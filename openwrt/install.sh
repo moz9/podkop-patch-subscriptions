@@ -1,7 +1,8 @@
 #!/bin/sh
 set -eu
 
-RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.15-subscriptions-batch-ru}"
+RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
 UPGRADE_PATCH_FILE="podkop-subscription-batch-upgrade.patch"
 LMO_FILE="podkop.ru.lmo.base64"

@@ -10,7 +10,7 @@
 Выполнить уже внутри SSH-сессии на роутере:
 
 ```sh
-PODKOP_PATCH_VERSION=84afc70ad19c181d45e5ea8af5ec67a17220aeba; wget -O /tmp/podkop-subscriptions-install.sh "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PODKOP_PATCH_VERSION/openwrt/install.sh" && PODKOP_PATCH_RAW_BASE="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PODKOP_PATCH_VERSION/openwrt" sh /tmp/podkop-subscriptions-install.sh
+wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/v2026.06.15-subscriptions-batch-ru/openwrt/install.sh && sh /tmp/podkop-subscriptions-install.sh
 ```
 
 Установщик:
