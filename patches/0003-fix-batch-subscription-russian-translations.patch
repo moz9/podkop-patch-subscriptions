@@ -1,0 +1,199 @@
+From 9df6f64698f604872091f2dab50fd7cc4afc0080 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Mon, 15 Jun 2026 15:35:57 +0300
+Subject: [PATCH] Fix batch subscription Russian translations
+
+---
+ fe-app-podkop/locales/podkop.ru.po | 22 +++++++++++-----------
+ luci-app-podkop/po/ru/podkop.po    | 22 +++++++++++-----------
+ 2 files changed, 22 insertions(+), 22 deletions(-)
+
+diff --git a/fe-app-podkop/locales/podkop.ru.po b/fe-app-podkop/locales/podkop.ru.po
+index 01f4fa0..8426712 100644
+--- a/fe-app-podkop/locales/podkop.ru.po
++++ b/fe-app-podkop/locales/podkop.ru.po
+@@ -42,10 +42,10 @@ msgid "Applicable for SOCKS and Shadowsocks proxy"
+ msgstr "Применимо для SOCKS и Shadowsocks прокси"
+ 
+ msgid "Apply"
+-msgstr "?????????"
++msgstr "Применить"
+ 
+ msgid "Applying changes. Podkop will be restarted once."
+-msgstr "????????? ?????????. Podkop ????? ??????????? ???? ???."
++msgstr "Применяем изменения. Podkop будет перезапущен один раз."
+ 
+ msgid "At least one valid domain must be specified. Comments-only content is not allowed."
+ msgstr "Необходимо указать хотя бы один действительный домен. Содержимое только из комментариев не допускается."
+@@ -78,7 +78,7 @@ msgid "Cannot receive checks result"
+ msgstr "Не удалось получить результаты проверки"
+ 
+ msgid "Changes applied. Podkop has been restarted."
+-msgstr "????????? ?????????. Podkop ???????????."
++msgstr "Изменения применены. Podkop перезапущен."
+ 
+ msgid "Checking, please wait"
+ msgstr "Проверяем, пожалуйста подождите"
+@@ -96,7 +96,7 @@ msgid "CIDR must be between 0 and 32"
+ msgstr "CIDR должен быть между 0 и 32"
+ 
+ msgid "Click Apply to restart Podkop once."
+-msgstr "??????? ???????????, ????? ????????????? Podkop ???? ???."
++msgstr "Нажмите «Применить», чтобы перезапустить Podkop один раз."
+ 
+ msgid "Close"
+ msgstr "Закрыть"
+@@ -288,7 +288,7 @@ msgid "Excluded"
+ msgstr "Исключён"
+ 
+ msgid "Failed to apply changes. Podkop was not changed."
+-msgstr "?? ??????? ????????? ?????????. Podkop ?? ??? ???????."
++msgstr "Не удалось применить изменения. Podkop не был изменён."
+ 
+ msgid "Failed to copy!"
+ msgstr "Не удалось скопировать!"
+@@ -483,7 +483,7 @@ msgid "Loading"
+ msgstr "Загрузка"
+ 
+ msgid "Loading subscription configs"
+-msgstr "????????? ??????? ????????"
++msgstr "Загружаем конфиги подписок"
+ 
+ msgid "Local Domain Lists"
+ msgstr "Локальные списки доменов"
+@@ -594,7 +594,7 @@ msgid "Remote Subnet Lists"
+ msgstr "Внешние списки подсетей"
+ 
+ msgid "Reset"
+-msgstr "????????"
++msgstr "Сбросить"
+ 
+ msgid "Resolve real IP for routing"
+ msgstr "Разрешение реальных IP-адресов"
+@@ -651,7 +651,7 @@ msgid "Select between VPN and Proxy connection methods for traffic routing"
+ msgstr "Выберите между VPN и Proxy методами для маршрутизации трафика"
+ 
+ msgid "Select configs, then click Apply to restart Podkop once."
+-msgstr "???????? ???????, ????? ??????? ??????????? ??? ?????? ??????????? Podkop."
++msgstr "Выберите конфиги, затем нажмите «Применить» для одного перезапуска Podkop."
+ 
+ msgid "Select DNS protocol to use"
+ msgstr "Выберите протокол DNS"
+@@ -846,7 +846,7 @@ msgid "Unknown error"
+ msgstr "Неизвестная ошибка"
+ 
+ msgid "Unsaved changes"
+-msgstr "????????????? ?????????"
++msgstr "Несохранённые изменения"
+ 
+ msgid "Unsupported config"
+ msgstr "Неподдерживаемый конфиг"
+@@ -927,10 +927,10 @@ msgid "Warning: Russia inside can only be used with %s. %s already in Russia ins
+ msgstr "Предупреждение: Russia inside может быть использован только с %s. %s уже есть в Russia inside и будет удален из выбранных."
+ 
+ msgid "Will be excluded"
+-msgstr "????? ????????"
++msgstr "Будет исключён"
+ 
+ msgid "Will be included"
+-msgstr "????? ???????"
++msgstr "Будет включён"
+ 
+ msgid "YACD Secret Key"
+ msgstr "Секретный ключ YACD"
+diff --git a/luci-app-podkop/po/ru/podkop.po b/luci-app-podkop/po/ru/podkop.po
+index 01f4fa0..8426712 100644
+--- a/luci-app-podkop/po/ru/podkop.po
++++ b/luci-app-podkop/po/ru/podkop.po
+@@ -42,10 +42,10 @@ msgid "Applicable for SOCKS and Shadowsocks proxy"
+ msgstr "Применимо для SOCKS и Shadowsocks прокси"
+ 
+ msgid "Apply"
+-msgstr "?????????"
++msgstr "Применить"
+ 
+ msgid "Applying changes. Podkop will be restarted once."
+-msgstr "????????? ?????????. Podkop ????? ??????????? ???? ???."
++msgstr "Применяем изменения. Podkop будет перезапущен один раз."
+ 
+ msgid "At least one valid domain must be specified. Comments-only content is not allowed."
+ msgstr "Необходимо указать хотя бы один действительный домен. Содержимое только из комментариев не допускается."
+@@ -78,7 +78,7 @@ msgid "Cannot receive checks result"
+ msgstr "Не удалось получить результаты проверки"
+ 
+ msgid "Changes applied. Podkop has been restarted."
+-msgstr "????????? ?????????. Podkop ???????????."
++msgstr "Изменения применены. Podkop перезапущен."
+ 
+ msgid "Checking, please wait"
+ msgstr "Проверяем, пожалуйста подождите"
+@@ -96,7 +96,7 @@ msgid "CIDR must be between 0 and 32"
+ msgstr "CIDR должен быть между 0 и 32"
+ 
+ msgid "Click Apply to restart Podkop once."
+-msgstr "??????? ???????????, ????? ????????????? Podkop ???? ???."
++msgstr "Нажмите «Применить», чтобы перезапустить Podkop один раз."
+ 
+ msgid "Close"
+ msgstr "Закрыть"
+@@ -288,7 +288,7 @@ msgid "Excluded"
+ msgstr "Исключён"
+ 
+ msgid "Failed to apply changes. Podkop was not changed."
+-msgstr "?? ??????? ????????? ?????????. Podkop ?? ??? ???????."
++msgstr "Не удалось применить изменения. Podkop не был изменён."
+ 
+ msgid "Failed to copy!"
+ msgstr "Не удалось скопировать!"
+@@ -483,7 +483,7 @@ msgid "Loading"
+ msgstr "Загрузка"
+ 
+ msgid "Loading subscription configs"
+-msgstr "????????? ??????? ????????"
++msgstr "Загружаем конфиги подписок"
+ 
+ msgid "Local Domain Lists"
+ msgstr "Локальные списки доменов"
+@@ -594,7 +594,7 @@ msgid "Remote Subnet Lists"
+ msgstr "Внешние списки подсетей"
+ 
+ msgid "Reset"
+-msgstr "????????"
++msgstr "Сбросить"
+ 
+ msgid "Resolve real IP for routing"
+ msgstr "Разрешение реальных IP-адресов"
+@@ -651,7 +651,7 @@ msgid "Select between VPN and Proxy connection methods for traffic routing"
+ msgstr "Выберите между VPN и Proxy методами для маршрутизации трафика"
+ 
+ msgid "Select configs, then click Apply to restart Podkop once."
+-msgstr "???????? ???????, ????? ??????? ??????????? ??? ?????? ??????????? Podkop."
++msgstr "Выберите конфиги, затем нажмите «Применить» для одного перезапуска Podkop."
+ 
+ msgid "Select DNS protocol to use"
+ msgstr "Выберите протокол DNS"
+@@ -846,7 +846,7 @@ msgid "Unknown error"
+ msgstr "Неизвестная ошибка"
+ 
+ msgid "Unsaved changes"
+-msgstr "????????????? ?????????"
++msgstr "Несохранённые изменения"
+ 
+ msgid "Unsupported config"
+ msgstr "Неподдерживаемый конфиг"
+@@ -927,10 +927,10 @@ msgid "Warning: Russia inside can only be used with %s. %s already in Russia ins
+ msgstr "Предупреждение: Russia inside может быть использован только с %s. %s уже есть в Russia inside и будет удален из выбранных."
+ 
+ msgid "Will be excluded"
+-msgstr "????? ????????"
++msgstr "Будет исключён"
+ 
+ msgid "Will be included"
+-msgstr "????? ???????"
++msgstr "Будет включён"
+ 
+ msgid "YACD Secret Key"
+ msgstr "Секретный ключ YACD"
+-- 
+2.54.0.windows.1
+
