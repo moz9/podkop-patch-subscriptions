@@ -29,6 +29,12 @@ download() {
 	url="$1"
 	out="$2"
 
+	case "$url" in
+		*raw.githubusercontent.com*)
+			url="$url?podkop_patch=$(date +%s)"
+			;;
+	esac
+
 	if command -v curl >/dev/null 2>&1; then
 		curl -fsSL "$url" -o "$out"
 	elif command -v wget >/dev/null 2>&1; then
