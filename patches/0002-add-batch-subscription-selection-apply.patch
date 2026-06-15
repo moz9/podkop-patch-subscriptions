@@ -1,0 +1,2865 @@
+From ac524ec03cd7342c8f6353bd0fc92ce92f80d050 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Mon, 15 Jun 2026 15:02:18 +0300
+Subject: [PATCH] Add batch subscription selection apply
+
+---
+ fe-app-podkop/locales/calls.json              | 133 ++++--
+ fe-app-podkop/locales/podkop.pot              | 101 +++--
+ fe-app-podkop/locales/podkop.ru.po            |  40 +-
+ .../podkop/methods/shell/callBaseMethod.ts    |   3 +-
+ .../src/podkop/methods/shell/index.ts         |  15 +-
+ .../src/podkop/services/store.service.ts      |   8 +-
+ .../tabs/subscriptions/initController.ts      | 133 +++++-
+ .../partials/renderSubscriptionSections.ts    | 301 +++++++++++--
+ .../src/podkop/tabs/subscriptions/render.ts   |   6 +-
+ .../src/podkop/tabs/subscriptions/styles.ts   |  67 +++
+ fe-app-podkop/src/podkop/types.ts             |   8 +
+ .../luci-static/resources/view/podkop/main.js | 409 ++++++++++++++++--
+ luci-app-podkop/po/ru/podkop.po               |  40 +-
+ luci-app-podkop/po/templates/podkop.pot       | 101 +++--
+ podkop/files/usr/bin/podkop                   | 141 ++++--
+ 15 files changed, 1275 insertions(+), 231 deletions(-)
+
+diff --git a/fe-app-podkop/locales/calls.json b/fe-app-podkop/locales/calls.json
+index ad800d4..316b318 100644
+--- a/fe-app-podkop/locales/calls.json
++++ b/fe-app-podkop/locales/calls.json
+@@ -55,6 +55,20 @@
+       "..\\luci-app-podkop\\htdocs\\luci-static\\resources\\view\\podkop\\section.js:241"
+     ]
+   },
++  {
++    "call": "Apply",
++    "key": "Apply",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:218"
++    ]
++  },
++  {
++    "call": "Applying changes. Podkop will be restarted once.",
++    "key": "Applying changes. Podkop will be restarted once.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:141"
++    ]
++  },
+   {
+     "call": "At least one valid domain must be specified. Comments-only content is not allowed.",
+     "key": "At least one valid domain must be specified. Comments-only content is not allowed.",
+@@ -128,6 +142,13 @@
+       "src\\podkop\\tabs\\diagnostic\\checks\\runSingBoxCheck.ts:25"
+     ]
+   },
++  {
++    "call": "Changes applied. Podkop has been restarted.",
++    "key": "Changes applied. Podkop has been restarted.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:153"
++    ]
++  },
+   {
+     "call": "Checking, please wait",
+     "key": "Checking, please wait",
+@@ -167,6 +188,13 @@
+       "src\\validators\\validateSubnet.ts:33"
+     ]
+   },
++  {
++    "call": "Click Apply to restart Podkop once.",
++    "key": "Click Apply to restart Podkop once.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:149"
++    ]
++  },
+   {
+     "call": "Close",
+     "key": "Close",
+@@ -185,7 +213,7 @@
+     "call": "Config",
+     "key": "Config",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:149"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:342"
+     ]
+   },
+   {
+@@ -255,7 +283,7 @@
+     "call": "Default",
+     "key": "Default",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:106"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:289"
+     ]
+   },
+   {
+@@ -613,8 +641,15 @@
+     "call": "Excluded",
+     "key": "Excluded",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:17",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:36"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:55",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:86"
++    ]
++  },
++  {
++    "call": "Failed to apply changes. Podkop was not changed.",
++    "key": "Failed to apply changes. Podkop was not changed.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:145"
+     ]
+   },
+   {
+@@ -640,14 +675,15 @@
+     "call": "Failed to load subscription configs",
+     "key": "Failed to load subscription configs",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:187"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:137",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:428"
+     ]
+   },
+   {
+     "call": "Failed to save!",
+     "key": "Failed to save!",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:84"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:175"
+     ]
+   },
+   {
+@@ -704,7 +740,7 @@
+     "call": "Included",
+     "key": "Included",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:36"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:86"
+     ]
+   },
+   {
+@@ -733,7 +769,7 @@
+     "key": "Invalid config",
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:20",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:21"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:59"
+     ]
+   },
+   {
+@@ -1071,7 +1107,14 @@
+     "call": "Loading",
+     "key": "Loading",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:183"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:426"
++    ]
++  },
++  {
++    "call": "Loading subscription configs",
++    "key": "Loading subscription configs",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:133"
+     ]
+   },
+   {
+@@ -1148,14 +1191,14 @@
+     "call": "No subscription configs found",
+     "key": "No subscription configs found",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:141"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:334"
+     ]
+   },
+   {
+     "call": "No Subscription URLTest sections",
+     "key": "No Subscription URLTest sections",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:191"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:385"
+     ]
+   },
+   {
+@@ -1291,7 +1334,7 @@
+     "call": "Protocol",
+     "key": "Protocol",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:150"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:343"
+     ]
+   },
+   {
+@@ -1336,6 +1379,13 @@
+       "..\\luci-app-podkop\\htdocs\\luci-static\\resources\\view\\podkop\\section.js:657"
+     ]
+   },
++  {
++    "call": "Reset",
++    "key": "Reset",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:224"
++    ]
++  },
+   {
+     "call": "Resolve real IP for routing",
+     "key": "Resolve real IP for routing",
+@@ -1431,14 +1481,7 @@
+     "call": "Saved!",
+     "key": "Saved!",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:86"
+-    ]
+-  },
+-  {
+-    "call": "Saving",
+-    "key": "Saving",
+-    "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:110"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:170"
+     ]
+   },
+   {
+@@ -1469,6 +1512,13 @@
+       "..\\luci-app-podkop\\htdocs\\luci-static\\resources\\view\\podkop\\section.js:13"
+     ]
+   },
++  {
++    "call": "Select configs, then click Apply to restart Podkop once.",
++    "key": "Select configs, then click Apply to restart Podkop once.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:156"
++    ]
++  },
+   {
+     "call": "Select DNS protocol to use",
+     "key": "Select DNS protocol to use",
+@@ -1586,7 +1636,7 @@
+     "call": "Server",
+     "key": "Server",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:28"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:66"
+     ]
+   },
+   {
+@@ -1664,7 +1714,7 @@
+     "call": "Source",
+     "key": "Source",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:153"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:346"
+     ]
+   },
+   {
+@@ -1721,7 +1771,7 @@
+     "call": "Status",
+     "key": "Status",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:152"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:345"
+     ]
+   },
+   {
+@@ -1735,7 +1785,7 @@
+     "call": "Subscription",
+     "key": "Subscription",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:112"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:301"
+     ]
+   },
+   {
+@@ -1862,7 +1912,7 @@
+     "call": "Transport",
+     "key": "Transport",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:151"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:344"
+     ]
+   },
+   {
+@@ -1920,7 +1970,7 @@
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:266",
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:267",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:105"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:288"
+     ]
+   },
+   {
+@@ -1930,13 +1980,20 @@
+       "src\\podkop\\api.ts:40"
+     ]
+   },
++  {
++    "call": "Unsaved changes",
++    "key": "Unsaved changes",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:149"
++    ]
++  },
+   {
+     "call": "Unsupported config",
+     "key": "Unsupported config",
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:22",
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:263",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:24"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:62"
+     ]
+   },
+   {
+@@ -1944,7 +2001,7 @@
+     "key": "Unsupported protocol",
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:14",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:18"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:56"
+     ]
+   },
+   {
+@@ -1952,7 +2009,7 @@
+     "key": "Unsupported security",
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:18",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:20"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:58"
+     ]
+   },
+   {
+@@ -1960,7 +2017,7 @@
+     "key": "Unsupported transport",
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:16",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:19"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:57"
+     ]
+   },
+   {
+@@ -2024,7 +2081,7 @@
+     "call": "Use",
+     "key": "Use",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:148"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:341"
+     ]
+   },
+   {
+@@ -2135,6 +2192,20 @@
+       "..\\luci-app-podkop\\htdocs\\luci-static\\resources\\view\\podkop\\section.js:396"
+     ]
+   },
++  {
++    "call": "Will be excluded",
++    "key": "Will be excluded",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:83"
++    ]
++  },
++  {
++    "call": "Will be included",
++    "key": "Will be included",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:83"
++    ]
++  },
+   {
+     "call": "YACD Secret Key",
+     "key": "YACD Secret Key",
+diff --git a/fe-app-podkop/locales/podkop.pot b/fe-app-podkop/locales/podkop.pot
+index 5ffa365..2fcd371 100644
+--- a/fe-app-podkop/locales/podkop.pot
++++ b/fe-app-podkop/locales/podkop.pot
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-15 06:07+0300\n"
+-"PO-Revision-Date: 2026-06-15 06:07+0300\n"
++"POT-Creation-Date: 2026-06-15 11:51+0300\n"
++"PO-Revision-Date: 2026-06-15 11:51+0300\n"
+ "Last-Translator: Codex <codex@example.local>\n"
+ "Language-Team: LANGUAGE <LL@li.org>\n"
+ "Language: \n"
+@@ -48,6 +48,14 @@ msgstr ""
+ msgid "Applicable for SOCKS and Shadowsocks proxy"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:218
++msgid "Apply"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:141
++msgid "Applying changes. Podkop will be restarted once."
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:486
+ msgid "At least one valid domain must be specified. Comments-only content is not allowed."
+ msgstr ""
+@@ -91,6 +99,10 @@ msgstr ""
+ msgid "Cannot receive checks result"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:153
++msgid "Changes applied. Podkop has been restarted."
++msgstr ""
++
+ #: src\podkop\tabs\diagnostic\checks\runDnsCheck.ts:15
+ #: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts:15
+ #: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:13
+@@ -115,6 +127,10 @@ msgstr ""
+ msgid "CIDR must be between 0 and 32"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:149
++msgid "Click Apply to restart Podkop once."
++msgstr ""
++
+ #: src\partials\modal\renderModal.ts:26
+ msgid "Close"
+ msgstr ""
+@@ -123,7 +139,7 @@ msgstr ""
+ msgid "Community Lists"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:149
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:342
+ msgid "Config"
+ msgstr ""
+ 
+@@ -163,7 +179,7 @@ msgstr ""
+ msgid "Dashboard currently unavailable"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:106
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:289
+ msgid "Default"
+ msgstr ""
+ 
+@@ -371,11 +387,15 @@ msgstr ""
+ msgid "Exclude NTP protocol traffic from the tunnel to prevent it from being routed through the proxy or VPN"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:17
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:36
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:55
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:86
+ msgid "Excluded"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:145
++msgid "Failed to apply changes. Podkop was not changed."
++msgstr ""
++
+ #: src\helpers\copyToClipboard.ts:12
+ msgid "Failed to copy!"
+ msgstr ""
+@@ -389,11 +409,12 @@ msgstr ""
+ msgid "Failed to execute!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:187
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:137
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:428
+ msgid "Failed to load subscription configs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:84
++#: src\podkop\tabs\subscriptions\initController.ts:175
+ msgid "Failed to save!"
+ msgstr ""
+ 
+@@ -426,7 +447,7 @@ msgstr ""
+ msgid "HTTP/HTTPS subscription links with proxy URLs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:36
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:86
+ msgid "Included"
+ msgstr ""
+ 
+@@ -443,7 +464,7 @@ msgid "Interface monitoring for Bad WAN"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:20
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:21
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:59
+ msgid "Invalid config"
+ msgstr ""
+ 
+@@ -637,10 +658,14 @@ msgstr ""
+ msgid "List Update Frequency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:183
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:426
+ msgid "Loading"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:133
++msgid "Loading subscription configs"
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:588
+ msgid "Local Domain Lists"
+ msgstr ""
+@@ -681,11 +706,11 @@ msgstr ""
+ msgid "No other marking rules found"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:141
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:334
+ msgid "No subscription configs found"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:191
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:385
+ msgid "No Subscription URLTest sections"
+ msgstr ""
+ 
+@@ -767,7 +792,7 @@ msgstr ""
+ msgid "Podkop will not modify your DHCP configuration"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:150
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:343
+ msgid "Protocol"
+ msgstr ""
+ 
+@@ -795,6 +820,10 @@ msgstr ""
+ msgid "Remote Subnet Lists"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:224
++msgid "Reset"
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:732
+ msgid "Resolve real IP for routing"
+ msgstr ""
+@@ -847,14 +876,10 @@ msgstr ""
+ msgid "Russia inside restrictions"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:86
++#: src\podkop\tabs\subscriptions\initController.ts:170
+ msgid "Saved!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:110
+-msgid "Saving"
+-msgstr ""
+-
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\settings.js:257
+ msgid "Secret key for authenticating remote access to YACD when WAN access is enabled."
+ msgstr ""
+@@ -871,6 +896,10 @@ msgstr ""
+ msgid "Select between VPN and Proxy connection methods for traffic routing"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:156
++msgid "Select configs, then click Apply to restart Podkop once."
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\settings.js:13
+ msgid "Select DNS protocol to use"
+ msgstr ""
+@@ -936,7 +965,7 @@ msgstr ""
+ msgid "Selector Proxy Links"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:28
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:66
+ msgid "Server"
+ msgstr ""
+ 
+@@ -981,7 +1010,7 @@ msgstr ""
+ msgid "Sing-box version is compatible (newer than 1.12.4)"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:153
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:346
+ msgid "Source"
+ msgstr ""
+ 
+@@ -1014,7 +1043,7 @@ msgstr ""
+ msgid "Start podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:152
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:345
+ msgid "Status"
+ msgstr ""
+ 
+@@ -1022,7 +1051,7 @@ msgstr ""
+ msgid "Stop podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:112
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:301
+ msgid "Subscription"
+ msgstr ""
+ 
+@@ -1095,7 +1124,7 @@ msgstr ""
+ msgid "Traffic Total"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:151
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:344
+ msgid "Transport"
+ msgstr ""
+ 
+@@ -1132,7 +1161,7 @@ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:266
+ #: src\podkop\methods\custom\getDashboardSections.ts:267
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:105
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:288
+ msgid "Unknown"
+ msgstr ""
+ 
+@@ -1140,24 +1169,28 @@ msgstr ""
+ msgid "Unknown error"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:149
++msgid "Unsaved changes"
++msgstr ""
++
+ #: src\podkop\methods\custom\getDashboardSections.ts:22
+ #: src\podkop\methods\custom\getDashboardSections.ts:263
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:24
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:62
+ msgid "Unsupported config"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:14
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:18
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:56
+ msgid "Unsupported protocol"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:18
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:20
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:58
+ msgid "Unsupported security"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:16
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:19
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:57
+ msgid "Unsupported transport"
+ msgstr ""
+ 
+@@ -1194,7 +1227,7 @@ msgstr ""
+ msgid "URLTest Tolerance"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:148
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:341
+ msgid "Use"
+ msgstr ""
+ 
+@@ -1267,6 +1300,14 @@ msgstr ""
+ msgid "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection."
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:83
++msgid "Will be excluded"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:83
++msgid "Will be included"
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\settings.js:256
+ msgid "YACD Secret Key"
+ msgstr ""
+diff --git a/fe-app-podkop/locales/podkop.ru.po b/fe-app-podkop/locales/podkop.ru.po
+index d56b2a0..01f4fa0 100644
+--- a/fe-app-podkop/locales/podkop.ru.po
++++ b/fe-app-podkop/locales/podkop.ru.po
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-15 09:07+0300\n"
+-"PO-Revision-Date: 2026-06-15 09:07+0300\n"
++"POT-Creation-Date: 2026-06-15 14:51+0300\n"
++"PO-Revision-Date: 2026-06-15 14:51+0300\n"
+ "Last-Translator: Codex\n"
+ "Language-Team: none\n"
+ "Language: ru\n"
+@@ -41,6 +41,12 @@ msgstr "Обеспечивает доступ к YACD из WAN. Убедитес
+ msgid "Applicable for SOCKS and Shadowsocks proxy"
+ msgstr "Применимо для SOCKS и Shadowsocks прокси"
+ 
++msgid "Apply"
++msgstr "?????????"
++
++msgid "Applying changes. Podkop will be restarted once."
++msgstr "????????? ?????????. Podkop ????? ??????????? ???? ???."
++
+ msgid "At least one valid domain must be specified. Comments-only content is not allowed."
+ msgstr "Необходимо указать хотя бы один действительный домен. Содержимое только из комментариев не допускается."
+ 
+@@ -71,6 +77,9 @@ msgstr "Путь к файлу кэша не может быть пустым"
+ msgid "Cannot receive checks result"
+ msgstr "Не удалось получить результаты проверки"
+ 
++msgid "Changes applied. Podkop has been restarted."
++msgstr "????????? ?????????. Podkop ???????????."
++
+ msgid "Checking, please wait"
+ msgstr "Проверяем, пожалуйста подождите"
+ 
+@@ -86,6 +95,9 @@ msgstr "Проверки пройдены"
+ msgid "CIDR must be between 0 and 32"
+ msgstr "CIDR должен быть между 0 и 32"
+ 
++msgid "Click Apply to restart Podkop once."
++msgstr "??????? ???????????, ????? ????????????? Podkop ???? ???."
++
+ msgid "Close"
+ msgstr "Закрыть"
+ 
+@@ -275,6 +287,9 @@ msgstr "Исключите трафик протокола NTP из туннел
+ msgid "Excluded"
+ msgstr "Исключён"
+ 
++msgid "Failed to apply changes. Podkop was not changed."
++msgstr "?? ??????? ????????? ?????????. Podkop ?? ??? ???????."
++
+ msgid "Failed to copy!"
+ msgstr "Не удалось скопировать!"
+ 
+@@ -467,6 +482,9 @@ msgstr "Частота обновления списков"
+ msgid "Loading"
+ msgstr "Загрузка"
+ 
++msgid "Loading subscription configs"
++msgstr "????????? ??????? ????????"
++
+ msgid "Local Domain Lists"
+ msgstr "Локальные списки доменов"
+ 
+@@ -575,6 +593,9 @@ msgstr "Внешние списки доменов"
+ msgid "Remote Subnet Lists"
+ msgstr "Внешние списки подсетей"
+ 
++msgid "Reset"
++msgstr "????????"
++
+ msgid "Resolve real IP for routing"
+ msgstr "Разрешение реальных IP-адресов"
+ 
+@@ -617,9 +638,6 @@ msgstr "Ограничения Russia inside"
+ msgid "Saved!"
+ msgstr "Сохранено!"
+ 
+-msgid "Saving"
+-msgstr "Сохранение"
+-
+ msgid "Secret key for authenticating remote access to YACD when WAN access is enabled."
+ msgstr "Секретный ключ для аутентификации удаленного доступа к YACD при включенном доступе через WAN."
+ 
+@@ -632,6 +650,9 @@ msgstr "Выберите предопределенный список для м
+ msgid "Select between VPN and Proxy connection methods for traffic routing"
+ msgstr "Выберите между VPN и Proxy методами для маршрутизации трафика"
+ 
++msgid "Select configs, then click Apply to restart Podkop once."
++msgstr "???????? ???????, ????? ??????? ??????????? ??? ?????? ??????????? Podkop."
++
+ msgid "Select DNS protocol to use"
+ msgstr "Выберите протокол DNS"
+ 
+@@ -824,6 +845,9 @@ msgstr "Неизвестно"
+ msgid "Unknown error"
+ msgstr "Неизвестная ошибка"
+ 
++msgid "Unsaved changes"
++msgstr "????????????? ?????????"
++
+ msgid "Unsupported config"
+ msgstr "Неподдерживаемый конфиг"
+ 
+@@ -902,6 +926,12 @@ msgstr "Предупреждение: %s нельзя использовать 
+ msgid "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection."
+ msgstr "Предупреждение: Russia inside может быть использован только с %s. %s уже есть в Russia inside и будет удален из выбранных."
+ 
++msgid "Will be excluded"
++msgstr "????? ????????"
++
++msgid "Will be included"
++msgstr "????? ???????"
++
+ msgid "YACD Secret Key"
+ msgstr "Секретный ключ YACD"
+ 
+diff --git a/fe-app-podkop/src/podkop/methods/shell/callBaseMethod.ts b/fe-app-podkop/src/podkop/methods/shell/callBaseMethod.ts
+index 519cd36..5e77eb0 100644
+--- a/fe-app-podkop/src/podkop/methods/shell/callBaseMethod.ts
++++ b/fe-app-podkop/src/podkop/methods/shell/callBaseMethod.ts
+@@ -5,11 +5,12 @@ export async function callBaseMethod<T>(
+   method: Podkop.AvailableMethods,
+   args: string[] = [],
+   command: string = '/usr/bin/podkop',
++  timeout = 15000,
+ ): Promise<Podkop.MethodResponse<T>> {
+   const response = await executeShellCommand({
+     command,
+     args: [method as string, ...args],
+-    timeout: 15000,
++    timeout,
+   });
+ 
+   if (response.stdout) {
+diff --git a/fe-app-podkop/src/podkop/methods/shell/index.ts b/fe-app-podkop/src/podkop/methods/shell/index.ts
+index c96078f..ec0482d 100644
+--- a/fe-app-podkop/src/podkop/methods/shell/index.ts
++++ b/fe-app-podkop/src/podkop/methods/shell/index.ts
+@@ -104,8 +104,21 @@ export const PodkopShellMethods = {
+     linkId: string,
+     enabled: boolean,
+   ) =>
+-    callBaseMethod<{ success: boolean; error?: string }>(
++    callBaseMethod<Podkop.SetSubscriptionLinksEnabledResult>(
+       Podkop.AvailableMethods.SET_SUBSCRIPTION_LINK_ENABLED,
+       [section, linkId, enabled ? '1' : '0'],
+     ),
++  setSubscriptionLinksEnabled: async (
++    section: string,
++    changes: Array<{ id: string; enabled: boolean }>,
++  ) =>
++    callBaseMethod<Podkop.SetSubscriptionLinksEnabledResult>(
++      Podkop.AvailableMethods.SET_SUBSCRIPTION_LINKS_ENABLED,
++      [
++        section,
++        ...changes.flatMap(({ id, enabled }) => [id, enabled ? '1' : '0']),
++      ],
++      '/usr/bin/podkop',
++      60000,
++    ),
+ };
+diff --git a/fe-app-podkop/src/podkop/services/store.service.ts b/fe-app-podkop/src/podkop/services/store.service.ts
+index a40074b..96e91ef 100644
+--- a/fe-app-podkop/src/podkop/services/store.service.ts
++++ b/fe-app-podkop/src/podkop/services/store.service.ts
+@@ -170,7 +170,9 @@ export interface StoreType {
+   subscriptionItemsWidget: {
+     loading: boolean;
+     failed: boolean;
+-    updatingId: string;
++    applying: boolean;
++    status: 'idle' | 'dirty' | 'applying' | 'success' | 'error';
++    pendingChanges: Record<string, boolean>;
+     data: Podkop.SubscriptionItemsSection[];
+   };
+   diagnosticsRunAction: {
+@@ -232,7 +234,9 @@ const initialStore: StoreType = {
+   subscriptionItemsWidget: {
+     loading: true,
+     failed: false,
+-    updatingId: '',
++    applying: false,
++    status: 'idle',
++    pendingChanges: {},
+     data: [],
+   },
+   ...initialDiagnosticStore,
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+index 955264c..b2b3337 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+@@ -5,7 +5,22 @@ import { logger, store, StoreType } from '../../services';
+ import { Podkop } from '../../types';
+ import { renderSubscriptionSections } from './partials/renderSubscriptionSections';
+ 
+-async function fetchSubscriptionItems() {
++type SubscriptionItemsStatus =
++  | 'idle'
++  | 'dirty'
++  | 'applying'
++  | 'success'
++  | 'error';
++
++function getRowId(sectionCode: string, itemId: string) {
++  return `${sectionCode}:${itemId}`;
++}
++
++function getPendingCount(pendingChanges: Record<string, boolean>) {
++  return Object.keys(pendingChanges).length;
++}
++
++async function fetchSubscriptionItems(status: SubscriptionItemsStatus = 'idle') {
+   const prev = store.get().subscriptionItemsWidget;
+ 
+   store.set({
+@@ -42,7 +57,9 @@ async function fetchSubscriptionItems() {
+       subscriptionItemsWidget: {
+         loading: false,
+         failed: false,
+-        updatingId: '',
++        applying: false,
++        status,
++        pendingChanges: {},
+         data,
+       },
+     });
+@@ -54,39 +71,117 @@ async function fetchSubscriptionItems() {
+         ...store.get().subscriptionItemsWidget,
+         loading: false,
+         failed: true,
+-        updatingId: '',
++        applying: false,
++        status: 'error',
+       },
+     });
+   }
+ }
+ 
+-async function handleToggle(
++function handleToggle(
+   sectionCode: string,
+   item: Podkop.SubscriptionItem,
+   enabled: boolean,
+ ) {
+-  const rowId = `${sectionCode}:${item.id}`;
++  const widget = store.get().subscriptionItemsWidget;
++  const rowId = getRowId(sectionCode, item.id);
++  const pendingChanges = { ...widget.pendingChanges };
++
++  if (enabled === item.enabled) {
++    delete pendingChanges[rowId];
++  } else {
++    pendingChanges[rowId] = enabled;
++  }
+ 
+   store.set({
+     subscriptionItemsWidget: {
+-      ...store.get().subscriptionItemsWidget,
+-      updatingId: rowId,
++      ...widget,
++      status: getPendingCount(pendingChanges) > 0 ? 'dirty' : 'idle',
++      pendingChanges,
+     },
+   });
++}
++
++function handleReset() {
++  const widget = store.get().subscriptionItemsWidget;
+ 
+-  const result = await PodkopShellMethods.setSubscriptionLinkEnabled(
+-    sectionCode,
+-    item.id,
+-    enabled,
++  store.set({
++    subscriptionItemsWidget: {
++      ...widget,
++      status: 'idle',
++      pendingChanges: {},
++    },
++  });
++}
++
++function getChangesBySection(
++  pendingChanges: Record<string, boolean>,
++): Record<string, Array<{ id: string; enabled: boolean }>> {
++  return Object.entries(pendingChanges).reduce(
++    (acc, [rowId, enabled]) => {
++      const separatorIndex = rowId.indexOf(':');
++      const sectionCode = rowId.slice(0, separatorIndex);
++      const id = rowId.slice(separatorIndex + 1);
++
++      if (!sectionCode || !id) return acc;
++
++      if (!acc[sectionCode]) {
++        acc[sectionCode] = [];
++      }
++
++      acc[sectionCode].push({ id, enabled });
++
++      return acc;
++    },
++    {} as Record<string, Array<{ id: string; enabled: boolean }>>,
+   );
++}
+ 
+-  if (!result.success || !result.data.success) {
+-    showToast(_('Failed to save!'), 'error');
+-  } else {
+-    showToast(_('Saved!'), 'success');
++async function handleApply() {
++  const widget = store.get().subscriptionItemsWidget;
++  const pendingChanges = widget.pendingChanges;
++
++  if (getPendingCount(pendingChanges) === 0 || widget.applying) {
++    return;
+   }
+ 
+-  await fetchSubscriptionItems();
++  store.set({
++    subscriptionItemsWidget: {
++      ...widget,
++      applying: true,
++      status: 'applying',
++    },
++  });
++
++  try {
++    const changesBySection = getChangesBySection(pendingChanges);
++
++    for (const [sectionCode, changes] of Object.entries(changesBySection)) {
++      const result = await PodkopShellMethods.setSubscriptionLinksEnabled(
++        sectionCode,
++        changes,
++      );
++
++      if (!result.success || !result.data.success) {
++        throw new Error(result.success ? result.data.error : result.error);
++      }
++    }
++
++    showToast(_('Saved!'), 'success');
++    await fetchSubscriptionItems('success');
++  } catch (error) {
++    logger.error('[SUBSCRIPTIONS]', 'failed to apply subscription changes');
++    logger.error('[SUBSCRIPTIONS]', error);
++    showToast(_('Failed to save!'), 'error');
++
++    store.set({
++      subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
++        applying: false,
++        status: 'error',
++      },
++    });
++  }
+ }
+ 
+ async function renderSubscriptionItemsWidget() {
+@@ -97,9 +192,13 @@ async function renderSubscriptionItemsWidget() {
+   const renderedWidget = renderSubscriptionSections({
+     loading: subscriptionItemsWidget.loading,
+     failed: subscriptionItemsWidget.failed,
++    applying: subscriptionItemsWidget.applying,
++    status: subscriptionItemsWidget.status,
++    pendingChanges: subscriptionItemsWidget.pendingChanges,
+     sections: subscriptionItemsWidget.data,
+-    updatingId: subscriptionItemsWidget.updatingId,
+     onToggle: handleToggle,
++    onApply: handleApply,
++    onReset: handleReset,
+   });
+ 
+   return preserveScrollForPage(() => {
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
+index 81e254e..b11dbb0 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
+@@ -1,15 +1,53 @@
++import { renderButton } from '../../../../partials';
+ import { Podkop } from '../../../types';
+ 
++type SubscriptionItemsStatus =
++  | 'idle'
++  | 'dirty'
++  | 'applying'
++  | 'success'
++  | 'error';
++
+ interface RenderSubscriptionSectionsProps {
+   loading: boolean;
+   failed: boolean;
++  applying: boolean;
++  status: SubscriptionItemsStatus;
++  pendingChanges: Record<string, boolean>;
+   sections: Podkop.SubscriptionItemsSection[];
+-  updatingId: string;
+   onToggle: (
+     sectionCode: string,
+     item: Podkop.SubscriptionItem,
+     enabled: boolean,
+   ) => void;
++  onApply: () => void;
++  onReset: () => void;
++}
++
++function getRowId(sectionCode: string, itemId: string) {
++  return `${sectionCode}:${itemId}`;
++}
++
++function getPendingCount(pendingChanges: Record<string, boolean>) {
++  return Object.keys(pendingChanges).length;
++}
++
++function hasPendingChange(
++  pendingChanges: Record<string, boolean>,
++  sectionCode: string,
++  item: Podkop.SubscriptionItem,
++) {
++  return getRowId(sectionCode, item.id) in pendingChanges;
++}
++
++function getEffectiveEnabled(
++  pendingChanges: Record<string, boolean>,
++  sectionCode: string,
++  item: Podkop.SubscriptionItem,
++) {
++  const rowId = getRowId(sectionCode, item.id);
++
++  return rowId in pendingChanges ? pendingChanges[rowId] : item.enabled;
+ }
+ 
+ function getReasonLabel(reason: string) {
+@@ -28,20 +66,44 @@ function getItemName(item: Podkop.SubscriptionItem, index: number) {
+   return item.name || `${_('Server')} ${index + 1}`;
+ }
+ 
+-function getStatusLabel(item: Podkop.SubscriptionItem) {
++function getStatusLabel({
++  item,
++  pending,
++  effectiveEnabled,
++}: {
++  item: Podkop.SubscriptionItem;
++  pending: boolean;
++  effectiveEnabled: boolean;
++}) {
+   if (!item.supported) {
+     return getReasonLabel(item.reason);
+   }
+ 
+-  return item.enabled ? _('Included') : _('Excluded');
++  if (pending) {
++    return effectiveEnabled ? _('Will be included') : _('Will be excluded');
++  }
++
++  return effectiveEnabled ? _('Included') : _('Excluded');
+ }
+ 
+-function getStatusClass(item: Podkop.SubscriptionItem) {
++function getStatusClass({
++  item,
++  pending,
++  effectiveEnabled,
++}: {
++  item: Podkop.SubscriptionItem;
++  pending: boolean;
++  effectiveEnabled: boolean;
++}) {
+   if (!item.supported) {
+     return 'pdk_subscriptions-page__status--unsupported';
+   }
+ 
+-  return item.enabled
++  if (pending) {
++    return 'pdk_subscriptions-page__status--pending';
++  }
++
++  return effectiveEnabled
+     ? 'pdk_subscriptions-page__status--enabled'
+     : 'pdk_subscriptions-page__status--excluded';
+ }
+@@ -54,18 +116,134 @@ function renderEmptyState(text: string) {
+   );
+ }
+ 
++function getToolbarMessage({
++  loading,
++  failed,
++  applying,
++  status,
++  pendingCount,
++}: {
++  loading: boolean;
++  failed: boolean;
++  applying: boolean;
++  status: SubscriptionItemsStatus;
++  pendingCount: number;
++}) {
++  if (loading) {
++    return _('Loading subscription configs');
++  }
++
++  if (failed) {
++    return _('Failed to load subscription configs');
++  }
++
++  if (applying || status === 'applying') {
++    return _('Applying changes. Podkop will be restarted once.');
++  }
++
++  if (status === 'error') {
++    return _('Failed to apply changes. Podkop was not changed.');
++  }
++
++  if (pendingCount > 0) {
++    return `${_('Unsaved changes')}: ${pendingCount}. ${_('Click Apply to restart Podkop once.')}`;
++  }
++
++  if (status === 'success') {
++    return _('Changes applied. Podkop has been restarted.');
++  }
++
++  return _('Select configs, then click Apply to restart Podkop once.');
++}
++
++function getToolbarClass(status: SubscriptionItemsStatus, pendingCount: number) {
++  if (status === 'applying') {
++    return 'pdk_subscriptions-page__toolbar--applying';
++  }
++
++  if (status === 'error') {
++    return 'pdk_subscriptions-page__toolbar--error';
++  }
++
++  if (pendingCount > 0 || status === 'dirty') {
++    return 'pdk_subscriptions-page__toolbar--dirty';
++  }
++
++  if (status === 'success') {
++    return 'pdk_subscriptions-page__toolbar--success';
++  }
++
++  return '';
++}
++
++function renderToolbar({
++  loading,
++  failed,
++  applying,
++  status,
++  pendingCount,
++  onApply,
++  onReset,
++}: {
++  loading: boolean;
++  failed: boolean;
++  applying: boolean;
++  status: SubscriptionItemsStatus;
++  pendingCount: number;
++  onApply: () => void;
++  onReset: () => void;
++}) {
++  const canApply = pendingCount > 0 && !loading && !failed && !applying;
++  const canReset = pendingCount > 0 && !applying;
++
++  return E(
++    'div',
++    {
++      class: [
++        'pdk_subscriptions-page__toolbar',
++        getToolbarClass(status, pendingCount),
++      ]
++        .filter(Boolean)
++        .join(' '),
++    },
++    [
++      E(
++        'div',
++        { class: 'pdk_subscriptions-page__toolbar-message' },
++        getToolbarMessage({ loading, failed, applying, status, pendingCount }),
++      ),
++      E('div', { class: 'pdk_subscriptions-page__toolbar-actions' }, [
++        renderButton({
++          classNames: ['cbi-button-apply'],
++          text: _('Apply'),
++          onClick: onApply,
++          loading: applying,
++          disabled: !canApply,
++        }),
++        renderButton({
++          text: _('Reset'),
++          onClick: onReset,
++          disabled: !canReset,
++        }),
++      ]),
++    ],
++  );
++}
++
+ function renderRow({
+   section,
+   item,
+   index,
+-  updatingId,
++  pendingChanges,
++  applying,
+   enabledSupportedCount,
+   onToggle,
+ }: {
+   section: Podkop.SubscriptionItemsSection;
+   item: Podkop.SubscriptionItem;
+   index: number;
+-  updatingId: string;
++  pendingChanges: Record<string, boolean>;
++  applying: boolean;
+   enabledSupportedCount: number;
+   onToggle: (
+     sectionCode: string,
+@@ -73,18 +251,23 @@ function renderRow({
+     enabled: boolean,
+   ) => void;
+ }) {
+-  const rowId = `${section.code}:${item.id}`;
+-  const isUpdating = updatingId === rowId;
++  const pending = hasPendingChange(pendingChanges, section.code, item);
++  const effectiveEnabled = getEffectiveEnabled(
++    pendingChanges,
++    section.code,
++    item,
++  );
+   const isLastEnabled =
+-    item.supported && item.enabled && enabledSupportedCount <= 1;
+-  const disabled = !item.supported || isUpdating || isLastEnabled;
++    item.supported && effectiveEnabled && enabledSupportedCount <= 1;
++  const disabled = !item.supported || applying || isLastEnabled;
+ 
+   return E(
+     'tr',
+     {
+       class: [
+         !item.supported ? 'pdk_subscriptions-page__row--unsupported' : '',
+-        isUpdating ? 'pdk_subscriptions-page__row--updating' : '',
++        pending ? 'pdk_subscriptions-page__row--pending' : '',
++        applying ? 'pdk_subscriptions-page__row--updating' : '',
+       ]
+         .filter(Boolean)
+         .join(' '),
+@@ -93,7 +276,7 @@ function renderRow({
+       E('td', { class: 'pdk_subscriptions-page__toggle-cell' }, [
+         E('input', {
+           type: 'checkbox',
+-          checked: item.enabled ? 'checked' : undefined,
++          checked: effectiveEnabled ? 'checked' : undefined,
+           disabled: disabled ? 'disabled' : undefined,
+           change: (event: Event) => {
+             const target = event.target as HTMLInputElement;
+@@ -106,8 +289,14 @@ function renderRow({
+       E('td', {}, item.transport || _('Default')),
+       E(
+         'td',
+-        { class: `pdk_subscriptions-page__status ${getStatusClass(item)}` },
+-        isUpdating ? _('Saving') : getStatusLabel(item),
++        {
++          class: `pdk_subscriptions-page__status ${getStatusClass({
++            item,
++            pending,
++            effectiveEnabled,
++          })}`,
++        },
++        getStatusLabel({ item, pending, effectiveEnabled }),
+       ),
+       E('td', {}, `${_('Subscription')} ${item.sourceIndex}`),
+     ],
+@@ -116,11 +305,13 @@ function renderRow({
+ 
+ function renderSection({
+   section,
+-  updatingId,
++  pendingChanges,
++  applying,
+   onToggle,
+ }: {
+   section: Podkop.SubscriptionItemsSection;
+-  updatingId: string;
++  pendingChanges: Record<string, boolean>;
++  applying: boolean;
+   onToggle: (
+     sectionCode: string,
+     item: Podkop.SubscriptionItem,
+@@ -128,7 +319,9 @@ function renderSection({
+   ) => void;
+ }) {
+   const enabledSupportedCount = section.items.filter(
+-    (item) => item.supported && item.enabled,
++    (item) =>
++      item.supported &&
++      getEffectiveEnabled(pendingChanges, section.code, item),
+   ).length;
+ 
+   return E('div', { class: 'pdk_subscriptions-page__section' }, [
+@@ -161,7 +354,8 @@ function renderSection({
+                   section,
+                   item,
+                   index,
+-                  updatingId,
++                  pendingChanges,
++                  applying,
+                   enabledSupportedCount,
+                   onToggle,
+                 }),
+@@ -172,21 +366,21 @@ function renderSection({
+   ]);
+ }
+ 
+-export function renderSubscriptionSections({
+-  loading,
+-  failed,
++function renderSections({
+   sections,
+-  updatingId,
++  pendingChanges,
++  applying,
+   onToggle,
+-}: RenderSubscriptionSectionsProps) {
+-  if (loading) {
+-    return renderEmptyState(_('Loading'));
+-  }
+-
+-  if (failed) {
+-    return renderEmptyState(_('Failed to load subscription configs'));
+-  }
+-
++}: {
++  sections: Podkop.SubscriptionItemsSection[];
++  pendingChanges: Record<string, boolean>;
++  applying: boolean;
++  onToggle: (
++    sectionCode: string,
++    item: Podkop.SubscriptionItem,
++    enabled: boolean,
++  ) => void;
++}) {
+   if (sections.length === 0) {
+     return renderEmptyState(_('No Subscription URLTest sections'));
+   }
+@@ -195,7 +389,48 @@ export function renderSubscriptionSections({
+     'div',
+     { class: 'pdk_subscriptions-page__sections' },
+     sections.map((section) =>
+-      renderSection({ section, updatingId, onToggle }),
++      renderSection({
++        section,
++        pendingChanges,
++        applying,
++        onToggle,
++      }),
+     ),
+   );
+ }
++
++export function renderSubscriptionSections({
++  loading,
++  failed,
++  applying,
++  status,
++  pendingChanges,
++  sections,
++  onToggle,
++  onApply,
++  onReset,
++}: RenderSubscriptionSectionsProps) {
++  const pendingCount = getPendingCount(pendingChanges);
++
++  return E('div', { class: 'pdk_subscriptions-page__content' }, [
++    renderToolbar({
++      loading,
++      failed,
++      applying,
++      status,
++      pendingCount,
++      onApply,
++      onReset,
++    }),
++    loading
++      ? renderEmptyState(_('Loading'))
++      : failed
++        ? renderEmptyState(_('Failed to load subscription configs'))
++        : renderSections({
++            sections,
++            pendingChanges,
++            applying,
++            onToggle,
++          }),
++  ]);
++}
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/render.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/render.ts
+index d581712..cdde7f9 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/render.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/render.ts
+@@ -14,9 +14,13 @@ export function render() {
+         renderSubscriptionSections({
+           loading: true,
+           failed: false,
++          applying: false,
++          status: 'idle',
++          pendingChanges: {},
+           sections: [],
+-          updatingId: '',
+           onToggle: () => {},
++          onApply: () => {},
++          onReset: () => {},
+         }),
+       ),
+     ],
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
+index 95da648..1353b88 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
+@@ -12,6 +12,54 @@ export const styles = `
+     width: 100%;
+ }
+ 
++.pdk_subscriptions-page__content {
++    width: 100%;
++}
++
++.pdk_subscriptions-page__toolbar {
++    display: flex;
++    align-items: center;
++    justify-content: space-between;
++    gap: 10px;
++    min-height: 38px;
++    border: 1px var(--background-color-low, lightgray) solid;
++    border-radius: 4px;
++    padding: 6px 8px;
++}
++
++.pdk_subscriptions-page__toolbar-message {
++    color: var(--text-color-medium);
++    line-height: 1.35;
++}
++
++.pdk_subscriptions-page__toolbar-actions {
++    display: flex;
++    align-items: center;
++    gap: 6px;
++    flex-shrink: 0;
++}
++
++.pdk_subscriptions-page__toolbar-actions .btn {
++    min-height: 28px;
++    padding: 4px 10px;
++}
++
++.pdk_subscriptions-page__toolbar--dirty {
++    border-color: var(--warn-color-medium, orange);
++}
++
++.pdk_subscriptions-page__toolbar--applying {
++    border-color: var(--primary-color-medium, #4f8cff);
++}
++
++.pdk_subscriptions-page__toolbar--success {
++    border-color: var(--success-color-medium, green);
++}
++
++.pdk_subscriptions-page__toolbar--error {
++    border-color: var(--error-color-medium, red);
++}
++
+ .pdk_subscriptions-page__sections {
+     display: grid;
+     grid-template-columns: 1fr;
+@@ -60,6 +108,10 @@ export const styles = `
+     opacity: 0.72;
+ }
+ 
++.pdk_subscriptions-page__row--pending {
++    background: rgba(255, 193, 7, 0.08);
++}
++
+ .pdk_subscriptions-page__row--updating {
+     opacity: 0.6;
+ }
+@@ -76,6 +128,10 @@ export const styles = `
+     color: var(--warn-color-medium, orange);
+ }
+ 
++.pdk_subscriptions-page__status--pending {
++    color: var(--warn-color-medium, orange);
++}
++
+ .pdk_subscriptions-page__status--unsupported {
+     color: var(--error-color-medium, red);
+ }
+@@ -86,4 +142,15 @@ export const styles = `
+     border-radius: 4px;
+     padding: 10px;
+ }
++
++@media (max-width: 720px) {
++    .pdk_subscriptions-page__toolbar {
++        align-items: flex-start;
++        flex-direction: column;
++    }
++
++    .pdk_subscriptions-page__toolbar-actions {
++        width: 100%;
++    }
++}
+ `;
+diff --git a/fe-app-podkop/src/podkop/types.ts b/fe-app-podkop/src/podkop/types.ts
+index 7a7f012..e01b356 100644
+--- a/fe-app-podkop/src/podkop/types.ts
++++ b/fe-app-podkop/src/podkop/types.ts
+@@ -69,6 +69,7 @@ export namespace Podkop {
+     GET_SUBSCRIPTION_SKIPPED_LINKS = 'get_subscription_skipped_links',
+     GET_SUBSCRIPTION_ITEMS = 'get_subscription_items',
+     SET_SUBSCRIPTION_LINK_ENABLED = 'set_subscription_link_enabled',
++    SET_SUBSCRIPTION_LINKS_ENABLED = 'set_subscription_links_enabled',
+   }
+ 
+   export enum AvailableClashAPIMethods {
+@@ -121,6 +122,13 @@ export namespace Podkop {
+     items: SubscriptionItem[];
+   }
+ 
++  export interface SetSubscriptionLinksEnabledResult {
++    success: boolean;
++    changed?: number;
++    reloaded?: number;
++    error?: string;
++  }
++
+   export interface ConfigProxyUrlTestSection {
+     connection_type: 'proxy';
+     proxy_config_type: 'urltest';
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index e44aab0..4984048 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -576,11 +576,11 @@ async function getConfigSections() {
+ }
+ 
+ // src/podkop/methods/shell/callBaseMethod.ts
+-async function callBaseMethod(method, args = [], command = "/usr/bin/podkop") {
++async function callBaseMethod(method, args = [], command = "/usr/bin/podkop", timeout = 15e3) {
+   const response = await executeShellCommand({
+     command,
+     args: [method, ...args],
+-    timeout: 15e3
++    timeout
+   });
+   if (response.stdout) {
+     try {
+@@ -626,6 +626,7 @@ var Podkop;
+     AvailableMethods2["GET_SUBSCRIPTION_SKIPPED_LINKS"] = "get_subscription_skipped_links";
+     AvailableMethods2["GET_SUBSCRIPTION_ITEMS"] = "get_subscription_items";
+     AvailableMethods2["SET_SUBSCRIPTION_LINK_ENABLED"] = "set_subscription_link_enabled";
++    AvailableMethods2["SET_SUBSCRIPTION_LINKS_ENABLED"] = "set_subscription_links_enabled";
+   })(AvailableMethods = Podkop2.AvailableMethods || (Podkop2.AvailableMethods = {}));
+   let AvailableClashAPIMethods;
+   ((AvailableClashAPIMethods2) => {
+@@ -716,6 +717,15 @@ var PodkopShellMethods = {
+   setSubscriptionLinkEnabled: async (section, linkId, enabled) => callBaseMethod(
+     Podkop.AvailableMethods.SET_SUBSCRIPTION_LINK_ENABLED,
+     [section, linkId, enabled ? "1" : "0"]
++  ),
++  setSubscriptionLinksEnabled: async (section, changes) => callBaseMethod(
++    Podkop.AvailableMethods.SET_SUBSCRIPTION_LINKS_ENABLED,
++    [
++      section,
++      ...changes.flatMap(({ id, enabled }) => [id, enabled ? "1" : "0"])
++    ],
++    "/usr/bin/podkop",
++    6e4
+   )
+ };
+ 
+@@ -1465,7 +1475,9 @@ var initialStore = {
+   subscriptionItemsWidget: {
+     loading: true,
+     failed: false,
+-    updatingId: "",
++    applying: false,
++    status: "idle",
++    pendingChanges: {},
+     data: []
+   },
+   ...initialDiagnosticStore
+@@ -4719,6 +4731,19 @@ var DiagnosticTab = {
+ };
+ 
+ // src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
++function getRowId(sectionCode, itemId) {
++  return `${sectionCode}:${itemId}`;
++}
++function getPendingCount(pendingChanges) {
++  return Object.keys(pendingChanges).length;
++}
++function hasPendingChange(pendingChanges, sectionCode, item) {
++  return getRowId(sectionCode, item.id) in pendingChanges;
++}
++function getEffectiveEnabled(pendingChanges, sectionCode, item) {
++  const rowId = getRowId(sectionCode, item.id);
++  return rowId in pendingChanges ? pendingChanges[rowId] : item.enabled;
++}
+ function getReasonLabel(reason) {
+   const labels = {
+     user_excluded: _("Excluded"),
+@@ -4732,17 +4757,31 @@ function getReasonLabel(reason) {
+ function getItemName(item, index) {
+   return item.name || `${_("Server")} ${index + 1}`;
+ }
+-function getStatusLabel(item) {
++function getStatusLabel({
++  item,
++  pending,
++  effectiveEnabled
++}) {
+   if (!item.supported) {
+     return getReasonLabel(item.reason);
+   }
+-  return item.enabled ? _("Included") : _("Excluded");
++  if (pending) {
++    return effectiveEnabled ? _("Will be included") : _("Will be excluded");
++  }
++  return effectiveEnabled ? _("Included") : _("Excluded");
+ }
+-function getStatusClass(item) {
++function getStatusClass({
++  item,
++  pending,
++  effectiveEnabled
++}) {
+   if (!item.supported) {
+     return "pdk_subscriptions-page__status--unsupported";
+   }
+-  return item.enabled ? "pdk_subscriptions-page__status--enabled" : "pdk_subscriptions-page__status--excluded";
++  if (pending) {
++    return "pdk_subscriptions-page__status--pending";
++  }
++  return effectiveEnabled ? "pdk_subscriptions-page__status--enabled" : "pdk_subscriptions-page__status--excluded";
+ }
+ function renderEmptyState(text) {
+   return E(
+@@ -4751,31 +4790,121 @@ function renderEmptyState(text) {
+     text
+   );
+ }
++function getToolbarMessage({
++  loading,
++  failed,
++  applying,
++  status,
++  pendingCount
++}) {
++  if (loading) {
++    return _("Loading subscription configs");
++  }
++  if (failed) {
++    return _("Failed to load subscription configs");
++  }
++  if (applying || status === "applying") {
++    return _("Applying changes. Podkop will be restarted once.");
++  }
++  if (status === "error") {
++    return _("Failed to apply changes. Podkop was not changed.");
++  }
++  if (pendingCount > 0) {
++    return `${_("Unsaved changes")}: ${pendingCount}. ${_("Click Apply to restart Podkop once.")}`;
++  }
++  if (status === "success") {
++    return _("Changes applied. Podkop has been restarted.");
++  }
++  return _("Select configs, then click Apply to restart Podkop once.");
++}
++function getToolbarClass(status, pendingCount) {
++  if (status === "applying") {
++    return "pdk_subscriptions-page__toolbar--applying";
++  }
++  if (status === "error") {
++    return "pdk_subscriptions-page__toolbar--error";
++  }
++  if (pendingCount > 0 || status === "dirty") {
++    return "pdk_subscriptions-page__toolbar--dirty";
++  }
++  if (status === "success") {
++    return "pdk_subscriptions-page__toolbar--success";
++  }
++  return "";
++}
++function renderToolbar({
++  loading,
++  failed,
++  applying,
++  status,
++  pendingCount,
++  onApply,
++  onReset
++}) {
++  const canApply = pendingCount > 0 && !loading && !failed && !applying;
++  const canReset = pendingCount > 0 && !applying;
++  return E(
++    "div",
++    {
++      class: [
++        "pdk_subscriptions-page__toolbar",
++        getToolbarClass(status, pendingCount)
++      ].filter(Boolean).join(" ")
++    },
++    [
++      E(
++        "div",
++        { class: "pdk_subscriptions-page__toolbar-message" },
++        getToolbarMessage({ loading, failed, applying, status, pendingCount })
++      ),
++      E("div", { class: "pdk_subscriptions-page__toolbar-actions" }, [
++        renderButton({
++          classNames: ["cbi-button-apply"],
++          text: _("Apply"),
++          onClick: onApply,
++          loading: applying,
++          disabled: !canApply
++        }),
++        renderButton({
++          text: _("Reset"),
++          onClick: onReset,
++          disabled: !canReset
++        })
++      ])
++    ]
++  );
++}
+ function renderRow({
+   section,
+   item,
+   index,
+-  updatingId,
++  pendingChanges,
++  applying,
+   enabledSupportedCount,
+   onToggle
+ }) {
+-  const rowId = `${section.code}:${item.id}`;
+-  const isUpdating = updatingId === rowId;
+-  const isLastEnabled = item.supported && item.enabled && enabledSupportedCount <= 1;
+-  const disabled = !item.supported || isUpdating || isLastEnabled;
++  const pending = hasPendingChange(pendingChanges, section.code, item);
++  const effectiveEnabled = getEffectiveEnabled(
++    pendingChanges,
++    section.code,
++    item
++  );
++  const isLastEnabled = item.supported && effectiveEnabled && enabledSupportedCount <= 1;
++  const disabled = !item.supported || applying || isLastEnabled;
+   return E(
+     "tr",
+     {
+       class: [
+         !item.supported ? "pdk_subscriptions-page__row--unsupported" : "",
+-        isUpdating ? "pdk_subscriptions-page__row--updating" : ""
++        pending ? "pdk_subscriptions-page__row--pending" : "",
++        applying ? "pdk_subscriptions-page__row--updating" : ""
+       ].filter(Boolean).join(" ")
+     },
+     [
+       E("td", { class: "pdk_subscriptions-page__toggle-cell" }, [
+         E("input", {
+           type: "checkbox",
+-          checked: item.enabled ? "checked" : void 0,
++          checked: effectiveEnabled ? "checked" : void 0,
+           disabled: disabled ? "disabled" : void 0,
+           change: (event) => {
+             const target = event.target;
+@@ -4788,8 +4917,14 @@ function renderRow({
+       E("td", {}, item.transport || _("Default")),
+       E(
+         "td",
+-        { class: `pdk_subscriptions-page__status ${getStatusClass(item)}` },
+-        isUpdating ? _("Saving") : getStatusLabel(item)
++        {
++          class: `pdk_subscriptions-page__status ${getStatusClass({
++            item,
++            pending,
++            effectiveEnabled
++          })}`
++        },
++        getStatusLabel({ item, pending, effectiveEnabled })
+       ),
+       E("td", {}, `${_("Subscription")} ${item.sourceIndex}`)
+     ]
+@@ -4797,11 +4932,12 @@ function renderRow({
+ }
+ function renderSection({
+   section,
+-  updatingId,
++  pendingChanges,
++  applying,
+   onToggle
+ }) {
+   const enabledSupportedCount = section.items.filter(
+-    (item) => item.supported && item.enabled
++    (item) => item.supported && getEffectiveEnabled(pendingChanges, section.code, item)
+   ).length;
+   return E("div", { class: "pdk_subscriptions-page__section" }, [
+     E(
+@@ -4831,7 +4967,8 @@ function renderSection({
+               section,
+               item,
+               index,
+-              updatingId,
++              pendingChanges,
++              applying,
+               enabledSupportedCount,
+               onToggle
+             })
+@@ -4841,19 +4978,12 @@ function renderSection({
+     )
+   ]);
+ }
+-function renderSubscriptionSections({
+-  loading,
+-  failed,
++function renderSections2({
+   sections,
+-  updatingId,
++  pendingChanges,
++  applying,
+   onToggle
+ }) {
+-  if (loading) {
+-    return renderEmptyState(_("Loading"));
+-  }
+-  if (failed) {
+-    return renderEmptyState(_("Failed to load subscription configs"));
+-  }
+   if (sections.length === 0) {
+     return renderEmptyState(_("No Subscription URLTest sections"));
+   }
+@@ -4861,10 +4991,45 @@ function renderSubscriptionSections({
+     "div",
+     { class: "pdk_subscriptions-page__sections" },
+     sections.map(
+-      (section) => renderSection({ section, updatingId, onToggle })
++      (section) => renderSection({
++        section,
++        pendingChanges,
++        applying,
++        onToggle
++      })
+     )
+   );
+ }
++function renderSubscriptionSections({
++  loading,
++  failed,
++  applying,
++  status,
++  pendingChanges,
++  sections,
++  onToggle,
++  onApply,
++  onReset
++}) {
++  const pendingCount = getPendingCount(pendingChanges);
++  return E("div", { class: "pdk_subscriptions-page__content" }, [
++    renderToolbar({
++      loading,
++      failed,
++      applying,
++      status,
++      pendingCount,
++      onApply,
++      onReset
++    }),
++    loading ? renderEmptyState(_("Loading")) : failed ? renderEmptyState(_("Failed to load subscription configs")) : renderSections2({
++      sections,
++      pendingChanges,
++      applying,
++      onToggle
++    })
++  ]);
++}
+ 
+ // src/podkop/tabs/subscriptions/render.ts
+ function render3() {
+@@ -4881,9 +5046,15 @@ function render3() {
+         renderSubscriptionSections({
+           loading: true,
+           failed: false,
++          applying: false,
++          status: "idle",
++          pendingChanges: {},
+           sections: [],
+-          updatingId: "",
+           onToggle: () => {
++          },
++          onApply: () => {
++          },
++          onReset: () => {
+           }
+         })
+       )
+@@ -4892,7 +5063,13 @@ function render3() {
+ }
+ 
+ // src/podkop/tabs/subscriptions/initController.ts
+-async function fetchSubscriptionItems() {
++function getRowId2(sectionCode, itemId) {
++  return `${sectionCode}:${itemId}`;
++}
++function getPendingCount2(pendingChanges) {
++  return Object.keys(pendingChanges).length;
++}
++async function fetchSubscriptionItems(status = "idle") {
+   const prev = store.get().subscriptionItemsWidget;
+   store.set({
+     subscriptionItemsWidget: {
+@@ -4922,7 +5099,9 @@ async function fetchSubscriptionItems() {
+       subscriptionItemsWidget: {
+         loading: false,
+         failed: false,
+-        updatingId: "",
++        applying: false,
++        status,
++        pendingChanges: {},
+         data
+       }
+     });
+@@ -4933,30 +5112,93 @@ async function fetchSubscriptionItems() {
+         ...store.get().subscriptionItemsWidget,
+         loading: false,
+         failed: true,
+-        updatingId: ""
++        applying: false,
++        status: "error"
+       }
+     });
+   }
+ }
+-async function handleToggle(sectionCode, item, enabled) {
+-  const rowId = `${sectionCode}:${item.id}`;
++function handleToggle(sectionCode, item, enabled) {
++  const widget = store.get().subscriptionItemsWidget;
++  const rowId = getRowId2(sectionCode, item.id);
++  const pendingChanges = { ...widget.pendingChanges };
++  if (enabled === item.enabled) {
++    delete pendingChanges[rowId];
++  } else {
++    pendingChanges[rowId] = enabled;
++  }
++  store.set({
++    subscriptionItemsWidget: {
++      ...widget,
++      status: getPendingCount2(pendingChanges) > 0 ? "dirty" : "idle",
++      pendingChanges
++    }
++  });
++}
++function handleReset() {
++  const widget = store.get().subscriptionItemsWidget;
+   store.set({
+     subscriptionItemsWidget: {
+-      ...store.get().subscriptionItemsWidget,
+-      updatingId: rowId
++      ...widget,
++      status: "idle",
++      pendingChanges: {}
+     }
+   });
+-  const result = await PodkopShellMethods.setSubscriptionLinkEnabled(
+-    sectionCode,
+-    item.id,
+-    enabled
++}
++function getChangesBySection(pendingChanges) {
++  return Object.entries(pendingChanges).reduce(
++    (acc, [rowId, enabled]) => {
++      const separatorIndex = rowId.indexOf(":");
++      const sectionCode = rowId.slice(0, separatorIndex);
++      const id = rowId.slice(separatorIndex + 1);
++      if (!sectionCode || !id) return acc;
++      if (!acc[sectionCode]) {
++        acc[sectionCode] = [];
++      }
++      acc[sectionCode].push({ id, enabled });
++      return acc;
++    },
++    {}
+   );
+-  if (!result.success || !result.data.success) {
+-    showToast(_("Failed to save!"), "error");
+-  } else {
++}
++async function handleApply() {
++  const widget = store.get().subscriptionItemsWidget;
++  const pendingChanges = widget.pendingChanges;
++  if (getPendingCount2(pendingChanges) === 0 || widget.applying) {
++    return;
++  }
++  store.set({
++    subscriptionItemsWidget: {
++      ...widget,
++      applying: true,
++      status: "applying"
++    }
++  });
++  try {
++    const changesBySection = getChangesBySection(pendingChanges);
++    for (const [sectionCode, changes] of Object.entries(changesBySection)) {
++      const result = await PodkopShellMethods.setSubscriptionLinksEnabled(
++        sectionCode,
++        changes
++      );
++      if (!result.success || !result.data.success) {
++        throw new Error(result.success ? result.data.error : result.error);
++      }
++    }
+     showToast(_("Saved!"), "success");
++    await fetchSubscriptionItems("success");
++  } catch (error) {
++    logger.error("[SUBSCRIPTIONS]", "failed to apply subscription changes");
++    logger.error("[SUBSCRIPTIONS]", error);
++    showToast(_("Failed to save!"), "error");
++    store.set({
++      subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
++        applying: false,
++        status: "error"
++      }
++    });
+   }
+-  await fetchSubscriptionItems();
+ }
+ async function renderSubscriptionItemsWidget() {
+   logger.debug("[SUBSCRIPTIONS]", "renderSubscriptionItemsWidget");
+@@ -4965,9 +5207,13 @@ async function renderSubscriptionItemsWidget() {
+   const renderedWidget = renderSubscriptionSections({
+     loading: subscriptionItemsWidget.loading,
+     failed: subscriptionItemsWidget.failed,
++    applying: subscriptionItemsWidget.applying,
++    status: subscriptionItemsWidget.status,
++    pendingChanges: subscriptionItemsWidget.pendingChanges,
+     sections: subscriptionItemsWidget.data,
+-    updatingId: subscriptionItemsWidget.updatingId,
+-    onToggle: handleToggle
++    onToggle: handleToggle,
++    onApply: handleApply,
++    onReset: handleReset
+   });
+   return preserveScrollForPage(() => {
+     container.replaceChildren(renderedWidget);
+@@ -5025,6 +5271,54 @@ var styles5 = `
+     width: 100%;
+ }
+ 
++.pdk_subscriptions-page__content {
++    width: 100%;
++}
++
++.pdk_subscriptions-page__toolbar {
++    display: flex;
++    align-items: center;
++    justify-content: space-between;
++    gap: 10px;
++    min-height: 38px;
++    border: 1px var(--background-color-low, lightgray) solid;
++    border-radius: 4px;
++    padding: 6px 8px;
++}
++
++.pdk_subscriptions-page__toolbar-message {
++    color: var(--text-color-medium);
++    line-height: 1.35;
++}
++
++.pdk_subscriptions-page__toolbar-actions {
++    display: flex;
++    align-items: center;
++    gap: 6px;
++    flex-shrink: 0;
++}
++
++.pdk_subscriptions-page__toolbar-actions .btn {
++    min-height: 28px;
++    padding: 4px 10px;
++}
++
++.pdk_subscriptions-page__toolbar--dirty {
++    border-color: var(--warn-color-medium, orange);
++}
++
++.pdk_subscriptions-page__toolbar--applying {
++    border-color: var(--primary-color-medium, #4f8cff);
++}
++
++.pdk_subscriptions-page__toolbar--success {
++    border-color: var(--success-color-medium, green);
++}
++
++.pdk_subscriptions-page__toolbar--error {
++    border-color: var(--error-color-medium, red);
++}
++
+ .pdk_subscriptions-page__sections {
+     display: grid;
+     grid-template-columns: 1fr;
+@@ -5073,6 +5367,10 @@ var styles5 = `
+     opacity: 0.72;
+ }
+ 
++.pdk_subscriptions-page__row--pending {
++    background: rgba(255, 193, 7, 0.08);
++}
++
+ .pdk_subscriptions-page__row--updating {
+     opacity: 0.6;
+ }
+@@ -5089,6 +5387,10 @@ var styles5 = `
+     color: var(--warn-color-medium, orange);
+ }
+ 
++.pdk_subscriptions-page__status--pending {
++    color: var(--warn-color-medium, orange);
++}
++
+ .pdk_subscriptions-page__status--unsupported {
+     color: var(--error-color-medium, red);
+ }
+@@ -5099,6 +5401,17 @@ var styles5 = `
+     border-radius: 4px;
+     padding: 10px;
+ }
++
++@media (max-width: 720px) {
++    .pdk_subscriptions-page__toolbar {
++        align-items: flex-start;
++        flex-direction: column;
++    }
++
++    .pdk_subscriptions-page__toolbar-actions {
++        width: 100%;
++    }
++}
+ `;
+ 
+ // src/podkop/tabs/subscriptions/index.ts
+diff --git a/luci-app-podkop/po/ru/podkop.po b/luci-app-podkop/po/ru/podkop.po
+index d56b2a0..01f4fa0 100644
+--- a/luci-app-podkop/po/ru/podkop.po
++++ b/luci-app-podkop/po/ru/podkop.po
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-15 09:07+0300\n"
+-"PO-Revision-Date: 2026-06-15 09:07+0300\n"
++"POT-Creation-Date: 2026-06-15 14:51+0300\n"
++"PO-Revision-Date: 2026-06-15 14:51+0300\n"
+ "Last-Translator: Codex\n"
+ "Language-Team: none\n"
+ "Language: ru\n"
+@@ -41,6 +41,12 @@ msgstr "Обеспечивает доступ к YACD из WAN. Убедитес
+ msgid "Applicable for SOCKS and Shadowsocks proxy"
+ msgstr "Применимо для SOCKS и Shadowsocks прокси"
+ 
++msgid "Apply"
++msgstr "?????????"
++
++msgid "Applying changes. Podkop will be restarted once."
++msgstr "????????? ?????????. Podkop ????? ??????????? ???? ???."
++
+ msgid "At least one valid domain must be specified. Comments-only content is not allowed."
+ msgstr "Необходимо указать хотя бы один действительный домен. Содержимое только из комментариев не допускается."
+ 
+@@ -71,6 +77,9 @@ msgstr "Путь к файлу кэша не может быть пустым"
+ msgid "Cannot receive checks result"
+ msgstr "Не удалось получить результаты проверки"
+ 
++msgid "Changes applied. Podkop has been restarted."
++msgstr "????????? ?????????. Podkop ???????????."
++
+ msgid "Checking, please wait"
+ msgstr "Проверяем, пожалуйста подождите"
+ 
+@@ -86,6 +95,9 @@ msgstr "Проверки пройдены"
+ msgid "CIDR must be between 0 and 32"
+ msgstr "CIDR должен быть между 0 и 32"
+ 
++msgid "Click Apply to restart Podkop once."
++msgstr "??????? ???????????, ????? ????????????? Podkop ???? ???."
++
+ msgid "Close"
+ msgstr "Закрыть"
+ 
+@@ -275,6 +287,9 @@ msgstr "Исключите трафик протокола NTP из туннел
+ msgid "Excluded"
+ msgstr "Исключён"
+ 
++msgid "Failed to apply changes. Podkop was not changed."
++msgstr "?? ??????? ????????? ?????????. Podkop ?? ??? ???????."
++
+ msgid "Failed to copy!"
+ msgstr "Не удалось скопировать!"
+ 
+@@ -467,6 +482,9 @@ msgstr "Частота обновления списков"
+ msgid "Loading"
+ msgstr "Загрузка"
+ 
++msgid "Loading subscription configs"
++msgstr "????????? ??????? ????????"
++
+ msgid "Local Domain Lists"
+ msgstr "Локальные списки доменов"
+ 
+@@ -575,6 +593,9 @@ msgstr "Внешние списки доменов"
+ msgid "Remote Subnet Lists"
+ msgstr "Внешние списки подсетей"
+ 
++msgid "Reset"
++msgstr "????????"
++
+ msgid "Resolve real IP for routing"
+ msgstr "Разрешение реальных IP-адресов"
+ 
+@@ -617,9 +638,6 @@ msgstr "Ограничения Russia inside"
+ msgid "Saved!"
+ msgstr "Сохранено!"
+ 
+-msgid "Saving"
+-msgstr "Сохранение"
+-
+ msgid "Secret key for authenticating remote access to YACD when WAN access is enabled."
+ msgstr "Секретный ключ для аутентификации удаленного доступа к YACD при включенном доступе через WAN."
+ 
+@@ -632,6 +650,9 @@ msgstr "Выберите предопределенный список для м
+ msgid "Select between VPN and Proxy connection methods for traffic routing"
+ msgstr "Выберите между VPN и Proxy методами для маршрутизации трафика"
+ 
++msgid "Select configs, then click Apply to restart Podkop once."
++msgstr "???????? ???????, ????? ??????? ??????????? ??? ?????? ??????????? Podkop."
++
+ msgid "Select DNS protocol to use"
+ msgstr "Выберите протокол DNS"
+ 
+@@ -824,6 +845,9 @@ msgstr "Неизвестно"
+ msgid "Unknown error"
+ msgstr "Неизвестная ошибка"
+ 
++msgid "Unsaved changes"
++msgstr "????????????? ?????????"
++
+ msgid "Unsupported config"
+ msgstr "Неподдерживаемый конфиг"
+ 
+@@ -902,6 +926,12 @@ msgstr "Предупреждение: %s нельзя использовать 
+ msgid "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection."
+ msgstr "Предупреждение: Russia inside может быть использован только с %s. %s уже есть в Russia inside и будет удален из выбранных."
+ 
++msgid "Will be excluded"
++msgstr "????? ????????"
++
++msgid "Will be included"
++msgstr "????? ???????"
++
+ msgid "YACD Secret Key"
+ msgstr "Секретный ключ YACD"
+ 
+diff --git a/luci-app-podkop/po/templates/podkop.pot b/luci-app-podkop/po/templates/podkop.pot
+index 5ffa365..2fcd371 100644
+--- a/luci-app-podkop/po/templates/podkop.pot
++++ b/luci-app-podkop/po/templates/podkop.pot
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-15 06:07+0300\n"
+-"PO-Revision-Date: 2026-06-15 06:07+0300\n"
++"POT-Creation-Date: 2026-06-15 11:51+0300\n"
++"PO-Revision-Date: 2026-06-15 11:51+0300\n"
+ "Last-Translator: Codex <codex@example.local>\n"
+ "Language-Team: LANGUAGE <LL@li.org>\n"
+ "Language: \n"
+@@ -48,6 +48,14 @@ msgstr ""
+ msgid "Applicable for SOCKS and Shadowsocks proxy"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:218
++msgid "Apply"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:141
++msgid "Applying changes. Podkop will be restarted once."
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:486
+ msgid "At least one valid domain must be specified. Comments-only content is not allowed."
+ msgstr ""
+@@ -91,6 +99,10 @@ msgstr ""
+ msgid "Cannot receive checks result"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:153
++msgid "Changes applied. Podkop has been restarted."
++msgstr ""
++
+ #: src\podkop\tabs\diagnostic\checks\runDnsCheck.ts:15
+ #: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts:15
+ #: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:13
+@@ -115,6 +127,10 @@ msgstr ""
+ msgid "CIDR must be between 0 and 32"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:149
++msgid "Click Apply to restart Podkop once."
++msgstr ""
++
+ #: src\partials\modal\renderModal.ts:26
+ msgid "Close"
+ msgstr ""
+@@ -123,7 +139,7 @@ msgstr ""
+ msgid "Community Lists"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:149
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:342
+ msgid "Config"
+ msgstr ""
+ 
+@@ -163,7 +179,7 @@ msgstr ""
+ msgid "Dashboard currently unavailable"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:106
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:289
+ msgid "Default"
+ msgstr ""
+ 
+@@ -371,11 +387,15 @@ msgstr ""
+ msgid "Exclude NTP protocol traffic from the tunnel to prevent it from being routed through the proxy or VPN"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:17
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:36
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:55
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:86
+ msgid "Excluded"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:145
++msgid "Failed to apply changes. Podkop was not changed."
++msgstr ""
++
+ #: src\helpers\copyToClipboard.ts:12
+ msgid "Failed to copy!"
+ msgstr ""
+@@ -389,11 +409,12 @@ msgstr ""
+ msgid "Failed to execute!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:187
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:137
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:428
+ msgid "Failed to load subscription configs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:84
++#: src\podkop\tabs\subscriptions\initController.ts:175
+ msgid "Failed to save!"
+ msgstr ""
+ 
+@@ -426,7 +447,7 @@ msgstr ""
+ msgid "HTTP/HTTPS subscription links with proxy URLs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:36
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:86
+ msgid "Included"
+ msgstr ""
+ 
+@@ -443,7 +464,7 @@ msgid "Interface monitoring for Bad WAN"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:20
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:21
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:59
+ msgid "Invalid config"
+ msgstr ""
+ 
+@@ -637,10 +658,14 @@ msgstr ""
+ msgid "List Update Frequency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:183
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:426
+ msgid "Loading"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:133
++msgid "Loading subscription configs"
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:588
+ msgid "Local Domain Lists"
+ msgstr ""
+@@ -681,11 +706,11 @@ msgstr ""
+ msgid "No other marking rules found"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:141
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:334
+ msgid "No subscription configs found"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:191
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:385
+ msgid "No Subscription URLTest sections"
+ msgstr ""
+ 
+@@ -767,7 +792,7 @@ msgstr ""
+ msgid "Podkop will not modify your DHCP configuration"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:150
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:343
+ msgid "Protocol"
+ msgstr ""
+ 
+@@ -795,6 +820,10 @@ msgstr ""
+ msgid "Remote Subnet Lists"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:224
++msgid "Reset"
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:732
+ msgid "Resolve real IP for routing"
+ msgstr ""
+@@ -847,14 +876,10 @@ msgstr ""
+ msgid "Russia inside restrictions"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:86
++#: src\podkop\tabs\subscriptions\initController.ts:170
+ msgid "Saved!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:110
+-msgid "Saving"
+-msgstr ""
+-
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\settings.js:257
+ msgid "Secret key for authenticating remote access to YACD when WAN access is enabled."
+ msgstr ""
+@@ -871,6 +896,10 @@ msgstr ""
+ msgid "Select between VPN and Proxy connection methods for traffic routing"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:156
++msgid "Select configs, then click Apply to restart Podkop once."
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\settings.js:13
+ msgid "Select DNS protocol to use"
+ msgstr ""
+@@ -936,7 +965,7 @@ msgstr ""
+ msgid "Selector Proxy Links"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:28
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:66
+ msgid "Server"
+ msgstr ""
+ 
+@@ -981,7 +1010,7 @@ msgstr ""
+ msgid "Sing-box version is compatible (newer than 1.12.4)"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:153
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:346
+ msgid "Source"
+ msgstr ""
+ 
+@@ -1014,7 +1043,7 @@ msgstr ""
+ msgid "Start podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:152
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:345
+ msgid "Status"
+ msgstr ""
+ 
+@@ -1022,7 +1051,7 @@ msgstr ""
+ msgid "Stop podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:112
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:301
+ msgid "Subscription"
+ msgstr ""
+ 
+@@ -1095,7 +1124,7 @@ msgstr ""
+ msgid "Traffic Total"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:151
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:344
+ msgid "Transport"
+ msgstr ""
+ 
+@@ -1132,7 +1161,7 @@ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:266
+ #: src\podkop\methods\custom\getDashboardSections.ts:267
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:105
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:288
+ msgid "Unknown"
+ msgstr ""
+ 
+@@ -1140,24 +1169,28 @@ msgstr ""
+ msgid "Unknown error"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:149
++msgid "Unsaved changes"
++msgstr ""
++
+ #: src\podkop\methods\custom\getDashboardSections.ts:22
+ #: src\podkop\methods\custom\getDashboardSections.ts:263
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:24
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:62
+ msgid "Unsupported config"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:14
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:18
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:56
+ msgid "Unsupported protocol"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:18
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:20
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:58
+ msgid "Unsupported security"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:16
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:19
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:57
+ msgid "Unsupported transport"
+ msgstr ""
+ 
+@@ -1194,7 +1227,7 @@ msgstr ""
+ msgid "URLTest Tolerance"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:148
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:341
+ msgid "Use"
+ msgstr ""
+ 
+@@ -1267,6 +1300,14 @@ msgstr ""
+ msgid "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection."
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:83
++msgid "Will be excluded"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:83
++msgid "Will be included"
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\settings.js:256
+ msgid "YACD Secret Key"
+ msgstr ""
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index ee89ce2..3dff359 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1293,6 +1293,36 @@ validate_subscription_section_name() {
+     return 0
+ }
+ 
++normalize_subscription_enabled_value() {
++    local enabled="$1"
++
++    case "$enabled" in
++    1 | true | on | enabled)
++        echo "1"
++        return 0
++        ;;
++    0 | false | off | disabled)
++        echo "0"
++        return 0
++        ;;
++    esac
++
++    return 1
++}
++
++validate_subscription_urltest_section() {
++    local section="$1"
++    local connection_type proxy_config_type
++
++    if ! validate_subscription_section_name "$section"; then
++        return 1
++    fi
++
++    config_get connection_type "$section" "connection_type"
++    config_get proxy_config_type "$section" "proxy_config_type"
++    [ "$connection_type" = "proxy" ] && [ "$proxy_config_type" = "subscription_urltest" ]
++}
++
+ apply_subscription_exclusions_to_cached_links() {
+     local section="$1"
+     local cache_path all_cache_path items_cache_path excluded_ids_file active_links_file tmp_cache tmp_items_cache \
+@@ -1372,48 +1402,98 @@ set_subscription_link_enabled() {
+     local section="$1"
+     local link_id="$2"
+     local enabled="$3"
+-    local connection_type proxy_config_type items_cache_path remaining_enabled_count
+ 
+-    if ! validate_subscription_section_name "$section" || ! validate_subscription_link_id "$link_id"; then
++    set_subscription_links_enabled "$section" "$link_id" "$enabled"
++}
++
++set_subscription_links_enabled() {
++    local section="$1"
++    local items_cache_path excluded_ids_file tmp_excluded_file link_id enabled enabled_value \
++        excluded_ids_json remaining_enabled_count changed_count reload_required
++
++    if [ "$#" -lt 3 ] || [ $((($# - 1) % 2)) -ne 0 ]; then
+         echo '{"success":false,"error":"invalid_arguments"}'
+         return 1
+     fi
+ 
+-    case "$enabled" in
+-    1 | true | on | enabled) enabled=1 ;;
+-    0 | false | off | disabled) enabled=0 ;;
+-    *)
+-        echo '{"success":false,"error":"invalid_enabled_value"}'
++    if ! validate_subscription_urltest_section "$section"; then
++        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
+         return 1
+-        ;;
+-    esac
++    fi
+ 
+-    config_get connection_type "$section" "connection_type"
+-    config_get proxy_config_type "$section" "proxy_config_type"
+-    if [ "$connection_type" != "proxy" ] || [ "$proxy_config_type" != "subscription_urltest" ]; then
+-        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
++    shift
++
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$items_cache_path" ]; then
++        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
++    fi
++
++    if [ ! -s "$items_cache_path" ]; then
++        echo '{"success":false,"error":"subscription_cache_missing"}'
+         return 1
+     fi
+ 
+-    if [ "$enabled" -eq 0 ]; then
+-        items_cache_path="$(get_subscription_items_cache_path "$section")"
+-        if [ ! -s "$items_cache_path" ]; then
+-            refresh_subscription_cache "$section" > /dev/null 2>&1 || true
++    excluded_ids_file="$(mktemp)"
++    collect_subscription_excluded_ids "$section" "$excluded_ids_file"
++    changed_count=0
++
++    while [ "$#" -gt 0 ]; do
++        link_id="$1"
++        enabled="$2"
++        shift 2
++
++        if ! validate_subscription_link_id "$link_id"; then
++            rm -f "$excluded_ids_file"
++            echo '{"success":false,"error":"invalid_arguments"}'
++            return 1
+         fi
+ 
+-        remaining_enabled_count="$(jq --arg id "$link_id" '
+-            [.[] | select(.supported == true and .enabled == true and .id != $id)] | length
+-        ' "$items_cache_path" 2> /dev/null || echo 0)"
+-        if [ "$remaining_enabled_count" -eq 0 ]; then
+-            echo '{"success":false,"error":"cannot_disable_last_enabled_link"}'
++        enabled_value="$(normalize_subscription_enabled_value "$enabled")"
++        if [ -z "$enabled_value" ]; then
++            rm -f "$excluded_ids_file"
++            echo '{"success":false,"error":"invalid_enabled_value"}'
+             return 1
+         fi
++
++        if ! jq -e --arg id "$link_id" 'any(.[]; .id == $id and .supported == true)' "$items_cache_path" > /dev/null 2>&1; then
++            rm -f "$excluded_ids_file"
++            echo '{"success":false,"error":"link_is_not_supported"}'
++            return 1
++        fi
++
++        tmp_excluded_file="$(mktemp)"
++        grep -Fxv "$link_id" "$excluded_ids_file" > "$tmp_excluded_file" 2> /dev/null || true
++        if [ "$enabled_value" -eq 0 ]; then
++            printf '%s\n' "$link_id" >> "$tmp_excluded_file"
++        fi
++        awk '!seen[$0]++' "$tmp_excluded_file" > "$excluded_ids_file"
++        rm -f "$tmp_excluded_file"
++        changed_count=$((changed_count + 1))
++    done
++
++    excluded_ids_json="$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$excluded_ids_file")"
++    remaining_enabled_count="$(jq --argjson excludedIds "$excluded_ids_json" '
++        [
++            .[]
++            | select(
++                .supported == true
++                and (. as $item | ($excludedIds | index($item.id)) == null)
++            )
++        ] | length
++    ' "$items_cache_path" 2> /dev/null || echo 0)"
++
++    if [ "$remaining_enabled_count" -eq 0 ]; then
++        rm -f "$excluded_ids_file"
++        echo '{"success":false,"error":"cannot_disable_last_enabled_link"}'
++        return 1
+     fi
+ 
+-    uci -q del_list "podkop.$section.subscription_excluded_link_ids=$link_id"
+-    if [ "$enabled" -eq 0 ]; then
++    uci -q delete "podkop.$section.subscription_excluded_link_ids"
++    while IFS= read -r link_id || [ -n "$link_id" ]; do
++        [ -n "$link_id" ] || continue
+         uci -q add_list "podkop.$section.subscription_excluded_link_ids=$link_id"
+-    fi
++    done < "$excluded_ids_file"
++    rm -f "$excluded_ids_file"
+ 
+     if ! uci commit podkop; then
+         echo '{"success":false,"error":"uci_commit_failed"}'
+@@ -1428,14 +1508,15 @@ set_subscription_link_enabled() {
+         fi
+     fi
+ 
+-    if [ "$SUBSCRIPTION_CACHE_CHANGED" -eq 1 ]; then
++    reload_required="$SUBSCRIPTION_CACHE_CHANGED"
++    if [ "$reload_required" -eq 1 ]; then
+         if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
+             echo '{"success":false,"error":"reload_failed"}'
+             return 1
+         fi
+     fi
+ 
+-    echo '{"success":true}'
++    printf '{"success":true,"changed":%s,"reloaded":%s}\n' "$changed_count" "$reload_required"
+ }
+ 
+ subscription_update_section_handler() {
+@@ -3690,6 +3771,8 @@ Available commands:
+                             Show subscription proxy items for a section
+     set_subscription_link_enabled
+                             Enable or disable a subscription proxy item by id
++    set_subscription_links_enabled
++                            Enable or disable multiple subscription proxy items by id
+     show_config             Display current podkop configuration
+     show_version            Show podkop version
+     show_sing_box_config    Show sing-box configuration
+@@ -3761,6 +3844,10 @@ get_subscription_items)
+ set_subscription_link_enabled)
+     set_subscription_link_enabled "$2" "$3" "$4"
+     ;;
++set_subscription_links_enabled)
++    shift
++    set_subscription_links_enabled "$@"
++    ;;
+ show_config)
+     show_config
+     ;;
+-- 
+2.54.0.windows.1
+

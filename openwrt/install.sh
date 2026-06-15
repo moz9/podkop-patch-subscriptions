@@ -3,6 +3,7 @@ set -eu
 
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
+UPGRADE_PATCH_FILE="podkop-subscription-batch-upgrade.patch"
 LMO_FILE="podkop.ru.lmo.base64"
 SUBSCRIPTIONS_FILE="subscriptions.js"
 
@@ -96,7 +97,11 @@ abort_with_restore() {
 	fail "$1"
 }
 
-has_subscription_backend() {
+has_latest_subscription_backend() {
+	grep -q "set_subscription_links_enabled" /usr/bin/podkop 2>/dev/null
+}
+
+has_legacy_subscription_backend() {
 	grep -q "set_subscription_link_enabled" /usr/bin/podkop 2>/dev/null
 }
 
@@ -111,9 +116,16 @@ require_patch
 download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 
-if has_subscription_backend; then
-	log "Subscription URLTest backend is already installed; refreshing LuCI files."
+if has_latest_subscription_backend; then
+	log "Subscription URLTest batch backend is already installed; refreshing LuCI files."
 	backup_runtime
+elif has_legacy_subscription_backend; then
+	download "$RAW_BASE/$UPGRADE_PATCH_FILE" "$tmp_dir/$UPGRADE_PATCH_FILE"
+	backup_runtime
+
+	if ! patch -d / -p1 < "$tmp_dir/$UPGRADE_PATCH_FILE"; then
+		abort_with_restore "runtime upgrade patch failed"
+	fi
 else
 	download "$RAW_BASE/$PATCH_FILE" "$tmp_dir/$PATCH_FILE"
 	backup_runtime

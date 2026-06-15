@@ -30,6 +30,7 @@ PODKOP_PATCH_VERSION=c071783678ab6a579e0b7344c15b29cee75d4e11; wget -O /tmp/podk
 - фильтрацию неподдерживаемых Podkop конфигов до генерации sing-box;
 - отдельный список неподдерживаемых конфигов в дашборде;
 - вкладку `Подписки` в LuCI для включения и исключения отдельных конфигов;
+- пакетное применение изменений во вкладке `Подписки` с одним перезапуском Podkop;
 - сохранение исключений по хэшу ссылки, без записи proxy-ссылок в UCI;
 - русские строки интерфейса для добавленных элементов.
 
@@ -41,16 +42,18 @@ PODKOP_PATCH_VERSION=c071783678ab6a579e0b7344c15b29cee75d4e11; wget -O /tmp/podk
 git clone https://github.com/itdoginfo/podkop.git
 git clone https://github.com/moz9/podkop-patch-subscriptions.git
 cd podkop
-git am ../podkop-patch-subscriptions/patches/0001-add-subscription-urltest-management.patch
+git am ../podkop-patch-subscriptions/patches/*.patch
 ```
 
-Файл патча:
+Файлы патчей:
 
 - [`patches/0001-add-subscription-urltest-management.patch`](patches/0001-add-subscription-urltest-management.patch)
+- [`patches/0002-add-batch-subscription-selection-apply.patch`](patches/0002-add-batch-subscription-selection-apply.patch)
 
 Runtime-установка для OpenWrt использует отдельный файл:
 
 - [`openwrt/podkop-subscription-urltest-runtime.patch`](openwrt/podkop-subscription-urltest-runtime.patch)
+- [`openwrt/podkop-subscription-batch-upgrade.patch`](openwrt/podkop-subscription-batch-upgrade.patch)
 
 ## Проверка
 
