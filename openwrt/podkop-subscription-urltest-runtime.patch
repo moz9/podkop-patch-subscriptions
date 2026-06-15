@@ -1,0 +1,1854 @@
+diff --git a/usr/bin/podkop b/usr/bin/podkop
+index fda1c1e..ee89ce2 100644
+--- a/usr/bin/podkop
++++ b/usr/bin/podkop
+@@ -33,6 +33,8 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
+ 
+ config_load "$PODKOP_CONFIG"
+ 
++SUBSCRIPTION_CACHE_DIR="/etc/podkop/subscriptions"
++
+ check_requirements() {
+     log "Check Requirements"
+ 
+@@ -78,7 +80,7 @@ check_requirements() {
+     if has_outbound_section; then
+         log "Outbound section found" "debug"
+     else
+-        log "Outbound section not found. Please check your configuration file (missing proxy_string, selector_proxy_links, urltest_proxy_links, outbound_json, or interface). Aborted." "error"
++        log "Outbound section not found. Please check your configuration file (missing proxy_string, selector_proxy_links, urltest_proxy_links, subscription_url, outbound_json, or interface). Aborted." "error"
+         exit 1
+     fi
+ }
+@@ -94,7 +96,7 @@ _check_outbound_section() {
+     config_get interface "$section" "interface"
+ 
+     if [ -n "$proxy_string" ] || [ -n "$selector_proxy_links" ] || [ -n "$urltest_proxy_links" ] ||
+-        [ -n "$outbound_json" ] || [ -n "$interface" ]; then
++        section_has_subscription_urls "$section" || [ -n "$outbound_json" ] || [ -n "$interface" ]; then
+         section_exists=0
+     fi
+ }
+@@ -133,7 +135,9 @@ start_main() {
+ 
+     # sing-box
+     sing_box_init_config
++    remove_cron_job
+     config_foreach add_cron_job "section"
++    config_foreach add_subscription_cron_job "section"
+     /etc/init.d/sing-box start
+ 
+     log "Nice"
+@@ -475,10 +479,75 @@ add_cron_job() {
+ }
+ 
+ remove_cron_job() {
+-    (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
++    (crontab -l 2> /dev/null | grep -v "/usr/bin/podkop list_update" | grep -v "/usr/bin/podkop subscription_update") | crontab -
+     log "The cron job removed"
+ }
+ 
++get_subscription_cron_schedule() {
++    local interval="$1"
++
++    case "$interval" in
++    "10m")
++        echo "*/10 * * * *"
++        ;;
++    "30m")
++        echo "17,47 * * * *"
++        ;;
++    "1h")
++        echo "17 * * * *"
++        ;;
++    "3h")
++        echo "17 */3 * * *"
++        ;;
++    "6h")
++        echo "17 */6 * * *"
++        ;;
++    "12h")
++        echo "17 */12 * * *"
++        ;;
++    "1d")
++        echo "17 9 * * *"
++        ;;
++    *)
++        return 1
++        ;;
++    esac
++}
++
++add_subscription_cron_job() {
++    local section="$1"
++    local connection_type proxy_config_type subscription_update_interval cron_schedule cron_job
++
++    config_get connection_type "$section" "connection_type"
++    config_get proxy_config_type "$section" "proxy_config_type"
++
++    if [ "$connection_type" != "proxy" ] || [ "$proxy_config_type" != "subscription_urltest" ] ||
++        ! section_has_subscription_urls "$section"; then
++        return 0
++    fi
++
++    config_get subscription_update_interval "$section" "subscription_update_interval" "1h"
++    cron_schedule="$(get_subscription_cron_schedule "$subscription_update_interval")"
++    if [ -z "$cron_schedule" ]; then
++        log "Invalid subscription_update_interval value for section '$section': $subscription_update_interval" "warn"
++        cron_schedule="$(get_subscription_cron_schedule "1h")"
++    fi
++
++    case "$section" in
++    "" | *[!A-Za-z0-9_]*)
++        log "Skipping subscription cron job for section with unsupported name '$section'" "warn"
++        return 1
++        ;;
++    esac
++
++    cron_job="$cron_schedule /usr/bin/podkop subscription_update $section"
++    crontab -l 2> /dev/null | {
++        cat
++        echo "$cron_job"
++    } | crontab -
++    log "The subscription cron job has been created for section '$section'"
++}
++
+ list_update() {
+     echolog "🔄 Starting lists update..."
+ 
+@@ -547,6 +616,882 @@ list_update() {
+     fi
+ }
+ 
++get_subscription_cache_path() {
++    local section="$1"
++    local section_hash
++
++    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
++    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.links"
++}
++
++get_subscription_skipped_cache_path() {
++    local section="$1"
++    local section_hash
++
++    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
++    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.skipped.json"
++}
++
++get_subscription_all_cache_path() {
++    local section="$1"
++    local section_hash
++
++    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
++    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.all.links"
++}
++
++get_subscription_items_cache_path() {
++    local section="$1"
++    local section_hash
++
++    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
++    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.items.json"
++}
++
++get_subscription_link_id() {
++    local link="$1"
++
++    printf '%s' "$link" | md5sum | awk '{print $1}'
++}
++
++append_subscription_url_to_file() {
++    local subscription_url="$1"
++
++    if [ -n "$subscription_url" ]; then
++        printf '%s\n' "$subscription_url" >> "$SUBSCRIPTION_URLS_FILE"
++        SUBSCRIPTION_URLS_COUNT=$((SUBSCRIPTION_URLS_COUNT + 1))
++    fi
++}
++
++collect_subscription_urls() {
++    local section="$1"
++    local output_file="$2"
++    local subscription_url deduped_file
++
++    : > "$output_file"
++    SUBSCRIPTION_URLS_FILE="$output_file"
++    SUBSCRIPTION_URLS_COUNT=0
++    config_list_foreach "$section" "subscription_url" append_subscription_url_to_file
++
++    if [ "$SUBSCRIPTION_URLS_COUNT" -eq 0 ]; then
++        config_get subscription_url "$section" "subscription_url"
++        set -f
++        for subscription_url in $subscription_url; do
++            append_subscription_url_to_file "$subscription_url"
++        done
++        set +f
++    fi
++
++    if [ ! -s "$output_file" ]; then
++        return 1
++    fi
++
++    deduped_file="$(mktemp)"
++    awk '!seen[$0]++' "$output_file" > "$deduped_file"
++    mv "$deduped_file" "$output_file"
++}
++
++append_subscription_excluded_id_to_file() {
++    local link_id="$1"
++
++    if [ "${#link_id}" -ne 32 ]; then
++        return 0
++    fi
++
++    case "$link_id" in
++    *[!A-Fa-f0-9]*) return 0 ;;
++    esac
++
++    printf '%s\n' "$link_id" >> "$SUBSCRIPTION_EXCLUDED_IDS_FILE"
++    SUBSCRIPTION_EXCLUDED_IDS_COUNT=$((SUBSCRIPTION_EXCLUDED_IDS_COUNT + 1))
++}
++
++collect_subscription_excluded_ids() {
++    local section="$1"
++    local output_file="$2"
++    local link_id deduped_file
++
++    : > "$output_file"
++    SUBSCRIPTION_EXCLUDED_IDS_FILE="$output_file"
++    SUBSCRIPTION_EXCLUDED_IDS_COUNT=0
++    config_list_foreach "$section" "subscription_excluded_link_ids" append_subscription_excluded_id_to_file
++
++    if [ "$SUBSCRIPTION_EXCLUDED_IDS_COUNT" -eq 0 ]; then
++        config_get link_id "$section" "subscription_excluded_link_ids"
++        set -f
++        for link_id in $link_id; do
++            append_subscription_excluded_id_to_file "$link_id"
++        done
++        set +f
++    fi
++
++    deduped_file="$(mktemp)"
++    awk '!seen[$0]++' "$output_file" > "$deduped_file"
++    mv "$deduped_file" "$output_file"
++}
++
++is_subscription_link_id_excluded() {
++    local link_id="$1"
++    local excluded_ids_file="$2"
++
++    [ -s "$excluded_ids_file" ] && grep -Fxq "$link_id" "$excluded_ids_file"
++}
++
++section_has_subscription_urls() {
++    local section="$1"
++    local urls_file
++
++    urls_file="$(mktemp)"
++    if collect_subscription_urls "$section" "$urls_file"; then
++        rm -f "$urls_file"
++        return 0
++    fi
++
++    rm -f "$urls_file"
++    return 1
++}
++
++extract_subscription_proxy_links() {
++    local source_file="$1"
++    local output_file="$2"
++
++    awk '{ gsub(/[[:space:],"\[\]]+/, "\n"); print }' "$source_file" |
++        sed 's/^[>-]*//' |
++        awk '/^[A-Za-z][A-Za-z0-9+.-]*:\/\// { print }' |
++        awk '!seen[$0]++' > "$output_file"
++}
++
++normalize_subscription_file() {
++    local source_file="$1"
++    local output_file="$2"
++    local decoded_file extracted_file
++
++    extracted_file="$(mktemp)"
++    decoded_file="$(mktemp)"
++
++    convert_crlf_to_lf "$source_file"
++    extract_subscription_proxy_links "$source_file" "$extracted_file"
++    if [ -s "$extracted_file" ]; then
++        mv "$extracted_file" "$output_file"
++        rm -f "$decoded_file"
++        return 0
++    fi
++
++    if base64 -d < "$source_file" > "$decoded_file" 2> /dev/null && [ -s "$decoded_file" ]; then
++        convert_crlf_to_lf "$decoded_file"
++        extract_subscription_proxy_links "$decoded_file" "$extracted_file"
++        if [ -s "$extracted_file" ]; then
++            mv "$extracted_file" "$output_file"
++            rm -f "$decoded_file"
++            return 0
++        fi
++    fi
++
++    rm -f "$decoded_file" "$extracted_file"
++    return 1
++}
++
++get_subscription_link_name() {
++    local link="$1"
++    local name
++
++    case "$link" in
++    *#*) name="${link#*#}" ;;
++    *) name="" ;;
++    esac
++
++    [ -n "$name" ] && url_decode "$name"
++}
++
++get_subscription_proxy_skip_reason() {
++    local link="$1"
++    local scheme security transport userinfo decoded_userinfo
++
++    scheme="$(url_get_scheme "$link")"
++    case "$scheme" in
++    vless | ss | trojan | socks4 | socks4a | socks5 | hysteria2 | hy2) ;;
++    *)
++        echo "unsupported_protocol"
++        return 0
++        ;;
++    esac
++
++    case "$scheme" in
++    vless | trojan)
++        transport="$(url_get_query_param "$link" "type")"
++        case "$transport" in
++        "" | tcp | raw | ws | grpc) ;;
++        *)
++            echo "unsupported_transport"
++            return 0
++            ;;
++        esac
++
++        security="$(url_get_query_param "$link" "security")"
++        case "$security" in
++        "" | none | tls | reality) ;;
++        *)
++            echo "unsupported_security"
++            return 0
++            ;;
++        esac
++        ;;
++    ss)
++        userinfo="$(url_get_userinfo "$link")"
++        if ! is_shadowsocks_userinfo_format "$userinfo"; then
++            decoded_userinfo="$(echo "$userinfo" | base64 -d 2> /dev/null)"
++            if [ -z "$decoded_userinfo" ] || ! is_shadowsocks_userinfo_format "$decoded_userinfo"; then
++                echo "invalid_config"
++                return 0
++            fi
++        fi
++        ;;
++    esac
++
++    return 1
++}
++
++append_subscription_skipped_proxy_link() {
++    local link="$1"
++    local reason="$2"
++    local link_id scheme transport name
++
++    link_id="$(get_subscription_link_id "$link")"
++    scheme="$(url_get_scheme "$link")"
++    transport="$(url_get_query_param "$link" "type")"
++    name="$(get_subscription_link_name "$link")"
++
++    jq -cn \
++        --arg id "$link_id" \
++        --arg name "$name" \
++        --arg protocol "$scheme" \
++        --arg transport "$transport" \
++        --arg reason "$reason" \
++        '{id: $id, name: $name, protocol: $protocol, transport: $transport, reason: $reason}' >> "$SUBSCRIPTION_SKIPPED_LINKS_FILE"
++}
++
++append_subscription_item() {
++    local link="$1"
++    local source_index="$2"
++    local supported="$3"
++    local enabled="$4"
++    local reason="$5"
++    local link_id scheme transport name source_name
++
++    link_id="$(get_subscription_link_id "$link")"
++    scheme="$(url_get_scheme "$link")"
++    transport="$(url_get_query_param "$link" "type")"
++    name="$(get_subscription_link_name "$link")"
++    source_name="Subscription $source_index"
++
++    jq -cn \
++        --arg id "$link_id" \
++        --arg name "$name" \
++        --arg protocol "$scheme" \
++        --arg transport "$transport" \
++        --arg reason "$reason" \
++        --arg sourceName "$source_name" \
++        --argjson sourceIndex "$source_index" \
++        --argjson supported "$supported" \
++        --argjson enabled "$enabled" \
++        '{
++            id: $id,
++            name: $name,
++            protocol: $protocol,
++            transport: $transport,
++            sourceIndex: $sourceIndex,
++            sourceName: $sourceName,
++            supported: $supported,
++            enabled: $enabled,
++            reason: $reason
++        }' >> "$SUBSCRIPTION_ITEMS_FILE"
++}
++
++filter_working_subscription_proxy_links() {
++    local section="$1"
++    local source_file="$2"
++    local output_file="$3"
++    local all_output_file="$4"
++    local skipped_file="$5"
++    local items_file="$6"
++    local excluded_ids_file="$7"
++    local source_index="$8"
++    local udp_over_tcp validation_config candidate_config link link_id i valid_links skipped_links skip_reason
++
++    config_get udp_over_tcp "$section" "enable_udp_over_tcp"
++    validation_config='{"outbounds":[]}'
++    valid_links=0
++    skipped_links=0
++    i=1
++
++    : > "$output_file"
++    : > "$all_output_file"
++    : > "$skipped_file"
++    : > "$items_file"
++    SUBSCRIPTION_SKIPPED_LINKS_FILE="$skipped_file"
++    SUBSCRIPTION_ITEMS_FILE="$items_file"
++    while IFS= read -r link || [ -n "$link" ]; do
++        [ -n "$link" ] || continue
++
++        if skip_reason="$(get_subscription_proxy_skip_reason "$link")"; then
++            append_subscription_skipped_proxy_link "$link" "$skip_reason"
++            append_subscription_item "$link" "$source_index" "false" "false" "$skip_reason"
++            skipped_links=$((skipped_links + 1))
++            i=$((i + 1))
++            continue
++        fi
++
++        if candidate_config="$(sing_box_cf_add_proxy_outbound "$validation_config" "$section-subscription-check-$i" \
++            "$link" "$udp_over_tcp")" && [ -n "$candidate_config" ]; then
++            link_id="$(get_subscription_link_id "$link")"
++            printf '%s\n' "$link" >> "$all_output_file"
++            validation_config="$candidate_config"
++            valid_links=$((valid_links + 1))
++            if is_subscription_link_id_excluded "$link_id" "$excluded_ids_file"; then
++                append_subscription_item "$link" "$source_index" "true" "false" "user_excluded"
++            else
++                printf '%s\n' "$link" >> "$output_file"
++                append_subscription_item "$link" "$source_index" "true" "true" ""
++            fi
++        else
++            append_subscription_skipped_proxy_link "$link" "invalid_config"
++            append_subscription_item "$link" "$source_index" "false" "false" "invalid_config"
++            skipped_links=$((skipped_links + 1))
++        fi
++
++        i=$((i + 1))
++    done < "$source_file"
++
++    if [ "$skipped_links" -gt 0 ]; then
++        log "Skipped $skipped_links unsupported subscription proxy links for section '$section'" "warn"
++    fi
++
++    [ "$valid_links" -gt 0 ]
++}
++
++download_subscription_to_file() {
++    local url="$1"
++    local filepath="$2"
++    local http_proxy_address="$3"
++    local retries="${4:-3}"
++    local wait="${5:-2}"
++    local attempt
++
++    for attempt in $(seq 1 "$retries"); do
++        if command -v curl > /dev/null 2>&1; then
++            if [ -n "$http_proxy_address" ]; then
++                curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
++                    [ -s "$filepath" ] && return 0
++            else
++                curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
++            fi
++        else
++            if [ -n "$http_proxy_address" ]; then
++                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" wget -O "$filepath" "$url" &&
++                    [ -s "$filepath" ] && return 0
++            else
++                wget -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++            fi
++        fi
++
++        log "Attempt $attempt/$retries to download subscription failed" "warn"
++        sleep "$wait"
++    done
++
++    return 1
++}
++
++refresh_subscription_cache() {
++    local section="$1"
++    local subscription_url cache_path all_cache_path skipped_cache_path items_cache_path tmpfile links_file \
++        validated_links_file all_links_file skipped_links_file items_file merged_links_file deduped_links_file \
++        merged_all_links_file deduped_all_links_file merged_skipped_links_file deduped_skipped_links_file \
++        merged_items_file deduped_items_file excluded_ids_file urls_file tmp_cache tmp_all_cache tmp_skipped_cache \
++        tmp_items_cache http_proxy_address failed_sources skipped_sources skipped_json items_json source_index
++
++    SUBSCRIPTION_CACHE_CHANGED=0
++    urls_file="$(mktemp)"
++    merged_links_file="$(mktemp)"
++    deduped_links_file="$(mktemp)"
++    merged_all_links_file="$(mktemp)"
++    deduped_all_links_file="$(mktemp)"
++    merged_skipped_links_file="$(mktemp)"
++    deduped_skipped_links_file="$(mktemp)"
++    merged_items_file="$(mktemp)"
++    deduped_items_file="$(mktemp)"
++    excluded_ids_file="$(mktemp)"
++    if ! collect_subscription_urls "$section" "$urls_file"; then
++        log "Subscription URL is not set for section '$section'" "error"
++        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++        return 1
++    fi
++
++    collect_subscription_excluded_ids "$section" "$excluded_ids_file"
++    http_proxy_address="$(get_service_proxy_address)"
++    failed_sources=0
++    skipped_sources=0
++    source_index=1
++    : > "$merged_links_file"
++    : > "$merged_all_links_file"
++    : > "$merged_skipped_links_file"
++    : > "$merged_items_file"
++
++    while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
++        [ -n "$subscription_url" ] || continue
++        case "$subscription_url" in
++        http://* | https://*) ;;
++        *)
++            log "Skipping subscription source with unsupported URL scheme in section '$section'" "warn"
++            skipped_sources=$((skipped_sources + 1))
++            source_index=$((source_index + 1))
++            continue
++            ;;
++        esac
++
++        tmpfile="$(mktemp)"
++        links_file="$(mktemp)"
++        validated_links_file="$(mktemp)"
++        all_links_file="$(mktemp)"
++        skipped_links_file="$(mktemp)"
++        items_file="$(mktemp)"
++
++        if ! download_subscription_to_file "$subscription_url" "$tmpfile" "$http_proxy_address"; then
++            log "Subscription download failed for one of section '$section' sources" "warn"
++            failed_sources=$((failed_sources + 1))
++            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
++                "$items_file"
++            break
++        fi
++
++        if ! normalize_subscription_file "$tmpfile" "$links_file"; then
++            log "One subscription source for section '$section' does not contain supported proxy links" "warn"
++            skipped_sources=$((skipped_sources + 1))
++            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
++                "$items_file"
++            source_index=$((source_index + 1))
++            continue
++        fi
++
++        if ! filter_working_subscription_proxy_links "$section" "$links_file" "$validated_links_file" \
++            "$all_links_file" "$skipped_links_file" "$items_file" "$excluded_ids_file" "$source_index"; then
++            log "One subscription source for section '$section' does not contain proxy links supported by podkop" "warn"
++            skipped_sources=$((skipped_sources + 1))
++            cat "$skipped_links_file" >> "$merged_skipped_links_file"
++            cat "$items_file" >> "$merged_items_file"
++            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
++                "$items_file"
++            source_index=$((source_index + 1))
++            continue
++        fi
++
++        cat "$validated_links_file" >> "$merged_links_file"
++        cat "$all_links_file" >> "$merged_all_links_file"
++        cat "$skipped_links_file" >> "$merged_skipped_links_file"
++        cat "$items_file" >> "$merged_items_file"
++        rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
++            "$items_file"
++        source_index=$((source_index + 1))
++    done < "$urls_file"
++
++    if [ "$failed_sources" -gt 0 ]; then
++        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++        return 1
++    fi
++
++    awk '!seen[$0]++' "$merged_links_file" > "$deduped_links_file"
++    awk '!seen[$0]++' "$merged_all_links_file" > "$deduped_all_links_file"
++    awk '!seen[$0]++' "$merged_skipped_links_file" > "$deduped_skipped_links_file"
++    awk '!seen[$0]++' "$merged_items_file" > "$deduped_items_file"
++    if [ ! -s "$deduped_links_file" ]; then
++        log "Subscriptions for section '$section' do not contain enabled proxy links supported by podkop" "warn"
++        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++        return 1
++    fi
++
++    if ! mkdir -p "$SUBSCRIPTION_CACHE_DIR"; then
++        log "Failed to create subscription cache directory '$SUBSCRIPTION_CACHE_DIR'" "error"
++        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_cache_path "$section")"
++    all_cache_path="$(get_subscription_all_cache_path "$section")"
++    skipped_cache_path="$(get_subscription_skipped_cache_path "$section")"
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++
++    if [ -s "$deduped_skipped_links_file" ]; then
++        skipped_json="$(jq -s '.' "$deduped_skipped_links_file")"
++    else
++        skipped_json="[]"
++    fi
++
++    if [ -s "$deduped_items_file" ]; then
++        items_json="$(jq -s '.' "$deduped_items_file")"
++    else
++        items_json="[]"
++    fi
++
++    if [ ! -f "$cache_path" ] || ! cmp -s "$deduped_links_file" "$cache_path"; then
++        tmp_cache="$cache_path.tmp.$$"
++        if cp "$deduped_links_file" "$tmp_cache" && mv "$tmp_cache" "$cache_path"; then
++            chmod 600 "$cache_path" 2> /dev/null
++            SUBSCRIPTION_CACHE_CHANGED=1
++            log "Subscription cache updated for section '$section'" "info"
++        else
++            rm -f "$tmp_cache" "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++                "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++                "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++            log "Failed to update subscription cache for section '$section'" "error"
++            return 1
++        fi
++    fi
++
++    tmp_all_cache="$all_cache_path.tmp.$$"
++    if cp "$deduped_all_links_file" "$tmp_all_cache" && mv "$tmp_all_cache" "$all_cache_path"; then
++        chmod 600 "$all_cache_path" 2> /dev/null
++    else
++        rm -f "$tmp_all_cache"
++        log "Failed to update full subscription links cache for section '$section'" "warn"
++    fi
++
++    tmp_skipped_cache="$skipped_cache_path.tmp.$$"
++    if printf '%s\n' "$skipped_json" > "$tmp_skipped_cache" && mv "$tmp_skipped_cache" "$skipped_cache_path"; then
++        chmod 600 "$skipped_cache_path" 2> /dev/null
++    else
++        rm -f "$tmp_skipped_cache"
++        log "Failed to update skipped subscription links cache for section '$section'" "warn"
++    fi
++
++    tmp_items_cache="$items_cache_path.tmp.$$"
++    if printf '%s\n' "$items_json" > "$tmp_items_cache" && mv "$tmp_items_cache" "$items_cache_path"; then
++        chmod 600 "$items_cache_path" 2> /dev/null
++    else
++        rm -f "$tmp_items_cache"
++        log "Failed to update subscription items cache for section '$section'" "warn"
++    fi
++
++    if [ "$skipped_sources" -gt 0 ]; then
++        log "Skipped $skipped_sources subscription sources without podkop-compatible links for section '$section'" "warn"
++    fi
++
++    rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++        "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++        "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++    return 0
++}
++
++load_subscription_proxy_links_for_section() {
++    local section="$1"
++    local output_file="$2"
++    local cache_path
++
++    if ! refresh_subscription_cache "$section"; then
++        log "Using cached subscription for section '$section'" "warn"
++    fi
++
++    cache_path="$(get_subscription_cache_path "$section")"
++    if [ -s "$cache_path" ]; then
++        if cp "$cache_path" "$output_file"; then
++            return 0
++        fi
++
++        log "Failed to read subscription cache for section '$section'" "error"
++        return 1
++    fi
++
++    log "Subscription cache is not available for section '$section'" "fatal"
++    return 1
++}
++
++get_subscription_cached_links() {
++    local section="$1"
++    local cache_path
++
++    if [ -z "$section" ]; then
++        echo "[]"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_cache_path "$section")"
++    if [ ! -s "$cache_path" ]; then
++        echo "[]"
++        return 0
++    fi
++
++    jq -R -s 'split("\n") | map(select(length > 0))' "$cache_path"
++}
++
++get_subscription_skipped_links() {
++    local section="$1"
++    local cache_path
++
++    if [ -z "$section" ]; then
++        echo "[]"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_skipped_cache_path "$section")"
++    if [ ! -s "$cache_path" ]; then
++        echo "[]"
++        return 0
++    fi
++
++    cat "$cache_path"
++}
++
++get_subscription_items() {
++    local section="$1"
++    local cache_path
++
++    if [ -z "$section" ]; then
++        echo "[]"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$cache_path" ]; then
++        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
++    fi
++
++    if [ ! -s "$cache_path" ]; then
++        echo "[]"
++        return 0
++    fi
++
++    cat "$cache_path"
++}
++
++validate_subscription_link_id() {
++    local link_id="$1"
++
++    if [ "${#link_id}" -ne 32 ]; then
++        return 1
++    fi
++
++    case "$link_id" in
++    *[!A-Fa-f0-9]*) return 1 ;;
++    esac
++
++    return 0
++}
++
++validate_subscription_section_name() {
++    local section="$1"
++
++    case "$section" in
++    "" | *[!A-Za-z0-9_-]*) return 1 ;;
++    esac
++
++    return 0
++}
++
++apply_subscription_exclusions_to_cached_links() {
++    local section="$1"
++    local cache_path all_cache_path items_cache_path excluded_ids_file active_links_file tmp_cache tmp_items_cache \
++        excluded_ids_json link link_id items_json
++
++    SUBSCRIPTION_CACHE_CHANGED=0
++    cache_path="$(get_subscription_cache_path "$section")"
++    all_cache_path="$(get_subscription_all_cache_path "$section")"
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++    excluded_ids_file="$(mktemp)"
++    active_links_file="$(mktemp)"
++
++    if [ ! -s "$all_cache_path" ] && [ -s "$cache_path" ]; then
++        cp "$cache_path" "$all_cache_path"
++        chmod 600 "$all_cache_path" 2> /dev/null
++    fi
++
++    if [ ! -s "$all_cache_path" ]; then
++        rm -f "$excluded_ids_file" "$active_links_file"
++        return 1
++    fi
++
++    collect_subscription_excluded_ids "$section" "$excluded_ids_file"
++    : > "$active_links_file"
++
++    while IFS= read -r link || [ -n "$link" ]; do
++        [ -n "$link" ] || continue
++        link_id="$(get_subscription_link_id "$link")"
++        if ! is_subscription_link_id_excluded "$link_id" "$excluded_ids_file"; then
++            printf '%s\n' "$link" >> "$active_links_file"
++        fi
++    done < "$all_cache_path"
++
++    if [ ! -s "$active_links_file" ]; then
++        rm -f "$excluded_ids_file" "$active_links_file"
++        return 1
++    fi
++
++    if [ ! -f "$cache_path" ] || ! cmp -s "$active_links_file" "$cache_path"; then
++        tmp_cache="$cache_path.tmp.$$"
++        if cp "$active_links_file" "$tmp_cache" && mv "$tmp_cache" "$cache_path"; then
++            chmod 600 "$cache_path" 2> /dev/null
++            SUBSCRIPTION_CACHE_CHANGED=1
++        else
++            rm -f "$tmp_cache" "$excluded_ids_file" "$active_links_file"
++            return 1
++        fi
++    fi
++
++    if [ -s "$items_cache_path" ]; then
++        excluded_ids_json="$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$excluded_ids_file")"
++        tmp_items_cache="$items_cache_path.tmp.$$"
++        items_json="$(jq -c --argjson excludedIds "$excluded_ids_json" '
++            map(
++                if .supported == true then
++                    . as $item
++                    | .enabled = (($excludedIds | index($item.id)) == null)
++                    | .reason = (if (($excludedIds | index($item.id)) == null) then "" else "user_excluded" end)
++                else
++                    .
++                end
++            )
++        ' "$items_cache_path")"
++        if printf '%s\n' "$items_json" > "$tmp_items_cache" && mv "$tmp_items_cache" "$items_cache_path"; then
++            chmod 600 "$items_cache_path" 2> /dev/null
++        else
++            rm -f "$tmp_items_cache"
++            log "Failed to update subscription items cache for section '$section'" "warn"
++        fi
++    fi
++
++    rm -f "$excluded_ids_file" "$active_links_file"
++    return 0
++}
++
++set_subscription_link_enabled() {
++    local section="$1"
++    local link_id="$2"
++    local enabled="$3"
++    local connection_type proxy_config_type items_cache_path remaining_enabled_count
++
++    if ! validate_subscription_section_name "$section" || ! validate_subscription_link_id "$link_id"; then
++        echo '{"success":false,"error":"invalid_arguments"}'
++        return 1
++    fi
++
++    case "$enabled" in
++    1 | true | on | enabled) enabled=1 ;;
++    0 | false | off | disabled) enabled=0 ;;
++    *)
++        echo '{"success":false,"error":"invalid_enabled_value"}'
++        return 1
++        ;;
++    esac
++
++    config_get connection_type "$section" "connection_type"
++    config_get proxy_config_type "$section" "proxy_config_type"
++    if [ "$connection_type" != "proxy" ] || [ "$proxy_config_type" != "subscription_urltest" ]; then
++        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
++        return 1
++    fi
++
++    if [ "$enabled" -eq 0 ]; then
++        items_cache_path="$(get_subscription_items_cache_path "$section")"
++        if [ ! -s "$items_cache_path" ]; then
++            refresh_subscription_cache "$section" > /dev/null 2>&1 || true
++        fi
++
++        remaining_enabled_count="$(jq --arg id "$link_id" '
++            [.[] | select(.supported == true and .enabled == true and .id != $id)] | length
++        ' "$items_cache_path" 2> /dev/null || echo 0)"
++        if [ "$remaining_enabled_count" -eq 0 ]; then
++            echo '{"success":false,"error":"cannot_disable_last_enabled_link"}'
++            return 1
++        fi
++    fi
++
++    uci -q del_list "podkop.$section.subscription_excluded_link_ids=$link_id"
++    if [ "$enabled" -eq 0 ]; then
++        uci -q add_list "podkop.$section.subscription_excluded_link_ids=$link_id"
++    fi
++
++    if ! uci commit podkop; then
++        echo '{"success":false,"error":"uci_commit_failed"}'
++        return 1
++    fi
++
++    config_load "$PODKOP_CONFIG"
++    if ! apply_subscription_exclusions_to_cached_links "$section"; then
++        if ! refresh_subscription_cache "$section" > /dev/null 2>&1; then
++            echo '{"success":false,"error":"subscription_cache_update_failed"}'
++            return 1
++        fi
++    fi
++
++    if [ "$SUBSCRIPTION_CACHE_CHANGED" -eq 1 ]; then
++        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
++            echo '{"success":false,"error":"reload_failed"}'
++            return 1
++        fi
++    fi
++
++    echo '{"success":true}'
++}
++
++subscription_update_section_handler() {
++    local section="$1"
++    local connection_type proxy_config_type
++
++    if [ -n "$SUBSCRIPTION_UPDATE_TARGET" ] && [ "$SUBSCRIPTION_UPDATE_TARGET" != "$section" ]; then
++        return 0
++    fi
++
++    config_get connection_type "$section" "connection_type"
++    config_get proxy_config_type "$section" "proxy_config_type"
++
++    if [ "$connection_type" != "proxy" ] || [ "$proxy_config_type" != "subscription_urltest" ] ||
++        ! section_has_subscription_urls "$section"; then
++        return 0
++    fi
++
++    SUBSCRIPTION_FOUND_SECTIONS=$((SUBSCRIPTION_FOUND_SECTIONS + 1))
++    if refresh_subscription_cache "$section"; then
++        if [ "$SUBSCRIPTION_CACHE_CHANGED" -eq 1 ]; then
++            SUBSCRIPTION_UPDATED_SECTIONS=$((SUBSCRIPTION_UPDATED_SECTIONS + 1))
++        fi
++    else
++        SUBSCRIPTION_FAILED_SECTIONS=$((SUBSCRIPTION_FAILED_SECTIONS + 1))
++    fi
++}
++
++subscription_update() {
++    SUBSCRIPTION_UPDATE_TARGET="$1"
++    SUBSCRIPTION_FOUND_SECTIONS=0
++    SUBSCRIPTION_UPDATED_SECTIONS=0
++    SUBSCRIPTION_FAILED_SECTIONS=0
++
++    echolog "Starting subscription update..."
++    config_foreach subscription_update_section_handler "section"
++
++    if [ "$SUBSCRIPTION_FOUND_SECTIONS" -eq 0 ]; then
++        echolog "No Subscription URLTest sections found"
++        return 0
++    fi
++
++    if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
++        echolog "Subscription cache changed, reloading podkop..."
++        /etc/init.d/podkop reload
++        return $?
++    fi
++
++    if [ "$SUBSCRIPTION_FAILED_SECTIONS" -gt 0 ]; then
++        echolog "Subscription update finished with failures; cached subscriptions were kept"
++        return 1
++    fi
++
++    echolog "Subscription update completed, no changes"
++}
++
+ # sing-box funcs
+ sing_box_configure_service() {
+     local sing_box_enabled sing_box_user sing_box_config_path sing_box_conffile
+@@ -678,6 +1623,63 @@ configure_outbound_handler() {
+             config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
+                 "$default_outbound")"
+             ;;
++        subscription_urltest)
++            log "Detected proxy configuration type: subscription_urltest" "debug"
++            local udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
++                urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance urltest_testing_url \
++                links_file candidate_config link
++            config_get udp_over_tcp "$section" "enable_udp_over_tcp"
++            config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
++            config_get urltest_tolerance "$section" "urltest_tolerance" 50
++            config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
++
++            if ! section_has_subscription_urls "$section"; then
++                log "Subscription URL is not set. Aborted." "fatal"
++                exit 1
++            fi
++
++            links_file="$(mktemp)"
++            if ! load_subscription_proxy_links_for_section "$section" "$links_file"; then
++                rm -f "$links_file"
++                log "Unable to load subscription links. Aborted." "fatal"
++                exit 1
++            fi
++
++            i=1
++            while IFS= read -r link || [ -n "$link" ]; do
++                [ -n "$link" ] || continue
++
++                if ! candidate_config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")" ||
++                    [ -z "$candidate_config" ]; then
++                    log "Skipping unsupported subscription proxy link in section '$section'" "warn"
++                    i=$((i + 1))
++                    continue
++                fi
++
++                config="$candidate_config"
++                outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
++                if [ -z "$outbound_tags" ]; then
++                    outbound_tags="$outbound_tag"
++                else
++                    outbound_tags="$outbound_tags,$outbound_tag"
++                fi
++                i=$((i + 1))
++            done < "$links_file"
++            rm -f "$links_file"
++
++            if [ -z "$outbound_tags" ]; then
++                log "Subscription does not contain supported proxy links. Aborted." "fatal"
++                exit 1
++            fi
++
++            urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
++            selector_tag="$(get_outbound_tag_by_section "$section")"
++            urltest_outbounds="$(comma_string_to_json_array "$outbound_tags")"
++            selector_outbounds="$(comma_string_to_json_array "$outbound_tags,$urltest_tag")"
++            config="$(sing_box_cm_add_urltest_outbound "$config" "$urltest_tag" "$urltest_outbounds" \
++                "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
++            config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" "$urltest_tag")"
++            ;;
+         urltest)
+             log "Detected proxy configuration type: urltest" "debug"
+             local urltest_proxy_links udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
+@@ -1842,6 +2844,8 @@ show_config() {
+         -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
+         -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
+         -e 's/\(list selector_proxy_links\).*/\1 '\''MASKED'\''/g' \
++        -e 's/\(option subscription_url\).*/\1 '\''MASKED'\''/g' \
++        -e 's/\(list subscription_url\).*/\1 '\''MASKED'\''/g' \
+         -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
+         -e "s@\\(option domain_resolver_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
+         -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
+@@ -2669,6 +3673,7 @@ Available commands:
+     restart                 Restart podkop service
+     main                    Run main podkop process
+     list_update             Update domain lists
++    subscription_update     Update subscription URLTest caches
+     check_proxy             Check proxy connectivity
+     check_nft               Check NFT rules
+     check_nft_rules         Check NFT rules status
+@@ -2677,6 +3682,14 @@ Available commands:
+     check_sing_box_logs     Show sing-box logs
+     check_fakeip            Test FakeIP on router
+     clash_api               Clash API interface for managing proxies and groups
++    get_subscription_cached_links
++                            Show cached subscription proxy links for a section
++    get_subscription_skipped_links
++                            Show skipped subscription proxy links for a section
++    get_subscription_items
++                            Show subscription proxy items for a section
++    set_subscription_link_enabled
++                            Enable or disable a subscription proxy item by id
+     show_config             Display current podkop configuration
+     show_version            Show podkop version
+     show_sing_box_config    Show sing-box configuration
+@@ -2709,6 +3722,9 @@ main)
+ list_update)
+     list_update
+     ;;
++subscription_update)
++    subscription_update "$2"
++    ;;
+ check_proxy)
+     check_proxy
+     ;;
+@@ -2733,6 +3749,18 @@ check_fakeip)
+ clash_api)
+     clash_api "$2" "$3" "$4"
+     ;;
++get_subscription_cached_links)
++    get_subscription_cached_links "$2"
++    ;;
++get_subscription_skipped_links)
++    get_subscription_skipped_links "$2"
++    ;;
++get_subscription_items)
++    get_subscription_items "$2"
++    ;;
++set_subscription_link_enabled)
++    set_subscription_link_enabled "$2" "$3" "$4"
++    ;;
+ show_config)
+     show_config
+     ;;
+diff --git a/usr/lib/podkop/sing_box_config_facade.sh b/usr/lib/podkop/sing_box_config_facade.sh
+index 7641673..98c4ad7 100644
+--- a/usr/lib/podkop/sing_box_config_facade.sh
++++ b/usr/lib/podkop/sing_box_config_facade.sh
+@@ -241,7 +241,7 @@ _add_outbound_transport() {
+     local transport
+     transport=$(url_get_query_param "$url" "type")
+     case "$transport" in
+-    tcp | raw) ;;
++    "" | tcp | raw) ;;
+     ws)
+         local ws_path ws_host ws_early_data
+         ws_path=$(url_get_query_param "$url" "path")
+diff --git a/www/luci-static/resources/view/podkop/main.js b/www/luci-static/resources/view/podkop/main.js
+index 009c1ae..e44aab0 100644
+--- a/www/luci-static/resources/view/podkop/main.js
++++ b/www/luci-static/resources/view/podkop/main.js
+@@ -622,6 +622,10 @@ var Podkop;
+     AvailableMethods2["SHOW_SING_BOX_CONFIG"] = "show_sing_box_config";
+     AvailableMethods2["CHECK_LOGS"] = "check_logs";
+     AvailableMethods2["GET_SYSTEM_INFO"] = "get_system_info";
++    AvailableMethods2["GET_SUBSCRIPTION_CACHED_LINKS"] = "get_subscription_cached_links";
++    AvailableMethods2["GET_SUBSCRIPTION_SKIPPED_LINKS"] = "get_subscription_skipped_links";
++    AvailableMethods2["GET_SUBSCRIPTION_ITEMS"] = "get_subscription_items";
++    AvailableMethods2["SET_SUBSCRIPTION_LINK_ENABLED"] = "set_subscription_link_enabled";
+   })(AvailableMethods = Podkop2.AvailableMethods || (Podkop2.AvailableMethods = {}));
+   let AvailableClashAPIMethods;
+   ((AvailableClashAPIMethods2) => {
+@@ -696,10 +700,40 @@ var PodkopShellMethods = {
+   checkLogs: async () => callBaseMethod(Podkop.AvailableMethods.CHECK_LOGS),
+   getSystemInfo: async () => callBaseMethod(
+     Podkop.AvailableMethods.GET_SYSTEM_INFO
++  ),
++  getSubscriptionCachedLinks: async (section) => callBaseMethod(
++    Podkop.AvailableMethods.GET_SUBSCRIPTION_CACHED_LINKS,
++    [section]
++  ),
++  getSubscriptionSkippedLinks: async (section) => callBaseMethod(
++    Podkop.AvailableMethods.GET_SUBSCRIPTION_SKIPPED_LINKS,
++    [section]
++  ),
++  getSubscriptionItems: async (section) => callBaseMethod(
++    Podkop.AvailableMethods.GET_SUBSCRIPTION_ITEMS,
++    [section]
++  ),
++  setSubscriptionLinkEnabled: async (section, linkId, enabled) => callBaseMethod(
++    Podkop.AvailableMethods.SET_SUBSCRIPTION_LINK_ENABLED,
++    [section, linkId, enabled ? "1" : "0"]
+   )
+ };
+ 
+ // src/podkop/methods/custom/getDashboardSections.ts
++function getSubscriptionSkippedReasonLabel(reason) {
++  switch (reason) {
++    case "unsupported_protocol":
++      return _("Unsupported protocol");
++    case "unsupported_transport":
++      return _("Unsupported transport");
++    case "unsupported_security":
++      return _("Unsupported security");
++    case "invalid_config":
++      return _("Invalid config");
++    default:
++      return _("Unsupported config");
++  }
++}
+ async function getDashboardSections() {
+   const configSections = await getConfigSections();
+   const clashProxies = await PodkopShellMethods.getClashApiProxies();
+@@ -715,6 +749,24 @@ async function getDashboardSections() {
+       value
+     })
+   );
++  const subscriptionCachedLinks = /* @__PURE__ */ new Map();
++  const subscriptionSkippedLinks = /* @__PURE__ */ new Map();
++  await Promise.all(
++    configSections.filter(
++      (section) => section.connection_type === "proxy" && section.proxy_config_type === "subscription_urltest"
++    ).map(async (section) => {
++      const response = await PodkopShellMethods.getSubscriptionCachedLinks(
++        section[".name"]
++      );
++      if (response.success && Array.isArray(response.data)) {
++        subscriptionCachedLinks.set(section[".name"], response.data);
++      }
++      const skippedResponse = await PodkopShellMethods.getSubscriptionSkippedLinks(section[".name"]);
++      if (skippedResponse.success && Array.isArray(skippedResponse.data)) {
++        subscriptionSkippedLinks.set(section[".name"], skippedResponse.data);
++      }
++    })
++  );
+   const data = configSections.filter(
+     (section) => section.connection_type !== "block" && section.connection_type !== "exclusion" && section[".type"] !== "settings"
+   ).map((section) => {
+@@ -786,16 +838,17 @@ async function getDashboardSections() {
+           outbounds
+         };
+       }
+-      if (section.proxy_config_type === "urltest") {
++      if (section.proxy_config_type === "urltest" || section.proxy_config_type === "subscription_urltest") {
+         const selector = proxies.find(
+           (proxy) => proxy.code === `${section[".name"]}-out`
+         );
+         const outbound = proxies.find(
+           (proxy) => proxy.code === `${section[".name"]}-urltest-out`
+         );
++        const activeLinks = section.proxy_config_type === "subscription_urltest" ? subscriptionCachedLinks.get(section[".name"]) ?? [] : section.urltest_proxy_links ?? [];
+         const outbounds = (outbound?.value?.all ?? []).map((code) => proxies.find((item) => item.code === code)).map((item, index) => ({
+           code: item?.code || "",
+-          displayName: getProxyUrlName(section.urltest_proxy_links?.[index]) || item?.value?.name || "",
++          displayName: getProxyUrlName(activeLinks[index]) || item?.value?.name || `Server ${index + 1}`,
+           latency: item?.value?.history?.[0]?.delay || 0,
+           type: item?.value?.type || "",
+           selected: selector?.value?.now === item?.code
+@@ -843,9 +896,31 @@ async function getDashboardSections() {
+       outbounds: []
+     };
+   });
++  const skippedSubscriptionData = configSections.filter(
++    (section) => section.connection_type === "proxy" && section.proxy_config_type === "subscription_urltest"
++  ).map((section) => {
++    const skippedLinks = subscriptionSkippedLinks.get(section[".name"]) ?? [];
++    if (!skippedLinks.length) {
++      return null;
++    }
++    return {
++      withTagSelect: false,
++      canTestLatency: false,
++      code: `${section[".name"]}-subscription-skipped`,
++      displayName: `${section[".name"]} \xB7 ${_("Not imported")}`,
++      outbounds: skippedLinks.map((item, index) => ({
++        code: `${section[".name"]}-subscription-skipped-${index + 1}`,
++        displayName: item.name || `${_("Unsupported config")} ${index + 1}`,
++        latency: 0,
++        type: item.transport ? `${item.protocol || _("Unknown")} / ${item.transport}` : item.protocol || _("Unknown"),
++        reason: getSubscriptionSkippedReasonLabel(item.reason),
++        selected: false
++      }))
++    };
++  }).filter((section) => Boolean(section));
+   return {
+     success: true,
+-    data
++    data: [...data, ...skippedSubscriptionData]
+   };
+ }
+ 
+@@ -1387,6 +1462,12 @@ var initialStore = {
+     latencyFetching: false,
+     data: []
+   },
++  subscriptionItemsWidget: {
++    loading: true,
++    failed: false,
++    updatingId: "",
++    data: []
++  },
+   ...initialDiagnosticStore
+ };
+ var store = new StoreService(initialStore);
+@@ -1746,6 +1827,9 @@ function renderDefaultState({
+   latencyFetching
+ }) {
+   function testLatency() {
++    if (section.canTestLatency === false) {
++      return;
++    }
+     if (section.withTagSelect) {
+       return onTestLatency(section.code);
+     }
+@@ -1783,7 +1867,7 @@ function renderDefaultState({
+           E(
+             "div",
+             { class: getLatencyClass() },
+-            outbound.latency ? `${outbound.latency}ms` : "N/A"
++            outbound.reason || (outbound.latency ? `${outbound.latency}ms` : "N/A")
+           )
+         ])
+       ]
+@@ -1799,7 +1883,7 @@ function renderDefaultState({
+         },
+         section.displayName
+       ),
+-      latencyFetching ? E("div", { class: "skeleton", style: "width: 99px; height: 28px" }) : E(
++      section.canTestLatency === false ? null : latencyFetching ? E("div", { class: "skeleton", style: "width: 99px; height: 28px" }) : E(
+         "button",
+         {
+           class: "btn dashboard-sections-grid-item-test-latency",
+@@ -3854,8 +3938,11 @@ async function runSectionsCheck() {
+     });
+     throw new Error("Sections checks failed");
+   }
++  const checkableSections = sections.data.filter(
++    (section) => section.canTestLatency !== false
++  );
+   const items = await Promise.all(
+-    sections.data.map(async (section) => {
++    checkableSections.map(async (section) => {
+       async function getLatency() {
+         if (section.withTagSelect) {
+           const latencyGroup = await PodkopShellMethods.getClashApiGroupLatency(
+@@ -4631,10 +4718,401 @@ var DiagnosticTab = {
+   styles: styles4
+ };
+ 
++// src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
++function getReasonLabel(reason) {
++  const labels = {
++    user_excluded: _("Excluded"),
++    unsupported_protocol: _("Unsupported protocol"),
++    unsupported_transport: _("Unsupported transport"),
++    unsupported_security: _("Unsupported security"),
++    invalid_config: _("Invalid config")
++  };
++  return labels[reason] || _("Unsupported config");
++}
++function getItemName(item, index) {
++  return item.name || `${_("Server")} ${index + 1}`;
++}
++function getStatusLabel(item) {
++  if (!item.supported) {
++    return getReasonLabel(item.reason);
++  }
++  return item.enabled ? _("Included") : _("Excluded");
++}
++function getStatusClass(item) {
++  if (!item.supported) {
++    return "pdk_subscriptions-page__status--unsupported";
++  }
++  return item.enabled ? "pdk_subscriptions-page__status--enabled" : "pdk_subscriptions-page__status--excluded";
++}
++function renderEmptyState(text) {
++  return E(
++    "div",
++    { class: "pdk_subscriptions-page__empty centered" },
++    text
++  );
++}
++function renderRow({
++  section,
++  item,
++  index,
++  updatingId,
++  enabledSupportedCount,
++  onToggle
++}) {
++  const rowId = `${section.code}:${item.id}`;
++  const isUpdating = updatingId === rowId;
++  const isLastEnabled = item.supported && item.enabled && enabledSupportedCount <= 1;
++  const disabled = !item.supported || isUpdating || isLastEnabled;
++  return E(
++    "tr",
++    {
++      class: [
++        !item.supported ? "pdk_subscriptions-page__row--unsupported" : "",
++        isUpdating ? "pdk_subscriptions-page__row--updating" : ""
++      ].filter(Boolean).join(" ")
++    },
++    [
++      E("td", { class: "pdk_subscriptions-page__toggle-cell" }, [
++        E("input", {
++          type: "checkbox",
++          checked: item.enabled ? "checked" : void 0,
++          disabled: disabled ? "disabled" : void 0,
++          change: (event) => {
++            const target = event.target;
++            onToggle(section.code, item, target.checked);
++          }
++        })
++      ]),
++      E("td", {}, getItemName(item, index)),
++      E("td", {}, (item.protocol || _("Unknown")).toUpperCase()),
++      E("td", {}, item.transport || _("Default")),
++      E(
++        "td",
++        { class: `pdk_subscriptions-page__status ${getStatusClass(item)}` },
++        isUpdating ? _("Saving") : getStatusLabel(item)
++      ),
++      E("td", {}, `${_("Subscription")} ${item.sourceIndex}`)
++    ]
++  );
++}
++function renderSection({
++  section,
++  updatingId,
++  onToggle
++}) {
++  const enabledSupportedCount = section.items.filter(
++    (item) => item.supported && item.enabled
++  ).length;
++  return E("div", { class: "pdk_subscriptions-page__section" }, [
++    E(
++      "div",
++      { class: "pdk_subscriptions-page__section-title" },
++      section.displayName
++    ),
++    section.items.length === 0 ? renderEmptyState(_("No subscription configs found")) : E(
++      "div",
++      { class: "pdk_subscriptions-page__table-wrap" },
++      E("table", { class: "pdk_subscriptions-page__table" }, [
++        E("thead", {}, [
++          E("tr", {}, [
++            E("th", {}, _("Use")),
++            E("th", {}, _("Config")),
++            E("th", {}, _("Protocol")),
++            E("th", {}, _("Transport")),
++            E("th", {}, _("Status")),
++            E("th", {}, _("Source"))
++          ])
++        ]),
++        E(
++          "tbody",
++          {},
++          section.items.map(
++            (item, index) => renderRow({
++              section,
++              item,
++              index,
++              updatingId,
++              enabledSupportedCount,
++              onToggle
++            })
++          )
++        )
++      ])
++    )
++  ]);
++}
++function renderSubscriptionSections({
++  loading,
++  failed,
++  sections,
++  updatingId,
++  onToggle
++}) {
++  if (loading) {
++    return renderEmptyState(_("Loading"));
++  }
++  if (failed) {
++    return renderEmptyState(_("Failed to load subscription configs"));
++  }
++  if (sections.length === 0) {
++    return renderEmptyState(_("No Subscription URLTest sections"));
++  }
++  return E(
++    "div",
++    { class: "pdk_subscriptions-page__sections" },
++    sections.map(
++      (section) => renderSection({ section, updatingId, onToggle })
++    )
++  );
++}
++
++// src/podkop/tabs/subscriptions/render.ts
++function render3() {
++  return E(
++    "div",
++    {
++      id: "subscriptions-status",
++      class: "pdk_subscriptions-page"
++    },
++    [
++      E(
++        "div",
++        { id: "subscriptions-sections-grid" },
++        renderSubscriptionSections({
++          loading: true,
++          failed: false,
++          sections: [],
++          updatingId: "",
++          onToggle: () => {
++          }
++        })
++      )
++    ]
++  );
++}
++
++// src/podkop/tabs/subscriptions/initController.ts
++async function fetchSubscriptionItems() {
++  const prev = store.get().subscriptionItemsWidget;
++  store.set({
++    subscriptionItemsWidget: {
++      ...prev,
++      loading: true,
++      failed: false
++    }
++  });
++  try {
++    const configSections = await CustomPodkopMethods.getConfigSections();
++    const subscriptionSections = configSections.filter(
++      (section) => section.connection_type === "proxy" && section.proxy_config_type === "subscription_urltest"
++    );
++    const data = await Promise.all(
++      subscriptionSections.map(async (section) => {
++        const items = await PodkopShellMethods.getSubscriptionItems(
++          section[".name"]
++        );
++        return {
++          code: section[".name"],
++          displayName: section[".name"],
++          items: items.success ? items.data : []
++        };
++      })
++    );
++    store.set({
++      subscriptionItemsWidget: {
++        loading: false,
++        failed: false,
++        updatingId: "",
++        data
++      }
++    });
++  } catch (_error) {
++    logger.error("[SUBSCRIPTIONS]", "failed to fetch subscription items");
++    store.set({
++      subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
++        loading: false,
++        failed: true,
++        updatingId: ""
++      }
++    });
++  }
++}
++async function handleToggle(sectionCode, item, enabled) {
++  const rowId = `${sectionCode}:${item.id}`;
++  store.set({
++    subscriptionItemsWidget: {
++      ...store.get().subscriptionItemsWidget,
++      updatingId: rowId
++    }
++  });
++  const result = await PodkopShellMethods.setSubscriptionLinkEnabled(
++    sectionCode,
++    item.id,
++    enabled
++  );
++  if (!result.success || !result.data.success) {
++    showToast(_("Failed to save!"), "error");
++  } else {
++    showToast(_("Saved!"), "success");
++  }
++  await fetchSubscriptionItems();
++}
++async function renderSubscriptionItemsWidget() {
++  logger.debug("[SUBSCRIPTIONS]", "renderSubscriptionItemsWidget");
++  const subscriptionItemsWidget = store.get().subscriptionItemsWidget;
++  const container = document.getElementById("subscriptions-sections-grid");
++  const renderedWidget = renderSubscriptionSections({
++    loading: subscriptionItemsWidget.loading,
++    failed: subscriptionItemsWidget.failed,
++    sections: subscriptionItemsWidget.data,
++    updatingId: subscriptionItemsWidget.updatingId,
++    onToggle: handleToggle
++  });
++  return preserveScrollForPage(() => {
++    container.replaceChildren(renderedWidget);
++  });
++}
++async function onStoreUpdate3(next, prev, diff) {
++  if (diff.subscriptionItemsWidget) {
++    renderSubscriptionItemsWidget();
++  }
++}
++async function onPageMount3() {
++  onPageUnmount3();
++  store.subscribe(onStoreUpdate3);
++  await fetchSubscriptionItems();
++}
++function onPageUnmount3() {
++  store.unsubscribe(onStoreUpdate3);
++  store.reset(["subscriptionItemsWidget"]);
++}
++function registerLifecycleListeners3() {
++  store.subscribe((next, prev, diff) => {
++    if (diff.tabService && next.tabService.current !== prev.tabService.current) {
++      logger.debug(
++        "[SUBSCRIPTIONS]",
++        "active tab diff event, active tab:",
++        diff.tabService.current
++      );
++      const isSubscriptionsVisible = next.tabService.current === "subscriptions";
++      if (isSubscriptionsVisible) {
++        return onPageMount3();
++      }
++      return onPageUnmount3();
++    }
++  });
++}
++async function initController3() {
++  onMount("subscriptions-status").then(() => {
++    logger.debug("[SUBSCRIPTIONS]", "initController", "onMount");
++    onPageMount3();
++    registerLifecycleListeners3();
++  });
++}
++
++// src/podkop/tabs/subscriptions/styles.ts
++var styles5 = `
++#cbi-podkop-subscriptions-_mount_node > div {
++    width: 100%;
++}
++
++#cbi-podkop-subscriptions > h3 {
++    display: none;
++}
++
++.pdk_subscriptions-page {
++    width: 100%;
++}
++
++.pdk_subscriptions-page__sections {
++    display: grid;
++    grid-template-columns: 1fr;
++    grid-row-gap: 10px;
++    margin-top: 10px;
++}
++
++.pdk_subscriptions-page__section {
++    border: 2px var(--background-color-low, lightgray) solid;
++    border-radius: 4px;
++    padding: 10px;
++}
++
++.pdk_subscriptions-page__section-title {
++    color: var(--text-color-high);
++    font-weight: 700;
++    margin-bottom: 10px;
++}
++
++.pdk_subscriptions-page__table-wrap {
++    overflow-x: auto;
++}
++
++.pdk_subscriptions-page__table {
++    width: 100%;
++    border-collapse: collapse;
++}
++
++.pdk_subscriptions-page__table th,
++.pdk_subscriptions-page__table td {
++    padding: 8px;
++    border-bottom: 1px var(--background-color-low, lightgray) solid;
++    text-align: left;
++    white-space: nowrap;
++}
++
++.pdk_subscriptions-page__table th {
++    font-weight: 700;
++}
++
++.pdk_subscriptions-page__toggle-cell {
++    width: 48px;
++}
++
++.pdk_subscriptions-page__row--unsupported {
++    opacity: 0.72;
++}
++
++.pdk_subscriptions-page__row--updating {
++    opacity: 0.6;
++}
++
++.pdk_subscriptions-page__status {
++    font-weight: 700;
++}
++
++.pdk_subscriptions-page__status--enabled {
++    color: var(--success-color-medium, green);
++}
++
++.pdk_subscriptions-page__status--excluded {
++    color: var(--warn-color-medium, orange);
++}
++
++.pdk_subscriptions-page__status--unsupported {
++    color: var(--error-color-medium, red);
++}
++
++.pdk_subscriptions-page__empty {
++    min-height: 96px;
++    border: 2px var(--background-color-low, lightgray) solid;
++    border-radius: 4px;
++    padding: 10px;
++}
++`;
++
++// src/podkop/tabs/subscriptions/index.ts
++var SubscriptionsTab = {
++  render: render3,
++  initController: initController3,
++  styles: styles5
++};
++
+ // src/styles.ts
+ var GlobalStyles = `
+ ${DashboardTab.styles}
+ ${DiagnosticTab.styles}
++${SubscriptionsTab.styles}
+ ${PartialStyles}
+ 
+ 
+@@ -4904,6 +5382,7 @@ return baseclass.extend({
+   REGIONAL_OPTIONS,
+   RemoteFakeIPMethods,
+   STATUS_COLORS,
++  SubscriptionsTab,
+   TabService,
+   TabServiceInstance,
+   UPDATE_INTERVAL_OPTIONS,
+diff --git a/www/luci-static/resources/view/podkop/podkop.js b/www/luci-static/resources/view/podkop/podkop.js
+index f699e17..f0d1f5f 100644
+--- a/www/luci-static/resources/view/podkop/podkop.js
++++ b/www/luci-static/resources/view/podkop/podkop.js
+@@ -17,6 +17,9 @@
+ // Diagnostic content
+ "require view.podkop.diagnostic as diagnostic";
+ 
++// Subscriptions content
++"require view.podkop.subscriptions as subscriptions";
++
+ const EntryPoint = {
+   async render() {
+     main.injectGlobalStyles();
+@@ -73,6 +76,21 @@ const EntryPoint = {
+     // Render diagnostic content
+     diagnostic.createDiagnosticContent(diagnosticSection);
+ 
++    // Subscriptions tab
++    const subscriptionsSection = podkopMap.section(
++      form.TypedSection,
++      "subscriptions",
++      _("Subscriptions"),
++    );
++    subscriptionsSection.anonymous = true;
++    subscriptionsSection.addremove = false;
++    subscriptionsSection.cfgsections = function () {
++      return ["subscriptions"];
++    };
++
++    // Render subscriptions content
++    subscriptions.createSubscriptionsContent(subscriptionsSection);
++
+     // Dashboard tab
+     const dashboardSection = podkopMap.section(
+       form.TypedSection,
+diff --git a/www/luci-static/resources/view/podkop/section.js b/www/luci-static/resources/view/podkop/section.js
+index 7dc8ccb..c9f89e6 100644
+--- a/www/luci-static/resources/view/podkop/section.js
++++ b/www/luci-static/resources/view/podkop/section.js
+@@ -26,6 +26,7 @@ function createSectionContent(section) {
+   o.value("url", _("Connection URL"));
+   o.value("selector", _("Selector"));
+   o.value("urltest", _("URLTest"));
++  o.value("subscription_urltest", _("Subscription URLTest"));
+   o.value("outbound", _("Outbound Config"));
+   o.default = "url";
+   o.depends("connection_type", "proxy");
+@@ -59,6 +60,44 @@ function createSectionContent(section) {
+     return validation.message;
+   };
+ 
++  o = section.option(
++    form.DynamicList,
++    "subscription_url",
++    _("Subscription URLs"),
++    _("HTTP/HTTPS subscription links with proxy URLs")
++  );
++  o.depends("proxy_config_type", "subscription_urltest");
++  o.rmempty = false;
++  o.validate = function (section_id, value) {
++    if (!value || value.length === 0) {
++      return true;
++    }
++
++    const validation = main.validateUrl(value);
++
++    if (validation.valid) {
++      return true;
++    }
++
++    return validation.message;
++  };
++
++  o = section.option(
++    form.ListValue,
++    "subscription_update_interval",
++    _("Subscription Update Interval"),
++    _("How often to refresh the subscription cache")
++  );
++  o.value("10m", _("Every 10 minutes"));
++  o.value("30m", _("Every 30 minutes"));
++  o.value("1h", _("Every 1 hour"));
++  o.value("3h", _("Every 3 hours"));
++  o.value("6h", _("Every 6 hours"));
++  o.value("12h", _("Every 12 hours"));
++  o.value("1d", _("Every day"));
++  o.default = "1h";
++  o.depends("proxy_config_type", "subscription_urltest");
++
+   o = section.option(
+     form.TextValue,
+     "outbound_json",
+@@ -140,6 +179,7 @@ function createSectionContent(section) {
+   o.value("5m", _("Every 5 minutes"));
+   o.default = "3m";
+   o.depends("proxy_config_type", "urltest");
++  o.depends("proxy_config_type", "subscription_urltest");
+ 
+   o = section.option(
+     form.Value,
+@@ -150,6 +190,7 @@ function createSectionContent(section) {
+   o.default = "50";
+   o.rmempty = false;
+   o.depends("proxy_config_type", "urltest");
++  o.depends("proxy_config_type", "subscription_urltest");
+   o.validate = function (section_id, value) {
+     if (!value || value.length === 0) {
+       return true;
+@@ -177,6 +218,7 @@ function createSectionContent(section) {
+   o.default = "https://www.gstatic.com/generate_204";
+   o.rmempty = false;
+   o.depends("proxy_config_type", "urltest");
++  o.depends("proxy_config_type", "subscription_urltest");
+ 
+   o.validate = function (section_id, value) {
+     if (!value || value.length === 0) {

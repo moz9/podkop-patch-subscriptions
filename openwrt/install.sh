@@ -1,0 +1,158 @@
+#!/bin/sh
+set -eu
+
+RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt}"
+PATCH_FILE="podkop-subscription-urltest-runtime.patch"
+LMO_FILE="podkop.ru.lmo.base64"
+
+RUNTIME_FILES="
+usr/bin/podkop
+usr/lib/podkop/sing_box_config_facade.sh
+www/luci-static/resources/view/podkop/main.js
+www/luci-static/resources/view/podkop/podkop.js
+www/luci-static/resources/view/podkop/section.js
+www/luci-static/resources/view/podkop/subscriptions.js
+usr/lib/lua/luci/i18n/podkop.ru.lmo
+"
+
+log() {
+	printf '%s\n' "$*"
+}
+
+fail() {
+	log "ERROR: $*"
+	exit 1
+}
+
+download() {
+	url="$1"
+	out="$2"
+
+	if command -v curl >/dev/null 2>&1; then
+		curl -fsSL "$url" -o "$out"
+	elif command -v wget >/dev/null 2>&1; then
+		wget -q -O "$out" "$url"
+	else
+		fail "curl or wget is required"
+	fi
+}
+
+require_patch() {
+	if command -v patch >/dev/null 2>&1; then
+		return 0
+	fi
+
+	if command -v opkg >/dev/null 2>&1; then
+		log "Installing patch utility..."
+		opkg update >/dev/null 2>&1 || true
+		opkg install patch >/dev/null 2>&1 || true
+	fi
+
+	command -v patch >/dev/null 2>&1 || fail "patch utility is required"
+}
+
+backup_runtime() {
+	backup_dir="/root/podkop-patch-subscriptions-backup-$(date +%Y%m%d-%H%M%S)"
+	mkdir -p "$backup_dir"
+
+	for rel in $RUNTIME_FILES; do
+		src="/$rel"
+		if [ -e "$src" ]; then
+			mkdir -p "$backup_dir/$(dirname "$rel")"
+			cp -a "$src" "$backup_dir/$rel"
+		fi
+	done
+
+	log "Backup: $backup_dir"
+}
+
+restore_runtime() {
+	log "Restoring backup..."
+	for rel in $RUNTIME_FILES; do
+		dst="/$rel"
+		src="$backup_dir/$rel"
+		if [ -e "$src" ]; then
+			mkdir -p "$(dirname "$dst")"
+			cp -a "$src" "$dst"
+		else
+			rm -f "$dst"
+		fi
+	done
+	rm -f /tmp/luci-indexcache
+	rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
+	[ -x /etc/init.d/podkop ] && /etc/init.d/podkop reload >/dev/null 2>&1 || true
+	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+}
+
+abort_with_restore() {
+	restore_runtime
+	fail "$1"
+}
+
+already_installed() {
+	grep -q "set_subscription_link_enabled" /usr/bin/podkop 2>/dev/null \
+		&& [ -s /www/luci-static/resources/view/podkop/subscriptions.js ]
+}
+
+tmp_dir="$(mktemp -d)"
+backup_dir=""
+trap 'rm -rf "$tmp_dir"' EXIT
+
+[ -x /usr/bin/podkop ] || fail "Podkop is not installed at /usr/bin/podkop"
+command -v base64 >/dev/null 2>&1 || fail "base64 utility is required"
+require_patch
+
+download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
+
+if already_installed; then
+	log "Subscription URLTest patch is already installed; refreshing LuCI translation."
+	backup_runtime
+else
+	download "$RAW_BASE/$PATCH_FILE" "$tmp_dir/$PATCH_FILE"
+	backup_runtime
+
+	if ! patch -d / -p1 < "$tmp_dir/$PATCH_FILE"; then
+		abort_with_restore "runtime patch failed"
+	fi
+fi
+
+mkdir -p /usr/lib/lua/luci/i18n
+if ! base64 -d < "$tmp_dir/$LMO_FILE" > /usr/lib/lua/luci/i18n/podkop.ru.lmo; then
+	abort_with_restore "failed to install LuCI translation"
+fi
+
+chmod 755 /usr/bin/podkop
+[ -f /usr/lib/podkop/sing_box_config_facade.sh ] && chmod 644 /usr/lib/podkop/sing_box_config_facade.sh
+[ -f /www/luci-static/resources/view/podkop/main.js ] && chmod 644 /www/luci-static/resources/view/podkop/main.js
+[ -f /www/luci-static/resources/view/podkop/podkop.js ] && chmod 644 /www/luci-static/resources/view/podkop/podkop.js
+[ -f /www/luci-static/resources/view/podkop/section.js ] && chmod 644 /www/luci-static/resources/view/podkop/section.js
+[ -f /www/luci-static/resources/view/podkop/subscriptions.js ] && chmod 644 /www/luci-static/resources/view/podkop/subscriptions.js
+chmod 644 /usr/lib/lua/luci/i18n/podkop.ru.lmo
+
+if ! ash -n /usr/bin/podkop; then
+	abort_with_restore "podkop syntax check failed"
+fi
+
+if [ -f /usr/lib/podkop/sing_box_config_facade.sh ] && ! ash -n /usr/lib/podkop/sing_box_config_facade.sh; then
+	abort_with_restore "sing-box facade syntax check failed"
+fi
+
+rm -f /tmp/luci-indexcache
+rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
+
+if [ -x /etc/init.d/podkop ]; then
+	if ! /etc/init.d/podkop reload; then
+		abort_with_restore "podkop reload failed"
+	fi
+fi
+
+if command -v sing-box >/dev/null 2>&1 && [ -f /etc/sing-box/config.json ]; then
+	if ! sing-box check -c /etc/sing-box/config.json; then
+		abort_with_restore "sing-box config check failed"
+	fi
+fi
+
+/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+
+log "Installed Subscription URLTest patch."
+log "Backup saved at: $backup_dir"

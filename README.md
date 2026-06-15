@@ -1,9 +1,28 @@
 # Podkop Subscription URLTest Patch
 
-Этот репозиторий не является форком и не содержит исходный код Podkop.
+Этот репозиторий не является форком Podkop и не содержит исходный код Podkop целиком.
 
 Оригинальный проект: [itdoginfo/podkop](https://github.com/itdoginfo/podkop).
-Здесь хранится только патч для добавления режима `Subscription URLTest` и вкладки управления конфигами подписок.
+Здесь хранится только патч, который добавляет режим `Subscription URLTest` и вкладку управления конфигами из подписок.
+
+## Установка на OpenWrt одной командой
+
+Выполнить с компьютера, где доступен SSH до роутера:
+
+```sh
+ssh -p 22222 root@192.168.77.1 "wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh && sh /tmp/podkop-subscriptions-install.sh"
+```
+
+Если SSH доступен на стандартном порту 22, уберите `-p 22222`.
+
+Установщик:
+
+- скачивает runtime-патч и русскую LuCI-переводку;
+- делает резервную копию изменяемых файлов в `/root/podkop-patch-subscriptions-backup-*`;
+- применяет патч поверх уже установленного Podkop;
+- проверяет shell-синтаксис;
+- перезагружает Podkop и LuCI;
+- при ошибке возвращает файлы из резервной копии.
 
 ## Что добавляет патч
 
@@ -12,41 +31,29 @@
 - кеш последней рабочей подписки, чтобы Podkop продолжал работать при ошибке обновления;
 - фильтрацию неподдерживаемых Podkop конфигов до генерации sing-box;
 - отдельный список неподдерживаемых конфигов в дашборде;
-- вкладку `Подписки` в LuCI для включения/исключения отдельных конфигов;
+- вкладку `Подписки` в LuCI для включения и исключения отдельных конфигов;
 - сохранение исключений по хэшу ссылки, без записи proxy-ссылок в UCI;
 - русские строки интерфейса для добавленных элементов.
 
-## Как применить
+## Патч для исходников
 
-```bash
+Если нужно применить изменение к локальному checkout Podkop:
+
+```sh
 git clone https://github.com/itdoginfo/podkop.git
 git clone https://github.com/moz9/podkop-patch-subscriptions.git
 cd podkop
 git am ../podkop-patch-subscriptions/patches/0001-add-subscription-urltest-management.patch
 ```
 
-Если нужно только проверить применимость:
-
-```bash
-git apply --check ../podkop-patch-subscriptions/patches/0001-add-subscription-urltest-management.patch
-```
-
-## Файл патча
+Файл патча:
 
 - [`patches/0001-add-subscription-urltest-management.patch`](patches/0001-add-subscription-urltest-management.patch)
 
-Патч включает также собранный LuCI bundle `main.js`, потому что он хранится в upstream-репозитории Podkop рядом с исходниками frontend.
+Runtime-установка для OpenWrt использует отдельный файл:
 
-## Статус
+- [`openwrt/podkop-subscription-urltest-runtime.patch`](openwrt/podkop-subscription-urltest-runtime.patch)
 
-Патч был локально проверен командами:
+## Проверка
 
-```bash
-npx --yes shellcheck -s sh --severity=error podkop/files/usr/bin/podkop podkop/files/usr/lib/sing_box_config_facade.sh
-npm run lint -- --max-warnings=0
-npm test -- --run
-npm run build
-git diff --check
-```
-
-Также был smoke-tested на роутере OpenWrt с Podkop и sing-box.
+Патч проверялся локально на чистом checkout Podkop и smoke-тестом на роутере OpenWrt с Podkop и sing-box.
