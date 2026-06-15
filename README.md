@@ -7,13 +7,11 @@
 
 ## Установка на OpenWrt одной командой
 
-Выполнить с компьютера, где доступен SSH до роутера:
+Выполнить уже внутри SSH-сессии на роутере:
 
 ```sh
-ssh -p 22222 root@192.168.77.1 "wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh && sh /tmp/podkop-subscriptions-install.sh"
+wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh && sh /tmp/podkop-subscriptions-install.sh
 ```
-
-Если SSH доступен на стандартном порту 22, уберите `-p 22222`.
 
 Установщик:
 
