@@ -1852,3 +1852,31 @@ index 7dc8ccb..c9f89e6 100644
  
    o.validate = function (section_id, value) {
      if (!value || value.length === 0) {
+diff --git a/www/luci-static/resources/view/podkop/subscriptions.js b/www/luci-static/resources/view/podkop/subscriptions.js
+new file mode 100644
+index 0000000..52716a5
+--- /dev/null
++++ b/www/luci-static/resources/view/podkop/subscriptions.js
+@@ -0,0 +1,22 @@
++"use strict";
++"require baseclass";
++"require form";
++"require ui";
++"require uci";
++"require fs";
++"require view.podkop.main as main";
++
++function createSubscriptionsContent(section) {
++  const o = section.option(form.DummyValue, "_mount_node");
++  o.rawhtml = true;
++  o.cfgvalue = () => {
++    main.SubscriptionsTab.initController();
++    return main.SubscriptionsTab.render();
++  };
++}
++
++const EntryPoint = {
++  createSubscriptionsContent,
++};
++
++return baseclass.extend(EntryPoint);

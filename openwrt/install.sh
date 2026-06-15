@@ -4,6 +4,7 @@ set -eu
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
 LMO_FILE="podkop.ru.lmo.base64"
+SUBSCRIPTIONS_FILE="subscriptions.js"
 
 RUNTIME_FILES="
 usr/bin/podkop
@@ -89,9 +90,8 @@ abort_with_restore() {
 	fail "$1"
 }
 
-already_installed() {
-	grep -q "set_subscription_link_enabled" /usr/bin/podkop 2>/dev/null \
-		&& [ -s /www/luci-static/resources/view/podkop/subscriptions.js ]
+has_subscription_backend() {
+	grep -q "set_subscription_link_enabled" /usr/bin/podkop 2>/dev/null
 }
 
 tmp_dir="$(mktemp -d)"
@@ -103,9 +103,10 @@ command -v base64 >/dev/null 2>&1 || fail "base64 utility is required"
 require_patch
 
 download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
+download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 
-if already_installed; then
-	log "Subscription URLTest patch is already installed; refreshing LuCI translation."
+if has_subscription_backend; then
+	log "Subscription URLTest backend is already installed; refreshing LuCI files."
 	backup_runtime
 else
 	download "$RAW_BASE/$PATCH_FILE" "$tmp_dir/$PATCH_FILE"
@@ -115,6 +116,9 @@ else
 		abort_with_restore "runtime patch failed"
 	fi
 fi
+
+mkdir -p /www/luci-static/resources/view/podkop
+cp "$tmp_dir/$SUBSCRIPTIONS_FILE" /www/luci-static/resources/view/podkop/subscriptions.js
 
 mkdir -p /usr/lib/lua/luci/i18n
 if ! base64 -d < "$tmp_dir/$LMO_FILE" > /usr/lib/lua/luci/i18n/podkop.ru.lmo; then
