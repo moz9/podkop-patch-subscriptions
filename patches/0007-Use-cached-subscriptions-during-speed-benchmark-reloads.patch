@@ -1,0 +1,34 @@
+From 362acb3819a673beeacc635a17b51c34364c8814 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Tue, 16 Jun 2026 18:45:15 +0300
+Subject: [PATCH] Use cached subscriptions during speed benchmark reloads
+
+---
+ podkop/files/usr/bin/podkop | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 8405179..57c6f9e 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1686,7 +1686,7 @@ subscription_speedtest_restore_mixed_proxy() {
+ 
+     uci commit podkop > /dev/null 2>&1 || return 1
+     config_load "$PODKOP_CONFIG"
+-    /etc/init.d/podkop reload > /dev/null 2>&1
++    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1
+ }
+ 
+ subscription_speedtest_result_error() {
+@@ -1780,7 +1780,7 @@ subscription_speedtest() {
+         config_load "$PODKOP_CONFIG"
+         mixed_changed=1
+ 
+-        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
+             subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+             rm -f "$active_items_file" "$results_file"
+             echo '{"success":false,"error":"reload_failed"}'
+-- 
+2.54.0.windows.1
+

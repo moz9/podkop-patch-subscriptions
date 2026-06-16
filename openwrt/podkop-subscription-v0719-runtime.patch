@@ -1,5 +1,5 @@
 diff --git a/usr/bin/podkop b/usr/bin/podkop
-index e3af7c0..8405179 100644
+index e3af7c0..57c6f9e 100644
 --- a/usr/bin/podkop
 +++ b/usr/bin/podkop
 @@ -33,6 +33,8 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
@@ -1459,7 +1459,7 @@ index e3af7c0..8405179 100644
 -    uci_commit "dhcp"
 +    uci commit podkop > /dev/null 2>&1 || return 1
 +    config_load "$PODKOP_CONFIG"
-+    /etc/init.d/podkop reload > /dev/null 2>&1
++    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1
 +}
  
 -    /etc/init.d/dnsmasq restart
@@ -1633,7 +1633,7 @@ index e3af7c0..8405179 100644
 -        echolog "GitHub is unavailable [$i/$curl_attempts] (max-timeout=$curl_timeout)"
 -        if [ "$curl_timeout" -lt $curl_max_timeout ]; then
 -            curl_timeout=$((curl_timeout + 1))
-+        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
 +            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
 +            rm -f "$active_items_file" "$results_file"
 +            echo '{"success":false,"error":"reload_failed"}'
