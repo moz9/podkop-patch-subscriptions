@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-ui-fix2}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-ui-fix3}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -88,7 +88,7 @@ cleanup_old_backups() {
 		keep=1
 	fi
 
-	for dir in $(ls -1d /root/podkop-patch-subscriptions-backup-* 2>/dev/null | sort -r); do
+	for dir in $(ls -1dt /root/podkop-patch-subscriptions-backup-* 2>/dev/null); do
 		[ -d "$dir" ] || continue
 		count=$((count + 1))
 		if [ "$count" -gt "$keep" ]; then
