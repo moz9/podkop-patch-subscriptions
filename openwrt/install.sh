@@ -1,13 +1,14 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-ui-fix}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-ui-fix2}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
-UI_FIX_UPGRADE_PATCH_FILE="podkop-subscription-ui-fix-upgrade.patch"
+UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
+MAIN_JS_FILE="main.js"
 LMO_FILE="podkop.ru.lmo.base64"
 SUBSCRIPTIONS_FILE="subscriptions.js"
 
@@ -163,17 +164,17 @@ command -v base64 >/dev/null 2>&1 || fail "base64 utility is required"
 
 download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
+download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
 
 if has_latest_subscription_backend; then
 	log "Subscription URLTest backend is already up to date; refreshing LuCI files."
 	backup_runtime
 elif has_actions_subscription_backend; then
-	require_patch
-	download "$RAW_BASE/$UI_FIX_UPGRADE_PATCH_FILE" "$tmp_dir/$UI_FIX_UPGRADE_PATCH_FILE"
+	download "$RAW_BASE/$UI_FIX_BACKEND_FILE" "$tmp_dir/$UI_FIX_BACKEND_FILE"
 	backup_runtime
 
-	if ! patch -d / -p1 < "$tmp_dir/$UI_FIX_UPGRADE_PATCH_FILE"; then
-		abort_with_restore "runtime UI fix upgrade patch failed"
+	if ! sh "$tmp_dir/$UI_FIX_BACKEND_FILE"; then
+		abort_with_restore "runtime UI fix backend upgrade failed"
 	fi
 elif has_batch_subscription_backend; then
 	require_patch
@@ -202,6 +203,7 @@ else
 fi
 
 mkdir -p /www/luci-static/resources/view/podkop
+cp "$tmp_dir/$MAIN_JS_FILE" /www/luci-static/resources/view/podkop/main.js
 cp "$tmp_dir/$SUBSCRIPTIONS_FILE" /www/luci-static/resources/view/podkop/subscriptions.js
 
 mkdir -p /usr/lib/lua/luci/i18n
