@@ -1,5 +1,5 @@
 diff --git a/usr/bin/podkop b/usr/bin/podkop
-index e3af7c0..8231b11 100644
+index e3af7c0..8405179 100644
 --- a/usr/bin/podkop
 +++ b/usr/bin/podkop
 @@ -33,6 +33,8 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
@@ -29,7 +29,7 @@ index e3af7c0..8231b11 100644
          section_exists=0
      fi
  }
-@@ -133,7 +135,9 @@ start_main() {
+@@ -133,12 +135,18 @@ start_main() {
  
      # sing-box
      sing_box_init_config
@@ -39,7 +39,18 @@ index e3af7c0..8231b11 100644
      /etc/init.d/sing-box start
  
      log "Nice"
-@@ -342,208 +346,1555 @@ backup_dnsmasq_config_option() {
+-    list_update &
+-    echo $! > /var/run/podkop_list_update.pid
++    if [ "$PODKOP_SKIP_LIST_UPDATE" = "1" ]; then
++        log "Skipping lists update for this reload" "debug"
++    else
++        list_update &
++        echo $! > /var/run/podkop_list_update.pid
++    fi
+ }
+ 
+ stop_main() {
+@@ -342,208 +350,1557 @@ backup_dnsmasq_config_option() {
      local value
      value="$(uci_get "dhcp" "@dnsmasq[0]" "$key")"
  
@@ -892,11 +903,13 @@ index e3af7c0..8231b11 100644
 +    local output_file="$2"
 +    local cache_path
 +
-+    if ! refresh_subscription_cache "$section"; then
++    cache_path="$(get_subscription_cache_path "$section")"
++    if [ "$PODKOP_SUBSCRIPTION_CACHE_ONLY" = "1" ] && [ -s "$cache_path" ]; then
++        log "Using cached subscription for section '$section'" "debug"
++    elif ! refresh_subscription_cache "$section"; then
 +        log "Using cached subscription for section '$section'" "warn"
 +    fi
 +
-+    cache_path="$(get_subscription_cache_path "$section")"
 +    if [ -s "$cache_path" ]; then
 +        if cp "$cache_path" "$output_file"; then
 +            return 0
@@ -1227,7 +1240,7 @@ index e3af7c0..8231b11 100644
 +
 +    reload_required="$SUBSCRIPTION_CACHE_CHANGED"
 +    if [ "$reload_required" -eq 1 ]; then
-+        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
 +            echo '{"success":false,"error":"reload_failed"}'
 +            return 1
 +        fi
@@ -1755,7 +1768,7 @@ index e3af7c0..8231b11 100644
      fi
  }
  
-@@ -678,6 +2029,63 @@ configure_outbound_handler() {
+@@ -678,6 +2035,63 @@ configure_outbound_handler() {
              config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
                  "$default_outbound")"
              ;;
@@ -1819,7 +1832,7 @@ index e3af7c0..8231b11 100644
          urltest)
              log "Detected proxy configuration type: urltest" "debug"
              local urltest_proxy_links udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
-@@ -1842,6 +3250,8 @@ show_config() {
+@@ -1842,6 +3256,8 @@ show_config() {
          -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
          -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
          -e 's/\(list selector_proxy_links\).*/\1 '\''MASKED'\''/g' \
@@ -1828,7 +1841,7 @@ index e3af7c0..8231b11 100644
          -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e "s@\\(option domain_resolver_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
-@@ -2669,6 +4079,14 @@ Available commands:
+@@ -2669,6 +4085,14 @@ Available commands:
      restart                 Restart podkop service
      main                    Run main podkop process
      list_update             Update domain lists
@@ -1843,7 +1856,7 @@ index e3af7c0..8231b11 100644
      check_proxy             Check proxy connectivity
      check_nft               Check NFT rules
      check_nft_rules         Check NFT rules status
-@@ -2677,6 +4095,18 @@ Available commands:
+@@ -2677,6 +4101,18 @@ Available commands:
      check_sing_box_logs     Show sing-box logs
      check_fakeip            Test FakeIP on router
      clash_api               Clash API interface for managing proxies and groups
@@ -1862,7 +1875,7 @@ index e3af7c0..8231b11 100644
      show_config             Display current podkop configuration
      show_version            Show podkop version
      show_sing_box_config    Show sing-box configuration
-@@ -2709,6 +4139,21 @@ main)
+@@ -2709,6 +4145,21 @@ main)
  list_update)
      list_update
      ;;
@@ -1884,7 +1897,7 @@ index e3af7c0..8231b11 100644
  check_proxy)
      check_proxy
      ;;
-@@ -2733,6 +4178,25 @@ check_fakeip)
+@@ -2733,6 +4184,25 @@ check_fakeip)
  clash_api)
      clash_api "$2" "$3" "$4"
      ;;

@@ -1,0 +1,44 @@
+diff --git a/usr/bin/podkop b/usr/bin/podkop
+index 8231b11..8405179 100644
+--- a/usr/bin/podkop
++++ b/usr/bin/podkop
+@@ -141,8 +141,12 @@ start_main() {
+     /etc/init.d/sing-box start
+ 
+     log "Nice"
+-    list_update &
+-    echo $! > /var/run/podkop_list_update.pid
++    if [ "$PODKOP_SKIP_LIST_UPDATE" = "1" ]; then
++        log "Skipping lists update for this reload" "debug"
++    else
++        list_update &
++        echo $! > /var/run/podkop_list_update.pid
++    fi
+ }
+ 
+ stop_main() {
+@@ -1193,11 +1197,13 @@ load_subscription_proxy_links_for_section() {
+     local output_file="$2"
+     local cache_path
+ 
+-    if ! refresh_subscription_cache "$section"; then
++    cache_path="$(get_subscription_cache_path "$section")"
++    if [ "$PODKOP_SUBSCRIPTION_CACHE_ONLY" = "1" ] && [ -s "$cache_path" ]; then
++        log "Using cached subscription for section '$section'" "debug"
++    elif ! refresh_subscription_cache "$section"; then
+         log "Using cached subscription for section '$section'" "warn"
+     fi
+ 
+-    cache_path="$(get_subscription_cache_path "$section")"
+     if [ -s "$cache_path" ]; then
+         if cp "$cache_path" "$output_file"; then
+             return 0
+@@ -1528,7 +1534,7 @@ set_subscription_links_enabled() {
+ 
+     reload_required="$SUBSCRIPTION_CACHE_CHANGED"
+     if [ "$reload_required" -eq 1 ]; then
+-        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
+             echo '{"success":false,"error":"reload_failed"}'
+             return 1
+         fi
