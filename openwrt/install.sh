@@ -1,10 +1,11 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.15-subscriptions-batch-ru}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-actions}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
-UPGRADE_PATCH_FILE="podkop-subscription-batch-upgrade.patch"
+ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
+LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 LMO_FILE="podkop.ru.lmo.base64"
 SUBSCRIPTIONS_FILE="subscriptions.js"
 
@@ -99,6 +100,10 @@ abort_with_restore() {
 }
 
 has_latest_subscription_backend() {
+	grep -q "subscription_speedtest" /usr/bin/podkop 2>/dev/null
+}
+
+has_batch_subscription_backend() {
 	grep -q "set_subscription_links_enabled" /usr/bin/podkop 2>/dev/null
 }
 
@@ -118,14 +123,21 @@ download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 
 if has_latest_subscription_backend; then
-	log "Subscription URLTest batch backend is already installed; refreshing LuCI files."
+	log "Subscription URLTest actions backend is already installed; refreshing LuCI files."
 	backup_runtime
-elif has_legacy_subscription_backend; then
-	download "$RAW_BASE/$UPGRADE_PATCH_FILE" "$tmp_dir/$UPGRADE_PATCH_FILE"
+elif has_batch_subscription_backend; then
+	download "$RAW_BASE/$ACTIONS_UPGRADE_PATCH_FILE" "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"
 	backup_runtime
 
-	if ! patch -d / -p1 < "$tmp_dir/$UPGRADE_PATCH_FILE"; then
-		abort_with_restore "runtime upgrade patch failed"
+	if ! patch -d / -p1 < "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"; then
+		abort_with_restore "runtime actions upgrade patch failed"
+	fi
+elif has_legacy_subscription_backend; then
+	download "$RAW_BASE/$LEGACY_UPGRADE_PATCH_FILE" "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"
+	backup_runtime
+
+	if ! patch -d / -p1 < "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"; then
+		abort_with_restore "runtime legacy upgrade patch failed"
 	fi
 else
 	download "$RAW_BASE/$PATCH_FILE" "$tmp_dir/$PATCH_FILE"

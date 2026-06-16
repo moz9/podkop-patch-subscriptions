@@ -1,7 +1,7 @@
 From 9df6f64698f604872091f2dab50fd7cc4afc0080 Mon Sep 17 00:00:00 2001
 From: Codex <codex@example.local>
 Date: Mon, 15 Jun 2026 15:35:57 +0300
-Subject: [PATCH] Fix batch subscription Russian translations
+Subject: [PATCH 3/4] Fix batch subscription Russian translations
 
 ---
  fe-app-podkop/locales/podkop.ru.po | 22 +++++++++++-----------

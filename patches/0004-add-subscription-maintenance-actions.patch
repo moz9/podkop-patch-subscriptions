@@ -1,0 +1,2135 @@
+From 787bf3e379ac4b4da2cf5a07ab2734672a715aba Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Tue, 16 Jun 2026 08:48:31 +0300
+Subject: [PATCH 4/4] Add subscription maintenance actions
+
+---
+ .../src/podkop/methods/shell/index.ts         |  28 ++
+ .../src/podkop/services/store.service.ts      |  10 +
+ .../tabs/subscriptions/initController.ts      | 346 ++++++++++++-
+ .../partials/renderSubscriptionSections.ts    | 175 ++++++-
+ .../src/podkop/tabs/subscriptions/render.ts   |   9 +
+ .../src/podkop/tabs/subscriptions/styles.ts   |   6 +-
+ fe-app-podkop/src/podkop/types.ts             |  42 ++
+ .../luci-static/resources/view/podkop/main.js | 457 +++++++++++++++++-
+ luci-app-podkop/po/ru/podkop.po               |  90 ++++
+ podkop/files/usr/bin/podkop                   | 326 +++++++++++++
+ 10 files changed, 1451 insertions(+), 38 deletions(-)
+
+diff --git a/fe-app-podkop/src/podkop/methods/shell/index.ts b/fe-app-podkop/src/podkop/methods/shell/index.ts
+index ec0482d..d84ca58 100644
+--- a/fe-app-podkop/src/podkop/methods/shell/index.ts
++++ b/fe-app-podkop/src/podkop/methods/shell/index.ts
+@@ -80,6 +80,34 @@ export const PodkopShellMethods = {
+     callBaseMethod<unknown>(Podkop.AvailableMethods.SHOW_SING_BOX_CONFIG),
+   checkLogs: async () =>
+     callBaseMethod<unknown>(Podkop.AvailableMethods.CHECK_LOGS),
++  updateSubscriptions: async () =>
++    callBaseMethod<Podkop.SubscriptionUpdateResult>(
++      Podkop.AvailableMethods.SUBSCRIPTION_UPDATE_JSON,
++      [],
++      '/usr/bin/podkop',
++      120000,
++    ),
++  benchmarkSubscriptionSection: async (section: string) =>
++    callBaseMethod<Podkop.SubscriptionSpeedtestResult>(
++      Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST,
++      [section],
++      '/usr/bin/podkop',
++      300000,
++    ),
++  updateSubscriptionPatch: async () =>
++    callBaseMethod<Podkop.SubscriptionPatchUpdateStartResult>(
++      Podkop.AvailableMethods.SUBSCRIPTION_PATCH_UPDATE,
++      [],
++      '/usr/bin/podkop',
++      15000,
++    ),
++  getSubscriptionPatchUpdateStatus: async () =>
++    callBaseMethod<Podkop.SubscriptionPatchUpdateStatus>(
++      Podkop.AvailableMethods.GET_SUBSCRIPTION_PATCH_UPDATE_STATUS,
++      [],
++      '/usr/bin/podkop',
++      15000,
++    ),
+   getSystemInfo: async () =>
+     callBaseMethod<Podkop.GetSystemInfo>(
+       Podkop.AvailableMethods.GET_SYSTEM_INFO,
+diff --git a/fe-app-podkop/src/podkop/services/store.service.ts b/fe-app-podkop/src/podkop/services/store.service.ts
+index 96e91ef..6bc4267 100644
+--- a/fe-app-podkop/src/podkop/services/store.service.ts
++++ b/fe-app-podkop/src/podkop/services/store.service.ts
+@@ -172,7 +172,12 @@ export interface StoreType {
+     failed: boolean;
+     applying: boolean;
+     status: 'idle' | 'dirty' | 'applying' | 'success' | 'error';
++    action: 'none' | 'refresh' | 'ping' | 'speed' | 'patch';
++    actionStatus: 'idle' | 'running' | 'success' | 'error';
++    actionMessage: string;
+     pendingChanges: Record<string, boolean>;
++    latencyByRow: Record<string, number>;
++    speedByRow: Record<string, Podkop.SubscriptionSpeedtestItem>;
+     data: Podkop.SubscriptionItemsSection[];
+   };
+   diagnosticsRunAction: {
+@@ -236,7 +241,12 @@ const initialStore: StoreType = {
+     failed: false,
+     applying: false,
+     status: 'idle',
++    action: 'none',
++    actionStatus: 'idle',
++    actionMessage: '',
+     pendingChanges: {},
++    latencyByRow: {},
++    speedByRow: {},
+     data: [],
+   },
+   ...initialDiagnosticStore,
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+index b2b3337..8efb696 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+@@ -12,6 +12,9 @@ type SubscriptionItemsStatus =
+   | 'success'
+   | 'error';
+ 
++type SubscriptionItemsAction = 'none' | 'refresh' | 'ping' | 'speed' | 'patch';
++type SubscriptionItemsActionStatus = 'idle' | 'running' | 'success' | 'error';
++
+ function getRowId(sectionCode: string, itemId: string) {
+   return `${sectionCode}:${itemId}`;
+ }
+@@ -20,7 +23,54 @@ function getPendingCount(pendingChanges: Record<string, boolean>) {
+   return Object.keys(pendingChanges).length;
+ }
+ 
+-async function fetchSubscriptionItems(status: SubscriptionItemsStatus = 'idle') {
++function sleep(ms: number) {
++  return new Promise((resolve) => window.setTimeout(resolve, ms));
++}
++
++function getEnabledSupportedItems(section: Podkop.SubscriptionItemsSection) {
++  return section.items.filter((item) => item.supported && item.enabled);
++}
++
++function isActionRunning() {
++  return store.get().subscriptionItemsWidget.actionStatus === 'running';
++}
++
++function canRunServiceAction() {
++  const widget = store.get().subscriptionItemsWidget;
++
++  return (
++    !widget.loading &&
++    !widget.failed &&
++    !widget.applying &&
++    !isActionRunning() &&
++    getPendingCount(widget.pendingChanges) === 0
++  );
++}
++
++function setActionState({
++  action,
++  actionStatus,
++  actionMessage,
++}: {
++  action: SubscriptionItemsAction;
++  actionStatus: SubscriptionItemsActionStatus;
++  actionMessage: string;
++}) {
++  const widget = store.get().subscriptionItemsWidget;
++
++  store.set({
++    subscriptionItemsWidget: {
++      ...widget,
++      action,
++      actionStatus,
++      actionMessage,
++    },
++  });
++}
++
++async function fetchSubscriptionItems(
++  status: SubscriptionItemsStatus = 'idle',
++) {
+   const prev = store.get().subscriptionItemsWidget;
+ 
+   store.set({
+@@ -55,6 +105,7 @@ async function fetchSubscriptionItems(status: SubscriptionItemsStatus = 'idle')
+ 
+     store.set({
+       subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
+         loading: false,
+         failed: false,
+         applying: false,
+@@ -141,7 +192,11 @@ async function handleApply() {
+   const widget = store.get().subscriptionItemsWidget;
+   const pendingChanges = widget.pendingChanges;
+ 
+-  if (getPendingCount(pendingChanges) === 0 || widget.applying) {
++  if (
++    getPendingCount(pendingChanges) === 0 ||
++    widget.applying ||
++    isActionRunning()
++  ) {
+     return;
+   }
+ 
+@@ -184,6 +239,281 @@ async function handleApply() {
+   }
+ }
+ 
++async function handleRefreshSubscriptions() {
++  if (!canRunServiceAction()) {
++    return;
++  }
++
++  setActionState({
++    action: 'refresh',
++    actionStatus: 'running',
++    actionMessage: _('Updating subscription configs. Podkop may be reloaded.'),
++  });
++
++  try {
++    const result = await PodkopShellMethods.updateSubscriptions();
++
++    if (!result.success || !result.data.success) {
++      throw new Error(result.success ? result.data.output : result.error);
++    }
++
++    await fetchSubscriptionItems();
++    setActionState({
++      action: 'refresh',
++      actionStatus: 'success',
++      actionMessage: _('Subscription configs updated.'),
++    });
++    showToast(_('Subscription configs updated.'), 'success');
++  } catch (error) {
++    logger.error('[SUBSCRIPTIONS]', 'failed to refresh subscriptions');
++    logger.error('[SUBSCRIPTIONS]', error);
++    setActionState({
++      action: 'refresh',
++      actionStatus: 'error',
++      actionMessage: _(
++        'Failed to update subscription configs. Cache was kept.',
++      ),
++    });
++    showToast(_('Failed to update subscription configs.'), 'error');
++  }
++}
++
++async function handlePingSubscriptions() {
++  if (!canRunServiceAction()) {
++    return;
++  }
++
++  const sections = store.get().subscriptionItemsWidget.data;
++  const latencyByRow: Record<string, number> = {};
++
++  setActionState({
++    action: 'ping',
++    actionStatus: 'running',
++    actionMessage: _('Testing subscription latency.'),
++  });
++
++  try {
++    for (const section of sections) {
++      const enabledItems = getEnabledSupportedItems(section);
++
++      if (!enabledItems.length) {
++        continue;
++      }
++
++      setActionState({
++        action: 'ping',
++        actionStatus: 'running',
++        actionMessage: `${_('Testing latency')}: ${section.displayName}`,
++      });
++
++      const result = await PodkopShellMethods.getClashApiGroupLatency(
++        `${section.code}-out`,
++      );
++
++      if (!result.success) {
++        throw new Error(result.error);
++      }
++
++      enabledItems.forEach((item, index) => {
++        const tag = `${section.code}-${index + 1}-out`;
++        const latency = result.data[tag];
++
++        if (typeof latency === 'number' && latency > 0) {
++          latencyByRow[getRowId(section.code, item.id)] = latency;
++        }
++      });
++    }
++
++    store.set({
++      subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
++        latencyByRow,
++      },
++    });
++    setActionState({
++      action: 'ping',
++      actionStatus: 'success',
++      actionMessage: _('Latency test completed.'),
++    });
++    showToast(_('Latency test completed.'), 'success');
++  } catch (error) {
++    logger.error('[SUBSCRIPTIONS]', 'failed to ping subscription configs');
++    logger.error('[SUBSCRIPTIONS]', error);
++    setActionState({
++      action: 'ping',
++      actionStatus: 'error',
++      actionMessage: _('Failed to test latency.'),
++    });
++    showToast(_('Failed to test latency.'), 'error');
++  }
++}
++
++async function handleSpeedtestSubscriptions() {
++  if (!canRunServiceAction()) {
++    return;
++  }
++
++  const sections = store.get().subscriptionItemsWidget.data;
++  const speedByRow: Record<string, Podkop.SubscriptionSpeedtestItem> = {};
++
++  setActionState({
++    action: 'speed',
++    actionStatus: 'running',
++    actionMessage: _(
++      'Running speed benchmark. Active proxy may change briefly.',
++    ),
++  });
++
++  try {
++    for (const section of sections) {
++      const enabledItems = getEnabledSupportedItems(section);
++
++      if (!enabledItems.length) {
++        continue;
++      }
++
++      setActionState({
++        action: 'speed',
++        actionStatus: 'running',
++        actionMessage: `${_('Running speed benchmark')}: ${section.displayName}`,
++      });
++
++      const result = await PodkopShellMethods.benchmarkSubscriptionSection(
++        section.code,
++      );
++
++      if (!result.success || !result.data.success) {
++        throw new Error(result.success ? result.data.error : result.error);
++      }
++
++      (result.data.results ?? []).forEach((item) => {
++        speedByRow[getRowId(section.code, item.id)] = item;
++      });
++    }
++
++    store.set({
++      subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
++        speedByRow,
++      },
++    });
++    setActionState({
++      action: 'speed',
++      actionStatus: 'success',
++      actionMessage: _('Speed benchmark completed.'),
++    });
++    showToast(_('Speed benchmark completed.'), 'success');
++  } catch (error) {
++    logger.error('[SUBSCRIPTIONS]', 'failed to run subscription speedtest');
++    logger.error('[SUBSCRIPTIONS]', error);
++    setActionState({
++      action: 'speed',
++      actionStatus: 'error',
++      actionMessage: _('Failed to run speed benchmark.'),
++    });
++    showToast(_('Failed to run speed benchmark.'), 'error');
++  }
++}
++
++function getPatchUpdateMessage(status: Podkop.SubscriptionPatchUpdateStatus) {
++  switch (status.message) {
++    case 'patch_update_running':
++      return _('Updating patch from GitHub.');
++    case 'patch_update_success':
++      return _('Patch updated. Refresh the page in a minute.');
++    case 'download_failed':
++      return _('Failed to download patch update.');
++    case 'install_failed':
++      return _('Failed to install patch update.');
++    default:
++      return status.message || _('Patch update status is unknown.');
++  }
++}
++
++async function pollPatchUpdateStatus() {
++  for (let attempt = 0; attempt < 40; attempt += 1) {
++    await sleep(3000);
++
++    try {
++      const status =
++        await PodkopShellMethods.getSubscriptionPatchUpdateStatus();
++
++      if (!status.success) {
++        continue;
++      }
++
++      if (status.data.state === 'running') {
++        setActionState({
++          action: 'patch',
++          actionStatus: 'running',
++          actionMessage: getPatchUpdateMessage(status.data),
++        });
++        continue;
++      }
++
++      setActionState({
++        action: 'patch',
++        actionStatus: status.data.state === 'success' ? 'success' : 'error',
++        actionMessage: getPatchUpdateMessage(status.data),
++      });
++
++      return status.data.state === 'success';
++    } catch (error) {
++      logger.error('[SUBSCRIPTIONS]', 'failed to poll patch update status');
++      logger.error('[SUBSCRIPTIONS]', error);
++    }
++  }
++
++  setActionState({
++    action: 'patch',
++    actionStatus: 'success',
++    actionMessage: _('Patch update is still running. Refresh the page later.'),
++  });
++
++  return true;
++}
++
++async function handlePatchUpdate() {
++  const widget = store.get().subscriptionItemsWidget;
++
++  if (
++    widget.applying ||
++    isActionRunning() ||
++    getPendingCount(widget.pendingChanges) > 0
++  ) {
++    return;
++  }
++
++  setActionState({
++    action: 'patch',
++    actionStatus: 'running',
++    actionMessage: _('Starting patch update from GitHub.'),
++  });
++
++  try {
++    const result = await PodkopShellMethods.updateSubscriptionPatch();
++
++    if (!result.success || !result.data.success) {
++      throw new Error(result.success ? result.data.error : result.error);
++    }
++
++    const success = await pollPatchUpdateStatus();
++    showToast(
++      success ? _('Patch update started.') : _('Patch update failed.'),
++      success ? 'success' : 'error',
++    );
++  } catch (error) {
++    logger.error('[SUBSCRIPTIONS]', 'failed to start patch update');
++    logger.error('[SUBSCRIPTIONS]', error);
++    setActionState({
++      action: 'patch',
++      actionStatus: 'error',
++      actionMessage: _('Failed to start patch update.'),
++    });
++    showToast(_('Failed to start patch update.'), 'error');
++  }
++}
++
+ async function renderSubscriptionItemsWidget() {
+   logger.debug('[SUBSCRIPTIONS]', 'renderSubscriptionItemsWidget');
+   const subscriptionItemsWidget = store.get().subscriptionItemsWidget;
+@@ -194,11 +524,20 @@ async function renderSubscriptionItemsWidget() {
+     failed: subscriptionItemsWidget.failed,
+     applying: subscriptionItemsWidget.applying,
+     status: subscriptionItemsWidget.status,
++    action: subscriptionItemsWidget.action,
++    actionStatus: subscriptionItemsWidget.actionStatus,
++    actionMessage: subscriptionItemsWidget.actionMessage,
+     pendingChanges: subscriptionItemsWidget.pendingChanges,
++    latencyByRow: subscriptionItemsWidget.latencyByRow,
++    speedByRow: subscriptionItemsWidget.speedByRow,
+     sections: subscriptionItemsWidget.data,
+     onToggle: handleToggle,
+     onApply: handleApply,
+     onReset: handleReset,
++    onRefresh: handleRefreshSubscriptions,
++    onPing: handlePingSubscriptions,
++    onSpeedtest: handleSpeedtestSubscriptions,
++    onPatchUpdate: handlePatchUpdate,
+   });
+ 
+   return preserveScrollForPage(() => {
+@@ -240,7 +579,8 @@ function registerLifecycleListeners() {
+         'active tab diff event, active tab:',
+         diff.tabService.current,
+       );
+-      const isSubscriptionsVisible = next.tabService.current === 'subscriptions';
++      const isSubscriptionsVisible =
++        next.tabService.current === 'subscriptions';
+ 
+       if (isSubscriptionsVisible) {
+         return onPageMount();
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
+index b11dbb0..659269f 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
+@@ -1,4 +1,5 @@
+ import { renderButton } from '../../../../partials';
++import { prettyBytes } from '../../../../helpers/prettyBytes';
+ import { Podkop } from '../../../types';
+ 
+ type SubscriptionItemsStatus =
+@@ -8,12 +9,20 @@ type SubscriptionItemsStatus =
+   | 'success'
+   | 'error';
+ 
++type SubscriptionItemsAction = 'none' | 'refresh' | 'ping' | 'speed' | 'patch';
++type SubscriptionItemsActionStatus = 'idle' | 'running' | 'success' | 'error';
++
+ interface RenderSubscriptionSectionsProps {
+   loading: boolean;
+   failed: boolean;
+   applying: boolean;
+   status: SubscriptionItemsStatus;
++  action: SubscriptionItemsAction;
++  actionStatus: SubscriptionItemsActionStatus;
++  actionMessage: string;
+   pendingChanges: Record<string, boolean>;
++  latencyByRow: Record<string, number>;
++  speedByRow: Record<string, Podkop.SubscriptionSpeedtestItem>;
+   sections: Podkop.SubscriptionItemsSection[];
+   onToggle: (
+     sectionCode: string,
+@@ -22,6 +31,10 @@ interface RenderSubscriptionSectionsProps {
+   ) => void;
+   onApply: () => void;
+   onReset: () => void;
++  onRefresh: () => void;
++  onPing: () => void;
++  onSpeedtest: () => void;
++  onPatchUpdate: () => void;
+ }
+ 
+ function getRowId(sectionCode: string, itemId: string) {
+@@ -109,11 +122,7 @@ function getStatusClass({
+ }
+ 
+ function renderEmptyState(text: string) {
+-  return E(
+-    'div',
+-    { class: 'pdk_subscriptions-page__empty centered' },
+-    text,
+-  );
++  return E('div', { class: 'pdk_subscriptions-page__empty centered' }, text);
+ }
+ 
+ function getToolbarMessage({
+@@ -121,12 +130,16 @@ function getToolbarMessage({
+   failed,
+   applying,
+   status,
++  actionStatus,
++  actionMessage,
+   pendingCount,
+ }: {
+   loading: boolean;
+   failed: boolean;
+   applying: boolean;
+   status: SubscriptionItemsStatus;
++  actionStatus: SubscriptionItemsActionStatus;
++  actionMessage: string;
+   pendingCount: number;
+ }) {
+   if (loading) {
+@@ -141,6 +154,18 @@ function getToolbarMessage({
+     return _('Applying changes. Podkop will be restarted once.');
+   }
+ 
++  if (actionStatus === 'running') {
++    return actionMessage || _('Action is running');
++  }
++
++  if (actionStatus === 'error') {
++    return actionMessage || _('Action failed');
++  }
++
++  if (actionStatus === 'success') {
++    return actionMessage || _('Action completed');
++  }
++
+   if (status === 'error') {
+     return _('Failed to apply changes. Podkop was not changed.');
+   }
+@@ -156,12 +181,20 @@ function getToolbarMessage({
+   return _('Select configs, then click Apply to restart Podkop once.');
+ }
+ 
+-function getToolbarClass(status: SubscriptionItemsStatus, pendingCount: number) {
++function getToolbarClass(
++  status: SubscriptionItemsStatus,
++  actionStatus: SubscriptionItemsActionStatus,
++  pendingCount: number,
++) {
+   if (status === 'applying') {
+     return 'pdk_subscriptions-page__toolbar--applying';
+   }
+ 
+-  if (status === 'error') {
++  if (actionStatus === 'running') {
++    return 'pdk_subscriptions-page__toolbar--applying';
++  }
++
++  if (status === 'error' || actionStatus === 'error') {
+     return 'pdk_subscriptions-page__toolbar--error';
+   }
+ 
+@@ -169,7 +202,7 @@ function getToolbarClass(status: SubscriptionItemsStatus, pendingCount: number)
+     return 'pdk_subscriptions-page__toolbar--dirty';
+   }
+ 
+-  if (status === 'success') {
++  if (status === 'success' || actionStatus === 'success') {
+     return 'pdk_subscriptions-page__toolbar--success';
+   }
+ 
+@@ -181,27 +214,47 @@ function renderToolbar({
+   failed,
+   applying,
+   status,
++  action,
++  actionStatus,
++  actionMessage,
+   pendingCount,
+   onApply,
+   onReset,
++  onRefresh,
++  onPing,
++  onSpeedtest,
++  onPatchUpdate,
+ }: {
+   loading: boolean;
+   failed: boolean;
+   applying: boolean;
+   status: SubscriptionItemsStatus;
++  action: SubscriptionItemsAction;
++  actionStatus: SubscriptionItemsActionStatus;
++  actionMessage: string;
+   pendingCount: number;
+   onApply: () => void;
+   onReset: () => void;
++  onRefresh: () => void;
++  onPing: () => void;
++  onSpeedtest: () => void;
++  onPatchUpdate: () => void;
+ }) {
+-  const canApply = pendingCount > 0 && !loading && !failed && !applying;
+-  const canReset = pendingCount > 0 && !applying;
++  const actionRunning = actionStatus === 'running';
++  const canRunAction = !loading && !failed && !applying && !actionRunning;
++  const canRunSubscriptionAction = canRunAction && pendingCount === 0;
++  const canRunPatchAction =
++    !loading && !applying && !actionRunning && pendingCount === 0;
++  const canApply =
++    pendingCount > 0 && !loading && !failed && !applying && !actionRunning;
++  const canReset = pendingCount > 0 && !applying && !actionRunning;
+ 
+   return E(
+     'div',
+     {
+       class: [
+         'pdk_subscriptions-page__toolbar',
+-        getToolbarClass(status, pendingCount),
++        getToolbarClass(status, actionStatus, pendingCount),
+       ]
+         .filter(Boolean)
+         .join(' '),
+@@ -210,9 +263,41 @@ function renderToolbar({
+       E(
+         'div',
+         { class: 'pdk_subscriptions-page__toolbar-message' },
+-        getToolbarMessage({ loading, failed, applying, status, pendingCount }),
++        getToolbarMessage({
++          loading,
++          failed,
++          applying,
++          status,
++          actionStatus,
++          actionMessage,
++          pendingCount,
++        }),
+       ),
+       E('div', { class: 'pdk_subscriptions-page__toolbar-actions' }, [
++        renderButton({
++          text: _('Refresh'),
++          onClick: onRefresh,
++          loading: action === 'refresh' && actionRunning,
++          disabled: !canRunSubscriptionAction,
++        }),
++        renderButton({
++          text: _('Ping'),
++          onClick: onPing,
++          loading: action === 'ping' && actionRunning,
++          disabled: !canRunSubscriptionAction,
++        }),
++        renderButton({
++          text: _('Speed'),
++          onClick: onSpeedtest,
++          loading: action === 'speed' && actionRunning,
++          disabled: !canRunSubscriptionAction,
++        }),
++        renderButton({
++          text: _('Patch'),
++          onClick: onPatchUpdate,
++          loading: action === 'patch' && actionRunning,
++          disabled: !canRunPatchAction,
++        }),
+         renderButton({
+           classNames: ['cbi-button-apply'],
+           text: _('Apply'),
+@@ -243,6 +328,8 @@ function renderRow({
+   item: Podkop.SubscriptionItem;
+   index: number;
+   pendingChanges: Record<string, boolean>;
++  latencyByRow: Record<string, number>;
++  speedByRow: Record<string, Podkop.SubscriptionSpeedtestItem>;
+   applying: boolean;
+   enabledSupportedCount: number;
+   onToggle: (
+@@ -251,6 +338,7 @@ function renderRow({
+     enabled: boolean,
+   ) => void;
+ }) {
++  const rowId = getRowId(section.code, item.id);
+   const pending = hasPendingChange(pendingChanges, section.code, item);
+   const effectiveEnabled = getEffectiveEnabled(
+     pendingChanges,
+@@ -260,6 +348,32 @@ function renderRow({
+   const isLastEnabled =
+     item.supported && effectiveEnabled && enabledSupportedCount <= 1;
+   const disabled = !item.supported || applying || isLastEnabled;
++  const latency = latencyByRow[rowId];
++  const speed = speedByRow[rowId];
++
++  function renderLatency() {
++    if (!item.supported || !effectiveEnabled) {
++      return '—';
++    }
++
++    return typeof latency === 'number' && latency > 0 ? `${latency} ms` : '—';
++  }
++
++  function renderSpeed() {
++    if (!item.supported || !effectiveEnabled) {
++      return '—';
++    }
++
++    if (!speed) {
++      return '—';
++    }
++
++    if (!speed.success || !speed.bytesPerSecond) {
++      return _('Error');
++    }
++
++    return `${prettyBytes(speed.bytesPerSecond)}/s`;
++  }
+ 
+   return E(
+     'tr',
+@@ -287,6 +401,8 @@ function renderRow({
+       E('td', {}, getItemName(item, index)),
+       E('td', {}, (item.protocol || _('Unknown')).toUpperCase()),
+       E('td', {}, item.transport || _('Default')),
++      E('td', {}, renderLatency()),
++      E('td', {}, renderSpeed()),
+       E(
+         'td',
+         {
+@@ -306,11 +422,15 @@ function renderRow({
+ function renderSection({
+   section,
+   pendingChanges,
++  latencyByRow,
++  speedByRow,
+   applying,
+   onToggle,
+ }: {
+   section: Podkop.SubscriptionItemsSection;
+   pendingChanges: Record<string, boolean>;
++  latencyByRow: Record<string, number>;
++  speedByRow: Record<string, Podkop.SubscriptionSpeedtestItem>;
+   applying: boolean;
+   onToggle: (
+     sectionCode: string,
+@@ -320,8 +440,7 @@ function renderSection({
+ }) {
+   const enabledSupportedCount = section.items.filter(
+     (item) =>
+-      item.supported &&
+-      getEffectiveEnabled(pendingChanges, section.code, item),
++      item.supported && getEffectiveEnabled(pendingChanges, section.code, item),
+   ).length;
+ 
+   return E('div', { class: 'pdk_subscriptions-page__section' }, [
+@@ -342,6 +461,8 @@ function renderSection({
+                 E('th', {}, _('Config')),
+                 E('th', {}, _('Protocol')),
+                 E('th', {}, _('Transport')),
++                E('th', {}, _('Ping')),
++                E('th', {}, _('Speed')),
+                 E('th', {}, _('Status')),
+                 E('th', {}, _('Source')),
+               ]),
+@@ -355,6 +476,8 @@ function renderSection({
+                   item,
+                   index,
+                   pendingChanges,
++                  latencyByRow,
++                  speedByRow,
+                   applying,
+                   enabledSupportedCount,
+                   onToggle,
+@@ -369,11 +492,15 @@ function renderSection({
+ function renderSections({
+   sections,
+   pendingChanges,
++  latencyByRow,
++  speedByRow,
+   applying,
+   onToggle,
+ }: {
+   sections: Podkop.SubscriptionItemsSection[];
+   pendingChanges: Record<string, boolean>;
++  latencyByRow: Record<string, number>;
++  speedByRow: Record<string, Podkop.SubscriptionSpeedtestItem>;
+   applying: boolean;
+   onToggle: (
+     sectionCode: string,
+@@ -392,6 +519,8 @@ function renderSections({
+       renderSection({
+         section,
+         pendingChanges,
++        latencyByRow,
++        speedByRow,
+         applying,
+         onToggle,
+       }),
+@@ -404,11 +533,20 @@ export function renderSubscriptionSections({
+   failed,
+   applying,
+   status,
++  action,
++  actionStatus,
++  actionMessage,
+   pendingChanges,
++  latencyByRow,
++  speedByRow,
+   sections,
+   onToggle,
+   onApply,
+   onReset,
++  onRefresh,
++  onPing,
++  onSpeedtest,
++  onPatchUpdate,
+ }: RenderSubscriptionSectionsProps) {
+   const pendingCount = getPendingCount(pendingChanges);
+ 
+@@ -418,9 +556,16 @@ export function renderSubscriptionSections({
+       failed,
+       applying,
+       status,
++      action,
++      actionStatus,
++      actionMessage,
+       pendingCount,
+       onApply,
+       onReset,
++      onRefresh,
++      onPing,
++      onSpeedtest,
++      onPatchUpdate,
+     }),
+     loading
+       ? renderEmptyState(_('Loading'))
+@@ -429,6 +574,8 @@ export function renderSubscriptionSections({
+         : renderSections({
+             sections,
+             pendingChanges,
++            latencyByRow,
++            speedByRow,
+             applying,
+             onToggle,
+           }),
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/render.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/render.ts
+index cdde7f9..93e8139 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/render.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/render.ts
+@@ -16,11 +16,20 @@ export function render() {
+           failed: false,
+           applying: false,
+           status: 'idle',
++          action: 'none',
++          actionStatus: 'idle',
++          actionMessage: '',
+           pendingChanges: {},
++          latencyByRow: {},
++          speedByRow: {},
+           sections: [],
+           onToggle: () => {},
+           onApply: () => {},
+           onReset: () => {},
++          onRefresh: () => {},
++          onPing: () => {},
++          onSpeedtest: () => {},
++          onPatchUpdate: () => {},
+         }),
+       ),
+     ],
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
+index 1353b88..3328800 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
+@@ -35,13 +35,15 @@ export const styles = `
+ .pdk_subscriptions-page__toolbar-actions {
+     display: flex;
+     align-items: center;
++    justify-content: flex-end;
++    flex-wrap: wrap;
+     gap: 6px;
+     flex-shrink: 0;
+ }
+ 
+ .pdk_subscriptions-page__toolbar-actions .btn {
+-    min-height: 28px;
+-    padding: 4px 10px;
++    min-height: 26px;
++    padding: 3px 8px;
+ }
+ 
+ .pdk_subscriptions-page__toolbar--dirty {
+diff --git a/fe-app-podkop/src/podkop/types.ts b/fe-app-podkop/src/podkop/types.ts
+index e01b356..8598267 100644
+--- a/fe-app-podkop/src/podkop/types.ts
++++ b/fe-app-podkop/src/podkop/types.ts
+@@ -64,6 +64,10 @@ export namespace Podkop {
+     GLOBAL_CHECK = 'global_check',
+     SHOW_SING_BOX_CONFIG = 'show_sing_box_config',
+     CHECK_LOGS = 'check_logs',
++    SUBSCRIPTION_UPDATE_JSON = 'subscription_update_json',
++    SUBSCRIPTION_SPEEDTEST = 'subscription_speedtest',
++    SUBSCRIPTION_PATCH_UPDATE = 'subscription_patch_update',
++    GET_SUBSCRIPTION_PATCH_UPDATE_STATUS = 'get_subscription_patch_update_status',
+     GET_SYSTEM_INFO = 'get_system_info',
+     GET_SUBSCRIPTION_CACHED_LINKS = 'get_subscription_cached_links',
+     GET_SUBSCRIPTION_SKIPPED_LINKS = 'get_subscription_skipped_links',
+@@ -129,6 +133,44 @@ export namespace Podkop {
+     error?: string;
+   }
+ 
++  export interface SubscriptionUpdateResult {
++    success: boolean;
++    status: number;
++    output: string;
++  }
++
++  export interface SubscriptionSpeedtestItem {
++    id: string;
++    tag: string;
++    name: string;
++    success: boolean;
++    bytesPerSecond?: number;
++    timeTotal?: number;
++    sizeDownload?: number;
++    httpCode?: number;
++    error?: string;
++  }
++
++  export interface SubscriptionSpeedtestResult {
++    success: boolean;
++    section?: string;
++    results?: SubscriptionSpeedtestItem[];
++    error?: string;
++  }
++
++  export interface SubscriptionPatchUpdateStartResult {
++    success: boolean;
++    started?: boolean;
++    error?: string;
++  }
++
++  export interface SubscriptionPatchUpdateStatus {
++    state: 'idle' | 'running' | 'success' | 'error';
++    message: string;
++    updatedAt: string;
++    logTail: string;
++  }
++
+   export interface ConfigProxyUrlTestSection {
+     connection_type: 'proxy';
+     proxy_config_type: 'urltest';
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index 4984048..12760f7 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -621,6 +621,10 @@ var Podkop;
+     AvailableMethods2["GLOBAL_CHECK"] = "global_check";
+     AvailableMethods2["SHOW_SING_BOX_CONFIG"] = "show_sing_box_config";
+     AvailableMethods2["CHECK_LOGS"] = "check_logs";
++    AvailableMethods2["SUBSCRIPTION_UPDATE_JSON"] = "subscription_update_json";
++    AvailableMethods2["SUBSCRIPTION_SPEEDTEST"] = "subscription_speedtest";
++    AvailableMethods2["SUBSCRIPTION_PATCH_UPDATE"] = "subscription_patch_update";
++    AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_STATUS"] = "get_subscription_patch_update_status";
+     AvailableMethods2["GET_SYSTEM_INFO"] = "get_system_info";
+     AvailableMethods2["GET_SUBSCRIPTION_CACHED_LINKS"] = "get_subscription_cached_links";
+     AvailableMethods2["GET_SUBSCRIPTION_SKIPPED_LINKS"] = "get_subscription_skipped_links";
+@@ -699,6 +703,30 @@ var PodkopShellMethods = {
+   globalCheck: async () => callBaseMethod(Podkop.AvailableMethods.GLOBAL_CHECK),
+   showSingBoxConfig: async () => callBaseMethod(Podkop.AvailableMethods.SHOW_SING_BOX_CONFIG),
+   checkLogs: async () => callBaseMethod(Podkop.AvailableMethods.CHECK_LOGS),
++  updateSubscriptions: async () => callBaseMethod(
++    Podkop.AvailableMethods.SUBSCRIPTION_UPDATE_JSON,
++    [],
++    "/usr/bin/podkop",
++    12e4
++  ),
++  benchmarkSubscriptionSection: async (section) => callBaseMethod(
++    Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST,
++    [section],
++    "/usr/bin/podkop",
++    3e5
++  ),
++  updateSubscriptionPatch: async () => callBaseMethod(
++    Podkop.AvailableMethods.SUBSCRIPTION_PATCH_UPDATE,
++    [],
++    "/usr/bin/podkop",
++    15e3
++  ),
++  getSubscriptionPatchUpdateStatus: async () => callBaseMethod(
++    Podkop.AvailableMethods.GET_SUBSCRIPTION_PATCH_UPDATE_STATUS,
++    [],
++    "/usr/bin/podkop",
++    15e3
++  ),
+   getSystemInfo: async () => callBaseMethod(
+     Podkop.AvailableMethods.GET_SYSTEM_INFO
+   ),
+@@ -1477,7 +1505,12 @@ var initialStore = {
+     failed: false,
+     applying: false,
+     status: "idle",
++    action: "none",
++    actionStatus: "idle",
++    actionMessage: "",
+     pendingChanges: {},
++    latencyByRow: {},
++    speedByRow: {},
+     data: []
+   },
+   ...initialDiagnosticStore
+@@ -4784,17 +4817,15 @@ function getStatusClass({
+   return effectiveEnabled ? "pdk_subscriptions-page__status--enabled" : "pdk_subscriptions-page__status--excluded";
+ }
+ function renderEmptyState(text) {
+-  return E(
+-    "div",
+-    { class: "pdk_subscriptions-page__empty centered" },
+-    text
+-  );
++  return E("div", { class: "pdk_subscriptions-page__empty centered" }, text);
+ }
+ function getToolbarMessage({
+   loading,
+   failed,
+   applying,
+   status,
++  actionStatus,
++  actionMessage,
+   pendingCount
+ }) {
+   if (loading) {
+@@ -4806,6 +4837,15 @@ function getToolbarMessage({
+   if (applying || status === "applying") {
+     return _("Applying changes. Podkop will be restarted once.");
+   }
++  if (actionStatus === "running") {
++    return actionMessage || _("Action is running");
++  }
++  if (actionStatus === "error") {
++    return actionMessage || _("Action failed");
++  }
++  if (actionStatus === "success") {
++    return actionMessage || _("Action completed");
++  }
+   if (status === "error") {
+     return _("Failed to apply changes. Podkop was not changed.");
+   }
+@@ -4817,17 +4857,20 @@ function getToolbarMessage({
+   }
+   return _("Select configs, then click Apply to restart Podkop once.");
+ }
+-function getToolbarClass(status, pendingCount) {
++function getToolbarClass(status, actionStatus, pendingCount) {
+   if (status === "applying") {
+     return "pdk_subscriptions-page__toolbar--applying";
+   }
+-  if (status === "error") {
++  if (actionStatus === "running") {
++    return "pdk_subscriptions-page__toolbar--applying";
++  }
++  if (status === "error" || actionStatus === "error") {
+     return "pdk_subscriptions-page__toolbar--error";
+   }
+   if (pendingCount > 0 || status === "dirty") {
+     return "pdk_subscriptions-page__toolbar--dirty";
+   }
+-  if (status === "success") {
++  if (status === "success" || actionStatus === "success") {
+     return "pdk_subscriptions-page__toolbar--success";
+   }
+   return "";
+@@ -4837,27 +4880,70 @@ function renderToolbar({
+   failed,
+   applying,
+   status,
++  action,
++  actionStatus,
++  actionMessage,
+   pendingCount,
+   onApply,
+-  onReset
++  onReset,
++  onRefresh,
++  onPing,
++  onSpeedtest,
++  onPatchUpdate
+ }) {
+-  const canApply = pendingCount > 0 && !loading && !failed && !applying;
+-  const canReset = pendingCount > 0 && !applying;
++  const actionRunning = actionStatus === "running";
++  const canRunAction = !loading && !failed && !applying && !actionRunning;
++  const canRunSubscriptionAction = canRunAction && pendingCount === 0;
++  const canRunPatchAction = !loading && !applying && !actionRunning && pendingCount === 0;
++  const canApply = pendingCount > 0 && !loading && !failed && !applying && !actionRunning;
++  const canReset = pendingCount > 0 && !applying && !actionRunning;
+   return E(
+     "div",
+     {
+       class: [
+         "pdk_subscriptions-page__toolbar",
+-        getToolbarClass(status, pendingCount)
++        getToolbarClass(status, actionStatus, pendingCount)
+       ].filter(Boolean).join(" ")
+     },
+     [
+       E(
+         "div",
+         { class: "pdk_subscriptions-page__toolbar-message" },
+-        getToolbarMessage({ loading, failed, applying, status, pendingCount })
++        getToolbarMessage({
++          loading,
++          failed,
++          applying,
++          status,
++          actionStatus,
++          actionMessage,
++          pendingCount
++        })
+       ),
+       E("div", { class: "pdk_subscriptions-page__toolbar-actions" }, [
++        renderButton({
++          text: _("Refresh"),
++          onClick: onRefresh,
++          loading: action === "refresh" && actionRunning,
++          disabled: !canRunSubscriptionAction
++        }),
++        renderButton({
++          text: _("Ping"),
++          onClick: onPing,
++          loading: action === "ping" && actionRunning,
++          disabled: !canRunSubscriptionAction
++        }),
++        renderButton({
++          text: _("Speed"),
++          onClick: onSpeedtest,
++          loading: action === "speed" && actionRunning,
++          disabled: !canRunSubscriptionAction
++        }),
++        renderButton({
++          text: _("Patch"),
++          onClick: onPatchUpdate,
++          loading: action === "patch" && actionRunning,
++          disabled: !canRunPatchAction
++        }),
+         renderButton({
+           classNames: ["cbi-button-apply"],
+           text: _("Apply"),
+@@ -4883,6 +4969,7 @@ function renderRow({
+   enabledSupportedCount,
+   onToggle
+ }) {
++  const rowId = getRowId(section.code, item.id);
+   const pending = hasPendingChange(pendingChanges, section.code, item);
+   const effectiveEnabled = getEffectiveEnabled(
+     pendingChanges,
+@@ -4891,6 +4978,26 @@ function renderRow({
+   );
+   const isLastEnabled = item.supported && effectiveEnabled && enabledSupportedCount <= 1;
+   const disabled = !item.supported || applying || isLastEnabled;
++  const latency = latencyByRow[rowId];
++  const speed = speedByRow[rowId];
++  function renderLatency() {
++    if (!item.supported || !effectiveEnabled) {
++      return "\u2014";
++    }
++    return typeof latency === "number" && latency > 0 ? `${latency} ms` : "\u2014";
++  }
++  function renderSpeed() {
++    if (!item.supported || !effectiveEnabled) {
++      return "\u2014";
++    }
++    if (!speed) {
++      return "\u2014";
++    }
++    if (!speed.success || !speed.bytesPerSecond) {
++      return _("Error");
++    }
++    return `${prettyBytes(speed.bytesPerSecond)}/s`;
++  }
+   return E(
+     "tr",
+     {
+@@ -4915,6 +5022,8 @@ function renderRow({
+       E("td", {}, getItemName(item, index)),
+       E("td", {}, (item.protocol || _("Unknown")).toUpperCase()),
+       E("td", {}, item.transport || _("Default")),
++      E("td", {}, renderLatency()),
++      E("td", {}, renderSpeed()),
+       E(
+         "td",
+         {
+@@ -4933,6 +5042,8 @@ function renderRow({
+ function renderSection({
+   section,
+   pendingChanges,
++  latencyByRow: latencyByRow2,
++  speedByRow: speedByRow2,
+   applying,
+   onToggle
+ }) {
+@@ -4955,6 +5066,8 @@ function renderSection({
+             E("th", {}, _("Config")),
+             E("th", {}, _("Protocol")),
+             E("th", {}, _("Transport")),
++            E("th", {}, _("Ping")),
++            E("th", {}, _("Speed")),
+             E("th", {}, _("Status")),
+             E("th", {}, _("Source"))
+           ])
+@@ -4968,6 +5081,8 @@ function renderSection({
+               item,
+               index,
+               pendingChanges,
++              latencyByRow: latencyByRow2,
++              speedByRow: speedByRow2,
+               applying,
+               enabledSupportedCount,
+               onToggle
+@@ -4981,6 +5096,8 @@ function renderSection({
+ function renderSections2({
+   sections,
+   pendingChanges,
++  latencyByRow: latencyByRow2,
++  speedByRow: speedByRow2,
+   applying,
+   onToggle
+ }) {
+@@ -4994,6 +5111,8 @@ function renderSections2({
+       (section) => renderSection({
+         section,
+         pendingChanges,
++        latencyByRow: latencyByRow2,
++        speedByRow: speedByRow2,
+         applying,
+         onToggle
+       })
+@@ -5005,11 +5124,20 @@ function renderSubscriptionSections({
+   failed,
+   applying,
+   status,
++  action,
++  actionStatus,
++  actionMessage,
+   pendingChanges,
++  latencyByRow: latencyByRow2,
++  speedByRow: speedByRow2,
+   sections,
+   onToggle,
+   onApply,
+-  onReset
++  onReset,
++  onRefresh,
++  onPing,
++  onSpeedtest,
++  onPatchUpdate
+ }) {
+   const pendingCount = getPendingCount(pendingChanges);
+   return E("div", { class: "pdk_subscriptions-page__content" }, [
+@@ -5018,13 +5146,22 @@ function renderSubscriptionSections({
+       failed,
+       applying,
+       status,
++      action,
++      actionStatus,
++      actionMessage,
+       pendingCount,
+       onApply,
+-      onReset
++      onReset,
++      onRefresh,
++      onPing,
++      onSpeedtest,
++      onPatchUpdate
+     }),
+     loading ? renderEmptyState(_("Loading")) : failed ? renderEmptyState(_("Failed to load subscription configs")) : renderSections2({
+       sections,
+       pendingChanges,
++      latencyByRow: latencyByRow2,
++      speedByRow: speedByRow2,
+       applying,
+       onToggle
+     })
+@@ -5048,13 +5185,26 @@ function render3() {
+           failed: false,
+           applying: false,
+           status: "idle",
++          action: "none",
++          actionStatus: "idle",
++          actionMessage: "",
+           pendingChanges: {},
++          latencyByRow: {},
++          speedByRow: {},
+           sections: [],
+           onToggle: () => {
+           },
+           onApply: () => {
+           },
+           onReset: () => {
++          },
++          onRefresh: () => {
++          },
++          onPing: () => {
++          },
++          onSpeedtest: () => {
++          },
++          onPatchUpdate: () => {
+           }
+         })
+       )
+@@ -5069,6 +5219,34 @@ function getRowId2(sectionCode, itemId) {
+ function getPendingCount2(pendingChanges) {
+   return Object.keys(pendingChanges).length;
+ }
++function sleep(ms) {
++  return new Promise((resolve) => window.setTimeout(resolve, ms));
++}
++function getEnabledSupportedItems(section) {
++  return section.items.filter((item) => item.supported && item.enabled);
++}
++function isActionRunning() {
++  return store.get().subscriptionItemsWidget.actionStatus === "running";
++}
++function canRunServiceAction() {
++  const widget = store.get().subscriptionItemsWidget;
++  return !widget.loading && !widget.failed && !widget.applying && !isActionRunning() && getPendingCount2(widget.pendingChanges) === 0;
++}
++function setActionState({
++  action,
++  actionStatus,
++  actionMessage
++}) {
++  const widget = store.get().subscriptionItemsWidget;
++  store.set({
++    subscriptionItemsWidget: {
++      ...widget,
++      action,
++      actionStatus,
++      actionMessage
++    }
++  });
++}
+ async function fetchSubscriptionItems(status = "idle") {
+   const prev = store.get().subscriptionItemsWidget;
+   store.set({
+@@ -5097,6 +5275,7 @@ async function fetchSubscriptionItems(status = "idle") {
+     );
+     store.set({
+       subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
+         loading: false,
+         failed: false,
+         applying: false,
+@@ -5164,7 +5343,7 @@ function getChangesBySection(pendingChanges) {
+ async function handleApply() {
+   const widget = store.get().subscriptionItemsWidget;
+   const pendingChanges = widget.pendingChanges;
+-  if (getPendingCount2(pendingChanges) === 0 || widget.applying) {
++  if (getPendingCount2(pendingChanges) === 0 || widget.applying || isActionRunning()) {
+     return;
+   }
+   store.set({
+@@ -5200,6 +5379,235 @@ async function handleApply() {
+     });
+   }
+ }
++async function handleRefreshSubscriptions() {
++  if (!canRunServiceAction()) {
++    return;
++  }
++  setActionState({
++    action: "refresh",
++    actionStatus: "running",
++    actionMessage: _("Updating subscription configs. Podkop may be reloaded.")
++  });
++  try {
++    const result = await PodkopShellMethods.updateSubscriptions();
++    if (!result.success || !result.data.success) {
++      throw new Error(result.success ? result.data.output : result.error);
++    }
++    await fetchSubscriptionItems();
++    setActionState({
++      action: "refresh",
++      actionStatus: "success",
++      actionMessage: _("Subscription configs updated.")
++    });
++    showToast(_("Subscription configs updated."), "success");
++  } catch (error) {
++    logger.error("[SUBSCRIPTIONS]", "failed to refresh subscriptions");
++    logger.error("[SUBSCRIPTIONS]", error);
++    setActionState({
++      action: "refresh",
++      actionStatus: "error",
++      actionMessage: _(
++        "Failed to update subscription configs. Cache was kept."
++      )
++    });
++    showToast(_("Failed to update subscription configs."), "error");
++  }
++}
++async function handlePingSubscriptions() {
++  if (!canRunServiceAction()) {
++    return;
++  }
++  const sections = store.get().subscriptionItemsWidget.data;
++  const latencyByRow2 = {};
++  setActionState({
++    action: "ping",
++    actionStatus: "running",
++    actionMessage: _("Testing subscription latency.")
++  });
++  try {
++    for (const section of sections) {
++      const enabledItems = getEnabledSupportedItems(section);
++      if (!enabledItems.length) {
++        continue;
++      }
++      setActionState({
++        action: "ping",
++        actionStatus: "running",
++        actionMessage: `${_("Testing latency")}: ${section.displayName}`
++      });
++      const result = await PodkopShellMethods.getClashApiGroupLatency(
++        `${section.code}-out`
++      );
++      if (!result.success) {
++        throw new Error(result.error);
++      }
++      enabledItems.forEach((item, index) => {
++        const tag = `${section.code}-${index + 1}-out`;
++        const latency = result.data[tag];
++        if (typeof latency === "number" && latency > 0) {
++          latencyByRow2[getRowId2(section.code, item.id)] = latency;
++        }
++      });
++    }
++    store.set({
++      subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
++        latencyByRow: latencyByRow2
++      }
++    });
++    setActionState({
++      action: "ping",
++      actionStatus: "success",
++      actionMessage: _("Latency test completed.")
++    });
++    showToast(_("Latency test completed."), "success");
++  } catch (error) {
++    logger.error("[SUBSCRIPTIONS]", "failed to ping subscription configs");
++    logger.error("[SUBSCRIPTIONS]", error);
++    setActionState({
++      action: "ping",
++      actionStatus: "error",
++      actionMessage: _("Failed to test latency.")
++    });
++    showToast(_("Failed to test latency."), "error");
++  }
++}
++async function handleSpeedtestSubscriptions() {
++  if (!canRunServiceAction()) {
++    return;
++  }
++  const sections = store.get().subscriptionItemsWidget.data;
++  const speedByRow2 = {};
++  setActionState({
++    action: "speed",
++    actionStatus: "running",
++    actionMessage: _(
++      "Running speed benchmark. Active proxy may change briefly."
++    )
++  });
++  try {
++    for (const section of sections) {
++      const enabledItems = getEnabledSupportedItems(section);
++      if (!enabledItems.length) {
++        continue;
++      }
++      setActionState({
++        action: "speed",
++        actionStatus: "running",
++        actionMessage: `${_("Running speed benchmark")}: ${section.displayName}`
++      });
++      const result = await PodkopShellMethods.benchmarkSubscriptionSection(
++        section.code
++      );
++      if (!result.success || !result.data.success) {
++        throw new Error(result.success ? result.data.error : result.error);
++      }
++      (result.data.results ?? []).forEach((item) => {
++        speedByRow2[getRowId2(section.code, item.id)] = item;
++      });
++    }
++    store.set({
++      subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
++        speedByRow: speedByRow2
++      }
++    });
++    setActionState({
++      action: "speed",
++      actionStatus: "success",
++      actionMessage: _("Speed benchmark completed.")
++    });
++    showToast(_("Speed benchmark completed."), "success");
++  } catch (error) {
++    logger.error("[SUBSCRIPTIONS]", "failed to run subscription speedtest");
++    logger.error("[SUBSCRIPTIONS]", error);
++    setActionState({
++      action: "speed",
++      actionStatus: "error",
++      actionMessage: _("Failed to run speed benchmark.")
++    });
++    showToast(_("Failed to run speed benchmark."), "error");
++  }
++}
++function getPatchUpdateMessage(status) {
++  switch (status.message) {
++    case "patch_update_running":
++      return _("Updating patch from GitHub.");
++    case "patch_update_success":
++      return _("Patch updated. Refresh the page in a minute.");
++    case "download_failed":
++      return _("Failed to download patch update.");
++    case "install_failed":
++      return _("Failed to install patch update.");
++    default:
++      return status.message || _("Patch update status is unknown.");
++  }
++}
++async function pollPatchUpdateStatus() {
++  for (let attempt = 0; attempt < 40; attempt += 1) {
++    await sleep(3e3);
++    try {
++      const status = await PodkopShellMethods.getSubscriptionPatchUpdateStatus();
++      if (!status.success) {
++        continue;
++      }
++      if (status.data.state === "running") {
++        setActionState({
++          action: "patch",
++          actionStatus: "running",
++          actionMessage: getPatchUpdateMessage(status.data)
++        });
++        continue;
++      }
++      setActionState({
++        action: "patch",
++        actionStatus: status.data.state === "success" ? "success" : "error",
++        actionMessage: getPatchUpdateMessage(status.data)
++      });
++      return status.data.state === "success";
++    } catch (error) {
++      logger.error("[SUBSCRIPTIONS]", "failed to poll patch update status");
++      logger.error("[SUBSCRIPTIONS]", error);
++    }
++  }
++  setActionState({
++    action: "patch",
++    actionStatus: "success",
++    actionMessage: _("Patch update is still running. Refresh the page later.")
++  });
++  return true;
++}
++async function handlePatchUpdate() {
++  const widget = store.get().subscriptionItemsWidget;
++  if (widget.applying || isActionRunning() || getPendingCount2(widget.pendingChanges) > 0) {
++    return;
++  }
++  setActionState({
++    action: "patch",
++    actionStatus: "running",
++    actionMessage: _("Starting patch update from GitHub.")
++  });
++  try {
++    const result = await PodkopShellMethods.updateSubscriptionPatch();
++    if (!result.success || !result.data.success) {
++      throw new Error(result.success ? result.data.error : result.error);
++    }
++    const success = await pollPatchUpdateStatus();
++    showToast(
++      success ? _("Patch update started.") : _("Patch update failed."),
++      success ? "success" : "error"
++    );
++  } catch (error) {
++    logger.error("[SUBSCRIPTIONS]", "failed to start patch update");
++    logger.error("[SUBSCRIPTIONS]", error);
++    setActionState({
++      action: "patch",
++      actionStatus: "error",
++      actionMessage: _("Failed to start patch update.")
++    });
++    showToast(_("Failed to start patch update."), "error");
++  }
++}
+ async function renderSubscriptionItemsWidget() {
+   logger.debug("[SUBSCRIPTIONS]", "renderSubscriptionItemsWidget");
+   const subscriptionItemsWidget = store.get().subscriptionItemsWidget;
+@@ -5209,11 +5617,20 @@ async function renderSubscriptionItemsWidget() {
+     failed: subscriptionItemsWidget.failed,
+     applying: subscriptionItemsWidget.applying,
+     status: subscriptionItemsWidget.status,
++    action: subscriptionItemsWidget.action,
++    actionStatus: subscriptionItemsWidget.actionStatus,
++    actionMessage: subscriptionItemsWidget.actionMessage,
+     pendingChanges: subscriptionItemsWidget.pendingChanges,
++    latencyByRow: subscriptionItemsWidget.latencyByRow,
++    speedByRow: subscriptionItemsWidget.speedByRow,
+     sections: subscriptionItemsWidget.data,
+     onToggle: handleToggle,
+     onApply: handleApply,
+-    onReset: handleReset
++    onReset: handleReset,
++    onRefresh: handleRefreshSubscriptions,
++    onPing: handlePingSubscriptions,
++    onSpeedtest: handleSpeedtestSubscriptions,
++    onPatchUpdate: handlePatchUpdate
+   });
+   return preserveScrollForPage(() => {
+     container.replaceChildren(renderedWidget);
+@@ -5294,13 +5711,15 @@ var styles5 = `
+ .pdk_subscriptions-page__toolbar-actions {
+     display: flex;
+     align-items: center;
++    justify-content: flex-end;
++    flex-wrap: wrap;
+     gap: 6px;
+     flex-shrink: 0;
+ }
+ 
+ .pdk_subscriptions-page__toolbar-actions .btn {
+-    min-height: 28px;
+-    padding: 4px 10px;
++    min-height: 26px;
++    padding: 3px 8px;
+ }
+ 
+ .pdk_subscriptions-page__toolbar--dirty {
+diff --git a/luci-app-podkop/po/ru/podkop.po b/luci-app-podkop/po/ru/podkop.po
+index 8426712..93dfa5c 100644
+--- a/luci-app-podkop/po/ru/podkop.po
++++ b/luci-app-podkop/po/ru/podkop.po
+@@ -47,6 +47,15 @@ msgstr "Применить"
+ msgid "Applying changes. Podkop will be restarted once."
+ msgstr "Применяем изменения. Podkop будет перезапущен один раз."
+ 
++msgid "Action completed"
++msgstr "Действие выполнено"
++
++msgid "Action failed"
++msgstr "Действие не выполнено"
++
++msgid "Action is running"
++msgstr "Действие выполняется"
++
+ msgid "At least one valid domain must be specified. Comments-only content is not allowed."
+ msgstr "Необходимо указать хотя бы один действительный домен. Содержимое только из комментариев не допускается."
+ 
+@@ -937,3 +946,84 @@ msgstr "Секретный ключ YACD"
+ 
+ msgid "You can select Output Network Interface, by default autodetect"
+ msgstr "Вы можете выбрать выходной сетевой интерфейс, по умолчанию он определяется автоматически."
++
++msgid "Error"
++msgstr "Ошибка"
++
++msgid "Failed to download patch update."
++msgstr "Не удалось скачать обновление патча."
++
++msgid "Failed to install patch update."
++msgstr "Не удалось установить обновление патча."
++
++msgid "Failed to run speed benchmark."
++msgstr "Не удалось выполнить бенчмарк скорости."
++
++msgid "Failed to start patch update."
++msgstr "Не удалось запустить обновление патча."
++
++msgid "Failed to test latency."
++msgstr "Не удалось проверить задержку."
++
++msgid "Failed to update subscription configs."
++msgstr "Не удалось обновить конфиги подписок."
++
++msgid "Failed to update subscription configs. Cache was kept."
++msgstr "Не удалось обновить конфиги подписок. Кэш сохранён."
++
++msgid "Latency test completed."
++msgstr "Проверка задержки завершена."
++
++msgid "Patch"
++msgstr "Патч"
++
++msgid "Patch update failed."
++msgstr "Обновление патча не выполнено."
++
++msgid "Patch update is still running. Refresh the page later."
++msgstr "Обновление патча ещё выполняется. Обновите страницу позже."
++
++msgid "Patch update started."
++msgstr "Обновление патча запущено."
++
++msgid "Patch update status is unknown."
++msgstr "Статус обновления патча неизвестен."
++
++msgid "Patch updated. Refresh the page in a minute."
++msgstr "Патч обновлён. Обновите страницу через минуту."
++
++msgid "Ping"
++msgstr "Пинг"
++
++msgid "Refresh"
++msgstr "Обновить"
++
++msgid "Running speed benchmark"
++msgstr "Бенчмарк скорости"
++
++msgid "Running speed benchmark. Active proxy may change briefly."
++msgstr "Идёт бенчмарк скорости. Активный прокси может ненадолго измениться."
++
++msgid "Speed"
++msgstr "Скорость"
++
++msgid "Speed benchmark completed."
++msgstr "Бенчмарк скорости завершён."
++
++msgid "Starting patch update from GitHub."
++msgstr "Запускаем обновление патча с GitHub."
++
++msgid "Subscription configs updated."
++msgstr "Конфиги подписок обновлены."
++
++msgid "Testing latency"
++msgstr "Проверка задержки"
++
++msgid "Testing subscription latency."
++msgstr "Проверяем задержку конфигов подписки."
++
++msgid "Updating patch from GitHub."
++msgstr "Обновляем патч с GitHub."
++
++msgid "Updating subscription configs. Podkop may be reloaded."
++msgstr "Обновляем конфиги подписок. Podkop может быть перезагружен."
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 3dff359..826ea64 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1573,6 +1573,313 @@ subscription_update() {
+     echolog "Subscription update completed, no changes"
+ }
+ 
++subscription_update_json() {
++    local section="$1"
++    local output status success
++
++    output="$(subscription_update "$section" 2>&1)"
++    status=$?
++    if [ "$status" -eq 0 ]; then
++        success=true
++    else
++        success=false
++    fi
++
++    jq -cn --argjson success "$success" --arg output "$output" --argjson status "$status" \
++        '{success:$success, status:$status, output:$output}'
++}
++
++get_clash_api_base_url() {
++    local clash_api_controller_address
++
++    clash_api_controller_address="$(get_service_listen_address)"
++    if [ -z "$clash_api_controller_address" ]; then
++        clash_api_controller_address="127.0.0.1"
++    fi
++
++    echo "$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"
++}
++
++get_clash_api_auth_header() {
++    local enable_yacd_wan_access yacd_secret_key
++
++    config_get_bool enable_yacd_wan_access "settings" "enable_yacd_wan_access" 0
++    config_get yacd_secret_key "settings" "yacd_secret_key"
++
++    if [ "$enable_yacd_wan_access" -eq 1 ]; then
++        echo "Authorization: Bearer $yacd_secret_key"
++    fi
++}
++
++clash_api_get_proxy_now() {
++    local clash_url="$1"
++    local auth_header="$2"
++    local proxy_tag="$3"
++
++    curl -s --header "$auth_header" "$clash_url/proxies/$proxy_tag" | jq -r '.now // ""'
++}
++
++clash_api_set_group_proxy_raw() {
++    local clash_url="$1"
++    local auth_header="$2"
++    local group_tag="$3"
++    local proxy_tag="$4"
++    local response http_code
++
++    response=$(
++        curl -X PUT -s -w "\n%{http_code}" "$clash_url/proxies/$group_tag" \
++            --header "$auth_header" \
++            --data-raw "{\"name\":\"$proxy_tag\"}"
++    )
++    http_code="$(echo "$response" | tail -n 1)"
++
++    [ "$http_code" = "204" ]
++}
++
++get_subscription_benchmark_port() {
++    echo "42080"
++}
++
++subscription_speedtest_restore_mixed_proxy() {
++    local section="$1"
++    local original_mixed_enabled="$2"
++    local original_mixed_port="$3"
++    local mixed_changed="$4"
++
++    [ "$mixed_changed" -eq 1 ] || return 0
++
++    if [ -n "$original_mixed_enabled" ]; then
++        uci -q set "podkop.$section.mixed_proxy_enabled=$original_mixed_enabled"
++    else
++        uci -q delete "podkop.$section.mixed_proxy_enabled"
++    fi
++
++    if [ -n "$original_mixed_port" ]; then
++        uci -q set "podkop.$section.mixed_proxy_port=$original_mixed_port"
++    else
++        uci -q delete "podkop.$section.mixed_proxy_port"
++    fi
++
++    uci commit podkop > /dev/null 2>&1 || return 1
++    config_load "$PODKOP_CONFIG"
++    /etc/init.d/podkop reload > /dev/null 2>&1
++}
++
++subscription_speedtest_result_error() {
++    local id="$1"
++    local tag="$2"
++    local name="$3"
++    local error="$4"
++
++    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" --arg error "$error" \
++        '{id:$id, tag:$tag, name:$name, success:false, error:$error}'
++}
++
++subscription_speedtest_result_success() {
++    local id="$1"
++    local tag="$2"
++    local name="$3"
++    local bytes_per_second="$4"
++    local time_total="$5"
++    local size_download="$6"
++    local http_code="$7"
++
++    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" \
++        --argjson bytesPerSecond "$bytes_per_second" \
++        --argjson timeTotal "$time_total" \
++        --argjson sizeDownload "$size_download" \
++        --argjson httpCode "$http_code" \
++        '{id:$id, tag:$tag, name:$name, success:true, bytesPerSecond:$bytesPerSecond, timeTotal:$timeTotal, sizeDownload:$sizeDownload, httpCode:$httpCode}'
++}
++
++subscription_speedtest() {
++    local section="$1"
++    local items_cache_path active_items_file results_file clash_url auth_header selector_tag original_proxy \
++        original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
++        item_json id name tag index output bytes_per_second time_total size_download http_code results_json
++
++    if [ -z "$section" ]; then
++        echo '{"success":false,"error":"section_required"}'
++        return 1
++    fi
++
++    if ! validate_subscription_urltest_section "$section"; then
++        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
++        return 1
++    fi
++
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$items_cache_path" ]; then
++        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
++    fi
++
++    if [ ! -s "$items_cache_path" ]; then
++        echo '{"success":false,"error":"subscription_cache_missing"}'
++        return 1
++    fi
++
++    active_items_file="$(mktemp)"
++    results_file="$(mktemp)"
++    jq -c '.[] | select(.supported == true and .enabled == true)' "$items_cache_path" > "$active_items_file"
++
++    if [ ! -s "$active_items_file" ]; then
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"no_enabled_links"}'
++        return 1
++    fi
++
++    clash_url="$(get_clash_api_base_url)"
++    auth_header="$(get_clash_api_auth_header)"
++    selector_tag="$(get_outbound_tag_by_section "$section")"
++    original_proxy="$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")"
++
++    if [ -z "$original_proxy" ]; then
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"selector_not_available"}'
++        return 1
++    fi
++
++    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
++    config_get original_mixed_port "$section" "mixed_proxy_port"
++    mixed_port="$original_mixed_port"
++    [ -n "$mixed_port" ] || mixed_port="$(get_subscription_benchmark_port "$section")"
++    mixed_changed=0
++
++    if [ "$original_mixed_enabled" != "1" ] || [ -z "$original_mixed_port" ]; then
++        uci -q set "podkop.$section.mixed_proxy_enabled=1"
++        uci -q set "podkop.$section.mixed_proxy_port=$mixed_port"
++        if ! uci commit podkop > /dev/null 2>&1; then
++            rm -f "$active_items_file" "$results_file"
++            echo '{"success":false,"error":"uci_commit_failed"}'
++            return 1
++        fi
++        config_load "$PODKOP_CONFIG"
++        mixed_changed=1
++
++        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
++            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++            rm -f "$active_items_file" "$results_file"
++            echo '{"success":false,"error":"reload_failed"}'
++            return 1
++        fi
++    fi
++
++    mixed_address="$(get_service_listen_address)"
++    if [ -z "$mixed_address" ]; then
++        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"mixed_proxy_address_missing"}'
++        return 1
++    fi
++
++    benchmark_url="https://speed.cloudflare.com/__down?bytes=1048576"
++    index=1
++    while IFS= read -r item_json || [ -n "$item_json" ]; do
++        [ -n "$item_json" ] || continue
++
++        id="$(echo "$item_json" | jq -r '.id')"
++        name="$(echo "$item_json" | jq -r '.name // ""')"
++        tag="$(get_outbound_tag_by_section "$section-$index")"
++
++        if ! clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$tag"; then
++            subscription_speedtest_result_error "$id" "$tag" "$name" "select_failed" >> "$results_file"
++            index=$((index + 1))
++            continue
++        fi
++
++        sleep 1
++        output="$(
++            curl -L -s -o /dev/null \
++                -x "http://$mixed_address:$mixed_port" \
++                --connect-timeout 8 \
++                -m 20 \
++                -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
++                "$benchmark_url" 2> /dev/null
++        )"
++
++        bytes_per_second="$(echo "$output" | awk '{printf "%d", $1}')"
++        time_total="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
++        size_download="$(echo "$output" | awk '{printf "%d", $3}')"
++        http_code="$(echo "$output" | awk '{printf "%d", $4}')"
++
++        if [ "${bytes_per_second:-0}" -gt 0 ] && [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
++            subscription_speedtest_result_success "$id" "$tag" "$name" \
++                "${bytes_per_second:-0}" "${time_total:-0}" "${size_download:-0}" "${http_code:-0}" >> "$results_file"
++        else
++            subscription_speedtest_result_error "$id" "$tag" "$name" "download_failed" >> "$results_file"
++        fi
++
++        index=$((index + 1))
++    done < "$active_items_file"
++
++    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++    subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++
++    results_json="$(jq -s '.' "$results_file")"
++    rm -f "$active_items_file" "$results_file"
++    jq -cn --arg section "$section" --argjson results "$results_json" \
++        '{success:true, section:$section, results:$results}'
++}
++
++subscription_patch_update_status_file() {
++    echo "/tmp/podkop-subscriptions-patch-update.json"
++}
++
++subscription_patch_update() {
++    local status_file runner
++
++    status_file="$(subscription_patch_update_status_file)"
++    runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
++
++    cat > "$runner" << 'EOF'
++#!/bin/ash
++status_file="/tmp/podkop-subscriptions-patch-update.json"
++log_file="/tmp/podkop-subscriptions-patch-update.log"
++
++write_status() {
++    local state="$1"
++    local message="$2"
++    local log_tail="$3"
++    jq -cn --arg state "$state" --arg message "$message" \
++        --arg updatedAt "$(date -Iseconds 2> /dev/null || date)" \
++        --arg logTail "$log_tail" \
++        '{state:$state, message:$message, updatedAt:$updatedAt, logTail:$logTail}' > "$status_file"
++}
++
++write_status "running" "patch_update_running" ""
++
++tmp="/tmp/podkop-subscriptions-install.sh"
++if ! wget -O "$tmp" "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh" > "$log_file" 2>&1; then
++    write_status "error" "download_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    exit 1
++fi
++
++if PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp" >> "$log_file" 2>&1; then
++    write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
++else
++    write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    exit 1
++fi
++EOF
++
++    chmod +x "$runner"
++    "$runner" > /dev/null 2>&1 &
++
++    echo '{"success":true,"started":true}'
++}
++
++get_subscription_patch_update_status() {
++    local status_file
++
++    status_file="$(subscription_patch_update_status_file)"
++    if [ -s "$status_file" ]; then
++        cat "$status_file"
++    else
++        echo '{"state":"idle","message":"","updatedAt":"","logTail":""}'
++    fi
++}
++
+ # sing-box funcs
+ sing_box_configure_service() {
+     local sing_box_enabled sing_box_user sing_box_config_path sing_box_conffile
+@@ -3755,6 +4062,13 @@ Available commands:
+     main                    Run main podkop process
+     list_update             Update domain lists
+     subscription_update     Update subscription URLTest caches
++    subscription_update_json
++                            Update subscription URLTest caches and print JSON status
++    subscription_speedtest   Benchmark enabled subscription proxy items for a section
++    subscription_patch_update
++                            Update the Podkop subscriptions patch from GitHub
++    get_subscription_patch_update_status
++                            Show background patch update status
+     check_proxy             Check proxy connectivity
+     check_nft               Check NFT rules
+     check_nft_rules         Check NFT rules status
+@@ -3808,6 +4122,18 @@ list_update)
+ subscription_update)
+     subscription_update "$2"
+     ;;
++subscription_update_json)
++    subscription_update_json "$2"
++    ;;
++subscription_speedtest)
++    subscription_speedtest "$2"
++    ;;
++subscription_patch_update)
++    subscription_patch_update
++    ;;
++get_subscription_patch_update_status)
++    get_subscription_patch_update_status
++    ;;
+ check_proxy)
+     check_proxy
+     ;;
+-- 
+2.54.0.windows.1
+

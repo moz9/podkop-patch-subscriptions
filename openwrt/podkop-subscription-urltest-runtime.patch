@@ -1,5 +1,5 @@
 diff --git a/usr/bin/podkop b/usr/bin/podkop
-index fda1c1e..3dff359 100644
+index fda1c1e..826ea64 100644
 --- a/usr/bin/podkop
 +++ b/usr/bin/podkop
 @@ -33,6 +33,8 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
@@ -39,15 +39,149 @@ index fda1c1e..3dff359 100644
      /etc/init.d/sing-box start
  
      log "Nice"
-@@ -475,10 +479,75 @@ add_cron_job() {
- }
+@@ -342,208 +346,1537 @@ backup_dnsmasq_config_option() {
+     local value
+     value="$(uci_get "dhcp" "@dnsmasq[0]" "$key")"
  
- remove_cron_job() {
--    (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
+-    if [ -n "$value" ]; then
+-        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
++    if [ -n "$value" ]; then
++        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
++    fi
++}
++
++dnsmasq_configure() {
++    local shutdown_correctly
++    config_get shutdown_correctly "settings" "shutdown_correctly"
++    if [ "$shutdown_correctly" -eq 0 ]; then
++        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
++        return 0
++    fi
++
++    log "Backup dnsmasq configuration"
++    current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
++    if [ -n "$current_servers" ]; then
++        for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
++            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
++                uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
++            fi
++        done
++        uci_remove "dhcp" "@dnsmasq[0]" "server"
++    fi
++
++    backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
++    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
++
++    log "Configure dnsmasq for sing-box"
++    uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
++    uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
++    uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
++    uci_commit "dhcp"
++
++    /etc/init.d/dnsmasq restart
++}
++
++dnsmasq_restore() {
++    log "Restoring the dnsmasq configuration"
++    local shutdown_correctly
++    config_get shutdown_correctly "settings" "shutdown_correctly"
++    if [ "$shutdown_correctly" -eq 1 ]; then
++        log "Previous shutdown of podkop was correct, reconfiguration of dnsmasq is not required"
++        return 0
++    fi
++
++    local cachesize noresolv backup_servers resolvfile
++    log "Restoring cachesize" "debug"
++    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_cachesize")"
++    if [ -z "$cachesize" ]; then
++        uci_remove "dhcp" "@dnsmasq[0]" "cachesize"
++        uci_set "dhcp" "@dnsmasq[0]" "cachesize" 150
++    else
++        uci_set "dhcp" "@dnsmasq[0]" "cachesize" "$cachesize"
++        uci_remove "dhcp" "@dnsmasq[0]" "podkop_cachesize"
++    fi
++
++    log "Restoring noresolv" "debug"
++    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_noresolv")"
++    if [ -z "$noresolv" ]; then
++        uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
++    else
++        uci_set "dhcp" "@dnsmasq[0]" "noresolv" "$noresolv"
++        uci_remove "dhcp" "@dnsmasq[0]" "podkop_noresolv"
++    fi
++
++    log "Restoring DNS servers" "debug"
++    uci_remove "dhcp" "@dnsmasq[0]" "server"
++    resolvfile="/tmp/resolv.conf.d/resolv.conf.auto"
++    backup_servers="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_server")"
++    if [ -n "$backup_servers" ]; then
++        for server in $backup_servers; do
++            uci_add_list "dhcp" "@dnsmasq[0]" "server" "$server"
++        done
++        uci_remove "dhcp" "@dnsmasq[0]" "podkop_server"
++    elif file_exists "$resolvfile"; then
++        log "Backup DNS servers not found, using default resolvfile" "debug"
++        uci_set "dhcp" "@dnsmasq[0]" "resolvfile" "$resolvfile"
++        if [ -n "$noresolv" ] && [ "$noresolv" -eq 1 ]; then
++            log "Disabling noresolv option to use system resolvfile" "debug"
++            uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
++        fi
++    else
++        log "Backup DNS servers and default resolvfile not found, possible resolving issues" "warn"
++    fi
++
++    uci_commit "dhcp"
++
++    /etc/init.d/dnsmasq restart
++}
++
++add_cron_job() {
++    ## Future: make a check so that it doesn't recreate many times
++    local community_lists remote_domain_lists remote_subnet_lists update_interval
++    config_get community_lists "$section" "community_lists"
++    config_get remote_domain_lists "$section" "remote_domain_lists"
++    config_get remote_subnet_lists "$section" "remote_subnet_lists"
++    config_get update_interval "settings" "update_interval"
++
++    case "$update_interval" in
++    "1h")
++        cron_job="13 * * * * /usr/bin/podkop list_update"
++        ;;
++    "3h")
++        cron_job="13 */3 * * * /usr/bin/podkop list_update"
++        ;;
++    "12h")
++        cron_job="13 */12 * * * /usr/bin/podkop list_update"
++        ;;
++    "1d")
++        cron_job="13 9 * * * /usr/bin/podkop list_update"
++        ;;
++    "3d")
++        cron_job="13 9 */3 * * /usr/bin/podkop list_update"
++        ;;
++    *)
++        log "Invalid update_interval value: $update_interval"
++        return
++        ;;
++    esac
++
++    if [ -n "$community_lists" ] ||
++        [ -n "$remote_domain_lists" ] ||
++        [ -n "$remote_subnet_lists" ]; then
++        remove_cron_job
++        crontab -l | {
++            cat
++            echo "$cron_job"
++        } | crontab -
++        log "The cron job has been created: $cron_job"
++    fi
++}
++
++remove_cron_job() {
 +    (crontab -l 2> /dev/null | grep -v "/usr/bin/podkop list_update" | grep -v "/usr/bin/podkop subscription_update") | crontab -
-     log "The cron job removed"
- }
- 
++    log "The cron job removed"
++}
++
 +get_subscription_cron_schedule() {
 +    local interval="$1"
 +
@@ -113,13 +247,74 @@ index fda1c1e..3dff359 100644
 +    log "The subscription cron job has been created for section '$section'"
 +}
 +
- list_update() {
-     echolog "🔄 Starting lists update..."
- 
-@@ -547,6 +616,963 @@ list_update() {
-     fi
- }
- 
++list_update() {
++    echolog "🔄 Starting lists update..."
++
++    local nslookup_timeout=3
++    local nslookup_attempts=10
++    local curl_timeout=5
++    local curl_attempts=10
++    local curl_max_timeout=10
++    local delay=3
++    local i
++
++    # DNS Check
++    for i in $(seq 1 $nslookup_attempts); do
++        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
++            echolog "✅ DNS check passed"
++            break
++        fi
++        echolog "DNS is unavailable [$i/$nslookup_attempts]"
++        sleep $delay
++    done
++
++    if [ "$i" -eq $nslookup_attempts ]; then
++        echolog "❌ DNS check failed after $nslookup_attempts attempts"
++        return 1
++    fi
++
++    # Github Check
++    for i in $(seq 1 $curl_attempts); do
++        local service_proxy_address
++        service_proxy_address="$(get_service_proxy_address)"
++
++        if [ -n "$service_proxy_address" ]; then
++            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
++                echolog "✅ GitHub connection check passed (via proxy)"
++                break
++            fi
++        else
++            if curl -s -m $curl_timeout https://github.com > /dev/null; then
++                echolog "✅ GitHub connection check passed"
++                break
++            fi
++        fi
++
++        echolog "GitHub is unavailable [$i/$curl_attempts] (max-timeout=$curl_timeout)"
++        if [ "$curl_timeout" -lt $curl_max_timeout ]; then
++            curl_timeout=$((curl_timeout + 1))
++        fi
++        sleep $delay
++    done
++
++    if [ "$i" -eq $curl_attempts ]; then
++        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
++        return 1
++    fi
++
++    echolog "📥 Downloading and processing lists..."
++
++    config_foreach import_community_subnet_lists "section"
++    config_foreach import_domains_from_remote_domain_lists "section"
++    config_foreach import_subnets_from_remote_subnet_lists "section"
++
++    if [ $? -eq 0 ]; then
++        echolog "✅ Lists update completed successfully"
++    else
++        echolog "❌ Lists update failed"
++    fi
++}
++
 +get_subscription_cache_path() {
 +    local section="$1"
 +    local section_hash
@@ -1077,10 +1272,472 @@ index fda1c1e..3dff359 100644
 +    echolog "Subscription update completed, no changes"
 +}
 +
- # sing-box funcs
- sing_box_configure_service() {
-     local sing_box_enabled sing_box_user sing_box_config_path sing_box_conffile
-@@ -678,6 +1704,63 @@ configure_outbound_handler() {
++subscription_update_json() {
++    local section="$1"
++    local output status success
++
++    output="$(subscription_update "$section" 2>&1)"
++    status=$?
++    if [ "$status" -eq 0 ]; then
++        success=true
++    else
++        success=false
++    fi
++
++    jq -cn --argjson success "$success" --arg output "$output" --argjson status "$status" \
++        '{success:$success, status:$status, output:$output}'
++}
++
++get_clash_api_base_url() {
++    local clash_api_controller_address
++
++    clash_api_controller_address="$(get_service_listen_address)"
++    if [ -z "$clash_api_controller_address" ]; then
++        clash_api_controller_address="127.0.0.1"
++    fi
++
++    echo "$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"
++}
++
++get_clash_api_auth_header() {
++    local enable_yacd_wan_access yacd_secret_key
++
++    config_get_bool enable_yacd_wan_access "settings" "enable_yacd_wan_access" 0
++    config_get yacd_secret_key "settings" "yacd_secret_key"
++
++    if [ "$enable_yacd_wan_access" -eq 1 ]; then
++        echo "Authorization: Bearer $yacd_secret_key"
+     fi
+ }
+ 
+-dnsmasq_configure() {
+-    local shutdown_correctly
+-    config_get shutdown_correctly "settings" "shutdown_correctly"
+-    if [ "$shutdown_correctly" -eq 0 ]; then
+-        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
+-        return 0
+-    fi
++clash_api_get_proxy_now() {
++    local clash_url="$1"
++    local auth_header="$2"
++    local proxy_tag="$3"
+ 
+-    log "Backup dnsmasq configuration"
+-    current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
+-    if [ -n "$current_servers" ]; then
+-        for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
+-            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
+-                uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
+-            fi
+-        done
+-        uci_remove "dhcp" "@dnsmasq[0]" "server"
+-    fi
++    curl -s --header "$auth_header" "$clash_url/proxies/$proxy_tag" | jq -r '.now // ""'
++}
+ 
+-    backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
+-    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
++clash_api_set_group_proxy_raw() {
++    local clash_url="$1"
++    local auth_header="$2"
++    local group_tag="$3"
++    local proxy_tag="$4"
++    local response http_code
+ 
+-    log "Configure dnsmasq for sing-box"
+-    uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
+-    uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
+-    uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
+-    uci_commit "dhcp"
++    response=$(
++        curl -X PUT -s -w "\n%{http_code}" "$clash_url/proxies/$group_tag" \
++            --header "$auth_header" \
++            --data-raw "{\"name\":\"$proxy_tag\"}"
++    )
++    http_code="$(echo "$response" | tail -n 1)"
+ 
+-    /etc/init.d/dnsmasq restart
++    [ "$http_code" = "204" ]
+ }
+ 
+-dnsmasq_restore() {
+-    log "Restoring the dnsmasq configuration"
+-    local shutdown_correctly
+-    config_get shutdown_correctly "settings" "shutdown_correctly"
+-    if [ "$shutdown_correctly" -eq 1 ]; then
+-        log "Previous shutdown of podkop was correct, reconfiguration of dnsmasq is not required"
+-        return 0
+-    fi
++get_subscription_benchmark_port() {
++    echo "42080"
++}
+ 
+-    local cachesize noresolv backup_servers resolvfile
+-    log "Restoring cachesize" "debug"
+-    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_cachesize")"
+-    if [ -z "$cachesize" ]; then
+-        uci_remove "dhcp" "@dnsmasq[0]" "cachesize"
+-        uci_set "dhcp" "@dnsmasq[0]" "cachesize" 150
+-    else
+-        uci_set "dhcp" "@dnsmasq[0]" "cachesize" "$cachesize"
+-        uci_remove "dhcp" "@dnsmasq[0]" "podkop_cachesize"
+-    fi
++subscription_speedtest_restore_mixed_proxy() {
++    local section="$1"
++    local original_mixed_enabled="$2"
++    local original_mixed_port="$3"
++    local mixed_changed="$4"
+ 
+-    log "Restoring noresolv" "debug"
+-    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_noresolv")"
+-    if [ -z "$noresolv" ]; then
+-        uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
++    [ "$mixed_changed" -eq 1 ] || return 0
++
++    if [ -n "$original_mixed_enabled" ]; then
++        uci -q set "podkop.$section.mixed_proxy_enabled=$original_mixed_enabled"
+     else
+-        uci_set "dhcp" "@dnsmasq[0]" "noresolv" "$noresolv"
+-        uci_remove "dhcp" "@dnsmasq[0]" "podkop_noresolv"
++        uci -q delete "podkop.$section.mixed_proxy_enabled"
+     fi
+ 
+-    log "Restoring DNS servers" "debug"
+-    uci_remove "dhcp" "@dnsmasq[0]" "server"
+-    resolvfile="/tmp/resolv.conf.d/resolv.conf.auto"
+-    backup_servers="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_server")"
+-    if [ -n "$backup_servers" ]; then
+-        for server in $backup_servers; do
+-            uci_add_list "dhcp" "@dnsmasq[0]" "server" "$server"
+-        done
+-        uci_remove "dhcp" "@dnsmasq[0]" "podkop_server"
+-    elif file_exists "$resolvfile"; then
+-        log "Backup DNS servers not found, using default resolvfile" "debug"
+-        uci_set "dhcp" "@dnsmasq[0]" "resolvfile" "$resolvfile"
+-        if [ -n "$noresolv" ] && [ "$noresolv" -eq 1 ]; then
+-            log "Disabling noresolv option to use system resolvfile" "debug"
+-            uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
+-        fi
++    if [ -n "$original_mixed_port" ]; then
++        uci -q set "podkop.$section.mixed_proxy_port=$original_mixed_port"
+     else
+-        log "Backup DNS servers and default resolvfile not found, possible resolving issues" "warn"
++        uci -q delete "podkop.$section.mixed_proxy_port"
+     fi
+ 
+-    uci_commit "dhcp"
++    uci commit podkop > /dev/null 2>&1 || return 1
++    config_load "$PODKOP_CONFIG"
++    /etc/init.d/podkop reload > /dev/null 2>&1
++}
+ 
+-    /etc/init.d/dnsmasq restart
++subscription_speedtest_result_error() {
++    local id="$1"
++    local tag="$2"
++    local name="$3"
++    local error="$4"
++
++    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" --arg error "$error" \
++        '{id:$id, tag:$tag, name:$name, success:false, error:$error}'
+ }
+ 
+-add_cron_job() {
+-    ## Future: make a check so that it doesn't recreate many times
+-    local community_lists remote_domain_lists remote_subnet_lists update_interval
+-    config_get community_lists "$section" "community_lists"
+-    config_get remote_domain_lists "$section" "remote_domain_lists"
+-    config_get remote_subnet_lists "$section" "remote_subnet_lists"
+-    config_get update_interval "settings" "update_interval"
++subscription_speedtest_result_success() {
++    local id="$1"
++    local tag="$2"
++    local name="$3"
++    local bytes_per_second="$4"
++    local time_total="$5"
++    local size_download="$6"
++    local http_code="$7"
++
++    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" \
++        --argjson bytesPerSecond "$bytes_per_second" \
++        --argjson timeTotal "$time_total" \
++        --argjson sizeDownload "$size_download" \
++        --argjson httpCode "$http_code" \
++        '{id:$id, tag:$tag, name:$name, success:true, bytesPerSecond:$bytesPerSecond, timeTotal:$timeTotal, sizeDownload:$sizeDownload, httpCode:$httpCode}'
++}
+ 
+-    case "$update_interval" in
+-    "1h")
+-        cron_job="13 * * * * /usr/bin/podkop list_update"
+-        ;;
+-    "3h")
+-        cron_job="13 */3 * * * /usr/bin/podkop list_update"
+-        ;;
+-    "12h")
+-        cron_job="13 */12 * * * /usr/bin/podkop list_update"
+-        ;;
+-    "1d")
+-        cron_job="13 9 * * * /usr/bin/podkop list_update"
+-        ;;
+-    "3d")
+-        cron_job="13 9 */3 * * /usr/bin/podkop list_update"
+-        ;;
+-    *)
+-        log "Invalid update_interval value: $update_interval"
+-        return
+-        ;;
+-    esac
++subscription_speedtest() {
++    local section="$1"
++    local items_cache_path active_items_file results_file clash_url auth_header selector_tag original_proxy \
++        original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
++        item_json id name tag index output bytes_per_second time_total size_download http_code results_json
+ 
+-    if [ -n "$community_lists" ] ||
+-        [ -n "$remote_domain_lists" ] ||
+-        [ -n "$remote_subnet_lists" ]; then
+-        remove_cron_job
+-        crontab -l | {
+-            cat
+-            echo "$cron_job"
+-        } | crontab -
+-        log "The cron job has been created: $cron_job"
++    if [ -z "$section" ]; then
++        echo '{"success":false,"error":"section_required"}'
++        return 1
+     fi
+-}
+ 
+-remove_cron_job() {
+-    (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
+-    log "The cron job removed"
+-}
++    if ! validate_subscription_urltest_section "$section"; then
++        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
++        return 1
++    fi
+ 
+-list_update() {
+-    echolog "🔄 Starting lists update..."
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$items_cache_path" ]; then
++        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
++    fi
+ 
+-    local nslookup_timeout=3
+-    local nslookup_attempts=10
+-    local curl_timeout=5
+-    local curl_attempts=10
+-    local curl_max_timeout=10
+-    local delay=3
+-    local i
++    if [ ! -s "$items_cache_path" ]; then
++        echo '{"success":false,"error":"subscription_cache_missing"}'
++        return 1
++    fi
+ 
+-    # DNS Check
+-    for i in $(seq 1 $nslookup_attempts); do
+-        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
+-            echolog "✅ DNS check passed"
+-            break
+-        fi
+-        echolog "DNS is unavailable [$i/$nslookup_attempts]"
+-        sleep $delay
+-    done
++    active_items_file="$(mktemp)"
++    results_file="$(mktemp)"
++    jq -c '.[] | select(.supported == true and .enabled == true)' "$items_cache_path" > "$active_items_file"
+ 
+-    if [ "$i" -eq $nslookup_attempts ]; then
+-        echolog "❌ DNS check failed after $nslookup_attempts attempts"
++    if [ ! -s "$active_items_file" ]; then
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"no_enabled_links"}'
+         return 1
+     fi
+ 
+-    # Github Check
+-    for i in $(seq 1 $curl_attempts); do
+-        local service_proxy_address
+-        service_proxy_address="$(get_service_proxy_address)"
++    clash_url="$(get_clash_api_base_url)"
++    auth_header="$(get_clash_api_auth_header)"
++    selector_tag="$(get_outbound_tag_by_section "$section")"
++    original_proxy="$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")"
+ 
+-        if [ -n "$service_proxy_address" ]; then
+-            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
+-                echolog "✅ GitHub connection check passed (via proxy)"
+-                break
+-            fi
+-        else
+-            if curl -s -m $curl_timeout https://github.com > /dev/null; then
+-                echolog "✅ GitHub connection check passed"
+-                break
+-            fi
++    if [ -z "$original_proxy" ]; then
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"selector_not_available"}'
++        return 1
++    fi
++
++    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
++    config_get original_mixed_port "$section" "mixed_proxy_port"
++    mixed_port="$original_mixed_port"
++    [ -n "$mixed_port" ] || mixed_port="$(get_subscription_benchmark_port "$section")"
++    mixed_changed=0
++
++    if [ "$original_mixed_enabled" != "1" ] || [ -z "$original_mixed_port" ]; then
++        uci -q set "podkop.$section.mixed_proxy_enabled=1"
++        uci -q set "podkop.$section.mixed_proxy_port=$mixed_port"
++        if ! uci commit podkop > /dev/null 2>&1; then
++            rm -f "$active_items_file" "$results_file"
++            echo '{"success":false,"error":"uci_commit_failed"}'
++            return 1
+         fi
++        config_load "$PODKOP_CONFIG"
++        mixed_changed=1
+ 
+-        echolog "GitHub is unavailable [$i/$curl_attempts] (max-timeout=$curl_timeout)"
+-        if [ "$curl_timeout" -lt $curl_max_timeout ]; then
+-            curl_timeout=$((curl_timeout + 1))
++        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
++            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++            rm -f "$active_items_file" "$results_file"
++            echo '{"success":false,"error":"reload_failed"}'
++            return 1
+         fi
+-        sleep $delay
+-    done
++    fi
+ 
+-    if [ "$i" -eq $curl_attempts ]; then
+-        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
++    mixed_address="$(get_service_listen_address)"
++    if [ -z "$mixed_address" ]; then
++        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"mixed_proxy_address_missing"}'
+         return 1
+     fi
+ 
+-    echolog "📥 Downloading and processing lists..."
++    benchmark_url="https://speed.cloudflare.com/__down?bytes=1048576"
++    index=1
++    while IFS= read -r item_json || [ -n "$item_json" ]; do
++        [ -n "$item_json" ] || continue
+ 
+-    config_foreach import_community_subnet_lists "section"
+-    config_foreach import_domains_from_remote_domain_lists "section"
+-    config_foreach import_subnets_from_remote_subnet_lists "section"
++        id="$(echo "$item_json" | jq -r '.id')"
++        name="$(echo "$item_json" | jq -r '.name // ""')"
++        tag="$(get_outbound_tag_by_section "$section-$index")"
+ 
+-    if [ $? -eq 0 ]; then
+-        echolog "✅ Lists update completed successfully"
++        if ! clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$tag"; then
++            subscription_speedtest_result_error "$id" "$tag" "$name" "select_failed" >> "$results_file"
++            index=$((index + 1))
++            continue
++        fi
++
++        sleep 1
++        output="$(
++            curl -L -s -o /dev/null \
++                -x "http://$mixed_address:$mixed_port" \
++                --connect-timeout 8 \
++                -m 20 \
++                -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
++                "$benchmark_url" 2> /dev/null
++        )"
++
++        bytes_per_second="$(echo "$output" | awk '{printf "%d", $1}')"
++        time_total="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
++        size_download="$(echo "$output" | awk '{printf "%d", $3}')"
++        http_code="$(echo "$output" | awk '{printf "%d", $4}')"
++
++        if [ "${bytes_per_second:-0}" -gt 0 ] && [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
++            subscription_speedtest_result_success "$id" "$tag" "$name" \
++                "${bytes_per_second:-0}" "${time_total:-0}" "${size_download:-0}" "${http_code:-0}" >> "$results_file"
++        else
++            subscription_speedtest_result_error "$id" "$tag" "$name" "download_failed" >> "$results_file"
++        fi
++
++        index=$((index + 1))
++    done < "$active_items_file"
++
++    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++    subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++
++    results_json="$(jq -s '.' "$results_file")"
++    rm -f "$active_items_file" "$results_file"
++    jq -cn --arg section "$section" --argjson results "$results_json" \
++        '{success:true, section:$section, results:$results}'
++}
++
++subscription_patch_update_status_file() {
++    echo "/tmp/podkop-subscriptions-patch-update.json"
++}
++
++subscription_patch_update() {
++    local status_file runner
++
++    status_file="$(subscription_patch_update_status_file)"
++    runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
++
++    cat > "$runner" << 'EOF'
++#!/bin/ash
++status_file="/tmp/podkop-subscriptions-patch-update.json"
++log_file="/tmp/podkop-subscriptions-patch-update.log"
++
++write_status() {
++    local state="$1"
++    local message="$2"
++    local log_tail="$3"
++    jq -cn --arg state "$state" --arg message "$message" \
++        --arg updatedAt "$(date -Iseconds 2> /dev/null || date)" \
++        --arg logTail "$log_tail" \
++        '{state:$state, message:$message, updatedAt:$updatedAt, logTail:$logTail}' > "$status_file"
++}
++
++write_status "running" "patch_update_running" ""
++
++tmp="/tmp/podkop-subscriptions-install.sh"
++if ! wget -O "$tmp" "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh" > "$log_file" 2>&1; then
++    write_status "error" "download_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    exit 1
++fi
++
++if PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp" >> "$log_file" 2>&1; then
++    write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
++else
++    write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    exit 1
++fi
++EOF
++
++    chmod +x "$runner"
++    "$runner" > /dev/null 2>&1 &
++
++    echo '{"success":true,"started":true}'
++}
++
++get_subscription_patch_update_status() {
++    local status_file
++
++    status_file="$(subscription_patch_update_status_file)"
++    if [ -s "$status_file" ]; then
++        cat "$status_file"
+     else
+-        echolog "❌ Lists update failed"
++        echo '{"state":"idle","message":"","updatedAt":"","logTail":""}'
+     fi
+ }
+ 
+@@ -678,6 +2011,63 @@ configure_outbound_handler() {
              config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
                  "$default_outbound")"
              ;;
@@ -1144,7 +1801,7 @@ index fda1c1e..3dff359 100644
          urltest)
              log "Detected proxy configuration type: urltest" "debug"
              local urltest_proxy_links udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
-@@ -1842,6 +2925,8 @@ show_config() {
+@@ -1842,6 +3232,8 @@ show_config() {
          -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
          -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
          -e 's/\(list selector_proxy_links\).*/\1 '\''MASKED'\''/g' \
@@ -1153,15 +1810,22 @@ index fda1c1e..3dff359 100644
          -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e "s@\\(option domain_resolver_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
-@@ -2669,6 +3754,7 @@ Available commands:
+@@ -2669,6 +4061,14 @@ Available commands:
      restart                 Restart podkop service
      main                    Run main podkop process
      list_update             Update domain lists
 +    subscription_update     Update subscription URLTest caches
++    subscription_update_json
++                            Update subscription URLTest caches and print JSON status
++    subscription_speedtest   Benchmark enabled subscription proxy items for a section
++    subscription_patch_update
++                            Update the Podkop subscriptions patch from GitHub
++    get_subscription_patch_update_status
++                            Show background patch update status
      check_proxy             Check proxy connectivity
      check_nft               Check NFT rules
      check_nft_rules         Check NFT rules status
-@@ -2677,6 +3763,16 @@ Available commands:
+@@ -2677,6 +4077,16 @@ Available commands:
      check_sing_box_logs     Show sing-box logs
      check_fakeip            Test FakeIP on router
      clash_api               Clash API interface for managing proxies and groups
@@ -1178,17 +1842,29 @@ index fda1c1e..3dff359 100644
      show_config             Display current podkop configuration
      show_version            Show podkop version
      show_sing_box_config    Show sing-box configuration
-@@ -2709,6 +3805,9 @@ main)
+@@ -2709,6 +4119,21 @@ main)
  list_update)
      list_update
      ;;
 +subscription_update)
 +    subscription_update "$2"
 +    ;;
++subscription_update_json)
++    subscription_update_json "$2"
++    ;;
++subscription_speedtest)
++    subscription_speedtest "$2"
++    ;;
++subscription_patch_update)
++    subscription_patch_update
++    ;;
++get_subscription_patch_update_status)
++    get_subscription_patch_update_status
++    ;;
  check_proxy)
      check_proxy
      ;;
-@@ -2733,6 +3832,22 @@ check_fakeip)
+@@ -2733,6 +4158,22 @@ check_fakeip)
  clash_api)
      clash_api "$2" "$3" "$4"
      ;;
@@ -1225,7 +1901,7 @@ index 7641673..98c4ad7 100644
          local ws_path ws_host ws_early_data
          ws_path=$(url_get_query_param "$url" "path")
 diff --git a/www/luci-static/resources/view/podkop/main.js b/www/luci-static/resources/view/podkop/main.js
-index 009c1ae..4984048 100644
+index 009c1ae..12760f7 100644
 --- a/www/luci-static/resources/view/podkop/main.js
 +++ b/www/luci-static/resources/view/podkop/main.js
 @@ -576,11 +576,11 @@ async function getConfigSections() {
@@ -1242,9 +1918,14 @@ index 009c1ae..4984048 100644
    });
    if (response.stdout) {
      try {
-@@ -622,6 +622,11 @@ var Podkop;
+@@ -621,7 +621,16 @@ var Podkop;
+     AvailableMethods2["GLOBAL_CHECK"] = "global_check";
      AvailableMethods2["SHOW_SING_BOX_CONFIG"] = "show_sing_box_config";
      AvailableMethods2["CHECK_LOGS"] = "check_logs";
++    AvailableMethods2["SUBSCRIPTION_UPDATE_JSON"] = "subscription_update_json";
++    AvailableMethods2["SUBSCRIPTION_SPEEDTEST"] = "subscription_speedtest";
++    AvailableMethods2["SUBSCRIPTION_PATCH_UPDATE"] = "subscription_patch_update";
++    AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_STATUS"] = "get_subscription_patch_update_status";
      AvailableMethods2["GET_SYSTEM_INFO"] = "get_system_info";
 +    AvailableMethods2["GET_SUBSCRIPTION_CACHED_LINKS"] = "get_subscription_cached_links";
 +    AvailableMethods2["GET_SUBSCRIPTION_SKIPPED_LINKS"] = "get_subscription_skipped_links";
@@ -1254,8 +1935,34 @@ index 009c1ae..4984048 100644
    })(AvailableMethods = Podkop2.AvailableMethods || (Podkop2.AvailableMethods = {}));
    let AvailableClashAPIMethods;
    ((AvailableClashAPIMethods2) => {
-@@ -696,10 +701,49 @@ var PodkopShellMethods = {
+@@ -694,12 +703,75 @@ var PodkopShellMethods = {
+   globalCheck: async () => callBaseMethod(Podkop.AvailableMethods.GLOBAL_CHECK),
+   showSingBoxConfig: async () => callBaseMethod(Podkop.AvailableMethods.SHOW_SING_BOX_CONFIG),
    checkLogs: async () => callBaseMethod(Podkop.AvailableMethods.CHECK_LOGS),
++  updateSubscriptions: async () => callBaseMethod(
++    Podkop.AvailableMethods.SUBSCRIPTION_UPDATE_JSON,
++    [],
++    "/usr/bin/podkop",
++    12e4
++  ),
++  benchmarkSubscriptionSection: async (section) => callBaseMethod(
++    Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST,
++    [section],
++    "/usr/bin/podkop",
++    3e5
++  ),
++  updateSubscriptionPatch: async () => callBaseMethod(
++    Podkop.AvailableMethods.SUBSCRIPTION_PATCH_UPDATE,
++    [],
++    "/usr/bin/podkop",
++    15e3
++  ),
++  getSubscriptionPatchUpdateStatus: async () => callBaseMethod(
++    Podkop.AvailableMethods.GET_SUBSCRIPTION_PATCH_UPDATE_STATUS,
++    [],
++    "/usr/bin/podkop",
++    15e3
++  ),
    getSystemInfo: async () => callBaseMethod(
      Podkop.AvailableMethods.GET_SYSTEM_INFO
 +  ),
@@ -1304,7 +2011,7 @@ index 009c1ae..4984048 100644
  async function getDashboardSections() {
    const configSections = await getConfigSections();
    const clashProxies = await PodkopShellMethods.getClashApiProxies();
-@@ -715,6 +759,24 @@ async function getDashboardSections() {
+@@ -715,6 +787,24 @@ async function getDashboardSections() {
        value
      })
    );
@@ -1329,7 +2036,7 @@ index 009c1ae..4984048 100644
    const data = configSections.filter(
      (section) => section.connection_type !== "block" && section.connection_type !== "exclusion" && section[".type"] !== "settings"
    ).map((section) => {
-@@ -786,16 +848,17 @@ async function getDashboardSections() {
+@@ -786,16 +876,17 @@ async function getDashboardSections() {
            outbounds
          };
        }
@@ -1349,7 +2056,7 @@ index 009c1ae..4984048 100644
            latency: item?.value?.history?.[0]?.delay || 0,
            type: item?.value?.type || "",
            selected: selector?.value?.now === item?.code
-@@ -843,9 +906,31 @@ async function getDashboardSections() {
+@@ -843,9 +934,31 @@ async function getDashboardSections() {
        outbounds: []
      };
    });
@@ -1382,7 +2089,7 @@ index 009c1ae..4984048 100644
    };
  }
  
-@@ -1387,6 +1472,14 @@ var initialStore = {
+@@ -1387,6 +1500,19 @@ var initialStore = {
      latencyFetching: false,
      data: []
    },
@@ -1391,13 +2098,18 @@ index 009c1ae..4984048 100644
 +    failed: false,
 +    applying: false,
 +    status: "idle",
++    action: "none",
++    actionStatus: "idle",
++    actionMessage: "",
 +    pendingChanges: {},
++    latencyByRow: {},
++    speedByRow: {},
 +    data: []
 +  },
    ...initialDiagnosticStore
  };
  var store = new StoreService(initialStore);
-@@ -1746,6 +1839,9 @@ function renderDefaultState({
+@@ -1746,6 +1872,9 @@ function renderDefaultState({
    latencyFetching
  }) {
    function testLatency() {
@@ -1407,7 +2119,7 @@ index 009c1ae..4984048 100644
      if (section.withTagSelect) {
        return onTestLatency(section.code);
      }
-@@ -1783,7 +1879,7 @@ function renderDefaultState({
+@@ -1783,7 +1912,7 @@ function renderDefaultState({
            E(
              "div",
              { class: getLatencyClass() },
@@ -1416,7 +2128,7 @@ index 009c1ae..4984048 100644
            )
          ])
        ]
-@@ -1799,7 +1895,7 @@ function renderDefaultState({
+@@ -1799,7 +1928,7 @@ function renderDefaultState({
          },
          section.displayName
        ),
@@ -1425,7 +2137,7 @@ index 009c1ae..4984048 100644
          "button",
          {
            class: "btn dashboard-sections-grid-item-test-latency",
-@@ -3854,8 +3950,11 @@ async function runSectionsCheck() {
+@@ -3854,8 +3983,11 @@ async function runSectionsCheck() {
      });
      throw new Error("Sections checks failed");
    }
@@ -1438,7 +2150,7 @@ index 009c1ae..4984048 100644
        async function getLatency() {
          if (section.withTagSelect) {
            const latencyGroup = await PodkopShellMethods.getClashApiGroupLatency(
-@@ -4631,10 +4730,702 @@ var DiagnosticTab = {
+@@ -4631,10 +4763,1088 @@ var DiagnosticTab = {
    styles: styles4
  };
  
@@ -1496,17 +2208,15 @@ index 009c1ae..4984048 100644
 +  return effectiveEnabled ? "pdk_subscriptions-page__status--enabled" : "pdk_subscriptions-page__status--excluded";
 +}
 +function renderEmptyState(text) {
-+  return E(
-+    "div",
-+    { class: "pdk_subscriptions-page__empty centered" },
-+    text
-+  );
++  return E("div", { class: "pdk_subscriptions-page__empty centered" }, text);
 +}
 +function getToolbarMessage({
 +  loading,
 +  failed,
 +  applying,
 +  status,
++  actionStatus,
++  actionMessage,
 +  pendingCount
 +}) {
 +  if (loading) {
@@ -1517,6 +2227,15 @@ index 009c1ae..4984048 100644
 +  }
 +  if (applying || status === "applying") {
 +    return _("Applying changes. Podkop will be restarted once.");
++  }
++  if (actionStatus === "running") {
++    return actionMessage || _("Action is running");
++  }
++  if (actionStatus === "error") {
++    return actionMessage || _("Action failed");
++  }
++  if (actionStatus === "success") {
++    return actionMessage || _("Action completed");
 +  }
 +  if (status === "error") {
 +    return _("Failed to apply changes. Podkop was not changed.");
@@ -1529,17 +2248,20 @@ index 009c1ae..4984048 100644
 +  }
 +  return _("Select configs, then click Apply to restart Podkop once.");
 +}
-+function getToolbarClass(status, pendingCount) {
++function getToolbarClass(status, actionStatus, pendingCount) {
 +  if (status === "applying") {
 +    return "pdk_subscriptions-page__toolbar--applying";
 +  }
-+  if (status === "error") {
++  if (actionStatus === "running") {
++    return "pdk_subscriptions-page__toolbar--applying";
++  }
++  if (status === "error" || actionStatus === "error") {
 +    return "pdk_subscriptions-page__toolbar--error";
 +  }
 +  if (pendingCount > 0 || status === "dirty") {
 +    return "pdk_subscriptions-page__toolbar--dirty";
 +  }
-+  if (status === "success") {
++  if (status === "success" || actionStatus === "success") {
 +    return "pdk_subscriptions-page__toolbar--success";
 +  }
 +  return "";
@@ -1549,27 +2271,70 @@ index 009c1ae..4984048 100644
 +  failed,
 +  applying,
 +  status,
++  action,
++  actionStatus,
++  actionMessage,
 +  pendingCount,
 +  onApply,
-+  onReset
++  onReset,
++  onRefresh,
++  onPing,
++  onSpeedtest,
++  onPatchUpdate
 +}) {
-+  const canApply = pendingCount > 0 && !loading && !failed && !applying;
-+  const canReset = pendingCount > 0 && !applying;
++  const actionRunning = actionStatus === "running";
++  const canRunAction = !loading && !failed && !applying && !actionRunning;
++  const canRunSubscriptionAction = canRunAction && pendingCount === 0;
++  const canRunPatchAction = !loading && !applying && !actionRunning && pendingCount === 0;
++  const canApply = pendingCount > 0 && !loading && !failed && !applying && !actionRunning;
++  const canReset = pendingCount > 0 && !applying && !actionRunning;
 +  return E(
 +    "div",
 +    {
 +      class: [
 +        "pdk_subscriptions-page__toolbar",
-+        getToolbarClass(status, pendingCount)
++        getToolbarClass(status, actionStatus, pendingCount)
 +      ].filter(Boolean).join(" ")
 +    },
 +    [
 +      E(
 +        "div",
 +        { class: "pdk_subscriptions-page__toolbar-message" },
-+        getToolbarMessage({ loading, failed, applying, status, pendingCount })
++        getToolbarMessage({
++          loading,
++          failed,
++          applying,
++          status,
++          actionStatus,
++          actionMessage,
++          pendingCount
++        })
 +      ),
 +      E("div", { class: "pdk_subscriptions-page__toolbar-actions" }, [
++        renderButton({
++          text: _("Refresh"),
++          onClick: onRefresh,
++          loading: action === "refresh" && actionRunning,
++          disabled: !canRunSubscriptionAction
++        }),
++        renderButton({
++          text: _("Ping"),
++          onClick: onPing,
++          loading: action === "ping" && actionRunning,
++          disabled: !canRunSubscriptionAction
++        }),
++        renderButton({
++          text: _("Speed"),
++          onClick: onSpeedtest,
++          loading: action === "speed" && actionRunning,
++          disabled: !canRunSubscriptionAction
++        }),
++        renderButton({
++          text: _("Patch"),
++          onClick: onPatchUpdate,
++          loading: action === "patch" && actionRunning,
++          disabled: !canRunPatchAction
++        }),
 +        renderButton({
 +          classNames: ["cbi-button-apply"],
 +          text: _("Apply"),
@@ -1595,6 +2360,7 @@ index 009c1ae..4984048 100644
 +  enabledSupportedCount,
 +  onToggle
 +}) {
++  const rowId = getRowId(section.code, item.id);
 +  const pending = hasPendingChange(pendingChanges, section.code, item);
 +  const effectiveEnabled = getEffectiveEnabled(
 +    pendingChanges,
@@ -1603,6 +2369,26 @@ index 009c1ae..4984048 100644
 +  );
 +  const isLastEnabled = item.supported && effectiveEnabled && enabledSupportedCount <= 1;
 +  const disabled = !item.supported || applying || isLastEnabled;
++  const latency = latencyByRow[rowId];
++  const speed = speedByRow[rowId];
++  function renderLatency() {
++    if (!item.supported || !effectiveEnabled) {
++      return "\u2014";
++    }
++    return typeof latency === "number" && latency > 0 ? `${latency} ms` : "\u2014";
++  }
++  function renderSpeed() {
++    if (!item.supported || !effectiveEnabled) {
++      return "\u2014";
++    }
++    if (!speed) {
++      return "\u2014";
++    }
++    if (!speed.success || !speed.bytesPerSecond) {
++      return _("Error");
++    }
++    return `${prettyBytes(speed.bytesPerSecond)}/s`;
++  }
 +  return E(
 +    "tr",
 +    {
@@ -1627,6 +2413,8 @@ index 009c1ae..4984048 100644
 +      E("td", {}, getItemName(item, index)),
 +      E("td", {}, (item.protocol || _("Unknown")).toUpperCase()),
 +      E("td", {}, item.transport || _("Default")),
++      E("td", {}, renderLatency()),
++      E("td", {}, renderSpeed()),
 +      E(
 +        "td",
 +        {
@@ -1645,6 +2433,8 @@ index 009c1ae..4984048 100644
 +function renderSection({
 +  section,
 +  pendingChanges,
++  latencyByRow: latencyByRow2,
++  speedByRow: speedByRow2,
 +  applying,
 +  onToggle
 +}) {
@@ -1667,6 +2457,8 @@ index 009c1ae..4984048 100644
 +            E("th", {}, _("Config")),
 +            E("th", {}, _("Protocol")),
 +            E("th", {}, _("Transport")),
++            E("th", {}, _("Ping")),
++            E("th", {}, _("Speed")),
 +            E("th", {}, _("Status")),
 +            E("th", {}, _("Source"))
 +          ])
@@ -1680,6 +2472,8 @@ index 009c1ae..4984048 100644
 +              item,
 +              index,
 +              pendingChanges,
++              latencyByRow: latencyByRow2,
++              speedByRow: speedByRow2,
 +              applying,
 +              enabledSupportedCount,
 +              onToggle
@@ -1693,6 +2487,8 @@ index 009c1ae..4984048 100644
 +function renderSections2({
 +  sections,
 +  pendingChanges,
++  latencyByRow: latencyByRow2,
++  speedByRow: speedByRow2,
 +  applying,
 +  onToggle
 +}) {
@@ -1706,6 +2502,8 @@ index 009c1ae..4984048 100644
 +      (section) => renderSection({
 +        section,
 +        pendingChanges,
++        latencyByRow: latencyByRow2,
++        speedByRow: speedByRow2,
 +        applying,
 +        onToggle
 +      })
@@ -1717,11 +2515,20 @@ index 009c1ae..4984048 100644
 +  failed,
 +  applying,
 +  status,
++  action,
++  actionStatus,
++  actionMessage,
 +  pendingChanges,
++  latencyByRow: latencyByRow2,
++  speedByRow: speedByRow2,
 +  sections,
 +  onToggle,
 +  onApply,
-+  onReset
++  onReset,
++  onRefresh,
++  onPing,
++  onSpeedtest,
++  onPatchUpdate
 +}) {
 +  const pendingCount = getPendingCount(pendingChanges);
 +  return E("div", { class: "pdk_subscriptions-page__content" }, [
@@ -1730,13 +2537,22 @@ index 009c1ae..4984048 100644
 +      failed,
 +      applying,
 +      status,
++      action,
++      actionStatus,
++      actionMessage,
 +      pendingCount,
 +      onApply,
-+      onReset
++      onReset,
++      onRefresh,
++      onPing,
++      onSpeedtest,
++      onPatchUpdate
 +    }),
 +    loading ? renderEmptyState(_("Loading")) : failed ? renderEmptyState(_("Failed to load subscription configs")) : renderSections2({
 +      sections,
 +      pendingChanges,
++      latencyByRow: latencyByRow2,
++      speedByRow: speedByRow2,
 +      applying,
 +      onToggle
 +    })
@@ -1760,13 +2576,26 @@ index 009c1ae..4984048 100644
 +          failed: false,
 +          applying: false,
 +          status: "idle",
++          action: "none",
++          actionStatus: "idle",
++          actionMessage: "",
 +          pendingChanges: {},
++          latencyByRow: {},
++          speedByRow: {},
 +          sections: [],
 +          onToggle: () => {
 +          },
 +          onApply: () => {
 +          },
 +          onReset: () => {
++          },
++          onRefresh: () => {
++          },
++          onPing: () => {
++          },
++          onSpeedtest: () => {
++          },
++          onPatchUpdate: () => {
 +          }
 +        })
 +      )
@@ -1780,6 +2609,34 @@ index 009c1ae..4984048 100644
 +}
 +function getPendingCount2(pendingChanges) {
 +  return Object.keys(pendingChanges).length;
++}
++function sleep(ms) {
++  return new Promise((resolve) => window.setTimeout(resolve, ms));
++}
++function getEnabledSupportedItems(section) {
++  return section.items.filter((item) => item.supported && item.enabled);
++}
++function isActionRunning() {
++  return store.get().subscriptionItemsWidget.actionStatus === "running";
++}
++function canRunServiceAction() {
++  const widget = store.get().subscriptionItemsWidget;
++  return !widget.loading && !widget.failed && !widget.applying && !isActionRunning() && getPendingCount2(widget.pendingChanges) === 0;
++}
++function setActionState({
++  action,
++  actionStatus,
++  actionMessage
++}) {
++  const widget = store.get().subscriptionItemsWidget;
++  store.set({
++    subscriptionItemsWidget: {
++      ...widget,
++      action,
++      actionStatus,
++      actionMessage
++    }
++  });
 +}
 +async function fetchSubscriptionItems(status = "idle") {
 +  const prev = store.get().subscriptionItemsWidget;
@@ -1809,6 +2666,7 @@ index 009c1ae..4984048 100644
 +    );
 +    store.set({
 +      subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
 +        loading: false,
 +        failed: false,
 +        applying: false,
@@ -1876,7 +2734,7 @@ index 009c1ae..4984048 100644
 +async function handleApply() {
 +  const widget = store.get().subscriptionItemsWidget;
 +  const pendingChanges = widget.pendingChanges;
-+  if (getPendingCount2(pendingChanges) === 0 || widget.applying) {
++  if (getPendingCount2(pendingChanges) === 0 || widget.applying || isActionRunning()) {
 +    return;
 +  }
 +  store.set({
@@ -1912,6 +2770,235 @@ index 009c1ae..4984048 100644
 +    });
 +  }
 +}
++async function handleRefreshSubscriptions() {
++  if (!canRunServiceAction()) {
++    return;
++  }
++  setActionState({
++    action: "refresh",
++    actionStatus: "running",
++    actionMessage: _("Updating subscription configs. Podkop may be reloaded.")
++  });
++  try {
++    const result = await PodkopShellMethods.updateSubscriptions();
++    if (!result.success || !result.data.success) {
++      throw new Error(result.success ? result.data.output : result.error);
++    }
++    await fetchSubscriptionItems();
++    setActionState({
++      action: "refresh",
++      actionStatus: "success",
++      actionMessage: _("Subscription configs updated.")
++    });
++    showToast(_("Subscription configs updated."), "success");
++  } catch (error) {
++    logger.error("[SUBSCRIPTIONS]", "failed to refresh subscriptions");
++    logger.error("[SUBSCRIPTIONS]", error);
++    setActionState({
++      action: "refresh",
++      actionStatus: "error",
++      actionMessage: _(
++        "Failed to update subscription configs. Cache was kept."
++      )
++    });
++    showToast(_("Failed to update subscription configs."), "error");
++  }
++}
++async function handlePingSubscriptions() {
++  if (!canRunServiceAction()) {
++    return;
++  }
++  const sections = store.get().subscriptionItemsWidget.data;
++  const latencyByRow2 = {};
++  setActionState({
++    action: "ping",
++    actionStatus: "running",
++    actionMessage: _("Testing subscription latency.")
++  });
++  try {
++    for (const section of sections) {
++      const enabledItems = getEnabledSupportedItems(section);
++      if (!enabledItems.length) {
++        continue;
++      }
++      setActionState({
++        action: "ping",
++        actionStatus: "running",
++        actionMessage: `${_("Testing latency")}: ${section.displayName}`
++      });
++      const result = await PodkopShellMethods.getClashApiGroupLatency(
++        `${section.code}-out`
++      );
++      if (!result.success) {
++        throw new Error(result.error);
++      }
++      enabledItems.forEach((item, index) => {
++        const tag = `${section.code}-${index + 1}-out`;
++        const latency = result.data[tag];
++        if (typeof latency === "number" && latency > 0) {
++          latencyByRow2[getRowId2(section.code, item.id)] = latency;
++        }
++      });
++    }
++    store.set({
++      subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
++        latencyByRow: latencyByRow2
++      }
++    });
++    setActionState({
++      action: "ping",
++      actionStatus: "success",
++      actionMessage: _("Latency test completed.")
++    });
++    showToast(_("Latency test completed."), "success");
++  } catch (error) {
++    logger.error("[SUBSCRIPTIONS]", "failed to ping subscription configs");
++    logger.error("[SUBSCRIPTIONS]", error);
++    setActionState({
++      action: "ping",
++      actionStatus: "error",
++      actionMessage: _("Failed to test latency.")
++    });
++    showToast(_("Failed to test latency."), "error");
++  }
++}
++async function handleSpeedtestSubscriptions() {
++  if (!canRunServiceAction()) {
++    return;
++  }
++  const sections = store.get().subscriptionItemsWidget.data;
++  const speedByRow2 = {};
++  setActionState({
++    action: "speed",
++    actionStatus: "running",
++    actionMessage: _(
++      "Running speed benchmark. Active proxy may change briefly."
++    )
++  });
++  try {
++    for (const section of sections) {
++      const enabledItems = getEnabledSupportedItems(section);
++      if (!enabledItems.length) {
++        continue;
++      }
++      setActionState({
++        action: "speed",
++        actionStatus: "running",
++        actionMessage: `${_("Running speed benchmark")}: ${section.displayName}`
++      });
++      const result = await PodkopShellMethods.benchmarkSubscriptionSection(
++        section.code
++      );
++      if (!result.success || !result.data.success) {
++        throw new Error(result.success ? result.data.error : result.error);
++      }
++      (result.data.results ?? []).forEach((item) => {
++        speedByRow2[getRowId2(section.code, item.id)] = item;
++      });
++    }
++    store.set({
++      subscriptionItemsWidget: {
++        ...store.get().subscriptionItemsWidget,
++        speedByRow: speedByRow2
++      }
++    });
++    setActionState({
++      action: "speed",
++      actionStatus: "success",
++      actionMessage: _("Speed benchmark completed.")
++    });
++    showToast(_("Speed benchmark completed."), "success");
++  } catch (error) {
++    logger.error("[SUBSCRIPTIONS]", "failed to run subscription speedtest");
++    logger.error("[SUBSCRIPTIONS]", error);
++    setActionState({
++      action: "speed",
++      actionStatus: "error",
++      actionMessage: _("Failed to run speed benchmark.")
++    });
++    showToast(_("Failed to run speed benchmark."), "error");
++  }
++}
++function getPatchUpdateMessage(status) {
++  switch (status.message) {
++    case "patch_update_running":
++      return _("Updating patch from GitHub.");
++    case "patch_update_success":
++      return _("Patch updated. Refresh the page in a minute.");
++    case "download_failed":
++      return _("Failed to download patch update.");
++    case "install_failed":
++      return _("Failed to install patch update.");
++    default:
++      return status.message || _("Patch update status is unknown.");
++  }
++}
++async function pollPatchUpdateStatus() {
++  for (let attempt = 0; attempt < 40; attempt += 1) {
++    await sleep(3e3);
++    try {
++      const status = await PodkopShellMethods.getSubscriptionPatchUpdateStatus();
++      if (!status.success) {
++        continue;
++      }
++      if (status.data.state === "running") {
++        setActionState({
++          action: "patch",
++          actionStatus: "running",
++          actionMessage: getPatchUpdateMessage(status.data)
++        });
++        continue;
++      }
++      setActionState({
++        action: "patch",
++        actionStatus: status.data.state === "success" ? "success" : "error",
++        actionMessage: getPatchUpdateMessage(status.data)
++      });
++      return status.data.state === "success";
++    } catch (error) {
++      logger.error("[SUBSCRIPTIONS]", "failed to poll patch update status");
++      logger.error("[SUBSCRIPTIONS]", error);
++    }
++  }
++  setActionState({
++    action: "patch",
++    actionStatus: "success",
++    actionMessage: _("Patch update is still running. Refresh the page later.")
++  });
++  return true;
++}
++async function handlePatchUpdate() {
++  const widget = store.get().subscriptionItemsWidget;
++  if (widget.applying || isActionRunning() || getPendingCount2(widget.pendingChanges) > 0) {
++    return;
++  }
++  setActionState({
++    action: "patch",
++    actionStatus: "running",
++    actionMessage: _("Starting patch update from GitHub.")
++  });
++  try {
++    const result = await PodkopShellMethods.updateSubscriptionPatch();
++    if (!result.success || !result.data.success) {
++      throw new Error(result.success ? result.data.error : result.error);
++    }
++    const success = await pollPatchUpdateStatus();
++    showToast(
++      success ? _("Patch update started.") : _("Patch update failed."),
++      success ? "success" : "error"
++    );
++  } catch (error) {
++    logger.error("[SUBSCRIPTIONS]", "failed to start patch update");
++    logger.error("[SUBSCRIPTIONS]", error);
++    setActionState({
++      action: "patch",
++      actionStatus: "error",
++      actionMessage: _("Failed to start patch update.")
++    });
++    showToast(_("Failed to start patch update."), "error");
++  }
++}
 +async function renderSubscriptionItemsWidget() {
 +  logger.debug("[SUBSCRIPTIONS]", "renderSubscriptionItemsWidget");
 +  const subscriptionItemsWidget = store.get().subscriptionItemsWidget;
@@ -1921,11 +3008,20 @@ index 009c1ae..4984048 100644
 +    failed: subscriptionItemsWidget.failed,
 +    applying: subscriptionItemsWidget.applying,
 +    status: subscriptionItemsWidget.status,
++    action: subscriptionItemsWidget.action,
++    actionStatus: subscriptionItemsWidget.actionStatus,
++    actionMessage: subscriptionItemsWidget.actionMessage,
 +    pendingChanges: subscriptionItemsWidget.pendingChanges,
++    latencyByRow: subscriptionItemsWidget.latencyByRow,
++    speedByRow: subscriptionItemsWidget.speedByRow,
 +    sections: subscriptionItemsWidget.data,
 +    onToggle: handleToggle,
 +    onApply: handleApply,
-+    onReset: handleReset
++    onReset: handleReset,
++    onRefresh: handleRefreshSubscriptions,
++    onPing: handlePingSubscriptions,
++    onSpeedtest: handleSpeedtestSubscriptions,
++    onPatchUpdate: handlePatchUpdate
 +  });
 +  return preserveScrollForPage(() => {
 +    container.replaceChildren(renderedWidget);
@@ -2006,13 +3102,15 @@ index 009c1ae..4984048 100644
 +.pdk_subscriptions-page__toolbar-actions {
 +    display: flex;
 +    align-items: center;
++    justify-content: flex-end;
++    flex-wrap: wrap;
 +    gap: 6px;
 +    flex-shrink: 0;
 +}
 +
 +.pdk_subscriptions-page__toolbar-actions .btn {
-+    min-height: 28px;
-+    padding: 4px 10px;
++    min-height: 26px;
++    padding: 3px 8px;
 +}
 +
 +.pdk_subscriptions-page__toolbar--dirty {
@@ -2141,7 +3239,7 @@ index 009c1ae..4984048 100644
  ${PartialStyles}
  
  
-@@ -4904,6 +5695,7 @@ return baseclass.extend({
+@@ -4904,6 +6114,7 @@ return baseclass.extend({
    REGIONAL_OPTIONS,
    RemoteFakeIPMethods,
    STATUS_COLORS,
@@ -2266,31 +3364,3 @@ index 7dc8ccb..c9f89e6 100644
  
    o.validate = function (section_id, value) {
      if (!value || value.length === 0) {
-diff --git a/www/luci-static/resources/view/podkop/subscriptions.js b/www/luci-static/resources/view/podkop/subscriptions.js
-new file mode 100644
-index 0000000..52716a5
---- /dev/null
-+++ b/www/luci-static/resources/view/podkop/subscriptions.js
-@@ -0,0 +1,22 @@
-+"use strict";
-+"require baseclass";
-+"require form";
-+"require ui";
-+"require uci";
-+"require fs";
-+"require view.podkop.main as main";
-+
-+function createSubscriptionsContent(section) {
-+  const o = section.option(form.DummyValue, "_mount_node");
-+  o.rawhtml = true;
-+  o.cfgvalue = () => {
-+    main.SubscriptionsTab.initController();
-+    return main.SubscriptionsTab.render();
-+  };
-+}
-+
-+const EntryPoint = {
-+  createSubscriptionsContent,
-+};
-+
-+return baseclass.extend(EntryPoint);

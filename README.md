@@ -10,7 +10,7 @@
 Выполнить уже внутри SSH-сессии на роутере:
 
 ```sh
-wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/v2026.06.15-subscriptions-batch-ru/openwrt/install.sh && sh /tmp/podkop-subscriptions-install.sh
+wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/v2026.06.16-subscriptions-actions/openwrt/install.sh && sh /tmp/podkop-subscriptions-install.sh
 ```
 
 Установщик:
@@ -31,6 +31,8 @@ wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/m
 - отдельный список неподдерживаемых конфигов в дашборде;
 - вкладку `Подписки` в LuCI для включения и исключения отдельных конфигов;
 - пакетное применение изменений во вкладке `Подписки` с одним перезапуском Podkop;
+- компактные действия во вкладке `Подписки`: обновить подписки, проверить пинг, запустить быстрый бенчмарк скорости;
+- кнопку обновления самого патча из GitHub без ручного запуска команды в терминале;
 - сохранение исключений по хэшу ссылки, без записи proxy-ссылок в UCI;
 - русские строки интерфейса для добавленных элементов.
 
@@ -49,11 +51,14 @@ git am ../podkop-patch-subscriptions/patches/*.patch
 
 - [`patches/0001-add-subscription-urltest-management.patch`](patches/0001-add-subscription-urltest-management.patch)
 - [`patches/0002-add-batch-subscription-selection-apply.patch`](patches/0002-add-batch-subscription-selection-apply.patch)
+- [`patches/0003-fix-batch-subscription-russian-translations.patch`](patches/0003-fix-batch-subscription-russian-translations.patch)
+- [`patches/0004-add-subscription-maintenance-actions.patch`](patches/0004-add-subscription-maintenance-actions.patch)
 
-Runtime-установка для OpenWrt использует отдельный файл:
+Runtime-установка для OpenWrt использует отдельные файлы:
 
 - [`openwrt/podkop-subscription-urltest-runtime.patch`](openwrt/podkop-subscription-urltest-runtime.patch)
-- [`openwrt/podkop-subscription-batch-upgrade.patch`](openwrt/podkop-subscription-batch-upgrade.patch)
+- [`openwrt/podkop-subscription-legacy-upgrade.patch`](openwrt/podkop-subscription-legacy-upgrade.patch)
+- [`openwrt/podkop-subscription-actions-upgrade.patch`](openwrt/podkop-subscription-actions-upgrade.patch)
 
 ## Проверка
 

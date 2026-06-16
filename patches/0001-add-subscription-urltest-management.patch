@@ -1,7 +1,7 @@
 From 28a46a9fef78e38e845cada1f61fbffadf67afc7 Mon Sep 17 00:00:00 2001
 From: Codex <codex@example.local>
 Date: Mon, 15 Jun 2026 09:39:26 +0300
-Subject: [PATCH] Add subscription URLTest management
+Subject: [PATCH 1/4] Add subscription URLTest management
 
 ---
  fe-app-podkop/locales/calls.json              |  917 ++++++++++-----
