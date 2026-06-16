@@ -117,7 +117,6 @@ trap 'rm -rf "$tmp_dir"' EXIT
 
 [ -x /usr/bin/podkop ] || fail "Podkop is not installed at /usr/bin/podkop"
 command -v base64 >/dev/null 2>&1 || fail "base64 utility is required"
-require_patch
 
 download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
@@ -126,6 +125,7 @@ if has_latest_subscription_backend; then
 	log "Subscription URLTest actions backend is already installed; refreshing LuCI files."
 	backup_runtime
 elif has_batch_subscription_backend; then
+	require_patch
 	download "$RAW_BASE/$ACTIONS_UPGRADE_PATCH_FILE" "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"
 	backup_runtime
 
@@ -133,6 +133,7 @@ elif has_batch_subscription_backend; then
 		abort_with_restore "runtime actions upgrade patch failed"
 	fi
 elif has_legacy_subscription_backend; then
+	require_patch
 	download "$RAW_BASE/$LEGACY_UPGRADE_PATCH_FILE" "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"
 	backup_runtime
 
@@ -140,6 +141,7 @@ elif has_legacy_subscription_backend; then
 		abort_with_restore "runtime legacy upgrade patch failed"
 	fi
 else
+	require_patch
 	download "$RAW_BASE/$PATCH_FILE" "$tmp_dir/$PATCH_FILE"
 	backup_runtime
 
