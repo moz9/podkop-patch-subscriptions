@@ -10,13 +10,14 @@
 Выполнить уже внутри SSH-сессии на роутере:
 
 ```sh
-wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/v2026.06.16-subscriptions-actions-fix1/openwrt/install.sh && sh /tmp/podkop-subscriptions-install.sh
+wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/v2026.06.16-subscriptions-actions-fix2/openwrt/install.sh && sh /tmp/podkop-subscriptions-install.sh
 ```
 
 Установщик:
 
 - скачивает runtime-патч и русскую LuCI-переводку;
 - делает резервную копию изменяемых файлов в `/root/podkop-patch-subscriptions-backup-*`;
+- по умолчанию хранит только 2 последние резервные копии;
 - применяет патч поверх уже установленного Podkop;
 - проверяет shell-синтаксис;
 - перезагружает Podkop и LuCI;

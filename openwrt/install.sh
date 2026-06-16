@@ -1,8 +1,9 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-actions-fix1}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-actions-fix2}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
+BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
@@ -61,6 +62,42 @@ require_patch() {
 	command -v patch >/dev/null 2>&1 || fail "patch utility is required"
 }
 
+get_path_size() {
+	path="$1"
+
+	if command -v du >/dev/null 2>&1; then
+		du -sh "$path" 2>/dev/null | awk '{print $1}'
+	else
+		echo "unknown"
+	fi
+}
+
+cleanup_old_backups() {
+	keep="$BACKUPS_KEEP"
+	count=0
+
+	case "$keep" in
+		"" | *[!0-9]*)
+			keep=2
+			;;
+	esac
+
+	if [ "$keep" -lt 1 ]; then
+		keep=1
+	fi
+
+	for dir in $(ls -1d /root/podkop-patch-subscriptions-backup-* 2>/dev/null | sort -r); do
+		[ -d "$dir" ] || continue
+		count=$((count + 1))
+		if [ "$count" -gt "$keep" ]; then
+			rm -rf "$dir"
+			log "Removed old backup: $dir"
+		fi
+	done
+
+	log "Keeping last $keep backup(s)."
+}
+
 backup_runtime() {
 	backup_dir="/root/podkop-patch-subscriptions-backup-$(date +%Y%m%d-%H%M%S)"
 	mkdir -p "$backup_dir"
@@ -74,6 +111,7 @@ backup_runtime() {
 	done
 
 	log "Backup: $backup_dir"
+	log "Backup size: $(get_path_size "$backup_dir")"
 }
 
 restore_runtime() {
@@ -193,3 +231,4 @@ fi
 
 log "Installed Subscription URLTest patch."
 log "Backup saved at: $backup_dir"
+cleanup_old_backups
