@@ -1,0 +1,121 @@
+From 5c0f80f34d3e97956daf4361395423bcf8d48472 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Tue, 16 Jun 2026 20:41:03 +0300
+Subject: [PATCH] Use larger samples for subscription speed benchmark
+
+---
+ podkop/files/usr/bin/podkop | 76 ++++++++++++++++++++++++++++---------
+ 1 file changed, 58 insertions(+), 18 deletions(-)
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 57c6f9e..a6dfaf2 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1664,6 +1664,18 @@ get_subscription_benchmark_port() {
+     echo "42080"
+ }
+ 
++get_subscription_benchmark_bytes() {
++    echo "8388608"
++}
++
++get_subscription_benchmark_warmup_bytes() {
++    echo "262144"
++}
++
++get_subscription_benchmark_attempts() {
++    echo "2"
++}
++
+ subscription_speedtest_restore_mixed_proxy() {
+     local section="$1"
+     local original_mixed_enabled="$2"
+@@ -1720,7 +1732,9 @@ subscription_speedtest() {
+     local section="$1"
+     local items_cache_path active_items_file results_file clash_url auth_header selector_tag original_proxy \
+         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
+-        item_json id name tag index output bytes_per_second time_total size_download http_code results_json
++        warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
++        output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
++        best_time_total best_size_download best_http_code
+ 
+     if [ -z "$section" ]; then
+         echo '{"success":false,"error":"section_required"}'
+@@ -1797,7 +1811,12 @@ subscription_speedtest() {
+         return 1
+     fi
+ 
+-    benchmark_url="https://speed.cloudflare.com/__down?bytes=1048576"
++    benchmark_bytes="$(get_subscription_benchmark_bytes)"
++    warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"
++    benchmark_attempts="$(get_subscription_benchmark_attempts)"
++    min_size_download=$((benchmark_bytes * 9 / 10))
++    benchmark_url="https://speed.cloudflare.com/__down?bytes=$benchmark_bytes"
++    warmup_url="https://speed.cloudflare.com/__down?bytes=$warmup_bytes"
+     index=1
+     while IFS= read -r item_json || [ -n "$item_json" ]; do
+         [ -n "$item_json" ] || continue
+@@ -1813,23 +1832,44 @@ subscription_speedtest() {
+         fi
+ 
+         sleep 1
+-        output="$(
+-            curl -L -s -o /dev/null \
+-                -x "http://$mixed_address:$mixed_port" \
+-                --connect-timeout 8 \
+-                -m 20 \
+-                -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
+-                "$benchmark_url" 2> /dev/null
+-        )"
+-
+-        bytes_per_second="$(echo "$output" | awk '{printf "%d", $1}')"
+-        time_total="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
+-        size_download="$(echo "$output" | awk '{printf "%d", $3}')"
+-        http_code="$(echo "$output" | awk '{printf "%d", $4}')"
+-
+-        if [ "${bytes_per_second:-0}" -gt 0 ] && [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
++        curl -L -s -o /dev/null \
++            -x "http://$mixed_address:$mixed_port" \
++            --connect-timeout 6 \
++            -m 10 \
++            "$warmup_url" > /dev/null 2>&1 || true
++
++        best_bytes_per_second=0
++        best_time_total=0
++        best_size_download=0
++        best_http_code=0
++        for attempt in $(seq 1 "$benchmark_attempts"); do
++            output="$(
++                curl -L -s -o /dev/null \
++                    -x "http://$mixed_address:$mixed_port" \
++                    --connect-timeout 8 \
++                    -m 35 \
++                    -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
++                    "$benchmark_url" 2> /dev/null
++            )"
++
++            bytes_per_second="$(echo "$output" | awk '{printf "%d", $1}')"
++            time_total="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
++            size_download="$(echo "$output" | awk '{printf "%d", $3}')"
++            http_code="$(echo "$output" | awk '{printf "%d", $4}')"
++
++            if [ "${bytes_per_second:-0}" -gt "$best_bytes_per_second" ] &&
++                [ "${size_download:-0}" -ge "$min_size_download" ] &&
++                [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
++                best_bytes_per_second="${bytes_per_second:-0}"
++                best_time_total="${time_total:-0}"
++                best_size_download="${size_download:-0}"
++                best_http_code="${http_code:-0}"
++            fi
++        done
++
++        if [ "$best_bytes_per_second" -gt 0 ]; then
+             subscription_speedtest_result_success "$id" "$tag" "$name" \
+-                "${bytes_per_second:-0}" "${time_total:-0}" "${size_download:-0}" "${http_code:-0}" >> "$results_file"
++                "$best_bytes_per_second" "$best_time_total" "$best_size_download" "$best_http_code" >> "$results_file"
+         else
+             subscription_speedtest_result_error "$id" "$tag" "$name" "download_failed" >> "$results_file"
+         fi
+-- 
+2.54.0.windows.1
+

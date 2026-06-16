@@ -1,5 +1,5 @@
 diff --git a/usr/bin/podkop b/usr/bin/podkop
-index e3af7c0..57c6f9e 100644
+index e3af7c0..a6dfaf2 100644
 --- a/usr/bin/podkop
 +++ b/usr/bin/podkop
 @@ -33,6 +33,8 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
@@ -50,17 +50,17 @@ index e3af7c0..57c6f9e 100644
  }
  
  stop_main() {
-@@ -342,208 +350,1557 @@ backup_dnsmasq_config_option() {
-     local value
-     value="$(uci_get "dhcp" "@dnsmasq[0]" "$key")"
+@@ -347,203 +355,1592 @@ backup_dnsmasq_config_option() {
+     fi
+ }
  
--    if [ -n "$value" ]; then
--        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
-+    if [ -n "$value" ]; then
-+        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
-+    fi
-+}
-+
+-dnsmasq_configure() {
+-    local shutdown_correctly
+-    config_get shutdown_correctly "settings" "shutdown_correctly"
+-    if [ "$shutdown_correctly" -eq 0 ]; then
+-        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
+-        return 0
+-    fi
 +dnsmasq_configure() {
 +    local shutdown_correctly
 +    config_get shutdown_correctly "settings" "shutdown_correctly"
@@ -1338,16 +1338,9 @@ index e3af7c0..57c6f9e 100644
 +
 +    if [ "$enable_yacd_wan_access" -eq 1 ]; then
 +        echo "Authorization: Bearer $yacd_secret_key"
-     fi
- }
- 
--dnsmasq_configure() {
--    local shutdown_correctly
--    config_get shutdown_correctly "settings" "shutdown_correctly"
--    if [ "$shutdown_correctly" -eq 0 ]; then
--        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
--        return 0
--    fi
++    fi
++}
++
 +clash_api_get_proxy_now() {
 +    local clash_url="$1"
 +    local auth_header="$2"
@@ -1413,16 +1406,28 @@ index e3af7c0..57c6f9e 100644
 -        uci_set "dhcp" "@dnsmasq[0]" "cachesize" "$cachesize"
 -        uci_remove "dhcp" "@dnsmasq[0]" "podkop_cachesize"
 -    fi
-+subscription_speedtest_restore_mixed_proxy() {
-+    local section="$1"
-+    local original_mixed_enabled="$2"
-+    local original_mixed_port="$3"
-+    local mixed_changed="$4"
++get_subscription_benchmark_bytes() {
++    echo "8388608"
++}
  
 -    log "Restoring noresolv" "debug"
 -    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_noresolv")"
 -    if [ -z "$noresolv" ]; then
 -        uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
++get_subscription_benchmark_warmup_bytes() {
++    echo "262144"
++}
++
++get_subscription_benchmark_attempts() {
++    echo "2"
++}
++
++subscription_speedtest_restore_mixed_proxy() {
++    local section="$1"
++    local original_mixed_enabled="$2"
++    local original_mixed_port="$3"
++    local mixed_changed="$4"
++
 +    [ "$mixed_changed" -eq 1 ] || return 0
 +
 +    if [ -n "$original_mixed_enabled" ]; then
@@ -1522,7 +1527,14 @@ index e3af7c0..57c6f9e 100644
 +    local section="$1"
 +    local items_cache_path active_items_file results_file clash_url auth_header selector_tag original_proxy \
 +        original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
-+        item_json id name tag index output bytes_per_second time_total size_download http_code results_json
++        warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
++        output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
++        best_time_total best_size_download best_http_code
++
++    if [ -z "$section" ]; then
++        echo '{"success":false,"error":"section_required"}'
++        return 1
++    fi
  
 -    if [ -n "$community_lists" ] ||
 -        [ -n "$remote_domain_lists" ] ||
@@ -1533,8 +1545,8 @@ index e3af7c0..57c6f9e 100644
 -            echo "$cron_job"
 -        } | crontab -
 -        log "The cron job has been created: $cron_job"
-+    if [ -z "$section" ]; then
-+        echo '{"success":false,"error":"section_required"}'
++    if ! validate_subscription_urltest_section "$section"; then
++        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
 +        return 1
      fi
 -}
@@ -1543,16 +1555,16 @@ index e3af7c0..57c6f9e 100644
 -    (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
 -    log "The cron job removed"
 -}
-+    if ! validate_subscription_urltest_section "$section"; then
-+        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
-+        return 1
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$items_cache_path" ]; then
++        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
 +    fi
  
 -list_update() {
 -    echolog "🔄 Starting lists update..."
-+    items_cache_path="$(get_subscription_items_cache_path "$section")"
 +    if [ ! -s "$items_cache_path" ]; then
-+        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
++        echo '{"success":false,"error":"subscription_cache_missing"}'
++        return 1
 +    fi
  
 -    local nslookup_timeout=3
@@ -1562,51 +1574,26 @@ index e3af7c0..57c6f9e 100644
 -    local curl_max_timeout=10
 -    local delay=3
 -    local i
-+    if [ ! -s "$items_cache_path" ]; then
-+        echo '{"success":false,"error":"subscription_cache_missing"}'
-+        return 1
-+    fi
++    active_items_file="$(mktemp)"
++    results_file="$(mktemp)"
++    jq -c '.[] | select(.supported == true and .enabled == true)' "$items_cache_path" > "$active_items_file"
  
 -    # DNS Check
 -    for i in $(seq 1 $nslookup_attempts); do
 -        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
 -            echolog "✅ DNS check passed"
 -            break
--        fi
--        echolog "DNS is unavailable [$i/$nslookup_attempts]"
--        sleep $delay
--    done
-+    active_items_file="$(mktemp)"
-+    results_file="$(mktemp)"
-+    jq -c '.[] | select(.supported == true and .enabled == true)' "$items_cache_path" > "$active_items_file"
- 
--    if [ "$i" -eq $nslookup_attempts ]; then
--        echolog "❌ DNS check failed after $nslookup_attempts attempts"
 +    if [ ! -s "$active_items_file" ]; then
 +        rm -f "$active_items_file" "$results_file"
 +        echo '{"success":false,"error":"no_enabled_links"}'
-         return 1
-     fi
- 
--    # Github Check
--    for i in $(seq 1 $curl_attempts); do
--        local service_proxy_address
--        service_proxy_address="$(get_service_proxy_address)"
++        return 1
++    fi
++
 +    clash_url="$(get_clash_api_base_url)"
 +    auth_header="$(get_clash_api_auth_header)"
 +    selector_tag="$(get_outbound_tag_by_section "$section")"
 +    original_proxy="$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")"
- 
--        if [ -n "$http_proxy_address" ]; then
--            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
--                echolog "✅ GitHub connection check passed (via proxy)"
--                break
--            fi
--        else
--            if curl -s -m $curl_timeout https://github.com > /dev/null; then
--                echolog "✅ GitHub connection check passed"
--                break
--            fi
++
 +    if [ -z "$original_proxy" ]; then
 +        rm -f "$active_items_file" "$results_file"
 +        echo '{"success":false,"error":"selector_not_available"}'
@@ -1627,24 +1614,22 @@ index e3af7c0..57c6f9e 100644
 +            echo '{"success":false,"error":"uci_commit_failed"}'
 +            return 1
          fi
+-        echolog "DNS is unavailable [$i/$nslookup_attempts]"
+-        sleep $delay
+-    done
 +        config_load "$PODKOP_CONFIG"
 +        mixed_changed=1
  
--        echolog "GitHub is unavailable [$i/$curl_attempts] (max-timeout=$curl_timeout)"
--        if [ "$curl_timeout" -lt $curl_max_timeout ]; then
--            curl_timeout=$((curl_timeout + 1))
+-    if [ "$i" -eq $nslookup_attempts ]; then
+-        echolog "❌ DNS check failed after $nslookup_attempts attempts"
 +        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
 +            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
 +            rm -f "$active_items_file" "$results_file"
 +            echo '{"success":false,"error":"reload_failed"}'
 +            return 1
-         fi
--        sleep $delay
--    done
++        fi
 +    fi
- 
--    if [ "$i" -eq $curl_attempts ]; then
--        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
++
 +    mixed_address="$(get_service_listen_address)"
 +    if [ -z "$mixed_address" ]; then
 +        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
@@ -1654,65 +1639,113 @@ index e3af7c0..57c6f9e 100644
          return 1
      fi
  
--    echolog "📥 Downloading and processing lists..."
-+    benchmark_url="https://speed.cloudflare.com/__down?bytes=1048576"
+-    # Github Check
+-    for i in $(seq 1 $curl_attempts); do
+-        local service_proxy_address
+-        service_proxy_address="$(get_service_proxy_address)"
++    benchmark_bytes="$(get_subscription_benchmark_bytes)"
++    warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"
++    benchmark_attempts="$(get_subscription_benchmark_attempts)"
++    min_size_download=$((benchmark_bytes * 9 / 10))
++    benchmark_url="https://speed.cloudflare.com/__down?bytes=$benchmark_bytes"
++    warmup_url="https://speed.cloudflare.com/__down?bytes=$warmup_bytes"
 +    index=1
 +    while IFS= read -r item_json || [ -n "$item_json" ]; do
 +        [ -n "$item_json" ] || continue
- 
--    config_foreach import_community_subnet_lists "section"
--    config_foreach import_domains_from_remote_domain_lists "section"
--    config_foreach import_subnets_from_remote_subnet_lists "section"
++
 +        id="$(echo "$item_json" | jq -r '.id')"
 +        name="$(echo "$item_json" | jq -r '.name // ""')"
 +        tag="$(get_outbound_tag_by_section "$section-$index")"
- 
--    if [ $? -eq 0 ]; then
--        echolog "✅ Lists update completed successfully"
++
 +        if ! clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$tag"; then
 +            subscription_speedtest_result_error "$id" "$tag" "$name" "select_failed" >> "$results_file"
 +            index=$((index + 1))
 +            continue
 +        fi
-+
+ 
+-        if [ -n "$http_proxy_address" ]; then
+-            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
+-                echolog "✅ GitHub connection check passed (via proxy)"
+-                break
 +        sleep 1
-+        output="$(
-+            curl -L -s -o /dev/null \
-+                -x "http://$mixed_address:$mixed_port" \
-+                --connect-timeout 8 \
-+                -m 20 \
-+                -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
-+                "$benchmark_url" 2> /dev/null
-+        )"
++        curl -L -s -o /dev/null \
++            -x "http://$mixed_address:$mixed_port" \
++            --connect-timeout 6 \
++            -m 10 \
++            "$warmup_url" > /dev/null 2>&1 || true
 +
-+        bytes_per_second="$(echo "$output" | awk '{printf "%d", $1}')"
-+        time_total="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
-+        size_download="$(echo "$output" | awk '{printf "%d", $3}')"
-+        http_code="$(echo "$output" | awk '{printf "%d", $4}')"
++        best_bytes_per_second=0
++        best_time_total=0
++        best_size_download=0
++        best_http_code=0
++        for attempt in $(seq 1 "$benchmark_attempts"); do
++            output="$(
++                curl -L -s -o /dev/null \
++                    -x "http://$mixed_address:$mixed_port" \
++                    --connect-timeout 8 \
++                    -m 35 \
++                    -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
++                    "$benchmark_url" 2> /dev/null
++            )"
 +
-+        if [ "${bytes_per_second:-0}" -gt 0 ] && [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
++            bytes_per_second="$(echo "$output" | awk '{printf "%d", $1}')"
++            time_total="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
++            size_download="$(echo "$output" | awk '{printf "%d", $3}')"
++            http_code="$(echo "$output" | awk '{printf "%d", $4}')"
++
++            if [ "${bytes_per_second:-0}" -gt "$best_bytes_per_second" ] &&
++                [ "${size_download:-0}" -ge "$min_size_download" ] &&
++                [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
++                best_bytes_per_second="${bytes_per_second:-0}"
++                best_time_total="${time_total:-0}"
++                best_size_download="${size_download:-0}"
++                best_http_code="${http_code:-0}"
+             fi
++        done
++
++        if [ "$best_bytes_per_second" -gt 0 ]; then
 +            subscription_speedtest_result_success "$id" "$tag" "$name" \
-+                "${bytes_per_second:-0}" "${time_total:-0}" "${size_download:-0}" "${http_code:-0}" >> "$results_file"
-+        else
++                "$best_bytes_per_second" "$best_time_total" "$best_size_download" "$best_http_code" >> "$results_file"
+         else
+-            if curl -s -m $curl_timeout https://github.com > /dev/null; then
+-                echolog "✅ GitHub connection check passed"
+-                break
+-            fi
 +            subscription_speedtest_result_error "$id" "$tag" "$name" "download_failed" >> "$results_file"
-+        fi
-+
+         fi
+ 
+-        echolog "GitHub is unavailable [$i/$curl_attempts] (max-timeout=$curl_timeout)"
+-        if [ "$curl_timeout" -lt $curl_max_timeout ]; then
+-            curl_timeout=$((curl_timeout + 1))
+-        fi
+-        sleep $delay
+-    done
 +        index=$((index + 1))
 +    done < "$active_items_file"
-+
+ 
+-    if [ "$i" -eq $curl_attempts ]; then
+-        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
+-        return 1
+-    fi
 +    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
 +    subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
-+
+ 
+-    echolog "📥 Downloading and processing lists..."
 +    results_json="$(jq -s '.' "$results_file")"
 +    rm -f "$active_items_file" "$results_file"
 +    jq -cn --arg section "$section" --argjson results "$results_json" \
 +        '{success:true, section:$section, results:$results}'
 +}
-+
+ 
+-    config_foreach import_community_subnet_lists "section"
+-    config_foreach import_domains_from_remote_domain_lists "section"
+-    config_foreach import_subnets_from_remote_subnet_lists "section"
 +subscription_patch_update_status_file() {
 +    echo "/tmp/podkop-subscriptions-patch-update.json"
 +}
-+
+ 
+-    if [ $? -eq 0 ]; then
+-        echolog "✅ Lists update completed successfully"
 +subscription_patch_update() {
 +    local status_file runner
 +
@@ -1768,7 +1801,7 @@ index e3af7c0..57c6f9e 100644
      fi
  }
  
-@@ -678,6 +2035,63 @@ configure_outbound_handler() {
+@@ -678,6 +2075,63 @@ configure_outbound_handler() {
              config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
                  "$default_outbound")"
              ;;
@@ -1832,7 +1865,7 @@ index e3af7c0..57c6f9e 100644
          urltest)
              log "Detected proxy configuration type: urltest" "debug"
              local urltest_proxy_links udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
-@@ -1842,6 +3256,8 @@ show_config() {
+@@ -1842,6 +3296,8 @@ show_config() {
          -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
          -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
          -e 's/\(list selector_proxy_links\).*/\1 '\''MASKED'\''/g' \
@@ -1841,7 +1874,7 @@ index e3af7c0..57c6f9e 100644
          -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e "s@\\(option domain_resolver_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
-@@ -2669,6 +4085,14 @@ Available commands:
+@@ -2669,6 +4125,14 @@ Available commands:
      restart                 Restart podkop service
      main                    Run main podkop process
      list_update             Update domain lists
@@ -1856,7 +1889,7 @@ index e3af7c0..57c6f9e 100644
      check_proxy             Check proxy connectivity
      check_nft               Check NFT rules
      check_nft_rules         Check NFT rules status
-@@ -2677,6 +4101,18 @@ Available commands:
+@@ -2677,6 +4141,18 @@ Available commands:
      check_sing_box_logs     Show sing-box logs
      check_fakeip            Test FakeIP on router
      clash_api               Clash API interface for managing proxies and groups
@@ -1875,7 +1908,7 @@ index e3af7c0..57c6f9e 100644
      show_config             Display current podkop configuration
      show_version            Show podkop version
      show_sing_box_config    Show sing-box configuration
-@@ -2709,6 +4145,21 @@ main)
+@@ -2709,6 +4185,21 @@ main)
  list_update)
      list_update
      ;;
@@ -1897,7 +1930,7 @@ index e3af7c0..57c6f9e 100644
  check_proxy)
      check_proxy
      ;;
-@@ -2733,6 +4184,25 @@ check_fakeip)
+@@ -2733,6 +4224,25 @@ check_fakeip)
  clash_api)
      clash_api "$2" "$3" "$4"
      ;;

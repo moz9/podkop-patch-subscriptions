@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-speedtest-fix}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-realbench-fix}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -145,7 +145,7 @@ abort_with_restore() {
 
 has_latest_subscription_backend() {
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
-	[ "${count:-0}" -ge 3 ]
+	[ "${count:-0}" -ge 3 ] && grep -q "benchmark_bytes" /usr/bin/podkop 2>/dev/null
 }
 
 has_cache_only_subscription_backend() {

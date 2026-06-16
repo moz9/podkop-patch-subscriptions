@@ -104,4 +104,202 @@ $0 == "    /etc/init.d/podkop reload > /dev/null 2>&1" {
 cat "$tmp" > "$target"
 rm -f "$tmp"
 
+if ! grep -q 'benchmark_bytes="8388608"' "$target" 2>/dev/null; then
+	speedtest_function="$(mktemp)"
+	cat > "$speedtest_function" <<'SPEEDTEST_EOF'
+subscription_speedtest() {
+    local section="$1"
+    local items_cache_path active_items_file results_file clash_url auth_header selector_tag original_proxy \
+        original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
+        warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
+        output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
+        best_time_total best_size_download best_http_code
+
+    if [ -z "$section" ]; then
+        echo '{"success":false,"error":"section_required"}'
+        return 1
+    fi
+
+    if ! validate_subscription_urltest_section "$section"; then
+        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
+        return 1
+    fi
+
+    items_cache_path="$(get_subscription_items_cache_path "$section")"
+    if [ ! -s "$items_cache_path" ]; then
+        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
+    fi
+
+    if [ ! -s "$items_cache_path" ]; then
+        echo '{"success":false,"error":"subscription_cache_missing"}'
+        return 1
+    fi
+
+    active_items_file="$(mktemp)"
+    results_file="$(mktemp)"
+    jq -c '.[] | select(.supported == true and .enabled == true)' "$items_cache_path" > "$active_items_file"
+
+    if [ ! -s "$active_items_file" ]; then
+        rm -f "$active_items_file" "$results_file"
+        echo '{"success":false,"error":"no_enabled_links"}'
+        return 1
+    fi
+
+    clash_url="$(get_clash_api_base_url)"
+    auth_header="$(get_clash_api_auth_header)"
+    selector_tag="$(get_outbound_tag_by_section "$section")"
+    original_proxy="$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")"
+
+    if [ -z "$original_proxy" ]; then
+        rm -f "$active_items_file" "$results_file"
+        echo '{"success":false,"error":"selector_not_available"}'
+        return 1
+    fi
+
+    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
+    config_get original_mixed_port "$section" "mixed_proxy_port"
+    mixed_port="$original_mixed_port"
+    [ -n "$mixed_port" ] || mixed_port="$(get_subscription_benchmark_port "$section")"
+    mixed_changed=0
+
+    if [ "$original_mixed_enabled" != "1" ] || [ -z "$original_mixed_port" ]; then
+        uci -q set "podkop.$section.mixed_proxy_enabled=1"
+        uci -q set "podkop.$section.mixed_proxy_port=$mixed_port"
+        if ! uci commit podkop > /dev/null 2>&1; then
+            rm -f "$active_items_file" "$results_file"
+            echo '{"success":false,"error":"uci_commit_failed"}'
+            return 1
+        fi
+        config_load "$PODKOP_CONFIG"
+        mixed_changed=1
+
+        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
+            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+            rm -f "$active_items_file" "$results_file"
+            echo '{"success":false,"error":"reload_failed"}'
+            return 1
+        fi
+    fi
+
+    mixed_address="$(get_service_listen_address)"
+    if [ -z "$mixed_address" ]; then
+        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+        rm -f "$active_items_file" "$results_file"
+        echo '{"success":false,"error":"mixed_proxy_address_missing"}'
+        return 1
+    fi
+
+    benchmark_bytes="8388608"
+    warmup_bytes="262144"
+    benchmark_attempts="2"
+    min_size_download=$((benchmark_bytes * 9 / 10))
+    benchmark_url="https://speed.cloudflare.com/__down?bytes=$benchmark_bytes"
+    warmup_url="https://speed.cloudflare.com/__down?bytes=$warmup_bytes"
+    index=1
+    while IFS= read -r item_json || [ -n "$item_json" ]; do
+        [ -n "$item_json" ] || continue
+
+        id="$(echo "$item_json" | jq -r '.id')"
+        name="$(echo "$item_json" | jq -r '.name // ""')"
+        tag="$(get_outbound_tag_by_section "$section-$index")"
+
+        if ! clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$tag"; then
+            subscription_speedtest_result_error "$id" "$tag" "$name" "select_failed" >> "$results_file"
+            index=$((index + 1))
+            continue
+        fi
+
+        sleep 1
+        curl -L -s -o /dev/null \
+            -x "http://$mixed_address:$mixed_port" \
+            --connect-timeout 6 \
+            -m 10 \
+            "$warmup_url" > /dev/null 2>&1 || true
+
+        best_bytes_per_second=0
+        best_time_total=0
+        best_size_download=0
+        best_http_code=0
+        for attempt in $(seq 1 "$benchmark_attempts"); do
+            output="$(
+                curl -L -s -o /dev/null \
+                    -x "http://$mixed_address:$mixed_port" \
+                    --connect-timeout 8 \
+                    -m 35 \
+                    -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
+                    "$benchmark_url" 2> /dev/null
+            )"
+
+            bytes_per_second="$(echo "$output" | awk '{printf "%d", $1}')"
+            time_total="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
+            size_download="$(echo "$output" | awk '{printf "%d", $3}')"
+            http_code="$(echo "$output" | awk '{printf "%d", $4}')"
+
+            if [ "${bytes_per_second:-0}" -gt "$best_bytes_per_second" ] &&
+                [ "${size_download:-0}" -ge "$min_size_download" ] &&
+                [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
+                best_bytes_per_second="${bytes_per_second:-0}"
+                best_time_total="${time_total:-0}"
+                best_size_download="${size_download:-0}"
+                best_http_code="${http_code:-0}"
+            fi
+        done
+
+        if [ "$best_bytes_per_second" -gt 0 ]; then
+            subscription_speedtest_result_success "$id" "$tag" "$name" \
+                "$best_bytes_per_second" "$best_time_total" "$best_size_download" "$best_http_code" >> "$results_file"
+        else
+            subscription_speedtest_result_error "$id" "$tag" "$name" "download_failed" >> "$results_file"
+        fi
+
+        index=$((index + 1))
+    done < "$active_items_file"
+
+    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+    subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+
+    results_json="$(jq -s '.' "$results_file")"
+    rm -f "$active_items_file" "$results_file"
+    jq -cn --arg section "$section" --argjson results "$results_json" \
+        '{success:true, section:$section, results:$results}'
+}
+SPEEDTEST_EOF
+
+	awk -v replacement_file="$speedtest_function" '
+	BEGIN {
+		while ((getline line < replacement_file) > 0) {
+			replacement[++replacement_count] = line
+		}
+		close(replacement_file)
+		in_speedtest = 0
+	}
+
+	$0 == "subscription_speedtest() {" {
+		for (i = 1; i <= replacement_count; i++) {
+			print replacement[i]
+		}
+		in_speedtest = 1
+		next
+	}
+
+	in_speedtest && $0 == "subscription_patch_update_status_file() {" {
+		in_speedtest = 0
+		print
+		next
+	}
+
+	in_speedtest {
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp" "$speedtest_function"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp" "$speedtest_function"
+fi
+
 chmod 755 "$target"
