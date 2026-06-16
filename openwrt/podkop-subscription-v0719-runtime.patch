@@ -1,5 +1,5 @@
 diff --git a/usr/bin/podkop b/usr/bin/podkop
-index e3af7c0..a6dfaf2 100644
+index e3af7c0..ea1f33b 100644
 --- a/usr/bin/podkop
 +++ b/usr/bin/podkop
 @@ -33,6 +33,8 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
@@ -50,17 +50,26 @@ index e3af7c0..a6dfaf2 100644
  }
  
  stop_main() {
-@@ -347,203 +355,1592 @@ backup_dnsmasq_config_option() {
+@@ -336,214 +344,1620 @@ create_nft_rules() {
      fi
  }
  
--dnsmasq_configure() {
--    local shutdown_correctly
--    config_get shutdown_correctly "settings" "shutdown_correctly"
--    if [ "$shutdown_correctly" -eq 0 ]; then
--        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
--        return 0
--    fi
+-backup_dnsmasq_config_option() {
+-    local key="$1"
+-    local backup_key="$2"
+-    local value
+-    value="$(uci_get "dhcp" "@dnsmasq[0]" "$key")"
++backup_dnsmasq_config_option() {
++    local key="$1"
++    local backup_key="$2"
++    local value
++    value="$(uci_get "dhcp" "@dnsmasq[0]" "$key")"
++
++    if [ -n "$value" ]; then
++        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
++    fi
++}
++
 +dnsmasq_configure() {
 +    local shutdown_correctly
 +    config_get shutdown_correctly "settings" "shutdown_correctly"
@@ -1345,75 +1354,44 @@ index e3af7c0..a6dfaf2 100644
 +    local clash_url="$1"
 +    local auth_header="$2"
 +    local proxy_tag="$3"
- 
--    log "Backup dnsmasq configuration"
--    current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
--    if [ -n "$current_servers" ]; then
--        for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
--            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
--                uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
--            fi
--        done
--        uci_remove "dhcp" "@dnsmasq[0]" "server"
--    fi
++
 +    curl -s --header "$auth_header" "$clash_url/proxies/$proxy_tag" | jq -r '.now // ""'
 +}
- 
--    backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
--    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
++
 +clash_api_set_group_proxy_raw() {
 +    local clash_url="$1"
 +    local auth_header="$2"
 +    local group_tag="$3"
 +    local proxy_tag="$4"
 +    local response http_code
- 
--    log "Configure dnsmasq for sing-box"
--    uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
--    uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
--    uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
--    uci_commit "dhcp"
++
 +    response=$(
 +        curl -X PUT -s -w "\n%{http_code}" "$clash_url/proxies/$group_tag" \
 +            --header "$auth_header" \
 +            --data-raw "{\"name\":\"$proxy_tag\"}"
 +    )
 +    http_code="$(echo "$response" | tail -n 1)"
- 
--    /etc/init.d/dnsmasq restart
++
 +    [ "$http_code" = "204" ]
- }
- 
--dnsmasq_restore() {
--    log "Restoring the dnsmasq configuration"
--    local shutdown_correctly
--    config_get shutdown_correctly "settings" "shutdown_correctly"
--    if [ "$shutdown_correctly" -eq 1 ]; then
--        log "Previous shutdown of podkop was correct, reconfiguration of dnsmasq is not required"
--        return 0
--    fi
++}
++
 +get_subscription_benchmark_port() {
 +    echo "42080"
 +}
  
--    local cachesize noresolv backup_servers resolvfile
--    log "Restoring cachesize" "debug"
--    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_cachesize")"
--    if [ -z "$cachesize" ]; then
--        uci_remove "dhcp" "@dnsmasq[0]" "cachesize"
--        uci_set "dhcp" "@dnsmasq[0]" "cachesize" 150
--    else
--        uci_set "dhcp" "@dnsmasq[0]" "cachesize" "$cachesize"
--        uci_remove "dhcp" "@dnsmasq[0]" "podkop_cachesize"
+-    if [ -n "$value" ]; then
+-        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
 -    fi
 +get_subscription_benchmark_bytes() {
 +    echo "8388608"
-+}
+ }
  
--    log "Restoring noresolv" "debug"
--    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_noresolv")"
--    if [ -z "$noresolv" ]; then
--        uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
+-dnsmasq_configure() {
+-    local shutdown_correctly
+-    config_get shutdown_correctly "settings" "shutdown_correctly"
+-    if [ "$shutdown_correctly" -eq 0 ]; then
+-        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
+-        return 0
 +get_subscription_benchmark_warmup_bytes() {
 +    echo "262144"
 +}
@@ -1432,10 +1410,105 @@ index e3af7c0..a6dfaf2 100644
 +
 +    if [ -n "$original_mixed_enabled" ]; then
 +        uci -q set "podkop.$section.mixed_proxy_enabled=$original_mixed_enabled"
-     else
++    else
++        uci -q delete "podkop.$section.mixed_proxy_enabled"
+     fi
+ 
+-    log "Backup dnsmasq configuration"
+-    current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
+-    if [ -n "$current_servers" ]; then
+-        for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
+-            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
+-                uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
+-            fi
+-        done
+-        uci_remove "dhcp" "@dnsmasq[0]" "server"
++    if [ -n "$original_mixed_port" ]; then
++        uci -q set "podkop.$section.mixed_proxy_port=$original_mixed_port"
++    else
++        uci -q delete "podkop.$section.mixed_proxy_port"
+     fi
+ 
+-    backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
+-    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
++    uci commit podkop > /dev/null 2>&1 || return 1
++    config_load "$PODKOP_CONFIG"
++    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1
++}
+ 
+-    log "Configure dnsmasq for sing-box"
+-    uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
+-    uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
+-    uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
+-    uci_commit "dhcp"
++subscription_speedtest_result_error() {
++    local id="$1"
++    local tag="$2"
++    local name="$3"
++    local error="$4"
+ 
+-    /etc/init.d/dnsmasq restart
++    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" --arg error "$error" \
++        '{id:$id, tag:$tag, name:$name, success:false, error:$error}'
+ }
+ 
+-dnsmasq_restore() {
+-    log "Restoring the dnsmasq configuration"
+-    local shutdown_correctly
+-    config_get shutdown_correctly "settings" "shutdown_correctly"
+-    if [ "$shutdown_correctly" -eq 1 ]; then
+-        log "Previous shutdown of podkop was correct, reconfiguration of dnsmasq is not required"
+-        return 0
+-    fi
++subscription_speedtest_result_success() {
++    local id="$1"
++    local tag="$2"
++    local name="$3"
++    local bytes_per_second="$4"
++    local time_total="$5"
++    local size_download="$6"
++    local http_code="$7"
++
++    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" \
++        --argjson bytesPerSecond "$bytes_per_second" \
++        --argjson timeTotal "$time_total" \
++        --argjson sizeDownload "$size_download" \
++        --argjson httpCode "$http_code" \
++        '{id:$id, tag:$tag, name:$name, success:true, bytesPerSecond:$bytesPerSecond, timeTotal:$timeTotal, sizeDownload:$sizeDownload, httpCode:$httpCode}'
++}
+ 
+-    local cachesize noresolv backup_servers resolvfile
+-    log "Restoring cachesize" "debug"
+-    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_cachesize")"
+-    if [ -z "$cachesize" ]; then
+-        uci_remove "dhcp" "@dnsmasq[0]" "cachesize"
+-        uci_set "dhcp" "@dnsmasq[0]" "cachesize" 150
+-    else
+-        uci_set "dhcp" "@dnsmasq[0]" "cachesize" "$cachesize"
+-        uci_remove "dhcp" "@dnsmasq[0]" "podkop_cachesize"
++subscription_speedtest() {
++    local section="$1"
++    local items_cache_path active_items_file results_file clash_url auth_header selector_tag original_proxy \
++        original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
++        warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
++        output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
++        best_time_total best_size_download best_http_code clash_ready
++
++    if [ -z "$section" ]; then
++        echo '{"success":false,"error":"section_required"}'
++        return 1
+     fi
+ 
+-    log "Restoring noresolv" "debug"
+-    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_noresolv")"
+-    if [ -z "$noresolv" ]; then
+-        uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
+-    else
 -        uci_set "dhcp" "@dnsmasq[0]" "noresolv" "$noresolv"
 -        uci_remove "dhcp" "@dnsmasq[0]" "podkop_noresolv"
-+        uci -q delete "podkop.$section.mixed_proxy_enabled"
++    if ! validate_subscription_urltest_section "$section"; then
++        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
++        return 1
      fi
  
 -    log "Restoring DNS servers" "debug"
@@ -1454,29 +1527,24 @@ index e3af7c0..a6dfaf2 100644
 -            log "Disabling noresolv option to use system resolvfile" "debug"
 -            uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
 -        fi
-+    if [ -n "$original_mixed_port" ]; then
-+        uci -q set "podkop.$section.mixed_proxy_port=$original_mixed_port"
-     else
+-    else
 -        log "Backup DNS servers and default resolvfile not found, possible resolving issues" "warn"
-+        uci -q delete "podkop.$section.mixed_proxy_port"
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$items_cache_path" ]; then
++        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
      fi
  
 -    uci_commit "dhcp"
-+    uci commit podkop > /dev/null 2>&1 || return 1
-+    config_load "$PODKOP_CONFIG"
-+    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1
-+}
++    if [ ! -s "$items_cache_path" ]; then
++        echo '{"success":false,"error":"subscription_cache_missing"}'
++        return 1
++    fi
  
 -    /etc/init.d/dnsmasq restart
-+subscription_speedtest_result_error() {
-+    local id="$1"
-+    local tag="$2"
-+    local name="$3"
-+    local error="$4"
-+
-+    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" --arg error "$error" \
-+        '{id:$id, tag:$tag, name:$name, success:false, error:$error}'
- }
+-}
++    active_items_file="$(mktemp)"
++    results_file="$(mktemp)"
++    jq -c '.[] | select(.supported == true and .enabled == true)' "$items_cache_path" > "$active_items_file"
  
 -add_cron_job() {
 -    ## Future: make a check so that it doesn't recreate many times
@@ -1485,22 +1553,11 @@ index e3af7c0..a6dfaf2 100644
 -    config_get remote_domain_lists "$section" "remote_domain_lists"
 -    config_get remote_subnet_lists "$section" "remote_subnet_lists"
 -    config_get update_interval "settings" "update_interval"
-+subscription_speedtest_result_success() {
-+    local id="$1"
-+    local tag="$2"
-+    local name="$3"
-+    local bytes_per_second="$4"
-+    local time_total="$5"
-+    local size_download="$6"
-+    local http_code="$7"
-+
-+    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" \
-+        --argjson bytesPerSecond "$bytes_per_second" \
-+        --argjson timeTotal "$time_total" \
-+        --argjson sizeDownload "$size_download" \
-+        --argjson httpCode "$http_code" \
-+        '{id:$id, tag:$tag, name:$name, success:true, bytesPerSecond:$bytesPerSecond, timeTotal:$timeTotal, sizeDownload:$sizeDownload, httpCode:$httpCode}'
-+}
++    if [ ! -s "$active_items_file" ]; then
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"no_enabled_links"}'
++        return 1
++    fi
  
 -    case "$update_interval" in
 -    "1h")
@@ -1523,18 +1580,10 @@ index e3af7c0..a6dfaf2 100644
 -        return
 -        ;;
 -    esac
-+subscription_speedtest() {
-+    local section="$1"
-+    local items_cache_path active_items_file results_file clash_url auth_header selector_tag original_proxy \
-+        original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
-+        warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
-+        output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
-+        best_time_total best_size_download best_http_code
-+
-+    if [ -z "$section" ]; then
-+        echo '{"success":false,"error":"section_required"}'
-+        return 1
-+    fi
++    clash_url="$(get_clash_api_base_url)"
++    auth_header="$(get_clash_api_auth_header)"
++    selector_tag="$(get_outbound_tag_by_section "$section")"
++    original_proxy="$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")"
  
 -    if [ -n "$community_lists" ] ||
 -        [ -n "$remote_domain_lists" ] ||
@@ -1545,8 +1594,9 @@ index e3af7c0..a6dfaf2 100644
 -            echo "$cron_job"
 -        } | crontab -
 -        log "The cron job has been created: $cron_job"
-+    if ! validate_subscription_urltest_section "$section"; then
-+        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
++    if [ -z "$original_proxy" ]; then
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"selector_not_available"}'
 +        return 1
      fi
 -}
@@ -1555,51 +1605,6 @@ index e3af7c0..a6dfaf2 100644
 -    (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
 -    log "The cron job removed"
 -}
-+    items_cache_path="$(get_subscription_items_cache_path "$section")"
-+    if [ ! -s "$items_cache_path" ]; then
-+        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
-+    fi
- 
--list_update() {
--    echolog "🔄 Starting lists update..."
-+    if [ ! -s "$items_cache_path" ]; then
-+        echo '{"success":false,"error":"subscription_cache_missing"}'
-+        return 1
-+    fi
- 
--    local nslookup_timeout=3
--    local nslookup_attempts=10
--    local curl_timeout=5
--    local curl_attempts=10
--    local curl_max_timeout=10
--    local delay=3
--    local i
-+    active_items_file="$(mktemp)"
-+    results_file="$(mktemp)"
-+    jq -c '.[] | select(.supported == true and .enabled == true)' "$items_cache_path" > "$active_items_file"
- 
--    # DNS Check
--    for i in $(seq 1 $nslookup_attempts); do
--        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
--            echolog "✅ DNS check passed"
--            break
-+    if [ ! -s "$active_items_file" ]; then
-+        rm -f "$active_items_file" "$results_file"
-+        echo '{"success":false,"error":"no_enabled_links"}'
-+        return 1
-+    fi
-+
-+    clash_url="$(get_clash_api_base_url)"
-+    auth_header="$(get_clash_api_auth_header)"
-+    selector_tag="$(get_outbound_tag_by_section "$section")"
-+    original_proxy="$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")"
-+
-+    if [ -z "$original_proxy" ]; then
-+        rm -f "$active_items_file" "$results_file"
-+        echo '{"success":false,"error":"selector_not_available"}'
-+        return 1
-+    fi
-+
 +    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
 +    config_get original_mixed_port "$section" "mixed_proxy_port"
 +    mixed_port="$original_mixed_port"
@@ -1613,15 +1618,12 @@ index e3af7c0..a6dfaf2 100644
 +            rm -f "$active_items_file" "$results_file"
 +            echo '{"success":false,"error":"uci_commit_failed"}'
 +            return 1
-         fi
--        echolog "DNS is unavailable [$i/$nslookup_attempts]"
--        sleep $delay
--    done
++        fi
 +        config_load "$PODKOP_CONFIG"
 +        mixed_changed=1
  
--    if [ "$i" -eq $nslookup_attempts ]; then
--        echolog "❌ DNS check failed after $nslookup_attempts attempts"
+-list_update() {
+-    echolog "🔄 Starting lists update..."
 +        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
 +            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
 +            rm -f "$active_items_file" "$results_file"
@@ -1629,13 +1631,45 @@ index e3af7c0..a6dfaf2 100644
 +            return 1
 +        fi
 +    fi
-+
+ 
+-    local nslookup_timeout=3
+-    local nslookup_attempts=10
+-    local curl_timeout=5
+-    local curl_attempts=10
+-    local curl_max_timeout=10
+-    local delay=3
+-    local i
 +    mixed_address="$(get_service_listen_address)"
 +    if [ -z "$mixed_address" ]; then
 +        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
 +        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
 +        rm -f "$active_items_file" "$results_file"
 +        echo '{"success":false,"error":"mixed_proxy_address_missing"}'
++        return 1
++    fi
+ 
+-    # DNS Check
+-    for i in $(seq 1 $nslookup_attempts); do
+-        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
+-            echolog "✅ DNS check passed"
++    clash_ready=0
++    for attempt in $(seq 1 10); do
++        if [ -n "$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")" ]; then
++            clash_ready=1
+             break
+         fi
+-        echolog "DNS is unavailable [$i/$nslookup_attempts]"
+-        sleep $delay
++        sleep 1
+     done
+ 
+-    if [ "$i" -eq $nslookup_attempts ]; then
+-        echolog "❌ DNS check failed after $nslookup_attempts attempts"
++    if [ "$clash_ready" -ne 1 ]; then
++        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"selector_not_available"}'
          return 1
      fi
  
@@ -1801,7 +1835,7 @@ index e3af7c0..a6dfaf2 100644
      fi
  }
  
-@@ -678,6 +2075,63 @@ configure_outbound_handler() {
+@@ -678,6 +2092,63 @@ configure_outbound_handler() {
              config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
                  "$default_outbound")"
              ;;
@@ -1865,7 +1899,7 @@ index e3af7c0..a6dfaf2 100644
          urltest)
              log "Detected proxy configuration type: urltest" "debug"
              local urltest_proxy_links udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
-@@ -1842,6 +3296,8 @@ show_config() {
+@@ -1842,6 +3313,8 @@ show_config() {
          -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
          -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
          -e 's/\(list selector_proxy_links\).*/\1 '\''MASKED'\''/g' \
@@ -1874,7 +1908,7 @@ index e3af7c0..a6dfaf2 100644
          -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e "s@\\(option domain_resolver_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
-@@ -2669,6 +4125,14 @@ Available commands:
+@@ -2669,6 +4142,14 @@ Available commands:
      restart                 Restart podkop service
      main                    Run main podkop process
      list_update             Update domain lists
@@ -1889,7 +1923,7 @@ index e3af7c0..a6dfaf2 100644
      check_proxy             Check proxy connectivity
      check_nft               Check NFT rules
      check_nft_rules         Check NFT rules status
-@@ -2677,6 +4141,18 @@ Available commands:
+@@ -2677,6 +4158,18 @@ Available commands:
      check_sing_box_logs     Show sing-box logs
      check_fakeip            Test FakeIP on router
      clash_api               Clash API interface for managing proxies and groups
@@ -1908,7 +1942,7 @@ index e3af7c0..a6dfaf2 100644
      show_config             Display current podkop configuration
      show_version            Show podkop version
      show_sing_box_config    Show sing-box configuration
-@@ -2709,6 +4185,21 @@ main)
+@@ -2709,6 +4202,21 @@ main)
  list_update)
      list_update
      ;;
@@ -1930,7 +1964,7 @@ index e3af7c0..a6dfaf2 100644
  check_proxy)
      check_proxy
      ;;
-@@ -2733,6 +4224,25 @@ check_fakeip)
+@@ -2733,6 +4241,25 @@ check_fakeip)
  clash_api)
      clash_api "$2" "$3" "$4"
      ;;

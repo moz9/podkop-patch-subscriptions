@@ -1,0 +1,49 @@
+From e4c67800798deefce7e0afb7fda09f329aeb1003 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Tue, 16 Jun 2026 21:36:06 +0300
+Subject: [PATCH] Wait for Clash API before subscription speed benchmark
+
+---
+ podkop/files/usr/bin/podkop | 19 ++++++++++++++++++-
+ 1 file changed, 18 insertions(+), 1 deletion(-)
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index a6dfaf2..ea1f33b 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1734,7 +1734,7 @@ subscription_speedtest() {
+         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
+         warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
+         output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
+-        best_time_total best_size_download best_http_code
++        best_time_total best_size_download best_http_code clash_ready
+ 
+     if [ -z "$section" ]; then
+         echo '{"success":false,"error":"section_required"}'
+@@ -1811,6 +1811,23 @@ subscription_speedtest() {
+         return 1
+     fi
+ 
++    clash_ready=0
++    for attempt in $(seq 1 10); do
++        if [ -n "$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")" ]; then
++            clash_ready=1
++            break
++        fi
++        sleep 1
++    done
++
++    if [ "$clash_ready" -ne 1 ]; then
++        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"selector_not_available"}'
++        return 1
++    fi
++
+     benchmark_bytes="$(get_subscription_benchmark_bytes)"
+     warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"
+     benchmark_attempts="$(get_subscription_benchmark_attempts)"
+-- 
+2.54.0.windows.1
+

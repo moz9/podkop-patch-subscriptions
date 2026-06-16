@@ -104,7 +104,8 @@ $0 == "    /etc/init.d/podkop reload > /dev/null 2>&1" {
 cat "$tmp" > "$target"
 rm -f "$tmp"
 
-if ! grep -q 'benchmark_bytes="8388608"' "$target" 2>/dev/null; then
+if ! grep -q 'benchmark_bytes="8388608"' "$target" 2>/dev/null ||
+	! grep -q "clash_ready" "$target" 2>/dev/null; then
 	speedtest_function="$(mktemp)"
 	cat > "$speedtest_function" <<'SPEEDTEST_EOF'
 subscription_speedtest() {
@@ -113,7 +114,7 @@ subscription_speedtest() {
         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
         warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
         output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
-        best_time_total best_size_download best_http_code
+        best_time_total best_size_download best_http_code clash_ready
 
     if [ -z "$section" ]; then
         echo '{"success":false,"error":"section_required"}'
@@ -187,6 +188,23 @@ subscription_speedtest() {
         subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
         rm -f "$active_items_file" "$results_file"
         echo '{"success":false,"error":"mixed_proxy_address_missing"}'
+        return 1
+    fi
+
+    clash_ready=0
+    for attempt in $(seq 1 10); do
+        if [ -n "$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")" ]; then
+            clash_ready=1
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$clash_ready" -ne 1 ]; then
+        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+        rm -f "$active_items_file" "$results_file"
+        echo '{"success":false,"error":"selector_not_available"}'
         return 1
     fi
 
