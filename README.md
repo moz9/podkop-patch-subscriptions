@@ -3,6 +3,7 @@
 Этот репозиторий не является форком Podkop и не содержит исходный код Podkop целиком.
 
 Оригинальный проект: [itdoginfo/podkop](https://github.com/itdoginfo/podkop).
+
 Здесь хранится только патч, который добавляет режим `Subscription URLTest` и вкладку управления конфигами из подписок.
 
 ## Установка на OpenWrt одной командой
@@ -10,12 +11,12 @@
 Выполнить уже внутри SSH-сессии на роутере:
 
 ```sh
-wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/v2026.06.16-subscriptions-ui-fix3/openwrt/install.sh && sh /tmp/podkop-subscriptions-install.sh
+wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/v2026.06.16-subscriptions-v0719-fix/openwrt/install.sh && sh /tmp/podkop-subscriptions-install.sh
 ```
 
 Установщик:
 
-- скачивает runtime-патч и русскую LuCI-переводку;
+- скачивает runtime-патч, LuCI-файлы и русскую локализацию;
 - делает резервную копию изменяемых файлов в `/root/podkop-patch-subscriptions-backup-*`;
 - по умолчанию хранит только 2 последние резервные копии;
 - применяет патч поверх уже установленного Podkop;
@@ -27,19 +28,17 @@ wget -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/m
 
 - режим `Subscription URLTest` для чтения proxy-конфигов из HTTP/HTTPS подписок;
 - поддержку нескольких подписок в одной секции;
-- кеш последней рабочей подписки, чтобы Podkop продолжал работать при ошибке обновления;
+- кеш последней рабочей версии подписки;
 - фильтрацию неподдерживаемых Podkop конфигов до генерации sing-box;
 - отдельный список неподдерживаемых конфигов в дашборде;
-- вкладку `Подписки` в LuCI для включения и исключения отдельных конфигов;
-- пакетное применение изменений во вкладке `Подписки` с одним перезапуском Podkop;
-- компактные действия во вкладке `Подписки`: обновить подписки, проверить пинг, запустить быстрый бенчмарк скорости;
-- кнопку обновления самого патча из GitHub без ручного запуска команды в терминале;
-- сохранение исключений по хэшу ссылки, без записи proxy-ссылок в UCI;
+- вкладку `Подписки` для включения и исключения отдельных конфигов;
+- пакетное применение изменений с одним перезапуском Podkop;
+- компактные действия во вкладке `Подписки`: обновить, ping, быстрый тест скорости, обновить патч;
 - русские строки интерфейса для добавленных элементов.
 
 ## Патч для исходников
 
-Если нужно применить изменение к локальному checkout Podkop:
+Если нужно применить изменения к локальному checkout Podkop:
 
 ```sh
 git clone https://github.com/itdoginfo/podkop.git
@@ -48,23 +47,4 @@ cd podkop
 git am ../podkop-patch-subscriptions/patches/*.patch
 ```
 
-Файлы патчей:
-
-- [`patches/0001-Add-subscription-URLTest-management.patch`](patches/0001-Add-subscription-URLTest-management.patch)
-- [`patches/0002-Add-batch-subscription-selection-apply.patch`](patches/0002-Add-batch-subscription-selection-apply.patch)
-- [`patches/0003-Fix-batch-subscription-Russian-translations.patch`](patches/0003-Fix-batch-subscription-Russian-translations.patch)
-- [`patches/0004-Add-subscription-maintenance-actions.patch`](patches/0004-Add-subscription-maintenance-actions.patch)
-- [`patches/0005-Improve-subscription-tab-loading-and-grouping.patch`](patches/0005-Improve-subscription-tab-loading-and-grouping.patch)
-
-Runtime-установка для OpenWrt использует отдельные файлы:
-
-- [`openwrt/podkop-subscription-urltest-runtime.patch`](openwrt/podkop-subscription-urltest-runtime.patch)
-- [`openwrt/podkop-subscription-legacy-upgrade.patch`](openwrt/podkop-subscription-legacy-upgrade.patch)
-- [`openwrt/podkop-subscription-actions-upgrade.patch`](openwrt/podkop-subscription-actions-upgrade.patch)
-- [`openwrt/podkop-subscription-ui-fix-upgrade.patch`](openwrt/podkop-subscription-ui-fix-upgrade.patch)
-- [`openwrt/podkop-actions-ui-fix.sh`](openwrt/podkop-actions-ui-fix.sh)
-- [`openwrt/main.js`](openwrt/main.js)
-
-## Проверка
-
-Патч проверялся локально на чистом checkout Podkop и smoke-тестом на роутере OpenWrt с Podkop и sing-box.
+Runtime-установка для OpenWrt использует отдельные файлы из `openwrt/`.

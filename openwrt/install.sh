@@ -1,10 +1,11 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-ui-fix3}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-v0719-fix}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
+V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -155,6 +156,10 @@ has_legacy_subscription_backend() {
 	grep -q "set_subscription_link_enabled" /usr/bin/podkop 2>/dev/null
 }
 
+has_v0719_package_backend() {
+	/usr/bin/podkop show_version 2>/dev/null | grep -q "^v0\\.7\\.19$"
+}
+
 tmp_dir="$(mktemp -d)"
 backup_dir=""
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -191,6 +196,14 @@ elif has_legacy_subscription_backend; then
 
 	if ! patch -d / -p1 < "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"; then
 		abort_with_restore "runtime legacy upgrade patch failed"
+	fi
+elif has_v0719_package_backend; then
+	require_patch
+	download "$RAW_BASE/$V0719_PATCH_FILE" "$tmp_dir/$V0719_PATCH_FILE"
+	backup_runtime
+
+	if ! patch -d / -p1 < "$tmp_dir/$V0719_PATCH_FILE"; then
+		abort_with_restore "runtime v0.7.19 patch failed"
 	fi
 else
 	require_patch

@@ -1,0 +1,2042 @@
+diff --git a/usr/bin/podkop b/usr/bin/podkop
+index e3af7c0..8231b11 100644
+--- a/usr/bin/podkop
++++ b/usr/bin/podkop
+@@ -33,6 +33,8 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
+ 
+ config_load "$PODKOP_CONFIG"
+ 
++SUBSCRIPTION_CACHE_DIR="/etc/podkop/subscriptions"
++
+ check_requirements() {
+     log "Check Requirements"
+ 
+@@ -78,7 +80,7 @@ check_requirements() {
+     if has_outbound_section; then
+         log "Outbound section found" "debug"
+     else
+-        log "Outbound section not found. Please check your configuration file (missing proxy_string, selector_proxy_links, urltest_proxy_links, outbound_json, or interface). Aborted." "error"
++        log "Outbound section not found. Please check your configuration file (missing proxy_string, selector_proxy_links, urltest_proxy_links, subscription_url, outbound_json, or interface). Aborted." "error"
+         exit 1
+     fi
+ }
+@@ -94,7 +96,7 @@ _check_outbound_section() {
+     config_get interface "$section" "interface"
+ 
+     if [ -n "$proxy_string" ] || [ -n "$selector_proxy_links" ] || [ -n "$urltest_proxy_links" ] ||
+-        [ -n "$outbound_json" ] || [ -n "$interface" ]; then
++        section_has_subscription_urls "$section" || [ -n "$outbound_json" ] || [ -n "$interface" ]; then
+         section_exists=0
+     fi
+ }
+@@ -133,7 +135,9 @@ start_main() {
+ 
+     # sing-box
+     sing_box_init_config
++    remove_cron_job
+     config_foreach add_cron_job "section"
++    config_foreach add_subscription_cron_job "section"
+     /etc/init.d/sing-box start
+ 
+     log "Nice"
+@@ -342,208 +346,1555 @@ backup_dnsmasq_config_option() {
+     local value
+     value="$(uci_get "dhcp" "@dnsmasq[0]" "$key")"
+ 
+-    if [ -n "$value" ]; then
+-        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
++    if [ -n "$value" ]; then
++        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
++    fi
++}
++
++dnsmasq_configure() {
++    local shutdown_correctly
++    config_get shutdown_correctly "settings" "shutdown_correctly"
++    if [ "$shutdown_correctly" -eq 0 ]; then
++        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
++        return 0
++    fi
++
++    log "Backup dnsmasq configuration"
++    current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
++    if [ -n "$current_servers" ]; then
++        for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
++            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
++                uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
++            fi
++        done
++        uci_remove "dhcp" "@dnsmasq[0]" "server"
++    fi
++
++    backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
++    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
++
++    log "Configure dnsmasq for sing-box"
++    uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
++    uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
++    uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
++    uci_commit "dhcp"
++
++    /etc/init.d/dnsmasq restart
++}
++
++dnsmasq_restore() {
++    log "Restoring the dnsmasq configuration"
++    local shutdown_correctly
++    config_get shutdown_correctly "settings" "shutdown_correctly"
++    if [ "$shutdown_correctly" -eq 1 ]; then
++        log "Previous shutdown of podkop was correct, reconfiguration of dnsmasq is not required"
++        return 0
++    fi
++
++    local cachesize noresolv backup_servers resolvfile
++    log "Restoring cachesize" "debug"
++    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_cachesize")"
++    if [ -z "$cachesize" ]; then
++        uci_remove "dhcp" "@dnsmasq[0]" "cachesize"
++        uci_set "dhcp" "@dnsmasq[0]" "cachesize" 150
++    else
++        uci_set "dhcp" "@dnsmasq[0]" "cachesize" "$cachesize"
++        uci_remove "dhcp" "@dnsmasq[0]" "podkop_cachesize"
++    fi
++
++    log "Restoring noresolv" "debug"
++    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_noresolv")"
++    if [ -z "$noresolv" ]; then
++        uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
++    else
++        uci_set "dhcp" "@dnsmasq[0]" "noresolv" "$noresolv"
++        uci_remove "dhcp" "@dnsmasq[0]" "podkop_noresolv"
++    fi
++
++    log "Restoring DNS servers" "debug"
++    uci_remove "dhcp" "@dnsmasq[0]" "server"
++    resolvfile="/tmp/resolv.conf.d/resolv.conf.auto"
++    backup_servers="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_server")"
++    if [ -n "$backup_servers" ]; then
++        for server in $backup_servers; do
++            uci_add_list "dhcp" "@dnsmasq[0]" "server" "$server"
++        done
++        uci_remove "dhcp" "@dnsmasq[0]" "podkop_server"
++    elif file_exists "$resolvfile"; then
++        log "Backup DNS servers not found, using default resolvfile" "debug"
++        uci_set "dhcp" "@dnsmasq[0]" "resolvfile" "$resolvfile"
++        if [ -n "$noresolv" ] && [ "$noresolv" -eq 1 ]; then
++            log "Disabling noresolv option to use system resolvfile" "debug"
++            uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
++        fi
++    else
++        log "Backup DNS servers and default resolvfile not found, possible resolving issues" "warn"
++    fi
++
++    uci_commit "dhcp"
++
++    /etc/init.d/dnsmasq restart
++}
++
++add_cron_job() {
++    ## Future: make a check so that it doesn't recreate many times
++    local community_lists remote_domain_lists remote_subnet_lists update_interval
++    config_get community_lists "$section" "community_lists"
++    config_get remote_domain_lists "$section" "remote_domain_lists"
++    config_get remote_subnet_lists "$section" "remote_subnet_lists"
++    config_get update_interval "settings" "update_interval"
++
++    case "$update_interval" in
++    "1h")
++        cron_job="13 * * * * /usr/bin/podkop list_update"
++        ;;
++    "3h")
++        cron_job="13 */3 * * * /usr/bin/podkop list_update"
++        ;;
++    "12h")
++        cron_job="13 */12 * * * /usr/bin/podkop list_update"
++        ;;
++    "1d")
++        cron_job="13 9 * * * /usr/bin/podkop list_update"
++        ;;
++    "3d")
++        cron_job="13 9 */3 * * /usr/bin/podkop list_update"
++        ;;
++    *)
++        log "Invalid update_interval value: $update_interval"
++        return
++        ;;
++    esac
++
++    if [ -n "$community_lists" ] ||
++        [ -n "$remote_domain_lists" ] ||
++        [ -n "$remote_subnet_lists" ]; then
++        remove_cron_job
++        crontab -l | {
++            cat
++            echo "$cron_job"
++        } | crontab -
++        log "The cron job has been created: $cron_job"
++    fi
++}
++
++remove_cron_job() {
++    (crontab -l 2> /dev/null | grep -v "/usr/bin/podkop list_update" | grep -v "/usr/bin/podkop subscription_update") | crontab -
++    log "The cron job removed"
++}
++
++get_subscription_cron_schedule() {
++    local interval="$1"
++
++    case "$interval" in
++    "10m")
++        echo "*/10 * * * *"
++        ;;
++    "30m")
++        echo "17,47 * * * *"
++        ;;
++    "1h")
++        echo "17 * * * *"
++        ;;
++    "3h")
++        echo "17 */3 * * *"
++        ;;
++    "6h")
++        echo "17 */6 * * *"
++        ;;
++    "12h")
++        echo "17 */12 * * *"
++        ;;
++    "1d")
++        echo "17 9 * * *"
++        ;;
++    *)
++        return 1
++        ;;
++    esac
++}
++
++add_subscription_cron_job() {
++    local section="$1"
++    local connection_type proxy_config_type subscription_update_interval cron_schedule cron_job
++
++    config_get connection_type "$section" "connection_type"
++    config_get proxy_config_type "$section" "proxy_config_type"
++
++    if [ "$connection_type" != "proxy" ] || [ "$proxy_config_type" != "subscription_urltest" ] ||
++        ! section_has_subscription_urls "$section"; then
++        return 0
++    fi
++
++    config_get subscription_update_interval "$section" "subscription_update_interval" "1h"
++    cron_schedule="$(get_subscription_cron_schedule "$subscription_update_interval")"
++    if [ -z "$cron_schedule" ]; then
++        log "Invalid subscription_update_interval value for section '$section': $subscription_update_interval" "warn"
++        cron_schedule="$(get_subscription_cron_schedule "1h")"
++    fi
++
++    case "$section" in
++    "" | *[!A-Za-z0-9_]*)
++        log "Skipping subscription cron job for section with unsupported name '$section'" "warn"
++        return 1
++        ;;
++    esac
++
++    cron_job="$cron_schedule /usr/bin/podkop subscription_update $section"
++    crontab -l 2> /dev/null | {
++        cat
++        echo "$cron_job"
++    } | crontab -
++    log "The subscription cron job has been created for section '$section'"
++}
++
++list_update() {
++    echolog "🔄 Starting lists update..."
++
++    local nslookup_timeout=3
++    local nslookup_attempts=10
++    local curl_timeout=5
++    local curl_attempts=10
++    local curl_max_timeout=10
++    local delay=3
++    local i
++
++    # DNS Check
++    for i in $(seq 1 $nslookup_attempts); do
++        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
++            echolog "✅ DNS check passed"
++            break
++        fi
++        echolog "DNS is unavailable [$i/$nslookup_attempts]"
++        sleep $delay
++    done
++
++    if [ "$i" -eq $nslookup_attempts ]; then
++        echolog "❌ DNS check failed after $nslookup_attempts attempts"
++        return 1
++    fi
++
++    # Github Check
++    for i in $(seq 1 $curl_attempts); do
++        local service_proxy_address
++        service_proxy_address="$(get_service_proxy_address)"
++
++        if [ -n "$service_proxy_address" ]; then
++            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
++                echolog "✅ GitHub connection check passed (via proxy)"
++                break
++            fi
++        else
++            if curl -s -m $curl_timeout https://github.com > /dev/null; then
++                echolog "✅ GitHub connection check passed"
++                break
++            fi
++        fi
++
++        echolog "GitHub is unavailable [$i/$curl_attempts] (max-timeout=$curl_timeout)"
++        if [ "$curl_timeout" -lt $curl_max_timeout ]; then
++            curl_timeout=$((curl_timeout + 1))
++        fi
++        sleep $delay
++    done
++
++    if [ "$i" -eq $curl_attempts ]; then
++        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
++        return 1
++    fi
++
++    echolog "📥 Downloading and processing lists..."
++
++    config_foreach import_community_subnet_lists "section"
++    config_foreach import_domains_from_remote_domain_lists "section"
++    config_foreach import_subnets_from_remote_subnet_lists "section"
++
++    if [ $? -eq 0 ]; then
++        echolog "✅ Lists update completed successfully"
++    else
++        echolog "❌ Lists update failed"
++    fi
++}
++
++get_subscription_cache_path() {
++    local section="$1"
++    local section_hash
++
++    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
++    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.links"
++}
++
++get_subscription_skipped_cache_path() {
++    local section="$1"
++    local section_hash
++
++    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
++    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.skipped.json"
++}
++
++get_subscription_all_cache_path() {
++    local section="$1"
++    local section_hash
++
++    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
++    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.all.links"
++}
++
++get_subscription_items_cache_path() {
++    local section="$1"
++    local section_hash
++
++    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
++    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.items.json"
++}
++
++get_subscription_link_id() {
++    local link="$1"
++
++    printf '%s' "$link" | md5sum | awk '{print $1}'
++}
++
++append_subscription_url_to_file() {
++    local subscription_url="$1"
++
++    if [ -n "$subscription_url" ]; then
++        printf '%s\n' "$subscription_url" >> "$SUBSCRIPTION_URLS_FILE"
++        SUBSCRIPTION_URLS_COUNT=$((SUBSCRIPTION_URLS_COUNT + 1))
++    fi
++}
++
++collect_subscription_urls() {
++    local section="$1"
++    local output_file="$2"
++    local subscription_url deduped_file
++
++    : > "$output_file"
++    SUBSCRIPTION_URLS_FILE="$output_file"
++    SUBSCRIPTION_URLS_COUNT=0
++    config_list_foreach "$section" "subscription_url" append_subscription_url_to_file
++
++    if [ "$SUBSCRIPTION_URLS_COUNT" -eq 0 ]; then
++        config_get subscription_url "$section" "subscription_url"
++        set -f
++        for subscription_url in $subscription_url; do
++            append_subscription_url_to_file "$subscription_url"
++        done
++        set +f
++    fi
++
++    if [ ! -s "$output_file" ]; then
++        return 1
++    fi
++
++    deduped_file="$(mktemp)"
++    awk '!seen[$0]++' "$output_file" > "$deduped_file"
++    mv "$deduped_file" "$output_file"
++}
++
++append_subscription_excluded_id_to_file() {
++    local link_id="$1"
++
++    if [ "${#link_id}" -ne 32 ]; then
++        return 0
++    fi
++
++    case "$link_id" in
++    *[!A-Fa-f0-9]*) return 0 ;;
++    esac
++
++    printf '%s\n' "$link_id" >> "$SUBSCRIPTION_EXCLUDED_IDS_FILE"
++    SUBSCRIPTION_EXCLUDED_IDS_COUNT=$((SUBSCRIPTION_EXCLUDED_IDS_COUNT + 1))
++}
++
++collect_subscription_excluded_ids() {
++    local section="$1"
++    local output_file="$2"
++    local link_id deduped_file
++
++    : > "$output_file"
++    SUBSCRIPTION_EXCLUDED_IDS_FILE="$output_file"
++    SUBSCRIPTION_EXCLUDED_IDS_COUNT=0
++    config_list_foreach "$section" "subscription_excluded_link_ids" append_subscription_excluded_id_to_file
++
++    if [ "$SUBSCRIPTION_EXCLUDED_IDS_COUNT" -eq 0 ]; then
++        config_get link_id "$section" "subscription_excluded_link_ids"
++        set -f
++        for link_id in $link_id; do
++            append_subscription_excluded_id_to_file "$link_id"
++        done
++        set +f
++    fi
++
++    deduped_file="$(mktemp)"
++    awk '!seen[$0]++' "$output_file" > "$deduped_file"
++    mv "$deduped_file" "$output_file"
++}
++
++is_subscription_link_id_excluded() {
++    local link_id="$1"
++    local excluded_ids_file="$2"
++
++    [ -s "$excluded_ids_file" ] && grep -Fxq "$link_id" "$excluded_ids_file"
++}
++
++section_has_subscription_urls() {
++    local section="$1"
++    local urls_file
++
++    urls_file="$(mktemp)"
++    if collect_subscription_urls "$section" "$urls_file"; then
++        rm -f "$urls_file"
++        return 0
++    fi
++
++    rm -f "$urls_file"
++    return 1
++}
++
++extract_subscription_proxy_links() {
++    local source_file="$1"
++    local output_file="$2"
++
++    awk '{ gsub(/[[:space:],"\[\]]+/, "\n"); print }' "$source_file" |
++        sed 's/^[>-]*//' |
++        awk '/^[A-Za-z][A-Za-z0-9+.-]*:\/\// { print }' |
++        awk '!seen[$0]++' > "$output_file"
++}
++
++normalize_subscription_file() {
++    local source_file="$1"
++    local output_file="$2"
++    local decoded_file extracted_file
++
++    extracted_file="$(mktemp)"
++    decoded_file="$(mktemp)"
++
++    convert_crlf_to_lf "$source_file"
++    extract_subscription_proxy_links "$source_file" "$extracted_file"
++    if [ -s "$extracted_file" ]; then
++        mv "$extracted_file" "$output_file"
++        rm -f "$decoded_file"
++        return 0
++    fi
++
++    if base64 -d < "$source_file" > "$decoded_file" 2> /dev/null && [ -s "$decoded_file" ]; then
++        convert_crlf_to_lf "$decoded_file"
++        extract_subscription_proxy_links "$decoded_file" "$extracted_file"
++        if [ -s "$extracted_file" ]; then
++            mv "$extracted_file" "$output_file"
++            rm -f "$decoded_file"
++            return 0
++        fi
++    fi
++
++    rm -f "$decoded_file" "$extracted_file"
++    return 1
++}
++
++get_subscription_link_name() {
++    local link="$1"
++    local name
++
++    case "$link" in
++    *#*) name="${link#*#}" ;;
++    *) name="" ;;
++    esac
++
++    [ -n "$name" ] && url_decode "$name"
++}
++
++get_subscription_proxy_skip_reason() {
++    local link="$1"
++    local scheme security transport userinfo decoded_userinfo
++
++    scheme="$(url_get_scheme "$link")"
++    case "$scheme" in
++    vless | ss | trojan | socks4 | socks4a | socks5 | hysteria2 | hy2) ;;
++    *)
++        echo "unsupported_protocol"
++        return 0
++        ;;
++    esac
++
++    case "$scheme" in
++    vless | trojan)
++        transport="$(url_get_query_param "$link" "type")"
++        case "$transport" in
++        "" | tcp | raw | ws | grpc) ;;
++        *)
++            echo "unsupported_transport"
++            return 0
++            ;;
++        esac
++
++        security="$(url_get_query_param "$link" "security")"
++        case "$security" in
++        "" | none | tls | reality) ;;
++        *)
++            echo "unsupported_security"
++            return 0
++            ;;
++        esac
++        ;;
++    ss)
++        userinfo="$(url_get_userinfo "$link")"
++        if ! is_shadowsocks_userinfo_format "$userinfo"; then
++            decoded_userinfo="$(echo "$userinfo" | base64 -d 2> /dev/null)"
++            if [ -z "$decoded_userinfo" ] || ! is_shadowsocks_userinfo_format "$decoded_userinfo"; then
++                echo "invalid_config"
++                return 0
++            fi
++        fi
++        ;;
++    esac
++
++    return 1
++}
++
++append_subscription_skipped_proxy_link() {
++    local link="$1"
++    local reason="$2"
++    local link_id scheme transport name
++
++    link_id="$(get_subscription_link_id "$link")"
++    scheme="$(url_get_scheme "$link")"
++    transport="$(url_get_query_param "$link" "type")"
++    name="$(get_subscription_link_name "$link")"
++
++    jq -cn \
++        --arg id "$link_id" \
++        --arg name "$name" \
++        --arg protocol "$scheme" \
++        --arg transport "$transport" \
++        --arg reason "$reason" \
++        '{id: $id, name: $name, protocol: $protocol, transport: $transport, reason: $reason}' >> "$SUBSCRIPTION_SKIPPED_LINKS_FILE"
++}
++
++append_subscription_item() {
++    local link="$1"
++    local source_index="$2"
++    local supported="$3"
++    local enabled="$4"
++    local reason="$5"
++    local link_id scheme transport name source_name
++
++    link_id="$(get_subscription_link_id "$link")"
++    scheme="$(url_get_scheme "$link")"
++    transport="$(url_get_query_param "$link" "type")"
++    name="$(get_subscription_link_name "$link")"
++    source_name="Subscription $source_index"
++
++    jq -cn \
++        --arg id "$link_id" \
++        --arg name "$name" \
++        --arg protocol "$scheme" \
++        --arg transport "$transport" \
++        --arg reason "$reason" \
++        --arg sourceName "$source_name" \
++        --argjson sourceIndex "$source_index" \
++        --argjson supported "$supported" \
++        --argjson enabled "$enabled" \
++        '{
++            id: $id,
++            name: $name,
++            protocol: $protocol,
++            transport: $transport,
++            sourceIndex: $sourceIndex,
++            sourceName: $sourceName,
++            supported: $supported,
++            enabled: $enabled,
++            reason: $reason
++        }' >> "$SUBSCRIPTION_ITEMS_FILE"
++}
++
++filter_working_subscription_proxy_links() {
++    local section="$1"
++    local source_file="$2"
++    local output_file="$3"
++    local all_output_file="$4"
++    local skipped_file="$5"
++    local items_file="$6"
++    local excluded_ids_file="$7"
++    local source_index="$8"
++    local udp_over_tcp validation_config candidate_config link link_id i valid_links skipped_links skip_reason
++
++    config_get udp_over_tcp "$section" "enable_udp_over_tcp"
++    validation_config='{"outbounds":[]}'
++    valid_links=0
++    skipped_links=0
++    i=1
++
++    : > "$output_file"
++    : > "$all_output_file"
++    : > "$skipped_file"
++    : > "$items_file"
++    SUBSCRIPTION_SKIPPED_LINKS_FILE="$skipped_file"
++    SUBSCRIPTION_ITEMS_FILE="$items_file"
++    while IFS= read -r link || [ -n "$link" ]; do
++        [ -n "$link" ] || continue
++
++        if skip_reason="$(get_subscription_proxy_skip_reason "$link")"; then
++            append_subscription_skipped_proxy_link "$link" "$skip_reason"
++            append_subscription_item "$link" "$source_index" "false" "false" "$skip_reason"
++            skipped_links=$((skipped_links + 1))
++            i=$((i + 1))
++            continue
++        fi
++
++        if candidate_config="$(sing_box_cf_add_proxy_outbound "$validation_config" "$section-subscription-check-$i" \
++            "$link" "$udp_over_tcp")" && [ -n "$candidate_config" ]; then
++            link_id="$(get_subscription_link_id "$link")"
++            printf '%s\n' "$link" >> "$all_output_file"
++            validation_config="$candidate_config"
++            valid_links=$((valid_links + 1))
++            if is_subscription_link_id_excluded "$link_id" "$excluded_ids_file"; then
++                append_subscription_item "$link" "$source_index" "true" "false" "user_excluded"
++            else
++                printf '%s\n' "$link" >> "$output_file"
++                append_subscription_item "$link" "$source_index" "true" "true" ""
++            fi
++        else
++            append_subscription_skipped_proxy_link "$link" "invalid_config"
++            append_subscription_item "$link" "$source_index" "false" "false" "invalid_config"
++            skipped_links=$((skipped_links + 1))
++        fi
++
++        i=$((i + 1))
++    done < "$source_file"
++
++    if [ "$skipped_links" -gt 0 ]; then
++        log "Skipped $skipped_links unsupported subscription proxy links for section '$section'" "warn"
++    fi
++
++    [ "$valid_links" -gt 0 ]
++}
++
++download_subscription_to_file() {
++    local url="$1"
++    local filepath="$2"
++    local http_proxy_address="$3"
++    local retries="${4:-3}"
++    local wait="${5:-2}"
++    local attempt
++
++    for attempt in $(seq 1 "$retries"); do
++        if command -v curl > /dev/null 2>&1; then
++            if [ -n "$http_proxy_address" ]; then
++                curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
++                    [ -s "$filepath" ] && return 0
++            else
++                curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
++            fi
++        else
++            if [ -n "$http_proxy_address" ]; then
++                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" wget -O "$filepath" "$url" &&
++                    [ -s "$filepath" ] && return 0
++            else
++                wget -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++            fi
++        fi
++
++        log "Attempt $attempt/$retries to download subscription failed" "warn"
++        sleep "$wait"
++    done
++
++    return 1
++}
++
++refresh_subscription_cache() {
++    local section="$1"
++    local subscription_url cache_path all_cache_path skipped_cache_path items_cache_path tmpfile links_file \
++        validated_links_file all_links_file skipped_links_file items_file merged_links_file deduped_links_file \
++        merged_all_links_file deduped_all_links_file merged_skipped_links_file deduped_skipped_links_file \
++        merged_items_file deduped_items_file excluded_ids_file urls_file tmp_cache tmp_all_cache tmp_skipped_cache \
++        tmp_items_cache http_proxy_address failed_sources skipped_sources skipped_json items_json source_index
++
++    SUBSCRIPTION_CACHE_CHANGED=0
++    urls_file="$(mktemp)"
++    merged_links_file="$(mktemp)"
++    deduped_links_file="$(mktemp)"
++    merged_all_links_file="$(mktemp)"
++    deduped_all_links_file="$(mktemp)"
++    merged_skipped_links_file="$(mktemp)"
++    deduped_skipped_links_file="$(mktemp)"
++    merged_items_file="$(mktemp)"
++    deduped_items_file="$(mktemp)"
++    excluded_ids_file="$(mktemp)"
++    if ! collect_subscription_urls "$section" "$urls_file"; then
++        log "Subscription URL is not set for section '$section'" "error"
++        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++        return 1
++    fi
++
++    collect_subscription_excluded_ids "$section" "$excluded_ids_file"
++    http_proxy_address="$(get_service_proxy_address)"
++    failed_sources=0
++    skipped_sources=0
++    source_index=1
++    : > "$merged_links_file"
++    : > "$merged_all_links_file"
++    : > "$merged_skipped_links_file"
++    : > "$merged_items_file"
++
++    while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
++        [ -n "$subscription_url" ] || continue
++        case "$subscription_url" in
++        http://* | https://*) ;;
++        *)
++            log "Skipping subscription source with unsupported URL scheme in section '$section'" "warn"
++            skipped_sources=$((skipped_sources + 1))
++            source_index=$((source_index + 1))
++            continue
++            ;;
++        esac
++
++        tmpfile="$(mktemp)"
++        links_file="$(mktemp)"
++        validated_links_file="$(mktemp)"
++        all_links_file="$(mktemp)"
++        skipped_links_file="$(mktemp)"
++        items_file="$(mktemp)"
++
++        if ! download_subscription_to_file "$subscription_url" "$tmpfile" "$http_proxy_address"; then
++            log "Subscription download failed for one of section '$section' sources" "warn"
++            failed_sources=$((failed_sources + 1))
++            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
++                "$items_file"
++            break
++        fi
++
++        if ! normalize_subscription_file "$tmpfile" "$links_file"; then
++            log "One subscription source for section '$section' does not contain supported proxy links" "warn"
++            skipped_sources=$((skipped_sources + 1))
++            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
++                "$items_file"
++            source_index=$((source_index + 1))
++            continue
++        fi
++
++        if ! filter_working_subscription_proxy_links "$section" "$links_file" "$validated_links_file" \
++            "$all_links_file" "$skipped_links_file" "$items_file" "$excluded_ids_file" "$source_index"; then
++            log "One subscription source for section '$section' does not contain proxy links supported by podkop" "warn"
++            skipped_sources=$((skipped_sources + 1))
++            cat "$skipped_links_file" >> "$merged_skipped_links_file"
++            cat "$items_file" >> "$merged_items_file"
++            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
++                "$items_file"
++            source_index=$((source_index + 1))
++            continue
++        fi
++
++        cat "$validated_links_file" >> "$merged_links_file"
++        cat "$all_links_file" >> "$merged_all_links_file"
++        cat "$skipped_links_file" >> "$merged_skipped_links_file"
++        cat "$items_file" >> "$merged_items_file"
++        rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
++            "$items_file"
++        source_index=$((source_index + 1))
++    done < "$urls_file"
++
++    if [ "$failed_sources" -gt 0 ]; then
++        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++        return 1
++    fi
++
++    awk '!seen[$0]++' "$merged_links_file" > "$deduped_links_file"
++    awk '!seen[$0]++' "$merged_all_links_file" > "$deduped_all_links_file"
++    awk '!seen[$0]++' "$merged_skipped_links_file" > "$deduped_skipped_links_file"
++    awk '!seen[$0]++' "$merged_items_file" > "$deduped_items_file"
++    if [ ! -s "$deduped_links_file" ]; then
++        log "Subscriptions for section '$section' do not contain enabled proxy links supported by podkop" "warn"
++        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++        return 1
++    fi
++
++    if ! mkdir -p "$SUBSCRIPTION_CACHE_DIR"; then
++        log "Failed to create subscription cache directory '$SUBSCRIPTION_CACHE_DIR'" "error"
++        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_cache_path "$section")"
++    all_cache_path="$(get_subscription_all_cache_path "$section")"
++    skipped_cache_path="$(get_subscription_skipped_cache_path "$section")"
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++
++    if [ -s "$deduped_skipped_links_file" ]; then
++        skipped_json="$(jq -s '.' "$deduped_skipped_links_file")"
++    else
++        skipped_json="[]"
++    fi
++
++    if [ -s "$deduped_items_file" ]; then
++        items_json="$(jq -s '.' "$deduped_items_file")"
++    else
++        items_json="[]"
++    fi
++
++    if [ ! -f "$cache_path" ] || ! cmp -s "$deduped_links_file" "$cache_path"; then
++        tmp_cache="$cache_path.tmp.$$"
++        if cp "$deduped_links_file" "$tmp_cache" && mv "$tmp_cache" "$cache_path"; then
++            chmod 600 "$cache_path" 2> /dev/null
++            SUBSCRIPTION_CACHE_CHANGED=1
++            log "Subscription cache updated for section '$section'" "info"
++        else
++            rm -f "$tmp_cache" "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++                "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++                "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++            log "Failed to update subscription cache for section '$section'" "error"
++            return 1
++        fi
++    fi
++
++    tmp_all_cache="$all_cache_path.tmp.$$"
++    if cp "$deduped_all_links_file" "$tmp_all_cache" && mv "$tmp_all_cache" "$all_cache_path"; then
++        chmod 600 "$all_cache_path" 2> /dev/null
++    else
++        rm -f "$tmp_all_cache"
++        log "Failed to update full subscription links cache for section '$section'" "warn"
++    fi
++
++    tmp_skipped_cache="$skipped_cache_path.tmp.$$"
++    if printf '%s\n' "$skipped_json" > "$tmp_skipped_cache" && mv "$tmp_skipped_cache" "$skipped_cache_path"; then
++        chmod 600 "$skipped_cache_path" 2> /dev/null
++    else
++        rm -f "$tmp_skipped_cache"
++        log "Failed to update skipped subscription links cache for section '$section'" "warn"
++    fi
++
++    tmp_items_cache="$items_cache_path.tmp.$$"
++    if printf '%s\n' "$items_json" > "$tmp_items_cache" && mv "$tmp_items_cache" "$items_cache_path"; then
++        chmod 600 "$items_cache_path" 2> /dev/null
++    else
++        rm -f "$tmp_items_cache"
++        log "Failed to update subscription items cache for section '$section'" "warn"
++    fi
++
++    if [ "$skipped_sources" -gt 0 ]; then
++        log "Skipped $skipped_sources subscription sources without podkop-compatible links for section '$section'" "warn"
++    fi
++
++    rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++        "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++        "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++    return 0
++}
++
++load_subscription_proxy_links_for_section() {
++    local section="$1"
++    local output_file="$2"
++    local cache_path
++
++    if ! refresh_subscription_cache "$section"; then
++        log "Using cached subscription for section '$section'" "warn"
++    fi
++
++    cache_path="$(get_subscription_cache_path "$section")"
++    if [ -s "$cache_path" ]; then
++        if cp "$cache_path" "$output_file"; then
++            return 0
++        fi
++
++        log "Failed to read subscription cache for section '$section'" "error"
++        return 1
++    fi
++
++    log "Subscription cache is not available for section '$section'" "fatal"
++    return 1
++}
++
++get_subscription_cached_links() {
++    local section="$1"
++    local cache_path
++
++    if [ -z "$section" ]; then
++        echo "[]"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_cache_path "$section")"
++    if [ ! -s "$cache_path" ]; then
++        echo "[]"
++        return 0
++    fi
++
++    jq -R -s 'split("\n") | map(select(length > 0))' "$cache_path"
++}
++
++get_subscription_skipped_links() {
++    local section="$1"
++    local cache_path
++
++    if [ -z "$section" ]; then
++        echo "[]"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_skipped_cache_path "$section")"
++    if [ ! -s "$cache_path" ]; then
++        echo "[]"
++        return 0
++    fi
++
++    cat "$cache_path"
++}
++
++get_subscription_items() {
++    local section="$1"
++    local cache_path
++
++    if [ -z "$section" ]; then
++        echo "[]"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$cache_path" ]; then
++        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
++    fi
++
++    if [ ! -s "$cache_path" ]; then
++        echo "[]"
++        return 0
++    fi
++
++    cat "$cache_path"
++}
++
++get_subscription_items_cached() {
++    local section="$1"
++    local cache_path
++
++    if [ -z "$section" ]; then
++        echo "[]"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$cache_path" ]; then
++        echo "[]"
++        return 0
++    fi
++
++    cat "$cache_path"
++}
++
++validate_subscription_link_id() {
++    local link_id="$1"
++
++    if [ "${#link_id}" -ne 32 ]; then
++        return 1
++    fi
++
++    case "$link_id" in
++    *[!A-Fa-f0-9]*) return 1 ;;
++    esac
++
++    return 0
++}
++
++validate_subscription_section_name() {
++    local section="$1"
++
++    case "$section" in
++    "" | *[!A-Za-z0-9_-]*) return 1 ;;
++    esac
++
++    return 0
++}
++
++normalize_subscription_enabled_value() {
++    local enabled="$1"
++
++    case "$enabled" in
++    1 | true | on | enabled)
++        echo "1"
++        return 0
++        ;;
++    0 | false | off | disabled)
++        echo "0"
++        return 0
++        ;;
++    esac
++
++    return 1
++}
++
++validate_subscription_urltest_section() {
++    local section="$1"
++    local connection_type proxy_config_type
++
++    if ! validate_subscription_section_name "$section"; then
++        return 1
++    fi
++
++    config_get connection_type "$section" "connection_type"
++    config_get proxy_config_type "$section" "proxy_config_type"
++    [ "$connection_type" = "proxy" ] && [ "$proxy_config_type" = "subscription_urltest" ]
++}
++
++apply_subscription_exclusions_to_cached_links() {
++    local section="$1"
++    local cache_path all_cache_path items_cache_path excluded_ids_file active_links_file tmp_cache tmp_items_cache \
++        excluded_ids_json link link_id items_json
++
++    SUBSCRIPTION_CACHE_CHANGED=0
++    cache_path="$(get_subscription_cache_path "$section")"
++    all_cache_path="$(get_subscription_all_cache_path "$section")"
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++    excluded_ids_file="$(mktemp)"
++    active_links_file="$(mktemp)"
++
++    if [ ! -s "$all_cache_path" ] && [ -s "$cache_path" ]; then
++        cp "$cache_path" "$all_cache_path"
++        chmod 600 "$all_cache_path" 2> /dev/null
++    fi
++
++    if [ ! -s "$all_cache_path" ]; then
++        rm -f "$excluded_ids_file" "$active_links_file"
++        return 1
++    fi
++
++    collect_subscription_excluded_ids "$section" "$excluded_ids_file"
++    : > "$active_links_file"
++
++    while IFS= read -r link || [ -n "$link" ]; do
++        [ -n "$link" ] || continue
++        link_id="$(get_subscription_link_id "$link")"
++        if ! is_subscription_link_id_excluded "$link_id" "$excluded_ids_file"; then
++            printf '%s\n' "$link" >> "$active_links_file"
++        fi
++    done < "$all_cache_path"
++
++    if [ ! -s "$active_links_file" ]; then
++        rm -f "$excluded_ids_file" "$active_links_file"
++        return 1
++    fi
++
++    if [ ! -f "$cache_path" ] || ! cmp -s "$active_links_file" "$cache_path"; then
++        tmp_cache="$cache_path.tmp.$$"
++        if cp "$active_links_file" "$tmp_cache" && mv "$tmp_cache" "$cache_path"; then
++            chmod 600 "$cache_path" 2> /dev/null
++            SUBSCRIPTION_CACHE_CHANGED=1
++        else
++            rm -f "$tmp_cache" "$excluded_ids_file" "$active_links_file"
++            return 1
++        fi
++    fi
++
++    if [ -s "$items_cache_path" ]; then
++        excluded_ids_json="$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$excluded_ids_file")"
++        tmp_items_cache="$items_cache_path.tmp.$$"
++        items_json="$(jq -c --argjson excludedIds "$excluded_ids_json" '
++            map(
++                if .supported == true then
++                    . as $item
++                    | .enabled = (($excludedIds | index($item.id)) == null)
++                    | .reason = (if (($excludedIds | index($item.id)) == null) then "" else "user_excluded" end)
++                else
++                    .
++                end
++            )
++        ' "$items_cache_path")"
++        if printf '%s\n' "$items_json" > "$tmp_items_cache" && mv "$tmp_items_cache" "$items_cache_path"; then
++            chmod 600 "$items_cache_path" 2> /dev/null
++        else
++            rm -f "$tmp_items_cache"
++            log "Failed to update subscription items cache for section '$section'" "warn"
++        fi
++    fi
++
++    rm -f "$excluded_ids_file" "$active_links_file"
++    return 0
++}
++
++set_subscription_link_enabled() {
++    local section="$1"
++    local link_id="$2"
++    local enabled="$3"
++
++    set_subscription_links_enabled "$section" "$link_id" "$enabled"
++}
++
++set_subscription_links_enabled() {
++    local section="$1"
++    local items_cache_path excluded_ids_file tmp_excluded_file link_id enabled enabled_value \
++        excluded_ids_json remaining_enabled_count changed_count reload_required
++
++    if [ "$#" -lt 3 ] || [ $((($# - 1) % 2)) -ne 0 ]; then
++        echo '{"success":false,"error":"invalid_arguments"}'
++        return 1
++    fi
++
++    if ! validate_subscription_urltest_section "$section"; then
++        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
++        return 1
++    fi
++
++    shift
++
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$items_cache_path" ]; then
++        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
++    fi
++
++    if [ ! -s "$items_cache_path" ]; then
++        echo '{"success":false,"error":"subscription_cache_missing"}'
++        return 1
++    fi
++
++    excluded_ids_file="$(mktemp)"
++    collect_subscription_excluded_ids "$section" "$excluded_ids_file"
++    changed_count=0
++
++    while [ "$#" -gt 0 ]; do
++        link_id="$1"
++        enabled="$2"
++        shift 2
++
++        if ! validate_subscription_link_id "$link_id"; then
++            rm -f "$excluded_ids_file"
++            echo '{"success":false,"error":"invalid_arguments"}'
++            return 1
++        fi
++
++        enabled_value="$(normalize_subscription_enabled_value "$enabled")"
++        if [ -z "$enabled_value" ]; then
++            rm -f "$excluded_ids_file"
++            echo '{"success":false,"error":"invalid_enabled_value"}'
++            return 1
++        fi
++
++        if ! jq -e --arg id "$link_id" 'any(.[]; .id == $id and .supported == true)' "$items_cache_path" > /dev/null 2>&1; then
++            rm -f "$excluded_ids_file"
++            echo '{"success":false,"error":"link_is_not_supported"}'
++            return 1
++        fi
++
++        tmp_excluded_file="$(mktemp)"
++        grep -Fxv "$link_id" "$excluded_ids_file" > "$tmp_excluded_file" 2> /dev/null || true
++        if [ "$enabled_value" -eq 0 ]; then
++            printf '%s\n' "$link_id" >> "$tmp_excluded_file"
++        fi
++        awk '!seen[$0]++' "$tmp_excluded_file" > "$excluded_ids_file"
++        rm -f "$tmp_excluded_file"
++        changed_count=$((changed_count + 1))
++    done
++
++    excluded_ids_json="$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$excluded_ids_file")"
++    remaining_enabled_count="$(jq --argjson excludedIds "$excluded_ids_json" '
++        [
++            .[]
++            | select(
++                .supported == true
++                and (. as $item | ($excludedIds | index($item.id)) == null)
++            )
++        ] | length
++    ' "$items_cache_path" 2> /dev/null || echo 0)"
++
++    if [ "$remaining_enabled_count" -eq 0 ]; then
++        rm -f "$excluded_ids_file"
++        echo '{"success":false,"error":"cannot_disable_last_enabled_link"}'
++        return 1
++    fi
++
++    uci -q delete "podkop.$section.subscription_excluded_link_ids"
++    while IFS= read -r link_id || [ -n "$link_id" ]; do
++        [ -n "$link_id" ] || continue
++        uci -q add_list "podkop.$section.subscription_excluded_link_ids=$link_id"
++    done < "$excluded_ids_file"
++    rm -f "$excluded_ids_file"
++
++    if ! uci commit podkop; then
++        echo '{"success":false,"error":"uci_commit_failed"}'
++        return 1
++    fi
++
++    config_load "$PODKOP_CONFIG"
++    if ! apply_subscription_exclusions_to_cached_links "$section"; then
++        if ! refresh_subscription_cache "$section" > /dev/null 2>&1; then
++            echo '{"success":false,"error":"subscription_cache_update_failed"}'
++            return 1
++        fi
++    fi
++
++    reload_required="$SUBSCRIPTION_CACHE_CHANGED"
++    if [ "$reload_required" -eq 1 ]; then
++        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
++            echo '{"success":false,"error":"reload_failed"}'
++            return 1
++        fi
++    fi
++
++    printf '{"success":true,"changed":%s,"reloaded":%s}\n' "$changed_count" "$reload_required"
++}
++
++subscription_update_section_handler() {
++    local section="$1"
++    local connection_type proxy_config_type
++
++    if [ -n "$SUBSCRIPTION_UPDATE_TARGET" ] && [ "$SUBSCRIPTION_UPDATE_TARGET" != "$section" ]; then
++        return 0
++    fi
++
++    config_get connection_type "$section" "connection_type"
++    config_get proxy_config_type "$section" "proxy_config_type"
++
++    if [ "$connection_type" != "proxy" ] || [ "$proxy_config_type" != "subscription_urltest" ] ||
++        ! section_has_subscription_urls "$section"; then
++        return 0
++    fi
++
++    SUBSCRIPTION_FOUND_SECTIONS=$((SUBSCRIPTION_FOUND_SECTIONS + 1))
++    if refresh_subscription_cache "$section"; then
++        if [ "$SUBSCRIPTION_CACHE_CHANGED" -eq 1 ]; then
++            SUBSCRIPTION_UPDATED_SECTIONS=$((SUBSCRIPTION_UPDATED_SECTIONS + 1))
++        fi
++    else
++        SUBSCRIPTION_FAILED_SECTIONS=$((SUBSCRIPTION_FAILED_SECTIONS + 1))
++    fi
++}
++
++subscription_update() {
++    SUBSCRIPTION_UPDATE_TARGET="$1"
++    SUBSCRIPTION_FOUND_SECTIONS=0
++    SUBSCRIPTION_UPDATED_SECTIONS=0
++    SUBSCRIPTION_FAILED_SECTIONS=0
++
++    echolog "Starting subscription update..."
++    config_foreach subscription_update_section_handler "section"
++
++    if [ "$SUBSCRIPTION_FOUND_SECTIONS" -eq 0 ]; then
++        echolog "No Subscription URLTest sections found"
++        return 0
++    fi
++
++    if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
++        echolog "Subscription cache changed, reloading podkop..."
++        /etc/init.d/podkop reload
++        return $?
++    fi
++
++    if [ "$SUBSCRIPTION_FAILED_SECTIONS" -gt 0 ]; then
++        echolog "Subscription update finished with failures; cached subscriptions were kept"
++        return 1
++    fi
++
++    echolog "Subscription update completed, no changes"
++}
++
++subscription_update_json() {
++    local section="$1"
++    local output status success
++
++    output="$(subscription_update "$section" 2>&1)"
++    status=$?
++    if [ "$status" -eq 0 ]; then
++        success=true
++    else
++        success=false
++    fi
++
++    jq -cn --argjson success "$success" --arg output "$output" --argjson status "$status" \
++        '{success:$success, status:$status, output:$output}'
++}
++
++get_clash_api_base_url() {
++    local clash_api_controller_address
++
++    clash_api_controller_address="$(get_service_listen_address)"
++    if [ -z "$clash_api_controller_address" ]; then
++        clash_api_controller_address="127.0.0.1"
++    fi
++
++    echo "$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"
++}
++
++get_clash_api_auth_header() {
++    local enable_yacd_wan_access yacd_secret_key
++
++    config_get_bool enable_yacd_wan_access "settings" "enable_yacd_wan_access" 0
++    config_get yacd_secret_key "settings" "yacd_secret_key"
++
++    if [ "$enable_yacd_wan_access" -eq 1 ]; then
++        echo "Authorization: Bearer $yacd_secret_key"
+     fi
+ }
+ 
+-dnsmasq_configure() {
+-    local shutdown_correctly
+-    config_get shutdown_correctly "settings" "shutdown_correctly"
+-    if [ "$shutdown_correctly" -eq 0 ]; then
+-        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
+-        return 0
+-    fi
++clash_api_get_proxy_now() {
++    local clash_url="$1"
++    local auth_header="$2"
++    local proxy_tag="$3"
+ 
+-    log "Backup dnsmasq configuration"
+-    current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
+-    if [ -n "$current_servers" ]; then
+-        for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
+-            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
+-                uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
+-            fi
+-        done
+-        uci_remove "dhcp" "@dnsmasq[0]" "server"
+-    fi
++    curl -s --header "$auth_header" "$clash_url/proxies/$proxy_tag" | jq -r '.now // ""'
++}
+ 
+-    backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
+-    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
++clash_api_set_group_proxy_raw() {
++    local clash_url="$1"
++    local auth_header="$2"
++    local group_tag="$3"
++    local proxy_tag="$4"
++    local response http_code
+ 
+-    log "Configure dnsmasq for sing-box"
+-    uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
+-    uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
+-    uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
+-    uci_commit "dhcp"
++    response=$(
++        curl -X PUT -s -w "\n%{http_code}" "$clash_url/proxies/$group_tag" \
++            --header "$auth_header" \
++            --data-raw "{\"name\":\"$proxy_tag\"}"
++    )
++    http_code="$(echo "$response" | tail -n 1)"
+ 
+-    /etc/init.d/dnsmasq restart
++    [ "$http_code" = "204" ]
+ }
+ 
+-dnsmasq_restore() {
+-    log "Restoring the dnsmasq configuration"
+-    local shutdown_correctly
+-    config_get shutdown_correctly "settings" "shutdown_correctly"
+-    if [ "$shutdown_correctly" -eq 1 ]; then
+-        log "Previous shutdown of podkop was correct, reconfiguration of dnsmasq is not required"
+-        return 0
+-    fi
++get_subscription_benchmark_port() {
++    echo "42080"
++}
+ 
+-    local cachesize noresolv backup_servers resolvfile
+-    log "Restoring cachesize" "debug"
+-    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_cachesize")"
+-    if [ -z "$cachesize" ]; then
+-        uci_remove "dhcp" "@dnsmasq[0]" "cachesize"
+-        uci_set "dhcp" "@dnsmasq[0]" "cachesize" 150
+-    else
+-        uci_set "dhcp" "@dnsmasq[0]" "cachesize" "$cachesize"
+-        uci_remove "dhcp" "@dnsmasq[0]" "podkop_cachesize"
+-    fi
++subscription_speedtest_restore_mixed_proxy() {
++    local section="$1"
++    local original_mixed_enabled="$2"
++    local original_mixed_port="$3"
++    local mixed_changed="$4"
+ 
+-    log "Restoring noresolv" "debug"
+-    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_noresolv")"
+-    if [ -z "$noresolv" ]; then
+-        uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
++    [ "$mixed_changed" -eq 1 ] || return 0
++
++    if [ -n "$original_mixed_enabled" ]; then
++        uci -q set "podkop.$section.mixed_proxy_enabled=$original_mixed_enabled"
+     else
+-        uci_set "dhcp" "@dnsmasq[0]" "noresolv" "$noresolv"
+-        uci_remove "dhcp" "@dnsmasq[0]" "podkop_noresolv"
++        uci -q delete "podkop.$section.mixed_proxy_enabled"
+     fi
+ 
+-    log "Restoring DNS servers" "debug"
+-    uci_remove "dhcp" "@dnsmasq[0]" "server"
+-    resolvfile="/tmp/resolv.conf.d/resolv.conf.auto"
+-    backup_servers="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_server")"
+-    if [ -n "$backup_servers" ]; then
+-        for server in $backup_servers; do
+-            uci_add_list "dhcp" "@dnsmasq[0]" "server" "$server"
+-        done
+-        uci_remove "dhcp" "@dnsmasq[0]" "podkop_server"
+-    elif file_exists "$resolvfile"; then
+-        log "Backup DNS servers not found, using default resolvfile" "debug"
+-        uci_set "dhcp" "@dnsmasq[0]" "resolvfile" "$resolvfile"
+-        if [ -n "$noresolv" ] && [ "$noresolv" -eq 1 ]; then
+-            log "Disabling noresolv option to use system resolvfile" "debug"
+-            uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
+-        fi
++    if [ -n "$original_mixed_port" ]; then
++        uci -q set "podkop.$section.mixed_proxy_port=$original_mixed_port"
+     else
+-        log "Backup DNS servers and default resolvfile not found, possible resolving issues" "warn"
++        uci -q delete "podkop.$section.mixed_proxy_port"
+     fi
+ 
+-    uci_commit "dhcp"
++    uci commit podkop > /dev/null 2>&1 || return 1
++    config_load "$PODKOP_CONFIG"
++    /etc/init.d/podkop reload > /dev/null 2>&1
++}
+ 
+-    /etc/init.d/dnsmasq restart
++subscription_speedtest_result_error() {
++    local id="$1"
++    local tag="$2"
++    local name="$3"
++    local error="$4"
++
++    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" --arg error "$error" \
++        '{id:$id, tag:$tag, name:$name, success:false, error:$error}'
+ }
+ 
+-add_cron_job() {
+-    ## Future: make a check so that it doesn't recreate many times
+-    local community_lists remote_domain_lists remote_subnet_lists update_interval
+-    config_get community_lists "$section" "community_lists"
+-    config_get remote_domain_lists "$section" "remote_domain_lists"
+-    config_get remote_subnet_lists "$section" "remote_subnet_lists"
+-    config_get update_interval "settings" "update_interval"
++subscription_speedtest_result_success() {
++    local id="$1"
++    local tag="$2"
++    local name="$3"
++    local bytes_per_second="$4"
++    local time_total="$5"
++    local size_download="$6"
++    local http_code="$7"
++
++    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" \
++        --argjson bytesPerSecond "$bytes_per_second" \
++        --argjson timeTotal "$time_total" \
++        --argjson sizeDownload "$size_download" \
++        --argjson httpCode "$http_code" \
++        '{id:$id, tag:$tag, name:$name, success:true, bytesPerSecond:$bytesPerSecond, timeTotal:$timeTotal, sizeDownload:$sizeDownload, httpCode:$httpCode}'
++}
+ 
+-    case "$update_interval" in
+-    "1h")
+-        cron_job="13 * * * * /usr/bin/podkop list_update"
+-        ;;
+-    "3h")
+-        cron_job="13 */3 * * * /usr/bin/podkop list_update"
+-        ;;
+-    "12h")
+-        cron_job="13 */12 * * * /usr/bin/podkop list_update"
+-        ;;
+-    "1d")
+-        cron_job="13 9 * * * /usr/bin/podkop list_update"
+-        ;;
+-    "3d")
+-        cron_job="13 9 */3 * * /usr/bin/podkop list_update"
+-        ;;
+-    *)
+-        log "Invalid update_interval value: $update_interval"
+-        return
+-        ;;
+-    esac
++subscription_speedtest() {
++    local section="$1"
++    local items_cache_path active_items_file results_file clash_url auth_header selector_tag original_proxy \
++        original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
++        item_json id name tag index output bytes_per_second time_total size_download http_code results_json
+ 
+-    if [ -n "$community_lists" ] ||
+-        [ -n "$remote_domain_lists" ] ||
+-        [ -n "$remote_subnet_lists" ]; then
+-        remove_cron_job
+-        crontab -l | {
+-            cat
+-            echo "$cron_job"
+-        } | crontab -
+-        log "The cron job has been created: $cron_job"
++    if [ -z "$section" ]; then
++        echo '{"success":false,"error":"section_required"}'
++        return 1
+     fi
+-}
+ 
+-remove_cron_job() {
+-    (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
+-    log "The cron job removed"
+-}
++    if ! validate_subscription_urltest_section "$section"; then
++        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
++        return 1
++    fi
+ 
+-list_update() {
+-    echolog "🔄 Starting lists update..."
++    items_cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$items_cache_path" ]; then
++        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
++    fi
+ 
+-    local nslookup_timeout=3
+-    local nslookup_attempts=10
+-    local curl_timeout=5
+-    local curl_attempts=10
+-    local curl_max_timeout=10
+-    local delay=3
+-    local i
++    if [ ! -s "$items_cache_path" ]; then
++        echo '{"success":false,"error":"subscription_cache_missing"}'
++        return 1
++    fi
+ 
+-    # DNS Check
+-    for i in $(seq 1 $nslookup_attempts); do
+-        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
+-            echolog "✅ DNS check passed"
+-            break
+-        fi
+-        echolog "DNS is unavailable [$i/$nslookup_attempts]"
+-        sleep $delay
+-    done
++    active_items_file="$(mktemp)"
++    results_file="$(mktemp)"
++    jq -c '.[] | select(.supported == true and .enabled == true)' "$items_cache_path" > "$active_items_file"
+ 
+-    if [ "$i" -eq $nslookup_attempts ]; then
+-        echolog "❌ DNS check failed after $nslookup_attempts attempts"
++    if [ ! -s "$active_items_file" ]; then
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"no_enabled_links"}'
+         return 1
+     fi
+ 
+-    # Github Check
+-    for i in $(seq 1 $curl_attempts); do
+-        local service_proxy_address
+-        service_proxy_address="$(get_service_proxy_address)"
++    clash_url="$(get_clash_api_base_url)"
++    auth_header="$(get_clash_api_auth_header)"
++    selector_tag="$(get_outbound_tag_by_section "$section")"
++    original_proxy="$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")"
+ 
+-        if [ -n "$http_proxy_address" ]; then
+-            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
+-                echolog "✅ GitHub connection check passed (via proxy)"
+-                break
+-            fi
+-        else
+-            if curl -s -m $curl_timeout https://github.com > /dev/null; then
+-                echolog "✅ GitHub connection check passed"
+-                break
+-            fi
++    if [ -z "$original_proxy" ]; then
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"selector_not_available"}'
++        return 1
++    fi
++
++    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
++    config_get original_mixed_port "$section" "mixed_proxy_port"
++    mixed_port="$original_mixed_port"
++    [ -n "$mixed_port" ] || mixed_port="$(get_subscription_benchmark_port "$section")"
++    mixed_changed=0
++
++    if [ "$original_mixed_enabled" != "1" ] || [ -z "$original_mixed_port" ]; then
++        uci -q set "podkop.$section.mixed_proxy_enabled=1"
++        uci -q set "podkop.$section.mixed_proxy_port=$mixed_port"
++        if ! uci commit podkop > /dev/null 2>&1; then
++            rm -f "$active_items_file" "$results_file"
++            echo '{"success":false,"error":"uci_commit_failed"}'
++            return 1
+         fi
++        config_load "$PODKOP_CONFIG"
++        mixed_changed=1
+ 
+-        echolog "GitHub is unavailable [$i/$curl_attempts] (max-timeout=$curl_timeout)"
+-        if [ "$curl_timeout" -lt $curl_max_timeout ]; then
+-            curl_timeout=$((curl_timeout + 1))
++        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
++            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++            rm -f "$active_items_file" "$results_file"
++            echo '{"success":false,"error":"reload_failed"}'
++            return 1
+         fi
+-        sleep $delay
+-    done
++    fi
+ 
+-    if [ "$i" -eq $curl_attempts ]; then
+-        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
++    mixed_address="$(get_service_listen_address)"
++    if [ -z "$mixed_address" ]; then
++        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++        rm -f "$active_items_file" "$results_file"
++        echo '{"success":false,"error":"mixed_proxy_address_missing"}'
+         return 1
+     fi
+ 
+-    echolog "📥 Downloading and processing lists..."
++    benchmark_url="https://speed.cloudflare.com/__down?bytes=1048576"
++    index=1
++    while IFS= read -r item_json || [ -n "$item_json" ]; do
++        [ -n "$item_json" ] || continue
+ 
+-    config_foreach import_community_subnet_lists "section"
+-    config_foreach import_domains_from_remote_domain_lists "section"
+-    config_foreach import_subnets_from_remote_subnet_lists "section"
++        id="$(echo "$item_json" | jq -r '.id')"
++        name="$(echo "$item_json" | jq -r '.name // ""')"
++        tag="$(get_outbound_tag_by_section "$section-$index")"
+ 
+-    if [ $? -eq 0 ]; then
+-        echolog "✅ Lists update completed successfully"
++        if ! clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$tag"; then
++            subscription_speedtest_result_error "$id" "$tag" "$name" "select_failed" >> "$results_file"
++            index=$((index + 1))
++            continue
++        fi
++
++        sleep 1
++        output="$(
++            curl -L -s -o /dev/null \
++                -x "http://$mixed_address:$mixed_port" \
++                --connect-timeout 8 \
++                -m 20 \
++                -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
++                "$benchmark_url" 2> /dev/null
++        )"
++
++        bytes_per_second="$(echo "$output" | awk '{printf "%d", $1}')"
++        time_total="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
++        size_download="$(echo "$output" | awk '{printf "%d", $3}')"
++        http_code="$(echo "$output" | awk '{printf "%d", $4}')"
++
++        if [ "${bytes_per_second:-0}" -gt 0 ] && [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
++            subscription_speedtest_result_success "$id" "$tag" "$name" \
++                "${bytes_per_second:-0}" "${time_total:-0}" "${size_download:-0}" "${http_code:-0}" >> "$results_file"
++        else
++            subscription_speedtest_result_error "$id" "$tag" "$name" "download_failed" >> "$results_file"
++        fi
++
++        index=$((index + 1))
++    done < "$active_items_file"
++
++    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++    subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
++
++    results_json="$(jq -s '.' "$results_file")"
++    rm -f "$active_items_file" "$results_file"
++    jq -cn --arg section "$section" --argjson results "$results_json" \
++        '{success:true, section:$section, results:$results}'
++}
++
++subscription_patch_update_status_file() {
++    echo "/tmp/podkop-subscriptions-patch-update.json"
++}
++
++subscription_patch_update() {
++    local status_file runner
++
++    status_file="$(subscription_patch_update_status_file)"
++    runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
++
++    cat > "$runner" << 'EOF'
++#!/bin/ash
++status_file="/tmp/podkop-subscriptions-patch-update.json"
++log_file="/tmp/podkop-subscriptions-patch-update.log"
++
++write_status() {
++    local state="$1"
++    local message="$2"
++    local log_tail="$3"
++    jq -cn --arg state "$state" --arg message "$message" \
++        --arg updatedAt "$(date -Iseconds 2> /dev/null || date)" \
++        --arg logTail "$log_tail" \
++        '{state:$state, message:$message, updatedAt:$updatedAt, logTail:$logTail}' > "$status_file"
++}
++
++write_status "running" "patch_update_running" ""
++
++tmp="/tmp/podkop-subscriptions-install.sh"
++if ! wget -O "$tmp" "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh" > "$log_file" 2>&1; then
++    write_status "error" "download_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    exit 1
++fi
++
++if PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp" >> "$log_file" 2>&1; then
++    write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
++else
++    write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    exit 1
++fi
++EOF
++
++    chmod +x "$runner"
++    "$runner" > /dev/null 2>&1 &
++
++    echo '{"success":true,"started":true}'
++}
++
++get_subscription_patch_update_status() {
++    local status_file
++
++    status_file="$(subscription_patch_update_status_file)"
++    if [ -s "$status_file" ]; then
++        cat "$status_file"
+     else
+-        echolog "❌ Lists update failed"
++        echo '{"state":"idle","message":"","updatedAt":"","logTail":""}'
+     fi
+ }
+ 
+@@ -678,6 +2029,63 @@ configure_outbound_handler() {
+             config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
+                 "$default_outbound")"
+             ;;
++        subscription_urltest)
++            log "Detected proxy configuration type: subscription_urltest" "debug"
++            local udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
++                urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance urltest_testing_url \
++                links_file candidate_config link
++            config_get udp_over_tcp "$section" "enable_udp_over_tcp"
++            config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
++            config_get urltest_tolerance "$section" "urltest_tolerance" 50
++            config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
++
++            if ! section_has_subscription_urls "$section"; then
++                log "Subscription URL is not set. Aborted." "fatal"
++                exit 1
++            fi
++
++            links_file="$(mktemp)"
++            if ! load_subscription_proxy_links_for_section "$section" "$links_file"; then
++                rm -f "$links_file"
++                log "Unable to load subscription links. Aborted." "fatal"
++                exit 1
++            fi
++
++            i=1
++            while IFS= read -r link || [ -n "$link" ]; do
++                [ -n "$link" ] || continue
++
++                if ! candidate_config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")" ||
++                    [ -z "$candidate_config" ]; then
++                    log "Skipping unsupported subscription proxy link in section '$section'" "warn"
++                    i=$((i + 1))
++                    continue
++                fi
++
++                config="$candidate_config"
++                outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
++                if [ -z "$outbound_tags" ]; then
++                    outbound_tags="$outbound_tag"
++                else
++                    outbound_tags="$outbound_tags,$outbound_tag"
++                fi
++                i=$((i + 1))
++            done < "$links_file"
++            rm -f "$links_file"
++
++            if [ -z "$outbound_tags" ]; then
++                log "Subscription does not contain supported proxy links. Aborted." "fatal"
++                exit 1
++            fi
++
++            urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
++            selector_tag="$(get_outbound_tag_by_section "$section")"
++            urltest_outbounds="$(comma_string_to_json_array "$outbound_tags")"
++            selector_outbounds="$(comma_string_to_json_array "$outbound_tags,$urltest_tag")"
++            config="$(sing_box_cm_add_urltest_outbound "$config" "$urltest_tag" "$urltest_outbounds" \
++                "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
++            config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" "$urltest_tag")"
++            ;;
+         urltest)
+             log "Detected proxy configuration type: urltest" "debug"
+             local urltest_proxy_links udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
+@@ -1842,6 +3250,8 @@ show_config() {
+         -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
+         -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
+         -e 's/\(list selector_proxy_links\).*/\1 '\''MASKED'\''/g' \
++        -e 's/\(option subscription_url\).*/\1 '\''MASKED'\''/g' \
++        -e 's/\(list subscription_url\).*/\1 '\''MASKED'\''/g' \
+         -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
+         -e "s@\\(option domain_resolver_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
+         -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
+@@ -2669,6 +4079,14 @@ Available commands:
+     restart                 Restart podkop service
+     main                    Run main podkop process
+     list_update             Update domain lists
++    subscription_update     Update subscription URLTest caches
++    subscription_update_json
++                            Update subscription URLTest caches and print JSON status
++    subscription_speedtest   Benchmark enabled subscription proxy items for a section
++    subscription_patch_update
++                            Update the Podkop subscriptions patch from GitHub
++    get_subscription_patch_update_status
++                            Show background patch update status
+     check_proxy             Check proxy connectivity
+     check_nft               Check NFT rules
+     check_nft_rules         Check NFT rules status
+@@ -2677,6 +4095,18 @@ Available commands:
+     check_sing_box_logs     Show sing-box logs
+     check_fakeip            Test FakeIP on router
+     clash_api               Clash API interface for managing proxies and groups
++    get_subscription_cached_links
++                            Show cached subscription proxy links for a section
++    get_subscription_skipped_links
++                            Show skipped subscription proxy links for a section
++    get_subscription_items
++                            Show subscription proxy items for a section
++    get_subscription_items_cached
++                            Show cached subscription proxy items without refresh
++    set_subscription_link_enabled
++                            Enable or disable a subscription proxy item by id
++    set_subscription_links_enabled
++                            Enable or disable multiple subscription proxy items by id
+     show_config             Display current podkop configuration
+     show_version            Show podkop version
+     show_sing_box_config    Show sing-box configuration
+@@ -2709,6 +4139,21 @@ main)
+ list_update)
+     list_update
+     ;;
++subscription_update)
++    subscription_update "$2"
++    ;;
++subscription_update_json)
++    subscription_update_json "$2"
++    ;;
++subscription_speedtest)
++    subscription_speedtest "$2"
++    ;;
++subscription_patch_update)
++    subscription_patch_update
++    ;;
++get_subscription_patch_update_status)
++    get_subscription_patch_update_status
++    ;;
+ check_proxy)
+     check_proxy
+     ;;
+@@ -2733,6 +4178,25 @@ check_fakeip)
+ clash_api)
+     clash_api "$2" "$3" "$4"
+     ;;
++get_subscription_cached_links)
++    get_subscription_cached_links "$2"
++    ;;
++get_subscription_skipped_links)
++    get_subscription_skipped_links "$2"
++    ;;
++get_subscription_items)
++    get_subscription_items "$2"
++    ;;
++get_subscription_items_cached)
++    get_subscription_items_cached "$2"
++    ;;
++set_subscription_link_enabled)
++    set_subscription_link_enabled "$2" "$3" "$4"
++    ;;
++set_subscription_links_enabled)
++    shift
++    set_subscription_links_enabled "$@"
++    ;;
+ show_config)
+     show_config
+     ;;
+diff --git a/usr/lib/podkop/sing_box_config_facade.sh b/usr/lib/podkop/sing_box_config_facade.sh
+index 7641673..98c4ad7 100644
+--- a/usr/lib/podkop/sing_box_config_facade.sh
++++ b/usr/lib/podkop/sing_box_config_facade.sh
+@@ -241,7 +241,7 @@ _add_outbound_transport() {
+     local transport
+     transport=$(url_get_query_param "$url" "type")
+     case "$transport" in
+-    tcp | raw) ;;
++    "" | tcp | raw) ;;
+     ws)
+         local ws_path ws_host ws_early_data
+         ws_path=$(url_get_query_param "$url" "path")
+diff --git a/www/luci-static/resources/view/podkop/podkop.js b/www/luci-static/resources/view/podkop/podkop.js
+index f699e17..f0d1f5f 100644
+--- a/www/luci-static/resources/view/podkop/podkop.js
++++ b/www/luci-static/resources/view/podkop/podkop.js
+@@ -17,6 +17,9 @@
+ // Diagnostic content
+ "require view.podkop.diagnostic as diagnostic";
+ 
++// Subscriptions content
++"require view.podkop.subscriptions as subscriptions";
++
+ const EntryPoint = {
+   async render() {
+     main.injectGlobalStyles();
+@@ -73,6 +76,21 @@ const EntryPoint = {
+     // Render diagnostic content
+     diagnostic.createDiagnosticContent(diagnosticSection);
+ 
++    // Subscriptions tab
++    const subscriptionsSection = podkopMap.section(
++      form.TypedSection,
++      "subscriptions",
++      _("Subscriptions"),
++    );
++    subscriptionsSection.anonymous = true;
++    subscriptionsSection.addremove = false;
++    subscriptionsSection.cfgsections = function () {
++      return ["subscriptions"];
++    };
++
++    // Render subscriptions content
++    subscriptions.createSubscriptionsContent(subscriptionsSection);
++
+     // Dashboard tab
+     const dashboardSection = podkopMap.section(
+       form.TypedSection,
+diff --git a/www/luci-static/resources/view/podkop/section.js b/www/luci-static/resources/view/podkop/section.js
+index 7dc8ccb..c9f89e6 100644
+--- a/www/luci-static/resources/view/podkop/section.js
++++ b/www/luci-static/resources/view/podkop/section.js
+@@ -26,6 +26,7 @@ function createSectionContent(section) {
+   o.value("url", _("Connection URL"));
+   o.value("selector", _("Selector"));
+   o.value("urltest", _("URLTest"));
++  o.value("subscription_urltest", _("Subscription URLTest"));
+   o.value("outbound", _("Outbound Config"));
+   o.default = "url";
+   o.depends("connection_type", "proxy");
+@@ -59,6 +60,44 @@ function createSectionContent(section) {
+     return validation.message;
+   };
+ 
++  o = section.option(
++    form.DynamicList,
++    "subscription_url",
++    _("Subscription URLs"),
++    _("HTTP/HTTPS subscription links with proxy URLs")
++  );
++  o.depends("proxy_config_type", "subscription_urltest");
++  o.rmempty = false;
++  o.validate = function (section_id, value) {
++    if (!value || value.length === 0) {
++      return true;
++    }
++
++    const validation = main.validateUrl(value);
++
++    if (validation.valid) {
++      return true;
++    }
++
++    return validation.message;
++  };
++
++  o = section.option(
++    form.ListValue,
++    "subscription_update_interval",
++    _("Subscription Update Interval"),
++    _("How often to refresh the subscription cache")
++  );
++  o.value("10m", _("Every 10 minutes"));
++  o.value("30m", _("Every 30 minutes"));
++  o.value("1h", _("Every 1 hour"));
++  o.value("3h", _("Every 3 hours"));
++  o.value("6h", _("Every 6 hours"));
++  o.value("12h", _("Every 12 hours"));
++  o.value("1d", _("Every day"));
++  o.default = "1h";
++  o.depends("proxy_config_type", "subscription_urltest");
++
+   o = section.option(
+     form.TextValue,
+     "outbound_json",
+@@ -140,6 +179,7 @@ function createSectionContent(section) {
+   o.value("5m", _("Every 5 minutes"));
+   o.default = "3m";
+   o.depends("proxy_config_type", "urltest");
++  o.depends("proxy_config_type", "subscription_urltest");
+ 
+   o = section.option(
+     form.Value,
+@@ -150,6 +190,7 @@ function createSectionContent(section) {
+   o.default = "50";
+   o.rmempty = false;
+   o.depends("proxy_config_type", "urltest");
++  o.depends("proxy_config_type", "subscription_urltest");
+   o.validate = function (section_id, value) {
+     if (!value || value.length === 0) {
+       return true;
+@@ -177,6 +218,7 @@ function createSectionContent(section) {
+   o.default = "https://www.gstatic.com/generate_204";
+   o.rmempty = false;
+   o.depends("proxy_config_type", "urltest");
++  o.depends("proxy_config_type", "subscription_urltest");
+ 
+   o.validate = function (section_id, value) {
+     if (!value || value.length === 0) {
