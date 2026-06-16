@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-realbench-fix}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-realbench-fix2}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -174,6 +174,7 @@ has_v0719_package_backend() {
 
 tmp_dir="$(mktemp -d)"
 backup_dir=""
+light_reload=0
 trap 'rm -rf "$tmp_dir"' EXIT
 
 [ -x /usr/bin/podkop ] || fail "Podkop is not installed at /usr/bin/podkop"
@@ -186,12 +187,15 @@ download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
 if has_latest_subscription_backend; then
 	log "Subscription URLTest backend is already up to date; refreshing LuCI files."
 	backup_runtime
+	light_reload=1
 elif has_cache_only_subscription_backend; then
 	log "Subscription URLTest backend is installed; applying speedtest maintenance upgrade."
 	backup_runtime
+	light_reload=1
 elif has_subscription_backend; then
 	log "Subscription URLTest backend is installed; applying maintenance upgrade."
 	backup_runtime
+	light_reload=1
 elif has_actions_subscription_backend; then
 	download "$RAW_BASE/$UI_FIX_BACKEND_FILE" "$tmp_dir/$UI_FIX_BACKEND_FILE"
 	backup_runtime
@@ -270,7 +274,13 @@ rm -f /tmp/luci-indexcache
 rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 
 if [ -x /etc/init.d/podkop ]; then
-	if ! /etc/init.d/podkop reload; then
+	if [ "$light_reload" -eq 1 ]; then
+		reload_command="PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload"
+	else
+		reload_command="/etc/init.d/podkop reload"
+	fi
+
+	if ! sh -c "$reload_command"; then
 		abort_with_restore "podkop reload failed"
 	fi
 fi
