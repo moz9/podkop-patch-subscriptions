@@ -1,12 +1,13 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-actions-fix2}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.16-subscriptions-ui-fix}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
+UI_FIX_UPGRADE_PATCH_FILE="podkop-subscription-ui-fix-upgrade.patch"
 LMO_FILE="podkop.ru.lmo.base64"
 SUBSCRIPTIONS_FILE="subscriptions.js"
 
@@ -138,6 +139,10 @@ abort_with_restore() {
 }
 
 has_latest_subscription_backend() {
+	grep -q "get_subscription_items_cached" /usr/bin/podkop 2>/dev/null
+}
+
+has_actions_subscription_backend() {
 	grep -q "subscription_speedtest" /usr/bin/podkop 2>/dev/null
 }
 
@@ -160,8 +165,16 @@ download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 
 if has_latest_subscription_backend; then
-	log "Subscription URLTest actions backend is already installed; refreshing LuCI files."
+	log "Subscription URLTest backend is already up to date; refreshing LuCI files."
 	backup_runtime
+elif has_actions_subscription_backend; then
+	require_patch
+	download "$RAW_BASE/$UI_FIX_UPGRADE_PATCH_FILE" "$tmp_dir/$UI_FIX_UPGRADE_PATCH_FILE"
+	backup_runtime
+
+	if ! patch -d / -p1 < "$tmp_dir/$UI_FIX_UPGRADE_PATCH_FILE"; then
+		abort_with_restore "runtime UI fix upgrade patch failed"
+	fi
 elif has_batch_subscription_backend; then
 	require_patch
 	download "$RAW_BASE/$ACTIONS_UPGRADE_PATCH_FILE" "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"

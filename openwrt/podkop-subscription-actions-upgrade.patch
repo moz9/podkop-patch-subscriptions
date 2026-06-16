@@ -1,8 +1,33 @@
 diff --git a/usr/bin/podkop b/usr/bin/podkop
-index 3dff359..826ea64 100644
+index 3dff359..8231b11 100644
 --- a/usr/bin/podkop
 +++ b/usr/bin/podkop
-@@ -1573,6 +1573,313 @@ subscription_update() {
+@@ -1269,6 +1269,24 @@ get_subscription_items() {
+     cat "$cache_path"
+ }
+ 
++get_subscription_items_cached() {
++    local section="$1"
++    local cache_path
++
++    if [ -z "$section" ]; then
++        echo "[]"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$cache_path" ]; then
++        echo "[]"
++        return 0
++    fi
++
++    cat "$cache_path"
++}
++
+ validate_subscription_link_id() {
+     local link_id="$1"
+ 
+@@ -1573,6 +1591,313 @@ subscription_update() {
      echolog "Subscription update completed, no changes"
  }
  
@@ -316,7 +341,7 @@ index 3dff359..826ea64 100644
  # sing-box funcs
  sing_box_configure_service() {
      local sing_box_enabled sing_box_user sing_box_config_path sing_box_conffile
-@@ -3755,6 +4062,13 @@ Available commands:
+@@ -3755,6 +4080,13 @@ Available commands:
      main                    Run main podkop process
      list_update             Update domain lists
      subscription_update     Update subscription URLTest caches
@@ -330,7 +355,16 @@ index 3dff359..826ea64 100644
      check_proxy             Check proxy connectivity
      check_nft               Check NFT rules
      check_nft_rules         Check NFT rules status
-@@ -3808,6 +4122,18 @@ list_update)
+@@ -3769,6 +4101,8 @@ Available commands:
+                             Show skipped subscription proxy links for a section
+     get_subscription_items
+                             Show subscription proxy items for a section
++    get_subscription_items_cached
++                            Show cached subscription proxy items without refresh
+     set_subscription_link_enabled
+                             Enable or disable a subscription proxy item by id
+     set_subscription_links_enabled
+@@ -3808,6 +4142,18 @@ list_update)
  subscription_update)
      subscription_update "$2"
      ;;
@@ -349,11 +383,21 @@ index 3dff359..826ea64 100644
  check_proxy)
      check_proxy
      ;;
+@@ -3841,6 +4187,9 @@ get_subscription_skipped_links)
+ get_subscription_items)
+     get_subscription_items "$2"
+     ;;
++get_subscription_items_cached)
++    get_subscription_items_cached "$2"
++    ;;
+ set_subscription_link_enabled)
+     set_subscription_link_enabled "$2" "$3" "$4"
+     ;;
 diff --git a/www/luci-static/resources/view/podkop/main.js b/www/luci-static/resources/view/podkop/main.js
-index 4984048..12760f7 100644
+index 4984048..c435547 100644
 --- a/www/luci-static/resources/view/podkop/main.js
 +++ b/www/luci-static/resources/view/podkop/main.js
-@@ -621,6 +621,10 @@ var Podkop;
+@@ -621,10 +621,15 @@ var Podkop;
      AvailableMethods2["GLOBAL_CHECK"] = "global_check";
      AvailableMethods2["SHOW_SING_BOX_CONFIG"] = "show_sing_box_config";
      AvailableMethods2["CHECK_LOGS"] = "check_logs";
@@ -364,7 +408,12 @@ index 4984048..12760f7 100644
      AvailableMethods2["GET_SYSTEM_INFO"] = "get_system_info";
      AvailableMethods2["GET_SUBSCRIPTION_CACHED_LINKS"] = "get_subscription_cached_links";
      AvailableMethods2["GET_SUBSCRIPTION_SKIPPED_LINKS"] = "get_subscription_skipped_links";
-@@ -699,6 +703,30 @@ var PodkopShellMethods = {
+     AvailableMethods2["GET_SUBSCRIPTION_ITEMS"] = "get_subscription_items";
++    AvailableMethods2["GET_SUBSCRIPTION_ITEMS_CACHED"] = "get_subscription_items_cached";
+     AvailableMethods2["SET_SUBSCRIPTION_LINK_ENABLED"] = "set_subscription_link_enabled";
+     AvailableMethods2["SET_SUBSCRIPTION_LINKS_ENABLED"] = "set_subscription_links_enabled";
+   })(AvailableMethods = Podkop2.AvailableMethods || (Podkop2.AvailableMethods = {}));
+@@ -699,6 +704,30 @@ var PodkopShellMethods = {
    globalCheck: async () => callBaseMethod(Podkop.AvailableMethods.GLOBAL_CHECK),
    showSingBoxConfig: async () => callBaseMethod(Podkop.AvailableMethods.SHOW_SING_BOX_CONFIG),
    checkLogs: async () => callBaseMethod(Podkop.AvailableMethods.CHECK_LOGS),
@@ -395,7 +444,18 @@ index 4984048..12760f7 100644
    getSystemInfo: async () => callBaseMethod(
      Podkop.AvailableMethods.GET_SYSTEM_INFO
    ),
-@@ -1477,7 +1505,12 @@ var initialStore = {
+@@ -714,6 +743,10 @@ var PodkopShellMethods = {
+     Podkop.AvailableMethods.GET_SUBSCRIPTION_ITEMS,
+     [section]
+   ),
++  getSubscriptionItemsCached: async (section) => callBaseMethod(
++    Podkop.AvailableMethods.GET_SUBSCRIPTION_ITEMS_CACHED,
++    [section]
++  ),
+   setSubscriptionLinkEnabled: async (section, linkId, enabled) => callBaseMethod(
+     Podkop.AvailableMethods.SET_SUBSCRIPTION_LINK_ENABLED,
+     [section, linkId, enabled ? "1" : "0"]
+@@ -1477,7 +1510,13 @@ var initialStore = {
      failed: false,
      applying: false,
      status: "idle",
@@ -403,12 +463,87 @@ index 4984048..12760f7 100644
 +    actionStatus: "idle",
 +    actionMessage: "",
      pendingChanges: {},
++    collapsedSources: {},
 +    latencyByRow: {},
 +    speedByRow: {},
      data: []
    },
    ...initialDiagnosticStore
-@@ -4784,17 +4817,15 @@ function getStatusClass({
+@@ -2919,6 +2958,18 @@ var styles2 = `
+     margin-right: 5px;
+ }
+ 
++.pdk-partial-button--icon-only {
++    min-width: 30px;
++    width: 30px;
++    min-height: 26px;
++    padding-left: 3px;
++    padding-right: 3px;
++}
++
++.pdk-partial-button--icon-only .pdk-partial-button__icon {
++    margin-right: 0;
++}
++
+ .pdk-partial-button__icon {
+     display: flex;
+     align-items: center;
+@@ -3471,12 +3522,15 @@ function renderBookOpenTextIcon24() {
+ 
+ // src/partials/button/renderButton.ts
+ function renderButton({
++  ariaLabel,
+   classNames = [],
+   disabled,
++  hideText,
+   loading,
+   onClick,
+   text,
+-  icon
++  icon,
++  title
+ }) {
+   const hasIcon = !!loading || !!icon;
+   function getWrappedIcon() {
+@@ -3500,6 +3554,7 @@ function renderButton({
+       ...insertIf(Boolean(disabled), ["pdk-partial-button--disabled"]),
+       ...insertIf(Boolean(loading), ["pdk-partial-button--loading"]),
+       ...insertIf(Boolean(hasIcon), ["pdk-partial-button--with-icon"]),
++      ...insertIf(Boolean(hideText), ["pdk-partial-button--icon-only"]),
+       ...classNames
+     ].filter(Boolean).join(" ");
+   }
+@@ -3511,8 +3566,17 @@ function renderButton({
+   }
+   return E(
+     "button",
+-    { class: getClass(), disabled: getDisabled(), click: onClick },
+-    [...insertIf(hasIcon, [getWrappedIcon()]), E("span", {}, text)]
++    {
++      class: getClass(),
++      disabled: getDisabled(),
++      title: title || text,
++      "aria-label": ariaLabel || text,
++      click: onClick
++    },
++    [
++      ...insertIf(hasIcon, [getWrappedIcon()]),
++      ...insertIf(!hideText, [E("span", {}, text)])
++    ]
+   );
+ }
+ 
+@@ -4734,6 +4798,9 @@ var DiagnosticTab = {
+ function getRowId(sectionCode, itemId) {
+   return `${sectionCode}:${itemId}`;
+ }
++function getSourceId(sectionCode, sourceIndex) {
++  return `${sectionCode}:${sourceIndex}`;
++}
+ function getPendingCount(pendingChanges) {
+   return Object.keys(pendingChanges).length;
+ }
+@@ -4784,17 +4851,52 @@ function getStatusClass({
    return effectiveEnabled ? "pdk_subscriptions-page__status--enabled" : "pdk_subscriptions-page__status--excluded";
  }
  function renderEmptyState(text) {
@@ -418,6 +553,43 @@ index 4984048..12760f7 100644
 -    text
 -  );
 +  return E("div", { class: "pdk_subscriptions-page__empty centered" }, text);
++}
++function getSourceGroups(items) {
++  const groups = [];
++  const indexBySource = {};
++  items.forEach((item, index) => {
++    const sourceIndex = item.sourceIndex || 1;
++    const key = String(sourceIndex);
++    if (!(key in indexBySource)) {
++      indexBySource[key] = groups.length;
++      groups.push({
++        sourceIndex,
++        items: [],
++        firstItemIndex: index
++      });
++    }
++    groups[indexBySource[key]].items.push(item);
++  });
++  return groups;
++}
++function getSourceSummary({
++  section,
++  group,
++  pendingChanges
++}) {
++  const supportedCount = group.items.filter((item) => item.supported).length;
++  const enabledCount = group.items.filter(
++    (item) => item.supported && getEffectiveEnabled(pendingChanges, section.code, item)
++  ).length;
++  const unsupportedCount = group.items.length - supportedCount;
++  const parts = [
++    `${_("Configs")}: ${group.items.length}`,
++    `${_("Included")}: ${enabledCount}/${supportedCount}`
++  ];
++  if (unsupportedCount > 0) {
++    parts.push(`${_("Unsupported")}: ${unsupportedCount}`);
++  }
++  return parts.join(" | ");
  }
  function getToolbarMessage({
    loading,
@@ -429,7 +601,7 @@ index 4984048..12760f7 100644
    pendingCount
  }) {
    if (loading) {
-@@ -4806,6 +4837,15 @@ function getToolbarMessage({
+@@ -4806,6 +4908,15 @@ function getToolbarMessage({
    if (applying || status === "applying") {
      return _("Applying changes. Podkop will be restarted once.");
    }
@@ -445,7 +617,7 @@ index 4984048..12760f7 100644
    if (status === "error") {
      return _("Failed to apply changes. Podkop was not changed.");
    }
-@@ -4817,17 +4857,20 @@ function getToolbarMessage({
+@@ -4817,17 +4928,20 @@ function getToolbarMessage({
    }
    return _("Select configs, then click Apply to restart Podkop once.");
  }
@@ -469,7 +641,7 @@ index 4984048..12760f7 100644
      return "pdk_subscriptions-page__toolbar--success";
    }
    return "";
-@@ -4837,27 +4880,70 @@ function renderToolbar({
+@@ -4837,27 +4951,86 @@ function renderToolbar({
    failed,
    applying,
    status,
@@ -520,24 +692,40 @@ index 4984048..12760f7 100644
        E("div", { class: "pdk_subscriptions-page__toolbar-actions" }, [
 +        renderButton({
 +          text: _("Refresh"),
++          title: _("Refresh subscription configs"),
++          ariaLabel: _("Refresh subscription configs"),
++          icon: renderRotateCcwIcon24,
++          hideText: true,
 +          onClick: onRefresh,
 +          loading: action === "refresh" && actionRunning,
 +          disabled: !canRunSubscriptionAction
 +        }),
 +        renderButton({
 +          text: _("Ping"),
++          title: _("Test latency"),
++          ariaLabel: _("Test latency"),
++          icon: renderSearchIcon24,
++          hideText: true,
 +          onClick: onPing,
 +          loading: action === "ping" && actionRunning,
 +          disabled: !canRunSubscriptionAction
 +        }),
 +        renderButton({
 +          text: _("Speed"),
++          title: _("Run speed benchmark"),
++          ariaLabel: _("Run speed benchmark"),
++          icon: renderSquareChartGanttIcon24,
++          hideText: true,
 +          onClick: onSpeedtest,
 +          loading: action === "speed" && actionRunning,
 +          disabled: !canRunSubscriptionAction
 +        }),
 +        renderButton({
 +          text: _("Patch"),
++          title: _("Update patch"),
++          ariaLabel: _("Update patch"),
++          icon: renderCogIcon24,
++          hideText: true,
 +          onClick: onPatchUpdate,
 +          loading: action === "patch" && actionRunning,
 +          disabled: !canRunPatchAction
@@ -545,7 +733,13 @@ index 4984048..12760f7 100644
          renderButton({
            classNames: ["cbi-button-apply"],
            text: _("Apply"),
-@@ -4883,6 +4969,7 @@ function renderRow({
+@@ -4879,10 +5052,13 @@ function renderRow({
+   item,
+   index,
+   pendingChanges,
++  latencyByRow,
++  speedByRow,
+   applying,
    enabledSupportedCount,
    onToggle
  }) {
@@ -553,7 +747,7 @@ index 4984048..12760f7 100644
    const pending = hasPendingChange(pendingChanges, section.code, item);
    const effectiveEnabled = getEffectiveEnabled(
      pendingChanges,
-@@ -4891,6 +4978,26 @@ function renderRow({
+@@ -4891,6 +5067,26 @@ function renderRow({
    );
    const isLastEnabled = item.supported && effectiveEnabled && enabledSupportedCount <= 1;
    const disabled = !item.supported || applying || isLastEnabled;
@@ -580,7 +774,7 @@ index 4984048..12760f7 100644
    return E(
      "tr",
      {
-@@ -4915,6 +5022,8 @@ function renderRow({
+@@ -4915,6 +5111,8 @@ function renderRow({
        E("td", {}, getItemName(item, index)),
        E("td", {}, (item.protocol || _("Unknown")).toUpperCase()),
        E("td", {}, item.transport || _("Default")),
@@ -589,52 +783,223 @@ index 4984048..12760f7 100644
        E(
          "td",
          {
-@@ -4933,6 +5042,8 @@ function renderRow({
+@@ -4925,64 +5123,169 @@ function renderRow({
+           })}`
+         },
+         getStatusLabel({ item, pending, effectiveEnabled })
++      )
++    ]
++  );
++}
++function renderSourceTable({
++  section,
++  group,
++  pendingChanges,
++  latencyByRow,
++  speedByRow,
++  applying,
++  enabledSupportedCount,
++  onToggle
++}) {
++  return E(
++    "div",
++    { class: "pdk_subscriptions-page__table-wrap" },
++    E("table", { class: "pdk_subscriptions-page__table" }, [
++      E("thead", {}, [
++        E("tr", {}, [
++          E("th", {}, _("Use")),
++          E("th", {}, _("Config")),
++          E("th", {}, _("Protocol")),
++          E("th", {}, _("Transport")),
++          E("th", {}, _("Ping")),
++          E("th", {}, _("Speed")),
++          E("th", {}, _("Status"))
++        ])
++      ]),
++      E(
++        "tbody",
++        {},
++        group.items.map(
++          (item, index) => renderRow({
++            section,
++            item,
++            index: group.firstItemIndex + index,
++            pendingChanges,
++            latencyByRow,
++            speedByRow,
++            applying,
++            enabledSupportedCount,
++            onToggle
++          })
++        )
++      )
++    ])
++  );
++}
++function renderSourceGroup({
++  section,
++  group,
++  pendingChanges,
++  collapsedSources,
++  latencyByRow,
++  speedByRow,
++  applying,
++  enabledSupportedCount,
++  onToggle,
++  onToggleSource
++}) {
++  const collapsed = Boolean(
++    collapsedSources[getSourceId(section.code, group.sourceIndex)]
++  );
++  const actionLabel = collapsed ? _("Expand subscription") : _("Collapse subscription");
++  return E(
++    "div",
++    {
++      class: [
++        "pdk_subscriptions-page__source-group",
++        collapsed ? "pdk_subscriptions-page__source-group--collapsed" : ""
++      ].filter(Boolean).join(" ")
++    },
++    [
++      E(
++        "button",
++        {
++          type: "button",
++          class: "pdk_subscriptions-page__source-header",
++          title: actionLabel,
++          "aria-label": actionLabel,
++          click: () => onToggleSource(section.code, group.sourceIndex)
++        },
++        [
++          E("span", { class: "pdk_subscriptions-page__source-caret" }),
++          E(
++            "span",
++            { class: "pdk_subscriptions-page__source-title" },
++            `${_("Subscription")} ${group.sourceIndex}`
++          ),
++          E(
++            "span",
++            { class: "pdk_subscriptions-page__source-summary" },
++            getSourceSummary({ section, group, pendingChanges })
++          )
++        ]
+       ),
+-      E("td", {}, `${_("Subscription")} ${item.sourceIndex}`)
++      ...collapsed ? [] : [
++        renderSourceTable({
++          section,
++          group,
++          pendingChanges,
++          latencyByRow,
++          speedByRow,
++          applying,
++          enabledSupportedCount,
++          onToggle
++        })
++      ]
+     ]
+   );
+ }
  function renderSection({
    section,
    pendingChanges,
-+  latencyByRow: latencyByRow2,
-+  speedByRow: speedByRow2,
++  collapsedSources,
++  latencyByRow,
++  speedByRow,
    applying,
-   onToggle
+-  onToggle
++  onToggle,
++  onToggleSource
  }) {
-@@ -4955,6 +5066,8 @@ function renderSection({
-             E("th", {}, _("Config")),
-             E("th", {}, _("Protocol")),
-             E("th", {}, _("Transport")),
-+            E("th", {}, _("Ping")),
-+            E("th", {}, _("Speed")),
-             E("th", {}, _("Status")),
-             E("th", {}, _("Source"))
-           ])
-@@ -4968,6 +5081,8 @@ function renderSection({
-               item,
-               index,
-               pendingChanges,
-+              latencyByRow: latencyByRow2,
-+              speedByRow: speedByRow2,
-               applying,
-               enabledSupportedCount,
-               onToggle
-@@ -4981,6 +5096,8 @@ function renderSection({
+   const enabledSupportedCount = section.items.filter(
+     (item) => item.supported && getEffectiveEnabled(pendingChanges, section.code, item)
+   ).length;
++  const sourceGroups = getSourceGroups(section.items);
+   return E("div", { class: "pdk_subscriptions-page__section" }, [
+     E(
+       "div",
+       { class: "pdk_subscriptions-page__section-title" },
+       section.displayName
+     ),
+-    section.items.length === 0 ? renderEmptyState(_("No subscription configs found")) : E(
++    section.items.length === 0 ? renderEmptyState(
++      _("Subscription cache is empty. Click refresh to load configs.")
++    ) : E(
+       "div",
+-      { class: "pdk_subscriptions-page__table-wrap" },
+-      E("table", { class: "pdk_subscriptions-page__table" }, [
+-        E("thead", {}, [
+-          E("tr", {}, [
+-            E("th", {}, _("Use")),
+-            E("th", {}, _("Config")),
+-            E("th", {}, _("Protocol")),
+-            E("th", {}, _("Transport")),
+-            E("th", {}, _("Status")),
+-            E("th", {}, _("Source"))
+-          ])
+-        ]),
+-        E(
+-          "tbody",
+-          {},
+-          section.items.map(
+-            (item, index) => renderRow({
+-              section,
+-              item,
+-              index,
+-              pendingChanges,
+-              applying,
+-              enabledSupportedCount,
+-              onToggle
+-            })
+-          )
+-        )
+-      ])
++      { class: "pdk_subscriptions-page__source-groups" },
++      sourceGroups.map(
++        (group) => renderSourceGroup({
++          section,
++          group,
++          pendingChanges,
++          collapsedSources,
++          latencyByRow,
++          speedByRow,
++          applying,
++          enabledSupportedCount,
++          onToggle,
++          onToggleSource
++        })
++      )
+     )
+   ]);
+ }
  function renderSections2({
    sections,
    pendingChanges,
-+  latencyByRow: latencyByRow2,
-+  speedByRow: speedByRow2,
++  collapsedSources,
++  latencyByRow,
++  speedByRow,
    applying,
-   onToggle
+-  onToggle
++  onToggle,
++  onToggleSource
  }) {
-@@ -4994,6 +5111,8 @@ function renderSections2({
+   if (sections.length === 0) {
+     return renderEmptyState(_("No Subscription URLTest sections"));
+@@ -4994,8 +5297,12 @@ function renderSections2({
        (section) => renderSection({
          section,
          pendingChanges,
-+        latencyByRow: latencyByRow2,
-+        speedByRow: speedByRow2,
++        collapsedSources,
++        latencyByRow,
++        speedByRow,
          applying,
-         onToggle
+-        onToggle
++        onToggle,
++        onToggleSource
        })
-@@ -5005,11 +5124,20 @@ function renderSubscriptionSections({
+     )
+   );
+@@ -5005,11 +5312,22 @@ function renderSubscriptionSections({
    failed,
    applying,
    status,
@@ -642,8 +1007,9 @@ index 4984048..12760f7 100644
 +  actionStatus,
 +  actionMessage,
    pendingChanges,
-+  latencyByRow: latencyByRow2,
-+  speedByRow: speedByRow2,
++  collapsedSources,
++  latencyByRow,
++  speedByRow,
    sections,
    onToggle,
    onApply,
@@ -652,11 +1018,12 @@ index 4984048..12760f7 100644
 +  onRefresh,
 +  onPing,
 +  onSpeedtest,
-+  onPatchUpdate
++  onPatchUpdate,
++  onToggleSource
  }) {
    const pendingCount = getPendingCount(pendingChanges);
    return E("div", { class: "pdk_subscriptions-page__content" }, [
-@@ -5018,13 +5146,22 @@ function renderSubscriptionSections({
+@@ -5018,15 +5336,26 @@ function renderSubscriptionSections({
        failed,
        applying,
        status,
@@ -675,12 +1042,17 @@ index 4984048..12760f7 100644
      loading ? renderEmptyState(_("Loading")) : failed ? renderEmptyState(_("Failed to load subscription configs")) : renderSections2({
        sections,
        pendingChanges,
-+      latencyByRow: latencyByRow2,
-+      speedByRow: speedByRow2,
++      collapsedSources,
++      latencyByRow,
++      speedByRow,
        applying,
-       onToggle
+-      onToggle
++      onToggle,
++      onToggleSource
      })
-@@ -5048,13 +5185,26 @@ function render3() {
+   ]);
+ }
+@@ -5048,13 +5377,29 @@ function render3() {
            failed: false,
            applying: false,
            status: "idle",
@@ -688,6 +1060,7 @@ index 4984048..12760f7 100644
 +          actionStatus: "idle",
 +          actionMessage: "",
            pendingChanges: {},
++          collapsedSources: {},
 +          latencyByRow: {},
 +          speedByRow: {},
            sections: [],
@@ -704,10 +1077,12 @@ index 4984048..12760f7 100644
 +          onSpeedtest: () => {
 +          },
 +          onPatchUpdate: () => {
++          },
++          onToggleSource: () => {
            }
          })
        )
-@@ -5069,6 +5219,34 @@ function getRowId2(sectionCode, itemId) {
+@@ -5069,6 +5414,34 @@ function getRowId2(sectionCode, itemId) {
  function getPendingCount2(pendingChanges) {
    return Object.keys(pendingChanges).length;
  }
@@ -742,7 +1117,16 @@ index 4984048..12760f7 100644
  async function fetchSubscriptionItems(status = "idle") {
    const prev = store.get().subscriptionItemsWidget;
    store.set({
-@@ -5097,6 +5275,7 @@ async function fetchSubscriptionItems(status = "idle") {
+@@ -5085,7 +5458,7 @@ async function fetchSubscriptionItems(status = "idle") {
+     );
+     const data = await Promise.all(
+       subscriptionSections.map(async (section) => {
+-        const items = await PodkopShellMethods.getSubscriptionItems(
++        const items = await PodkopShellMethods.getSubscriptionItemsCached(
+           section[".name"]
+         );
+         return {
+@@ -5097,6 +5470,7 @@ async function fetchSubscriptionItems(status = "idle") {
      );
      store.set({
        subscriptionItemsWidget: {
@@ -750,7 +1134,30 @@ index 4984048..12760f7 100644
          loading: false,
          failed: false,
          applying: false,
-@@ -5164,7 +5343,7 @@ function getChangesBySection(pendingChanges) {
+@@ -5145,6 +5519,22 @@ function handleReset() {
+     }
+   });
+ }
++function handleToggleSource(sectionCode, sourceIndex) {
++  const widget = store.get().subscriptionItemsWidget;
++  const sourceId = `${sectionCode}:${sourceIndex}`;
++  const collapsedSources = { ...widget.collapsedSources };
++  if (collapsedSources[sourceId]) {
++    delete collapsedSources[sourceId];
++  } else {
++    collapsedSources[sourceId] = true;
++  }
++  store.set({
++    subscriptionItemsWidget: {
++      ...widget,
++      collapsedSources
++    }
++  });
++}
+ function getChangesBySection(pendingChanges) {
+   return Object.entries(pendingChanges).reduce(
+     (acc, [rowId, enabled]) => {
+@@ -5164,7 +5554,7 @@ function getChangesBySection(pendingChanges) {
  async function handleApply() {
    const widget = store.get().subscriptionItemsWidget;
    const pendingChanges = widget.pendingChanges;
@@ -759,7 +1166,7 @@ index 4984048..12760f7 100644
      return;
    }
    store.set({
-@@ -5200,6 +5379,235 @@ async function handleApply() {
+@@ -5200,6 +5590,235 @@ async function handleApply() {
      });
    }
  }
@@ -802,7 +1209,7 @@ index 4984048..12760f7 100644
 +    return;
 +  }
 +  const sections = store.get().subscriptionItemsWidget.data;
-+  const latencyByRow2 = {};
++  const latencyByRow = {};
 +  setActionState({
 +    action: "ping",
 +    actionStatus: "running",
@@ -829,14 +1236,14 @@ index 4984048..12760f7 100644
 +        const tag = `${section.code}-${index + 1}-out`;
 +        const latency = result.data[tag];
 +        if (typeof latency === "number" && latency > 0) {
-+          latencyByRow2[getRowId2(section.code, item.id)] = latency;
++          latencyByRow[getRowId2(section.code, item.id)] = latency;
 +        }
 +      });
 +    }
 +    store.set({
 +      subscriptionItemsWidget: {
 +        ...store.get().subscriptionItemsWidget,
-+        latencyByRow: latencyByRow2
++        latencyByRow
 +      }
 +    });
 +    setActionState({
@@ -861,7 +1268,7 @@ index 4984048..12760f7 100644
 +    return;
 +  }
 +  const sections = store.get().subscriptionItemsWidget.data;
-+  const speedByRow2 = {};
++  const speedByRow = {};
 +  setActionState({
 +    action: "speed",
 +    actionStatus: "running",
@@ -887,13 +1294,13 @@ index 4984048..12760f7 100644
 +        throw new Error(result.success ? result.data.error : result.error);
 +      }
 +      (result.data.results ?? []).forEach((item) => {
-+        speedByRow2[getRowId2(section.code, item.id)] = item;
++        speedByRow[getRowId2(section.code, item.id)] = item;
 +      });
 +    }
 +    store.set({
 +      subscriptionItemsWidget: {
 +        ...store.get().subscriptionItemsWidget,
-+        speedByRow: speedByRow2
++        speedByRow
 +      }
 +    });
 +    setActionState({
@@ -995,7 +1402,7 @@ index 4984048..12760f7 100644
  async function renderSubscriptionItemsWidget() {
    logger.debug("[SUBSCRIPTIONS]", "renderSubscriptionItemsWidget");
    const subscriptionItemsWidget = store.get().subscriptionItemsWidget;
-@@ -5209,11 +5617,20 @@ async function renderSubscriptionItemsWidget() {
+@@ -5209,11 +5828,22 @@ async function renderSubscriptionItemsWidget() {
      failed: subscriptionItemsWidget.failed,
      applying: subscriptionItemsWidget.applying,
      status: subscriptionItemsWidget.status,
@@ -1003,6 +1410,7 @@ index 4984048..12760f7 100644
 +    actionStatus: subscriptionItemsWidget.actionStatus,
 +    actionMessage: subscriptionItemsWidget.actionMessage,
      pendingChanges: subscriptionItemsWidget.pendingChanges,
++    collapsedSources: subscriptionItemsWidget.collapsedSources,
 +    latencyByRow: subscriptionItemsWidget.latencyByRow,
 +    speedByRow: subscriptionItemsWidget.speedByRow,
      sections: subscriptionItemsWidget.data,
@@ -1013,11 +1421,12 @@ index 4984048..12760f7 100644
 +    onRefresh: handleRefreshSubscriptions,
 +    onPing: handlePingSubscriptions,
 +    onSpeedtest: handleSpeedtestSubscriptions,
-+    onPatchUpdate: handlePatchUpdate
++    onPatchUpdate: handlePatchUpdate,
++    onToggleSource: handleToggleSource
    });
    return preserveScrollForPage(() => {
      container.replaceChildren(renderedWidget);
-@@ -5294,13 +5711,15 @@ var styles5 = `
+@@ -5294,13 +5924,15 @@ var styles5 = `
  .pdk_subscriptions-page__toolbar-actions {
      display: flex;
      align-items: center;
@@ -1035,3 +1444,86 @@ index 4984048..12760f7 100644
  }
  
  .pdk_subscriptions-page__toolbar--dirty {
+@@ -5338,6 +5970,65 @@ var styles5 = `
+     margin-bottom: 10px;
+ }
+ 
++.pdk_subscriptions-page__source-groups {
++    display: grid;
++    grid-template-columns: 1fr;
++    grid-row-gap: 8px;
++}
++
++.pdk_subscriptions-page__source-group {
++    border: 1px var(--background-color-low, lightgray) solid;
++    border-radius: 4px;
++    overflow: hidden;
++}
++
++.pdk_subscriptions-page__source-header {
++    width: 100%;
++    min-height: 34px;
++    display: flex;
++    align-items: center;
++    gap: 8px;
++    border: 0;
++    border-bottom: 1px var(--background-color-low, lightgray) solid;
++    background: var(--background-color-high, transparent);
++    color: var(--text-color-high);
++    padding: 6px 8px;
++    text-align: left;
++    cursor: pointer;
++}
++
++.pdk_subscriptions-page__source-group--collapsed .pdk_subscriptions-page__source-header {
++    border-bottom: 0;
++}
++
++.pdk_subscriptions-page__source-caret {
++    width: 0;
++    height: 0;
++    border-top: 5px solid transparent;
++    border-bottom: 5px solid transparent;
++    border-left: 6px solid currentColor;
++    transform: rotate(90deg);
++    transition: transform 120ms ease;
++    flex-shrink: 0;
++}
++
++.pdk_subscriptions-page__source-group--collapsed .pdk_subscriptions-page__source-caret {
++    transform: rotate(0deg);
++}
++
++.pdk_subscriptions-page__source-title {
++    font-weight: 700;
++    flex-shrink: 0;
++}
++
++.pdk_subscriptions-page__source-summary {
++    color: var(--text-color-medium);
++    min-width: 0;
++    overflow: hidden;
++    text-overflow: ellipsis;
++    white-space: nowrap;
++}
++
+ .pdk_subscriptions-page__table-wrap {
+     overflow-x: auto;
+ }
+@@ -5411,6 +6102,16 @@ var styles5 = `
+     .pdk_subscriptions-page__toolbar-actions {
+         width: 100%;
+     }
++
++    .pdk_subscriptions-page__source-header {
++        align-items: flex-start;
++        flex-wrap: wrap;
++    }
++
++    .pdk_subscriptions-page__source-summary {
++        flex-basis: 100%;
++        padding-left: 14px;
++    }
+ }
+ `;
+ 

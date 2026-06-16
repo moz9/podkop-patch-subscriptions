@@ -1,20 +1,8 @@
 From 787bf3e379ac4b4da2cf5a07ab2734672a715aba Mon Sep 17 00:00:00 2001
 From: Codex <codex@example.local>
 Date: Tue, 16 Jun 2026 08:48:31 +0300
-Subject: [PATCH 4/4] Add subscription maintenance actions
+Subject: [PATCH 4/5] Add subscription maintenance actions
 
----
- .../src/podkop/methods/shell/index.ts         |  28 ++
- .../src/podkop/services/store.service.ts      |  10 +
- .../tabs/subscriptions/initController.ts      | 346 ++++++++++++-
- .../partials/renderSubscriptionSections.ts    | 175 ++++++-
- .../src/podkop/tabs/subscriptions/render.ts   |   9 +
- .../src/podkop/tabs/subscriptions/styles.ts   |   6 +-
- fe-app-podkop/src/podkop/types.ts             |  42 ++
- .../luci-static/resources/view/podkop/main.js | 457 +++++++++++++++++-
- luci-app-podkop/po/ru/podkop.po               |  90 ++++
- podkop/files/usr/bin/podkop                   | 326 +++++++++++++
- 10 files changed, 1451 insertions(+), 38 deletions(-)
 
 diff --git a/fe-app-podkop/src/podkop/methods/shell/index.ts b/fe-app-podkop/src/podkop/methods/shell/index.ts
 index ec0482d..d84ca58 100644

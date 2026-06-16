@@ -1,8 +1,33 @@
 diff --git a/usr/bin/podkop b/usr/bin/podkop
-index ee89ce2..826ea64 100644
+index ee89ce2..8231b11 100644
 --- a/usr/bin/podkop
 +++ b/usr/bin/podkop
-@@ -1293,6 +1293,36 @@ validate_subscription_section_name() {
+@@ -1269,6 +1269,24 @@ get_subscription_items() {
+     cat "$cache_path"
+ }
+ 
++get_subscription_items_cached() {
++    local section="$1"
++    local cache_path
++
++    if [ -z "$section" ]; then
++        echo "[]"
++        return 1
++    fi
++
++    cache_path="$(get_subscription_items_cache_path "$section")"
++    if [ ! -s "$cache_path" ]; then
++        echo "[]"
++        return 0
++    fi
++
++    cat "$cache_path"
++}
++
+ validate_subscription_link_id() {
+     local link_id="$1"
+ 
+@@ -1293,6 +1311,36 @@ validate_subscription_section_name() {
      return 0
  }
  
@@ -39,7 +64,7 @@ index ee89ce2..826ea64 100644
  apply_subscription_exclusions_to_cached_links() {
      local section="$1"
      local cache_path all_cache_path items_cache_path excluded_ids_file active_links_file tmp_cache tmp_items_cache \
-@@ -1372,48 +1402,98 @@ set_subscription_link_enabled() {
+@@ -1372,48 +1420,98 @@ set_subscription_link_enabled() {
      local section="$1"
      local link_id="$2"
      local enabled="$3"
@@ -163,7 +188,7 @@ index ee89ce2..826ea64 100644
  
      if ! uci commit podkop; then
          echo '{"success":false,"error":"uci_commit_failed"}'
-@@ -1428,14 +1508,15 @@ set_subscription_link_enabled() {
+@@ -1428,14 +1526,15 @@ set_subscription_link_enabled() {
          fi
      fi
  
@@ -181,7 +206,7 @@ index ee89ce2..826ea64 100644
  }
  
  subscription_update_section_handler() {
-@@ -1492,6 +1573,313 @@ subscription_update() {
+@@ -1492,6 +1591,313 @@ subscription_update() {
      echolog "Subscription update completed, no changes"
  }
  
@@ -495,7 +520,7 @@ index ee89ce2..826ea64 100644
  # sing-box funcs
  sing_box_configure_service() {
      local sing_box_enabled sing_box_user sing_box_config_path sing_box_conffile
-@@ -3674,6 +4062,13 @@ Available commands:
+@@ -3674,6 +4080,13 @@ Available commands:
      main                    Run main podkop process
      list_update             Update domain lists
      subscription_update     Update subscription URLTest caches
@@ -509,8 +534,12 @@ index ee89ce2..826ea64 100644
      check_proxy             Check proxy connectivity
      check_nft               Check NFT rules
      check_nft_rules         Check NFT rules status
-@@ -3690,6 +4085,8 @@ Available commands:
+@@ -3688,8 +4101,12 @@ Available commands:
+                             Show skipped subscription proxy links for a section
+     get_subscription_items
                              Show subscription proxy items for a section
++    get_subscription_items_cached
++                            Show cached subscription proxy items without refresh
      set_subscription_link_enabled
                              Enable or disable a subscription proxy item by id
 +    set_subscription_links_enabled
@@ -518,7 +547,7 @@ index ee89ce2..826ea64 100644
      show_config             Display current podkop configuration
      show_version            Show podkop version
      show_sing_box_config    Show sing-box configuration
-@@ -3725,6 +4122,18 @@ list_update)
+@@ -3725,6 +4142,18 @@ list_update)
  subscription_update)
      subscription_update "$2"
      ;;
@@ -537,7 +566,13 @@ index ee89ce2..826ea64 100644
  check_proxy)
      check_proxy
      ;;
-@@ -3761,6 +4170,10 @@ get_subscription_items)
+@@ -3758,9 +4187,16 @@ get_subscription_skipped_links)
+ get_subscription_items)
+     get_subscription_items "$2"
+     ;;
++get_subscription_items_cached)
++    get_subscription_items_cached "$2"
++    ;;
  set_subscription_link_enabled)
      set_subscription_link_enabled "$2" "$3" "$4"
      ;;
@@ -549,7 +584,7 @@ index ee89ce2..826ea64 100644
      show_config
      ;;
 diff --git a/www/luci-static/resources/view/podkop/main.js b/www/luci-static/resources/view/podkop/main.js
-index e44aab0..12760f7 100644
+index e44aab0..c435547 100644
 --- a/www/luci-static/resources/view/podkop/main.js
 +++ b/www/luci-static/resources/view/podkop/main.js
 @@ -576,11 +576,11 @@ async function getConfigSections() {
@@ -566,7 +601,7 @@ index e44aab0..12760f7 100644
    });
    if (response.stdout) {
      try {
-@@ -621,11 +621,16 @@ var Podkop;
+@@ -621,11 +621,17 @@ var Podkop;
      AvailableMethods2["GLOBAL_CHECK"] = "global_check";
      AvailableMethods2["SHOW_SING_BOX_CONFIG"] = "show_sing_box_config";
      AvailableMethods2["CHECK_LOGS"] = "check_logs";
@@ -578,12 +613,13 @@ index e44aab0..12760f7 100644
      AvailableMethods2["GET_SUBSCRIPTION_CACHED_LINKS"] = "get_subscription_cached_links";
      AvailableMethods2["GET_SUBSCRIPTION_SKIPPED_LINKS"] = "get_subscription_skipped_links";
      AvailableMethods2["GET_SUBSCRIPTION_ITEMS"] = "get_subscription_items";
++    AvailableMethods2["GET_SUBSCRIPTION_ITEMS_CACHED"] = "get_subscription_items_cached";
      AvailableMethods2["SET_SUBSCRIPTION_LINK_ENABLED"] = "set_subscription_link_enabled";
 +    AvailableMethods2["SET_SUBSCRIPTION_LINKS_ENABLED"] = "set_subscription_links_enabled";
    })(AvailableMethods = Podkop2.AvailableMethods || (Podkop2.AvailableMethods = {}));
    let AvailableClashAPIMethods;
    ((AvailableClashAPIMethods2) => {
-@@ -698,6 +703,30 @@ var PodkopShellMethods = {
+@@ -698,6 +704,30 @@ var PodkopShellMethods = {
    globalCheck: async () => callBaseMethod(Podkop.AvailableMethods.GLOBAL_CHECK),
    showSingBoxConfig: async () => callBaseMethod(Podkop.AvailableMethods.SHOW_SING_BOX_CONFIG),
    checkLogs: async () => callBaseMethod(Podkop.AvailableMethods.CHECK_LOGS),
@@ -614,7 +650,14 @@ index e44aab0..12760f7 100644
    getSystemInfo: async () => callBaseMethod(
      Podkop.AvailableMethods.GET_SYSTEM_INFO
    ),
-@@ -716,6 +745,15 @@ var PodkopShellMethods = {
+@@ -713,9 +743,22 @@ var PodkopShellMethods = {
+     Podkop.AvailableMethods.GET_SUBSCRIPTION_ITEMS,
+     [section]
+   ),
++  getSubscriptionItemsCached: async (section) => callBaseMethod(
++    Podkop.AvailableMethods.GET_SUBSCRIPTION_ITEMS_CACHED,
++    [section]
++  ),
    setSubscriptionLinkEnabled: async (section, linkId, enabled) => callBaseMethod(
      Podkop.AvailableMethods.SET_SUBSCRIPTION_LINK_ENABLED,
      [section, linkId, enabled ? "1" : "0"]
@@ -630,7 +673,7 @@ index e44aab0..12760f7 100644
    )
  };
  
-@@ -1465,7 +1503,14 @@ var initialStore = {
+@@ -1465,7 +1508,15 @@ var initialStore = {
    subscriptionItemsWidget: {
      loading: true,
      failed: false,
@@ -641,17 +684,85 @@ index e44aab0..12760f7 100644
 +    actionStatus: "idle",
 +    actionMessage: "",
 +    pendingChanges: {},
++    collapsedSources: {},
 +    latencyByRow: {},
 +    speedByRow: {},
      data: []
    },
    ...initialDiagnosticStore
-@@ -4719,6 +4764,19 @@ var DiagnosticTab = {
+@@ -2907,6 +2958,18 @@ var styles2 = `
+     margin-right: 5px;
+ }
+ 
++.pdk-partial-button--icon-only {
++    min-width: 30px;
++    width: 30px;
++    min-height: 26px;
++    padding-left: 3px;
++    padding-right: 3px;
++}
++
++.pdk-partial-button--icon-only .pdk-partial-button__icon {
++    margin-right: 0;
++}
++
+ .pdk-partial-button__icon {
+     display: flex;
+     align-items: center;
+@@ -3459,12 +3522,15 @@ function renderBookOpenTextIcon24() {
+ 
+ // src/partials/button/renderButton.ts
+ function renderButton({
++  ariaLabel,
+   classNames = [],
+   disabled,
++  hideText,
+   loading,
+   onClick,
+   text,
+-  icon
++  icon,
++  title
+ }) {
+   const hasIcon = !!loading || !!icon;
+   function getWrappedIcon() {
+@@ -3488,6 +3554,7 @@ function renderButton({
+       ...insertIf(Boolean(disabled), ["pdk-partial-button--disabled"]),
+       ...insertIf(Boolean(loading), ["pdk-partial-button--loading"]),
+       ...insertIf(Boolean(hasIcon), ["pdk-partial-button--with-icon"]),
++      ...insertIf(Boolean(hideText), ["pdk-partial-button--icon-only"]),
+       ...classNames
+     ].filter(Boolean).join(" ");
+   }
+@@ -3499,8 +3566,17 @@ function renderButton({
+   }
+   return E(
+     "button",
+-    { class: getClass(), disabled: getDisabled(), click: onClick },
+-    [...insertIf(hasIcon, [getWrappedIcon()]), E("span", {}, text)]
++    {
++      class: getClass(),
++      disabled: getDisabled(),
++      title: title || text,
++      "aria-label": ariaLabel || text,
++      click: onClick
++    },
++    [
++      ...insertIf(hasIcon, [getWrappedIcon()]),
++      ...insertIf(!hideText, [E("span", {}, text)])
++    ]
+   );
+ }
+ 
+@@ -4719,6 +4795,22 @@ var DiagnosticTab = {
  };
  
  // src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
 +function getRowId(sectionCode, itemId) {
 +  return `${sectionCode}:${itemId}`;
++}
++function getSourceId(sectionCode, sourceIndex) {
++  return `${sectionCode}:${sourceIndex}`;
 +}
 +function getPendingCount(pendingChanges) {
 +  return Object.keys(pendingChanges).length;
@@ -666,7 +777,7 @@ index e44aab0..12760f7 100644
  function getReasonLabel(reason) {
    const labels = {
      user_excluded: _("Excluded"),
-@@ -4732,50 +4790,228 @@ function getReasonLabel(reason) {
+@@ -4732,50 +4824,283 @@ function getReasonLabel(reason) {
  function getItemName(item, index) {
    return item.name || `${_("Server")} ${index + 1}`;
  }
@@ -702,6 +813,43 @@ index e44aab0..12760f7 100644
  }
  function renderEmptyState(text) {
 +  return E("div", { class: "pdk_subscriptions-page__empty centered" }, text);
++}
++function getSourceGroups(items) {
++  const groups = [];
++  const indexBySource = {};
++  items.forEach((item, index) => {
++    const sourceIndex = item.sourceIndex || 1;
++    const key = String(sourceIndex);
++    if (!(key in indexBySource)) {
++      indexBySource[key] = groups.length;
++      groups.push({
++        sourceIndex,
++        items: [],
++        firstItemIndex: index
++      });
++    }
++    groups[indexBySource[key]].items.push(item);
++  });
++  return groups;
++}
++function getSourceSummary({
++  section,
++  group,
++  pendingChanges
++}) {
++  const supportedCount = group.items.filter((item) => item.supported).length;
++  const enabledCount = group.items.filter(
++    (item) => item.supported && getEffectiveEnabled(pendingChanges, section.code, item)
++  ).length;
++  const unsupportedCount = group.items.length - supportedCount;
++  const parts = [
++    `${_("Configs")}: ${group.items.length}`,
++    `${_("Included")}: ${enabledCount}/${supportedCount}`
++  ];
++  if (unsupportedCount > 0) {
++    parts.push(`${_("Unsupported")}: ${unsupportedCount}`);
++  }
++  return parts.join(" | ");
 +}
 +function getToolbarMessage({
 +  loading,
@@ -808,24 +956,40 @@ index e44aab0..12760f7 100644
 +      E("div", { class: "pdk_subscriptions-page__toolbar-actions" }, [
 +        renderButton({
 +          text: _("Refresh"),
++          title: _("Refresh subscription configs"),
++          ariaLabel: _("Refresh subscription configs"),
++          icon: renderRotateCcwIcon24,
++          hideText: true,
 +          onClick: onRefresh,
 +          loading: action === "refresh" && actionRunning,
 +          disabled: !canRunSubscriptionAction
 +        }),
 +        renderButton({
 +          text: _("Ping"),
++          title: _("Test latency"),
++          ariaLabel: _("Test latency"),
++          icon: renderSearchIcon24,
++          hideText: true,
 +          onClick: onPing,
 +          loading: action === "ping" && actionRunning,
 +          disabled: !canRunSubscriptionAction
 +        }),
 +        renderButton({
 +          text: _("Speed"),
++          title: _("Run speed benchmark"),
++          ariaLabel: _("Run speed benchmark"),
++          icon: renderSquareChartGanttIcon24,
++          hideText: true,
 +          onClick: onSpeedtest,
 +          loading: action === "speed" && actionRunning,
 +          disabled: !canRunSubscriptionAction
 +        }),
 +        renderButton({
 +          text: _("Patch"),
++          title: _("Update patch"),
++          ariaLabel: _("Update patch"),
++          icon: renderCogIcon24,
++          hideText: true,
 +          onClick: onPatchUpdate,
 +          loading: action === "patch" && actionRunning,
 +          disabled: !canRunPatchAction
@@ -852,6 +1016,8 @@ index e44aab0..12760f7 100644
    index,
 -  updatingId,
 +  pendingChanges,
++  latencyByRow,
++  speedByRow,
 +  applying,
    enabledSupportedCount,
    onToggle
@@ -908,7 +1074,7 @@ index e44aab0..12760f7 100644
            disabled: disabled ? "disabled" : void 0,
            change: (event) => {
              const target = event.target;
-@@ -4786,10 +5022,18 @@ function renderRow({
+@@ -4786,74 +5111,182 @@ function renderRow({
        E("td", {}, getItemName(item, index)),
        E("td", {}, (item.protocol || _("Unknown")).toUpperCase()),
        E("td", {}, item.transport || _("Default")),
@@ -926,48 +1092,189 @@ index e44aab0..12760f7 100644
 +          })}`
 +        },
 +        getStatusLabel({ item, pending, effectiveEnabled })
++      )
++    ]
++  );
++}
++function renderSourceTable({
++  section,
++  group,
++  pendingChanges,
++  latencyByRow,
++  speedByRow,
++  applying,
++  enabledSupportedCount,
++  onToggle
++}) {
++  return E(
++    "div",
++    { class: "pdk_subscriptions-page__table-wrap" },
++    E("table", { class: "pdk_subscriptions-page__table" }, [
++      E("thead", {}, [
++        E("tr", {}, [
++          E("th", {}, _("Use")),
++          E("th", {}, _("Config")),
++          E("th", {}, _("Protocol")),
++          E("th", {}, _("Transport")),
++          E("th", {}, _("Ping")),
++          E("th", {}, _("Speed")),
++          E("th", {}, _("Status"))
++        ])
++      ]),
++      E(
++        "tbody",
++        {},
++        group.items.map(
++          (item, index) => renderRow({
++            section,
++            item,
++            index: group.firstItemIndex + index,
++            pendingChanges,
++            latencyByRow,
++            speedByRow,
++            applying,
++            enabledSupportedCount,
++            onToggle
++          })
++        )
++      )
++    ])
++  );
++}
++function renderSourceGroup({
++  section,
++  group,
++  pendingChanges,
++  collapsedSources,
++  latencyByRow,
++  speedByRow,
++  applying,
++  enabledSupportedCount,
++  onToggle,
++  onToggleSource
++}) {
++  const collapsed = Boolean(
++    collapsedSources[getSourceId(section.code, group.sourceIndex)]
++  );
++  const actionLabel = collapsed ? _("Expand subscription") : _("Collapse subscription");
++  return E(
++    "div",
++    {
++      class: [
++        "pdk_subscriptions-page__source-group",
++        collapsed ? "pdk_subscriptions-page__source-group--collapsed" : ""
++      ].filter(Boolean).join(" ")
++    },
++    [
++      E(
++        "button",
++        {
++          type: "button",
++          class: "pdk_subscriptions-page__source-header",
++          title: actionLabel,
++          "aria-label": actionLabel,
++          click: () => onToggleSource(section.code, group.sourceIndex)
++        },
++        [
++          E("span", { class: "pdk_subscriptions-page__source-caret" }),
++          E(
++            "span",
++            { class: "pdk_subscriptions-page__source-title" },
++            `${_("Subscription")} ${group.sourceIndex}`
++          ),
++          E(
++            "span",
++            { class: "pdk_subscriptions-page__source-summary" },
++            getSourceSummary({ section, group, pendingChanges })
++          )
++        ]
        ),
-       E("td", {}, `${_("Subscription")} ${item.sourceIndex}`)
+-      E("td", {}, `${_("Subscription")} ${item.sourceIndex}`)
++      ...collapsed ? [] : [
++        renderSourceTable({
++          section,
++          group,
++          pendingChanges,
++          latencyByRow,
++          speedByRow,
++          applying,
++          enabledSupportedCount,
++          onToggle
++        })
++      ]
      ]
-@@ -4797,11 +5041,14 @@ function renderRow({
+   );
  }
  function renderSection({
    section,
 -  updatingId,
+-  onToggle
 +  pendingChanges,
-+  latencyByRow: latencyByRow2,
-+  speedByRow: speedByRow2,
++  collapsedSources,
++  latencyByRow,
++  speedByRow,
 +  applying,
-   onToggle
++  onToggle,
++  onToggleSource
  }) {
    const enabledSupportedCount = section.items.filter(
 -    (item) => item.supported && item.enabled
 +    (item) => item.supported && getEffectiveEnabled(pendingChanges, section.code, item)
    ).length;
++  const sourceGroups = getSourceGroups(section.items);
    return E("div", { class: "pdk_subscriptions-page__section" }, [
      E(
-@@ -4819,6 +5066,8 @@ function renderSection({
-             E("th", {}, _("Config")),
-             E("th", {}, _("Protocol")),
-             E("th", {}, _("Transport")),
-+            E("th", {}, _("Ping")),
-+            E("th", {}, _("Speed")),
-             E("th", {}, _("Status")),
-             E("th", {}, _("Source"))
-           ])
-@@ -4831,7 +5080,10 @@ function renderSection({
-               section,
-               item,
-               index,
+       "div",
+       { class: "pdk_subscriptions-page__section-title" },
+       section.displayName
+     ),
+-    section.items.length === 0 ? renderEmptyState(_("No subscription configs found")) : E(
++    section.items.length === 0 ? renderEmptyState(
++      _("Subscription cache is empty. Click refresh to load configs.")
++    ) : E(
+       "div",
+-      { class: "pdk_subscriptions-page__table-wrap" },
+-      E("table", { class: "pdk_subscriptions-page__table" }, [
+-        E("thead", {}, [
+-          E("tr", {}, [
+-            E("th", {}, _("Use")),
+-            E("th", {}, _("Config")),
+-            E("th", {}, _("Protocol")),
+-            E("th", {}, _("Transport")),
+-            E("th", {}, _("Status")),
+-            E("th", {}, _("Source"))
+-          ])
+-        ]),
+-        E(
+-          "tbody",
+-          {},
+-          section.items.map(
+-            (item, index) => renderRow({
+-              section,
+-              item,
+-              index,
 -              updatingId,
-+              pendingChanges,
-+              latencyByRow: latencyByRow2,
-+              speedByRow: speedByRow2,
-+              applying,
-               enabledSupportedCount,
-               onToggle
-             })
-@@ -4841,19 +5093,14 @@ function renderSection({
+-              enabledSupportedCount,
+-              onToggle
+-            })
+-          )
+-        )
+-      ])
++      { class: "pdk_subscriptions-page__source-groups" },
++      sourceGroups.map(
++        (group) => renderSourceGroup({
++          section,
++          group,
++          pendingChanges,
++          collapsedSources,
++          latencyByRow,
++          speedByRow,
++          applying,
++          enabledSupportedCount,
++          onToggle,
++          onToggleSource
++        })
++      )
      )
    ]);
  }
@@ -977,11 +1284,14 @@ index e44aab0..12760f7 100644
 +function renderSections2({
    sections,
 -  updatingId,
+-  onToggle
 +  pendingChanges,
-+  latencyByRow: latencyByRow2,
-+  speedByRow: speedByRow2,
++  collapsedSources,
++  latencyByRow,
++  speedByRow,
 +  applying,
-   onToggle
++  onToggle,
++  onToggleSource
  }) {
 -  if (loading) {
 -    return renderEmptyState(_("Loading"));
@@ -992,7 +1302,7 @@ index e44aab0..12760f7 100644
    if (sections.length === 0) {
      return renderEmptyState(_("No Subscription URLTest sections"));
    }
-@@ -4861,10 +5108,65 @@ function renderSubscriptionSections({
+@@ -4861,10 +5294,71 @@ function renderSubscriptionSections({
      "div",
      { class: "pdk_subscriptions-page__sections" },
      sections.map(
@@ -1000,10 +1310,12 @@ index e44aab0..12760f7 100644
 +      (section) => renderSection({
 +        section,
 +        pendingChanges,
-+        latencyByRow: latencyByRow2,
-+        speedByRow: speedByRow2,
++        collapsedSources,
++        latencyByRow,
++        speedByRow,
 +        applying,
-+        onToggle
++        onToggle,
++        onToggleSource
 +      })
      )
    );
@@ -1017,8 +1329,9 @@ index e44aab0..12760f7 100644
 +  actionStatus,
 +  actionMessage,
 +  pendingChanges,
-+  latencyByRow: latencyByRow2,
-+  speedByRow: speedByRow2,
++  collapsedSources,
++  latencyByRow,
++  speedByRow,
 +  sections,
 +  onToggle,
 +  onApply,
@@ -1026,7 +1339,8 @@ index e44aab0..12760f7 100644
 +  onRefresh,
 +  onPing,
 +  onSpeedtest,
-+  onPatchUpdate
++  onPatchUpdate,
++  onToggleSource
 +}) {
 +  const pendingCount = getPendingCount(pendingChanges);
 +  return E("div", { class: "pdk_subscriptions-page__content" }, [
@@ -1049,17 +1363,19 @@ index e44aab0..12760f7 100644
 +    loading ? renderEmptyState(_("Loading")) : failed ? renderEmptyState(_("Failed to load subscription configs")) : renderSections2({
 +      sections,
 +      pendingChanges,
-+      latencyByRow: latencyByRow2,
-+      speedByRow: speedByRow2,
++      collapsedSources,
++      latencyByRow,
++      speedByRow,
 +      applying,
-+      onToggle
++      onToggle,
++      onToggleSource
 +    })
 +  ]);
 +}
  
  // src/podkop/tabs/subscriptions/render.ts
  function render3() {
-@@ -4881,9 +5183,28 @@ function render3() {
+@@ -4881,9 +5375,31 @@ function render3() {
          renderSubscriptionSections({
            loading: true,
            failed: false,
@@ -1069,6 +1385,7 @@ index e44aab0..12760f7 100644
 +          actionStatus: "idle",
 +          actionMessage: "",
 +          pendingChanges: {},
++          collapsedSources: {},
 +          latencyByRow: {},
 +          speedByRow: {},
            sections: [],
@@ -1086,10 +1403,12 @@ index e44aab0..12760f7 100644
 +          onSpeedtest: () => {
 +          },
 +          onPatchUpdate: () => {
++          },
++          onToggleSource: () => {
            }
          })
        )
-@@ -4892,7 +5213,41 @@ function render3() {
+@@ -4892,7 +5408,41 @@ function render3() {
  }
  
  // src/podkop/tabs/subscriptions/initController.ts
@@ -1132,7 +1451,16 @@ index e44aab0..12760f7 100644
    const prev = store.get().subscriptionItemsWidget;
    store.set({
      subscriptionItemsWidget: {
-@@ -4920,9 +5275,12 @@ async function fetchSubscriptionItems() {
+@@ -4908,7 +5458,7 @@ async function fetchSubscriptionItems() {
+     );
+     const data = await Promise.all(
+       subscriptionSections.map(async (section) => {
+-        const items = await PodkopShellMethods.getSubscriptionItems(
++        const items = await PodkopShellMethods.getSubscriptionItemsCached(
+           section[".name"]
+         );
+         return {
+@@ -4920,9 +5470,12 @@ async function fetchSubscriptionItems() {
      );
      store.set({
        subscriptionItemsWidget: {
@@ -1146,7 +1474,7 @@ index e44aab0..12760f7 100644
          data
        }
      });
-@@ -4933,30 +5291,322 @@ async function fetchSubscriptionItems() {
+@@ -4933,30 +5486,338 @@ async function fetchSubscriptionItems() {
          ...store.get().subscriptionItemsWidget,
          loading: false,
          failed: true,
@@ -1181,6 +1509,9 @@ index e44aab0..12760f7 100644
 -    sectionCode,
 -    item.id,
 -    enabled
+-  );
+-  if (!result.success || !result.data.success) {
+-    showToast(_("Failed to save!"), "error");
 +}
 +function handleReset() {
 +  const widget = store.get().subscriptionItemsWidget;
@@ -1189,6 +1520,22 @@ index e44aab0..12760f7 100644
 +      ...widget,
 +      status: "idle",
 +      pendingChanges: {}
++    }
++  });
++}
++function handleToggleSource(sectionCode, sourceIndex) {
++  const widget = store.get().subscriptionItemsWidget;
++  const sourceId = `${sectionCode}:${sourceIndex}`;
++  const collapsedSources = { ...widget.collapsedSources };
++  if (collapsedSources[sourceId]) {
++    delete collapsedSources[sourceId];
+   } else {
++    collapsedSources[sourceId] = true;
++  }
++  store.set({
++    subscriptionItemsWidget: {
++      ...widget,
++      collapsedSources
 +    }
 +  });
 +}
@@ -1206,10 +1553,7 @@ index e44aab0..12760f7 100644
 +      return acc;
 +    },
 +    {}
-   );
--  if (!result.success || !result.data.success) {
--    showToast(_("Failed to save!"), "error");
--  } else {
++  );
 +}
 +async function handleApply() {
 +  const widget = store.get().subscriptionItemsWidget;
@@ -1289,7 +1633,7 @@ index e44aab0..12760f7 100644
 +    return;
 +  }
 +  const sections = store.get().subscriptionItemsWidget.data;
-+  const latencyByRow2 = {};
++  const latencyByRow = {};
 +  setActionState({
 +    action: "ping",
 +    actionStatus: "running",
@@ -1316,14 +1660,14 @@ index e44aab0..12760f7 100644
 +        const tag = `${section.code}-${index + 1}-out`;
 +        const latency = result.data[tag];
 +        if (typeof latency === "number" && latency > 0) {
-+          latencyByRow2[getRowId2(section.code, item.id)] = latency;
++          latencyByRow[getRowId2(section.code, item.id)] = latency;
 +        }
 +      });
 +    }
 +    store.set({
 +      subscriptionItemsWidget: {
 +        ...store.get().subscriptionItemsWidget,
-+        latencyByRow: latencyByRow2
++        latencyByRow
 +      }
 +    });
 +    setActionState({
@@ -1348,7 +1692,7 @@ index e44aab0..12760f7 100644
 +    return;
 +  }
 +  const sections = store.get().subscriptionItemsWidget.data;
-+  const speedByRow2 = {};
++  const speedByRow = {};
 +  setActionState({
 +    action: "speed",
 +    actionStatus: "running",
@@ -1374,13 +1718,13 @@ index e44aab0..12760f7 100644
 +        throw new Error(result.success ? result.data.error : result.error);
 +      }
 +      (result.data.results ?? []).forEach((item) => {
-+        speedByRow2[getRowId2(section.code, item.id)] = item;
++        speedByRow[getRowId2(section.code, item.id)] = item;
 +      });
 +    }
 +    store.set({
 +      subscriptionItemsWidget: {
 +        ...store.get().subscriptionItemsWidget,
-+        speedByRow: speedByRow2
++        speedByRow
 +      }
 +    });
 +    setActionState({
@@ -1482,7 +1826,7 @@ index e44aab0..12760f7 100644
  }
  async function renderSubscriptionItemsWidget() {
    logger.debug("[SUBSCRIPTIONS]", "renderSubscriptionItemsWidget");
-@@ -4965,9 +5615,22 @@ async function renderSubscriptionItemsWidget() {
+@@ -4965,9 +5826,24 @@ async function renderSubscriptionItemsWidget() {
    const renderedWidget = renderSubscriptionSections({
      loading: subscriptionItemsWidget.loading,
      failed: subscriptionItemsWidget.failed,
@@ -1492,6 +1836,7 @@ index e44aab0..12760f7 100644
 +    actionStatus: subscriptionItemsWidget.actionStatus,
 +    actionMessage: subscriptionItemsWidget.actionMessage,
 +    pendingChanges: subscriptionItemsWidget.pendingChanges,
++    collapsedSources: subscriptionItemsWidget.collapsedSources,
 +    latencyByRow: subscriptionItemsWidget.latencyByRow,
 +    speedByRow: subscriptionItemsWidget.speedByRow,
      sections: subscriptionItemsWidget.data,
@@ -1503,11 +1848,12 @@ index e44aab0..12760f7 100644
 +    onRefresh: handleRefreshSubscriptions,
 +    onPing: handlePingSubscriptions,
 +    onSpeedtest: handleSpeedtestSubscriptions,
-+    onPatchUpdate: handlePatchUpdate
++    onPatchUpdate: handlePatchUpdate,
++    onToggleSource: handleToggleSource
    });
    return preserveScrollForPage(() => {
      container.replaceChildren(renderedWidget);
-@@ -5025,6 +5688,56 @@ var styles5 = `
+@@ -5025,6 +5901,56 @@ var styles5 = `
      width: 100%;
  }
  
@@ -1564,7 +1910,73 @@ index e44aab0..12760f7 100644
  .pdk_subscriptions-page__sections {
      display: grid;
      grid-template-columns: 1fr;
-@@ -5073,6 +5786,10 @@ var styles5 = `
+@@ -5044,6 +5970,65 @@ var styles5 = `
+     margin-bottom: 10px;
+ }
+ 
++.pdk_subscriptions-page__source-groups {
++    display: grid;
++    grid-template-columns: 1fr;
++    grid-row-gap: 8px;
++}
++
++.pdk_subscriptions-page__source-group {
++    border: 1px var(--background-color-low, lightgray) solid;
++    border-radius: 4px;
++    overflow: hidden;
++}
++
++.pdk_subscriptions-page__source-header {
++    width: 100%;
++    min-height: 34px;
++    display: flex;
++    align-items: center;
++    gap: 8px;
++    border: 0;
++    border-bottom: 1px var(--background-color-low, lightgray) solid;
++    background: var(--background-color-high, transparent);
++    color: var(--text-color-high);
++    padding: 6px 8px;
++    text-align: left;
++    cursor: pointer;
++}
++
++.pdk_subscriptions-page__source-group--collapsed .pdk_subscriptions-page__source-header {
++    border-bottom: 0;
++}
++
++.pdk_subscriptions-page__source-caret {
++    width: 0;
++    height: 0;
++    border-top: 5px solid transparent;
++    border-bottom: 5px solid transparent;
++    border-left: 6px solid currentColor;
++    transform: rotate(90deg);
++    transition: transform 120ms ease;
++    flex-shrink: 0;
++}
++
++.pdk_subscriptions-page__source-group--collapsed .pdk_subscriptions-page__source-caret {
++    transform: rotate(0deg);
++}
++
++.pdk_subscriptions-page__source-title {
++    font-weight: 700;
++    flex-shrink: 0;
++}
++
++.pdk_subscriptions-page__source-summary {
++    color: var(--text-color-medium);
++    min-width: 0;
++    overflow: hidden;
++    text-overflow: ellipsis;
++    white-space: nowrap;
++}
++
+ .pdk_subscriptions-page__table-wrap {
+     overflow-x: auto;
+ }
+@@ -5073,6 +6058,10 @@ var styles5 = `
      opacity: 0.72;
  }
  
@@ -1575,7 +1987,7 @@ index e44aab0..12760f7 100644
  .pdk_subscriptions-page__row--updating {
      opacity: 0.6;
  }
-@@ -5089,6 +5806,10 @@ var styles5 = `
+@@ -5089,6 +6078,10 @@ var styles5 = `
      color: var(--warn-color-medium, orange);
  }
  
@@ -1586,7 +1998,7 @@ index e44aab0..12760f7 100644
  .pdk_subscriptions-page__status--unsupported {
      color: var(--error-color-medium, red);
  }
-@@ -5099,6 +5820,17 @@ var styles5 = `
+@@ -5099,6 +6092,27 @@ var styles5 = `
      border-radius: 4px;
      padding: 10px;
  }
@@ -1599,6 +2011,16 @@ index e44aab0..12760f7 100644
 +
 +    .pdk_subscriptions-page__toolbar-actions {
 +        width: 100%;
++    }
++
++    .pdk_subscriptions-page__source-header {
++        align-items: flex-start;
++        flex-wrap: wrap;
++    }
++
++    .pdk_subscriptions-page__source-summary {
++        flex-basis: 100%;
++        padding-left: 14px;
 +    }
 +}
  `;
