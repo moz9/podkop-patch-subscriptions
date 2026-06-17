@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-audit-fix1}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-apk-fix1}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -88,8 +88,18 @@ require_patch() {
 		return 0
 	fi
 
+	if command -v apk >/dev/null 2>&1; then
+		log "Installing patch utility with apk..."
+		apk update >/dev/null 2>&1 || true
+		apk add patch >/dev/null 2>&1 || true
+	fi
+
+	if command -v patch >/dev/null 2>&1; then
+		return 0
+	fi
+
 	if command -v opkg >/dev/null 2>&1; then
-		log "Installing patch utility..."
+		log "Installing patch utility with opkg..."
 		opkg update >/dev/null 2>&1 || true
 		opkg install patch >/dev/null 2>&1 || true
 	fi
