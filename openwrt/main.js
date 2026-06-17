@@ -5732,12 +5732,43 @@ async function handleSpeedtestSubscriptions() {
   } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to run subscription speedtest");
     logger.error("[SUBSCRIPTIONS]", error);
+    const message = getSubscriptionActionErrorMessage(
+      error,
+      _("Failed to run speed benchmark.")
+    );
     setActionState({
       action: "speed",
       actionStatus: "error",
-      actionMessage: _("Failed to run speed benchmark.")
+      actionMessage: message
     });
-    showToast(_("Failed to run speed benchmark."), "error");
+    showToast(message, "error");
+  }
+}
+function getErrorText(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === "string") {
+    return error;
+  }
+  return "";
+}
+function getSubscriptionActionErrorMessage(error, fallback) {
+  switch (getErrorText(error)) {
+    case "service_busy":
+      return _("Podkop is restarting now. Try again in a minute.");
+    case "selector_not_available":
+      return _("Podkop selector is not ready. Try again in a minute.");
+    case "reload_failed":
+      return _("Podkop reload failed. Changes were not applied.");
+    case "subscription_cache_missing":
+      return _("Subscription cache is missing. Refresh subscriptions first.");
+    case "no_enabled_links":
+      return _("No enabled supported configs to test.");
+    case "mixed_proxy_address_missing":
+      return _("Mixed proxy address is not configured.");
+    default:
+      return fallback;
   }
 }
 function getPatchUpdateMessage(status) {
@@ -5811,6 +5842,27 @@ async function handlePatchUpdate() {
   } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to start patch update");
     logger.error("[SUBSCRIPTIONS]", error);
+    try {
+      const status = await PodkopShellMethods.getSubscriptionPatchUpdateStatus();
+      if (status.success && (status.data.state === "running" || status.data.state === "success")) {
+        setActionState({
+          action: "patch",
+          actionStatus: status.data.state === "success" ? "success" : "running",
+          actionMessage: getPatchUpdateMessage(status.data)
+        });
+        if (status.data.state === "running") {
+          const success = await pollPatchUpdateStatus();
+          showToast(
+            success ? _("Patch update started.") : _("Patch update failed."),
+            success ? "success" : "error"
+          );
+        }
+        return;
+      }
+    } catch (statusError) {
+      logger.error("[SUBSCRIPTIONS]", "failed to read patch update status");
+      logger.error("[SUBSCRIPTIONS]", statusError);
+    }
     setActionState({
       action: "patch",
       actionStatus: "error",

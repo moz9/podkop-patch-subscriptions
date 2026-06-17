@@ -104,8 +104,71 @@ $0 == "    /etc/init.d/podkop reload > /dev/null 2>&1" {
 cat "$tmp" > "$target"
 rm -f "$tmp"
 
+if ! grep -q "clash_api_wait_proxy_now" "$target" 2>/dev/null; then
+	awk '
+	$0 == "clash_api_set_group_proxy_raw() {" {
+		print "clash_api_wait_proxy_now() {"
+		print "    local clash_url=\"$1\""
+		print "    local auth_header=\"$2\""
+		print "    local proxy_tag=\"$3\""
+		print "    local attempts=\"${4:-15}\""
+		print "    local proxy_now attempt"
+		print ""
+		print "    for attempt in $(seq 1 \"$attempts\"); do"
+		print "        proxy_now=\"$(clash_api_get_proxy_now \"$clash_url\" \"$auth_header\" \"$proxy_tag\")\""
+		print "        if [ -n \"$proxy_now\" ]; then"
+		print "            echo \"$proxy_now\""
+		print "            return 0"
+		print "        fi"
+		print "        sleep 1"
+		print "    done"
+		print ""
+		print "    return 1"
+		print "}"
+		print ""
+		print
+		next
+	}
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
+if ! grep -q "subscription_runtime_busy" "$target" 2>/dev/null; then
+	awk '
+	$0 == "subscription_speedtest_restore_mixed_proxy() {" {
+		print "subscription_runtime_busy() {"
+		print "    local status_file state"
+		print ""
+		print "    status_file=\"$(subscription_patch_update_status_file)\""
+		print "    if [ -s \"$status_file\" ]; then"
+		print "        state=\"$(jq -r '\''.state // \"\"'\'' \"$status_file\" 2> /dev/null)\""
+		print "        [ \"$state\" = \"running\" ] && return 0"
+		print "    fi"
+		print ""
+		print "    ps w 2> /dev/null | grep -E \"podkop-subscriptions-patch-update-runner|/usr/bin/podkop reload|/etc/init.d/podkop reload\" | grep -v grep > /dev/null"
+		print "}"
+		print ""
+		print
+		next
+	}
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
 if ! grep -q 'benchmark_bytes="8388608"' "$target" 2>/dev/null ||
-	! grep -q "clash_ready" "$target" 2>/dev/null; then
+	! grep -q "clash_ready" "$target" 2>/dev/null ||
+	! grep -q "service_busy" "$target" 2>/dev/null ||
+	! grep -q "clash_api_wait_proxy_now" "$target" 2>/dev/null; then
 	speedtest_function="$(mktemp)"
 	cat > "$speedtest_function" <<'SPEEDTEST_EOF'
 subscription_speedtest() {
@@ -123,6 +186,11 @@ subscription_speedtest() {
 
     if ! validate_subscription_urltest_section "$section"; then
         echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
+        return 1
+    fi
+
+    if subscription_runtime_busy; then
+        echo '{"success":false,"error":"service_busy"}'
         return 1
     fi
 
@@ -149,7 +217,7 @@ subscription_speedtest() {
     clash_url="$(get_clash_api_base_url)"
     auth_header="$(get_clash_api_auth_header)"
     selector_tag="$(get_outbound_tag_by_section "$section")"
-    original_proxy="$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")"
+    original_proxy="$(clash_api_wait_proxy_now "$clash_url" "$auth_header" "$selector_tag" 15)"
 
     if [ -z "$original_proxy" ]; then
         rm -f "$active_items_file" "$results_file"
@@ -193,7 +261,7 @@ subscription_speedtest() {
 
     clash_ready=0
     for attempt in $(seq 1 10); do
-        if [ -n "$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$selector_tag")" ]; then
+        if [ -n "$(clash_api_wait_proxy_now "$clash_url" "$auth_header" "$selector_tag" 1)" ]; then
             clash_ready=1
             break
         fi
