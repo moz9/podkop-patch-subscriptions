@@ -1249,7 +1249,7 @@ index e3af7c0..ea1f33b 100644
 +
 +    reload_required="$SUBSCRIPTION_CACHE_CHANGED"
 +    if [ "$reload_required" -eq 1 ]; then
-+        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
 +            echo '{"success":false,"error":"reload_failed"}'
 +            return 1
 +        fi
@@ -1300,7 +1300,7 @@ index e3af7c0..ea1f33b 100644
 +
 +    if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
 +        echolog "Subscription cache changed, reloading podkop..."
-+        /etc/init.d/podkop reload
++        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload
 +        return $?
 +    fi
 +
@@ -1433,7 +1433,7 @@ index e3af7c0..ea1f33b 100644
 -    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
 +    uci commit podkop > /dev/null 2>&1 || return 1
 +    config_load "$PODKOP_CONFIG"
-+    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1
++    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
 +}
  
 -    log "Configure dnsmasq for sing-box"
@@ -1624,7 +1624,7 @@ index e3af7c0..ea1f33b 100644
  
 -list_update() {
 -    echolog "🔄 Starting lists update..."
-+        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
 +            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
 +            rm -f "$active_items_file" "$results_file"
 +            echo '{"success":false,"error":"reload_failed"}'

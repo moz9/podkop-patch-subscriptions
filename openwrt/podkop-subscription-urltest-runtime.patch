@@ -3119,7 +3119,7 @@ index fda1c1e..b5b3fde 100755
 +
 +    reload_required="$SUBSCRIPTION_CACHE_CHANGED"
 +    if [ "$reload_required" -eq 1 ]; then
-+        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
 +            echo '{"success":false,"error":"reload_failed"}'
 +            return 1
 +        fi
@@ -3181,7 +3181,7 @@ index fda1c1e..b5b3fde 100755
 +
 +    if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
 +        echolog "Subscription cache changed, reloading podkop..."
-+        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload
++        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload
 +        return $?
 +    fi
 +
@@ -3329,7 +3329,7 @@ index fda1c1e..b5b3fde 100755
 +
 +    uci commit podkop > /dev/null 2>&1 || return 1
 +    config_load "$PODKOP_CONFIG"
-+    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1
++    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
 +}
 +
 +subscription_speedtest_result_error() {
@@ -3463,7 +3463,7 @@ index fda1c1e..b5b3fde 100755
 +        config_load "$PODKOP_CONFIG"
 +        mixed_changed=1
 +
-+        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
 +            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
 +            rm -f "$active_items_file" "$results_file"
 +            echo '{"success":false,"error":"reload_failed"}'

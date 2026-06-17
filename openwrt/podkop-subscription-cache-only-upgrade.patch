@@ -38,7 +38,7 @@ index 8231b11..8405179 100644
      reload_required="$SUBSCRIPTION_CACHE_CHANGED"
      if [ "$reload_required" -eq 1 ]; then
 -        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then
-+        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
              echo '{"success":false,"error":"reload_failed"}'
              return 1
          fi
