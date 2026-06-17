@@ -1,0 +1,128 @@
+From ac02ff329fdc9b350a47f528beefd822eaa46aea Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Thu, 18 Jun 2026 00:22:01 +0300
+Subject: [PATCH] Avoid subscription reload conflicts
+
+---
+ podkop/files/usr/bin/podkop | 77 ++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 76 insertions(+), 1 deletion(-)
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 718c5f7..b5b3fde 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1604,6 +1604,17 @@ subscription_update() {
+     SUBSCRIPTION_UPDATED_SECTIONS=0
+     SUBSCRIPTION_FAILED_SECTIONS=0
+ 
++    if subscription_runtime_busy; then
++        echolog "Subscription runtime is busy, skipping subscription update"
++        return 0
++    fi
++
++    if ! subscription_action_lock_acquire "subscription_update"; then
++        echolog "Subscription runtime is busy, skipping subscription update"
++        return 0
++    fi
++    trap 'subscription_action_lock_release' EXIT INT TERM
++
+     echolog "Starting subscription update..."
+     config_foreach subscription_update_section_handler "section"
+ 
+@@ -1614,7 +1625,7 @@ subscription_update() {
+ 
+     if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
+         echolog "Subscription cache changed, reloading podkop..."
+-        /etc/init.d/podkop reload
++        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload
+         return $?
+     fi
+ 
+@@ -1727,6 +1738,10 @@ get_subscription_benchmark_attempts() {
+ subscription_runtime_busy() {
+     local status_file state
+ 
++    if subscription_action_lock_busy; then
++        return 0
++    fi
++
+     status_file="$(subscription_patch_update_status_file)"
+     if [ -s "$status_file" ]; then
+         state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
+@@ -1811,6 +1826,12 @@ subscription_speedtest() {
+         return 1
+     fi
+ 
++    if ! subscription_action_lock_acquire "speedtest"; then
++        echo '{"success":false,"error":"service_busy"}'
++        return 1
++    fi
++    trap 'subscription_action_lock_release' EXIT INT TERM
++
+     items_cache_path="$(get_subscription_items_cache_path "$section")"
+     if [ ! -s "$items_cache_path" ]; then
+         refresh_subscription_cache "$section" > /dev/null 2>&1 || true
+@@ -2062,6 +2083,60 @@ get_subscription_patch_update_status() {
+     fi
+ }
+ 
++subscription_action_lock_file() {
++    echo "/tmp/podkop-subscription-action.lock"
++}
++
++subscription_action_lock_pid_alive() {
++    local pid="$1"
++
++    [ -n "$pid" ] || return 1
++    case "$pid" in
++    *[!0-9]*)
++        return 1
++        ;;
++    esac
++
++    [ -d "/proc/$pid" ]
++}
++
++subscription_action_lock_busy() {
++    local lock_file pid
++
++    lock_file="$(subscription_action_lock_file)"
++    [ -s "$lock_file" ] || return 1
++
++    pid="$(awk 'NR == 1 {print $1}' "$lock_file" 2> /dev/null)"
++    if subscription_action_lock_pid_alive "$pid"; then
++        return 0
++    fi
++
++    rm -f "$lock_file"
++    return 1
++}
++
++subscription_action_lock_acquire() {
++    local action="$1"
++    local lock_file
++
++    lock_file="$(subscription_action_lock_file)"
++    if subscription_action_lock_busy; then
++        return 1
++    fi
++
++    printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$lock_file"
++}
++
++subscription_action_lock_release() {
++    local lock_file pid
++
++    lock_file="$(subscription_action_lock_file)"
++    [ -s "$lock_file" ] || return 0
++
++    pid="$(awk 'NR == 1 {print $1}' "$lock_file" 2> /dev/null)"
++    [ "$pid" = "$$" ] && rm -f "$lock_file"
++}
++
+ # sing-box funcs
+ sing_box_configure_service() {
+     local sing_box_enabled sing_box_user sing_box_config_path sing_box_conffile
+-- 
+2.54.0.windows.1
+

@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-download-fallback-fix1}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.18-subscriptions-runtime-lock-fix1}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -242,6 +242,7 @@ has_latest_subscription_backend() {
 		grep -Fq 'wget -T 30 -t 1 -O "$filepath" "$url"' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'install.sh?t=$cache_buster' /usr/bin/podkop 2>/dev/null &&
+		grep -q "subscription_action_lock_file" /usr/bin/podkop 2>/dev/null &&
 		grep -q "curl -fsSL --connect-timeout 10 -m 30" /usr/lib/podkop/helpers.sh 2>/dev/null
 }
 

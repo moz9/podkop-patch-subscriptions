@@ -675,6 +675,183 @@ if ! grep -Fq 'reduce .[] as $item' "$target" 2>/dev/null; then
 	rm -f "$tmp"
 fi
 
+if ! grep -q "subscription_action_lock_file" "$target" 2>/dev/null; then
+	awk '
+	$0 == "# sing-box funcs" {
+		print "subscription_action_lock_file() {"
+		print "    echo \"/tmp/podkop-subscription-action.lock\""
+		print "}"
+		print ""
+		print "subscription_action_lock_pid_alive() {"
+		print "    local pid=\"$1\""
+		print ""
+		print "    [ -n \"$pid\" ] || return 1"
+		print "    case \"$pid\" in"
+		print "    *[!0-9]*)"
+		print "        return 1"
+		print "        ;;"
+		print "    esac"
+		print ""
+		print "    [ -d \"/proc/$pid\" ]"
+		print "}"
+		print ""
+		print "subscription_action_lock_busy() {"
+		print "    local lock_file pid"
+		print ""
+		print "    lock_file=\"$(subscription_action_lock_file)\""
+		print "    [ -s \"$lock_file\" ] || return 1"
+		print ""
+		print "    pid=\"$(awk '\''NR == 1 {print $1}'\'' \"$lock_file\" 2> /dev/null)\""
+		print "    if subscription_action_lock_pid_alive \"$pid\"; then"
+		print "        return 0"
+		print "    fi"
+		print ""
+		print "    rm -f \"$lock_file\""
+		print "    return 1"
+		print "}"
+		print ""
+		print "subscription_action_lock_acquire() {"
+		print "    local action=\"$1\""
+		print "    local lock_file"
+		print ""
+		print "    lock_file=\"$(subscription_action_lock_file)\""
+		print "    if subscription_action_lock_busy; then"
+		print "        return 1"
+		print "    fi"
+		print ""
+		print "    printf '\''%s %s %s\\n'\'' \"$$\" \"$action\" \"$(date +%s 2> /dev/null || date)\" > \"$lock_file\""
+		print "}"
+		print ""
+		print "subscription_action_lock_release() {"
+		print "    local lock_file pid"
+		print ""
+		print "    lock_file=\"$(subscription_action_lock_file)\""
+		print "    [ -s \"$lock_file\" ] || return 0"
+		print ""
+		print "    pid=\"$(awk '\''NR == 1 {print $1}'\'' \"$lock_file\" 2> /dev/null)\""
+		print "    [ \"$pid\" = \"$$\" ] && rm -f \"$lock_file\""
+		print "}"
+		print ""
+		print
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
+if ! grep -q "Subscription runtime is busy, skipping subscription update" "$target" 2>/dev/null; then
+	awk '
+	$0 == "    SUBSCRIPTION_FAILED_SECTIONS=0" {
+		print
+		print ""
+		print "    if subscription_runtime_busy; then"
+		print "        echolog \"Subscription runtime is busy, skipping subscription update\""
+		print "        return 0"
+		print "    fi"
+		print ""
+		print "    if ! subscription_action_lock_acquire \"subscription_update\"; then"
+		print "        echolog \"Subscription runtime is busy, skipping subscription update\""
+		print "        return 0"
+		print "    fi"
+		print "    trap '\''subscription_action_lock_release'\'' EXIT INT TERM"
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
+if grep -q "Subscription cache changed, reloading podkop..." "$target" 2>/dev/null; then
+	awk '
+	prev == "        echolog \"Subscription cache changed, reloading podkop...\"" && $0 == "        /etc/init.d/podkop reload" {
+		print "        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload"
+		prev = $0
+		next
+	}
+
+	{ print; prev = $0 }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
+if ! grep -q "subscription_action_lock_busy; then" "$target" 2>/dev/null; then
+	awk '
+	$0 == "    local status_file state" {
+		print
+		print ""
+		print "    if subscription_action_lock_busy; then"
+		print "        return 0"
+		print "    fi"
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
+if ! grep -q "subscription_action_lock_acquire \"speedtest\"" "$target" 2>/dev/null; then
+	awk '
+	BEGIN { in_speedtest = 0; after_busy = 0 }
+
+	$0 == "subscription_speedtest() {" {
+		in_speedtest = 1
+		print
+		next
+	}
+
+	in_speedtest && $0 == "    if subscription_runtime_busy; then" {
+		after_busy = 1
+		print
+		next
+	}
+
+	in_speedtest && after_busy && $0 == "    fi" {
+		print
+		print ""
+		print "    if ! subscription_action_lock_acquire \"speedtest\"; then"
+		print "        echo '\''{\"success\":false,\"error\":\"service_busy\"}'\''"
+		print "        return 1"
+		print "    fi"
+		print "    trap '\''subscription_action_lock_release'\'' EXIT INT TERM"
+		after_busy = 0
+		next
+	}
+
+	in_speedtest && $0 == "subscription_patch_update_status_file() {" {
+		in_speedtest = 0
+		print
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
 if [ -f "$helper_target" ] && ! grep -q "curl -fsSL --connect-timeout 10 -m 30" "$helper_target" 2>/dev/null; then
 	awk '
 	BEGIN { in_download = 0 }
