@@ -1,0 +1,89 @@
+From d26cca2bf8b8a2703716c790c8d987fcb0e61c8d Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Thu, 18 Jun 2026 01:29:54 +0300
+Subject: [PATCH] Decouple nft diagnostics from remote checks
+
+---
+ .../src/podkop/tabs/diagnostic/checks/runNftCheck.ts   | 10 ++++------
+ .../htdocs/luci-static/resources/view/podkop/main.js   |  7 +++----
+ 2 files changed, 7 insertions(+), 10 deletions(-)
+
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/checks/runNftCheck.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/checks/runNftCheck.ts
+index a28a378..7f8389b 100644
+--- a/fe-app-podkop/src/podkop/tabs/diagnostic/checks/runNftCheck.ts
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/checks/runNftCheck.ts
+@@ -1,5 +1,5 @@
+ import { DIAGNOSTICS_CHECKS_MAP } from './contstants';
+-import { RemoteFakeIPMethods, PodkopShellMethods } from '../../../methods';
++import { PodkopShellMethods } from '../../../methods';
+ import { updateCheckStore } from './updateCheckStore';
+ import { getMeta } from '../helpers/getMeta';
+ 
+@@ -15,9 +15,6 @@ export async function runNftCheck() {
+     items: [],
+   });
+ 
+-  await RemoteFakeIPMethods.getFakeIpCheck();
+-  await RemoteFakeIPMethods.getIpCheck();
+-
+   const nftablesChecks = await PodkopShellMethods.checkNftRules();
+ 
+   if (!nftablesChecks.success) {
+@@ -34,11 +31,12 @@ export async function runNftCheck() {
+   }
+ 
+   const data = nftablesChecks.data;
++  const routingCountersActive =
++    Boolean(data.rules_mangle_output_counters) && Boolean(data.rules_proxy_counters);
+ 
+   const allGood =
+     Boolean(data.table_exist) &&
+     Boolean(data.rules_mangle_exist) &&
+-    Boolean(data.rules_mangle_counters) &&
+     Boolean(data.rules_mangle_output_exist) &&
+     Boolean(data.rules_mangle_output_counters) &&
+     Boolean(data.rules_proxy_exist) &&
+@@ -75,7 +73,7 @@ export async function runNftCheck() {
+         value: '',
+       },
+       {
+-        state: data.rules_mangle_counters ? 'success' : 'error',
++        state: data.rules_mangle_counters || routingCountersActive ? 'success' : 'error',
+         key: _('Rules mangle counters'),
+         value: '',
+       },
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index b2e465f..d209be0 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -2814,8 +2814,6 @@ async function runNftCheck() {
+     state: "loading",
+     items: []
+   });
+-  await RemoteFakeIPMethods.getFakeIpCheck();
+-  await RemoteFakeIPMethods.getIpCheck();
+   const nftablesChecks = await PodkopShellMethods.checkNftRules();
+   if (!nftablesChecks.success) {
+     updateCheckStore({
+@@ -2829,7 +2827,8 @@ async function runNftCheck() {
+     throw new Error("Nftables checks failed");
+   }
+   const data = nftablesChecks.data;
+-  const allGood = Boolean(data.table_exist) && Boolean(data.rules_mangle_exist) && Boolean(data.rules_mangle_counters) && Boolean(data.rules_mangle_output_exist) && Boolean(data.rules_mangle_output_counters) && Boolean(data.rules_proxy_exist) && Boolean(data.rules_proxy_counters) && !data.rules_other_mark_exist;
++  const routingCountersActive = Boolean(data.rules_mangle_output_counters) && Boolean(data.rules_proxy_counters);
++  const allGood = Boolean(data.table_exist) && Boolean(data.rules_mangle_exist) && Boolean(data.rules_mangle_output_exist) && Boolean(data.rules_mangle_output_counters) && Boolean(data.rules_proxy_exist) && Boolean(data.rules_proxy_counters) && !data.rules_other_mark_exist;
+   const atLeastOneGood = Boolean(data.table_exist) || Boolean(data.rules_mangle_exist) || Boolean(data.rules_mangle_counters) || Boolean(data.rules_mangle_output_exist) || Boolean(data.rules_mangle_output_counters) || Boolean(data.rules_proxy_exist) || Boolean(data.rules_proxy_counters) || !data.rules_other_mark_exist;
+   const { state, description } = getMeta({ atLeastOneGood, allGood });
+   updateCheckStore({
+@@ -2850,7 +2849,7 @@ async function runNftCheck() {
+         value: ""
+       },
+       {
+-        state: data.rules_mangle_counters ? "success" : "error",
++        state: data.rules_mangle_counters || routingCountersActive ? "success" : "error",
+         key: _("Rules mangle counters"),
+         value: ""
+       },
+-- 
+2.54.0.windows.1
+

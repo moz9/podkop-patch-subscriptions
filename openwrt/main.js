@@ -2814,8 +2814,6 @@ async function runNftCheck() {
     state: "loading",
     items: []
   });
-  await RemoteFakeIPMethods.getFakeIpCheck();
-  await RemoteFakeIPMethods.getIpCheck();
   const nftablesChecks = await PodkopShellMethods.checkNftRules();
   if (!nftablesChecks.success) {
     updateCheckStore({
