@@ -10,6 +10,8 @@ if ! grep -q "get_subscription_items_cached" "$target" 2>/dev/null; then
 	exit 0
 fi
 
+sed -i 's#PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload#PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload#g' "$target"
+
 if ! grep -q "PODKOP_SKIP_LIST_UPDATE" "$target" 2>/dev/null; then
 	awk '
 	$0 == "    list_update &" {
@@ -89,12 +91,12 @@ fi
 
 awk '
 $0 == "        if ! /etc/init.d/podkop reload > /dev/null 2>&1; then" {
-	print "        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then"
+	print "        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then"
 	next
 }
 
 $0 == "    /etc/init.d/podkop reload > /dev/null 2>&1" {
-	print "    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1"
+	print "    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1"
 	next
 }
 
@@ -313,7 +315,7 @@ subscription_speedtest() {
         config_load "$PODKOP_CONFIG"
         mixed_changed=1
 
-        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
+        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
             subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
             rm -f "$active_items_file" "$results_file"
             echo '{"success":false,"error":"reload_failed"}'
@@ -775,7 +777,7 @@ fi
 if grep -q "Subscription cache changed, reloading podkop..." "$target" 2>/dev/null; then
 	awk '
 	prev == "        echolog \"Subscription cache changed, reloading podkop...\"" && $0 == "        /etc/init.d/podkop reload" {
-		print "        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload"
+		print "        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload"
 		prev = $0
 		next
 	}
@@ -882,6 +884,91 @@ if [ -f "$helper_target" ] && ! grep -q "curl -fsSL --connect-timeout 10 -m 30" 
 		print "            else"
 		print "                wget -T 30 -t 1 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
 		print "            fi"
+		print "        fi"
+		print ""
+		print "        log \"Attempt $attempt/$retries to download $url failed\" \"warn\""
+		print "        sleep \"$wait\""
+		print "    done"
+		print ""
+		print "    return 1"
+		print "}"
+		in_download = 1
+		next
+	}
+
+	in_download && $0 == "# Converts Windows-style line endings (CRLF) to Unix-style (LF)" {
+		in_download = 0
+		print ""
+		print
+		next
+	}
+
+	in_download {
+		next
+	}
+
+	{ print }
+	' "$helper_target" > "$helper_tmp" || {
+		rm -f "$helper_tmp"
+		exit 1
+	}
+	cat "$helper_tmp" > "$helper_target"
+	rm -f "$helper_tmp"
+fi
+
+if [ -f "$helper_target" ] && ! grep -q "raw.githubusercontent.com:443" "$helper_target" 2>/dev/null; then
+	awk '
+	BEGIN { in_download = 0 }
+
+	$0 == "download_to_file() {" {
+		print "download_to_file() {"
+		print "    local url=\"$1\""
+		print "    local filepath=\"$2\""
+		print "    local http_proxy_address=\"$3\""
+		print "    local retries=\"${4:-3}\""
+		print "    local wait=\"${5:-2}\""
+		print "    local attempt raw_path ip"
+		print ""
+		print "    for attempt in $(seq 1 \"$retries\"); do"
+		print "        rm -f \"$filepath\""
+		print ""
+		print "        if [ -n \"$http_proxy_address\" ]; then"
+		print "            if command -v curl > /dev/null 2>&1; then"
+		print "                curl -fsSL -x \"http://$http_proxy_address\" --connect-timeout 10 -m 30 -o \"$filepath\" \"$url\" &&"
+		print "                    [ -s \"$filepath\" ] && return 0"
+		print "            fi"
+		print "            if command -v wget > /dev/null 2>&1; then"
+		print "                http_proxy=\"http://$http_proxy_address\" https_proxy=\"http://$http_proxy_address\" \\"
+		print "                    wget -T 30 -t 1 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
+		print "            fi"
+		print "        else"
+		print "            if command -v curl > /dev/null 2>&1; then"
+		print "                curl -fsSL --connect-timeout 10 -m 30 -o \"$filepath\" \"$url\" &&"
+		print "                    [ -s \"$filepath\" ] && return 0"
+		print "            fi"
+		print "            if command -v wget > /dev/null 2>&1; then"
+		print "                wget -T 30 -t 1 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
+		print "            fi"
+		print ""
+		print "            case \"$url\" in"
+		print "            https://raw.githubusercontent.com/*)"
+		print "                raw_path=\"${url#https://raw.githubusercontent.com/}\""
+		print "                raw_path=\"${raw_path%%\\?*}\""
+		print "                if command -v wget > /dev/null 2>&1; then"
+		print "                    for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do"
+		print "                        wget -T 30 -t 1 --no-check-certificate --header=\"Host: raw.githubusercontent.com\" \\"
+		print "                            -O \"$filepath\" \"https://$ip/$raw_path\" && [ -s \"$filepath\" ] && return 0"
+		print "                    done"
+		print "                fi"
+		print "                if command -v curl > /dev/null 2>&1; then"
+		print "                    for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do"
+		print "                        curl -fsSL --connect-timeout 10 -m 30 \\"
+		print "                            --resolve \"raw.githubusercontent.com:443:$ip\" \\"
+		print "                            -o \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
+		print "                    done"
+		print "                fi"
+		print "                ;;"
+		print "            esac"
 		print "        fi"
 		print ""
 		print "        log \"Attempt $attempt/$retries to download $url failed\" \"warn\""

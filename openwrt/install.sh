@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.18-subscriptions-runtime-lock-fix1}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.18-subscriptions-listfix1}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -231,7 +231,7 @@ abort_with_restore() {
 }
 
 has_latest_subscription_backend() {
-	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
+	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
 	[ "${count:-0}" -ge 3 ] &&
 		grep -q "benchmark_bytes" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_runtime_busy" /usr/bin/podkop 2>/dev/null &&
@@ -243,7 +243,7 @@ has_latest_subscription_backend() {
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'install.sh?t=$cache_buster' /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_action_lock_file" /usr/bin/podkop 2>/dev/null &&
-		grep -q "curl -fsSL --connect-timeout 10 -m 30" /usr/lib/podkop/helpers.sh 2>/dev/null
+		grep -q "raw.githubusercontent.com:443" /usr/lib/podkop/helpers.sh 2>/dev/null
 }
 
 has_cache_only_subscription_backend() {
@@ -373,9 +373,9 @@ rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 
 if [ -x /etc/init.d/podkop ]; then
 	if [ "$light_reload" -eq 1 ]; then
-		reload_command="PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload"
+		reload_command="PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload"
 	else
-		reload_command="PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload"
+		reload_command="PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload"
 	fi
 
 	if ! run_podkop_reload "$reload_command"; then
