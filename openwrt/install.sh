@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.18-subscriptions-patch-detach-fix1}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.18-subscriptions-patch-daemon-fix1}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -240,7 +240,7 @@ has_latest_subscription_backend() {
 		grep -q "download_ok=0" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_download_v2" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_timeout_v1" /usr/bin/podkop 2>/dev/null &&
-		grep -q "patch_update_detach_v1" /usr/bin/podkop 2>/dev/null &&
+		grep -q "patch_update_start_stop_daemon_v1" /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'wget -T 30 -t 1 -O "$filepath" "$url"' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'install.sh?t=$cache_buster' /usr/bin/podkop 2>/dev/null &&
