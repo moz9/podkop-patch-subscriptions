@@ -1781,7 +1781,9 @@ index e3af7c0..ea1f33b 100644
 -    if [ $? -eq 0 ]; then
 -        echolog "✅ Lists update completed successfully"
 +subscription_patch_update() {
-+    local status_file runner
++    local status_file runner patch_update_detach_v1
++
++    patch_update_detach_v1=1
 +
 +    status_file="$(subscription_patch_update_status_file)"
 +    runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
@@ -1818,7 +1820,11 @@ index e3af7c0..ea1f33b 100644
 +EOF
 +
 +    chmod +x "$runner"
-+    "$runner" > /dev/null 2>&1 &
++    if command -v setsid > /dev/null 2>&1; then
++        setsid "$runner" < /dev/null > /dev/null 2>&1 &
++    else
++        "$runner" < /dev/null > /dev/null 2>&1 &
++    fi
 +
 +    echo '{"success":true,"started":true}'
 +}

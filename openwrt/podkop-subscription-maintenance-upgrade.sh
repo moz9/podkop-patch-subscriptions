@@ -854,11 +854,13 @@ if ! grep -q "subscription_action_lock_acquire \"speedtest\"" "$target" 2>/dev/n
 	rm -f "$tmp"
 fi
 
-if ! grep -q "patch_update_timeout_v1" "$target" 2>/dev/null; then
+if ! grep -q "patch_update_detach_v1" "$target" 2>/dev/null; then
 	patch_update_function="$(mktemp)"
 	cat > "$patch_update_function" <<'PATCH_UPDATE_EOF'
 subscription_patch_update() {
-    local status_file runner
+    local status_file runner patch_update_detach_v1
+
+    patch_update_detach_v1=1
 
     status_file="$(subscription_patch_update_status_file)"
     runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
@@ -965,7 +967,11 @@ fi
 EOF
 
     chmod +x "$runner"
-    "$runner" > /dev/null 2>&1 &
+    if command -v setsid > /dev/null 2>&1; then
+        setsid "$runner" < /dev/null > /dev/null 2>&1 &
+    else
+        "$runner" < /dev/null > /dev/null 2>&1 &
+    fi
 
     echo '{"success":true,"started":true}'
 }
