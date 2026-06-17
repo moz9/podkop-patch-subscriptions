@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-restore-fix1}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-v0719-detect-fix1}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -265,7 +265,7 @@ has_legacy_subscription_backend() {
 }
 
 has_v0719_package_backend() {
-	/usr/bin/podkop show_version 2>/dev/null | grep -q "^v0\\.7\\.19$"
+	/usr/bin/podkop show_version 2>/dev/null | grep -Eq "^v?0\\.7\\.19$"
 }
 
 tmp_dir="$(mktemp -d)"
