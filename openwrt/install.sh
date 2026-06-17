@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-v0719-detect-fix1}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-download-fallback-fix1}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -62,7 +62,9 @@ download() {
 				fi
 			done
 		fi
-	elif command -v wget >/dev/null 2>&1; then
+	fi
+
+	if [ "$download_ok" -ne 1 ] && command -v wget >/dev/null 2>&1; then
 		if wget -T 30 -t 1 -q -O "$out" "$url"; then
 			download_ok=1
 		elif [ "$raw_host" = "raw.githubusercontent.com" ]; then
@@ -76,8 +78,6 @@ download() {
 				fi
 			done
 		fi
-	else
-		fail "curl or wget is required"
 	fi
 
 	[ "$download_ok" -eq 1 ] && [ -s "$out" ] || fail "failed to download $url"
@@ -238,6 +238,7 @@ has_latest_subscription_backend() {
 		grep -q "clash_api_wait_proxy_now" /usr/bin/podkop 2>/dev/null &&
 		grep -q "stop_stale_list_update_downloads" /usr/bin/podkop 2>/dev/null &&
 		grep -q "download_ok=0" /usr/bin/podkop 2>/dev/null &&
+		grep -q "patch_update_download_v2" /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'wget -T 30 -t 1 -O "$filepath" "$url"' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'install.sh?t=$cache_buster' /usr/bin/podkop 2>/dev/null &&

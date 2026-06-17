@@ -462,7 +462,7 @@ SPEEDTEST_EOF
 	rm -f "$tmp" "$speedtest_function"
 fi
 
-if ! grep -Fq 'install.sh?t=$cache_buster' "$target" 2>/dev/null; then
+if ! grep -Fq 'patch_update_download_v2' "$target" 2>/dev/null; then
 	patch_update_function="$(mktemp)"
 	cat > "$patch_update_function" <<'PATCH_UPDATE_EOF'
 subscription_patch_update() {
@@ -492,6 +492,7 @@ tmp="/tmp/podkop-subscriptions-install.sh"
 cache_buster="$(date +%s 2> /dev/null || echo $$)"
 install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"
 download_ok=0
+patch_update_download_v2=1
 
 if command -v curl > /dev/null 2>&1; then
     if curl -fsSL --connect-timeout 10 -m 30 -o "$tmp" "$install_url" > "$log_file" 2>&1; then
@@ -506,7 +507,9 @@ if command -v curl > /dev/null 2>&1; then
             fi
         done
     fi
-else
+fi
+
+if [ "$download_ok" -ne 1 ] && command -v wget > /dev/null 2>&1; then
     if wget -T 30 -t 1 -O "$tmp" "$install_url" > "$log_file" 2>&1; then
         download_ok=1
     else
