@@ -5475,6 +5475,9 @@ async function fetchSubscriptionItems(status = "idle") {
         failed: false,
         applying: false,
         status,
+        action: "none",
+        actionStatus: "idle",
+        actionMessage: "",
         pendingChanges: {},
         data
       }
@@ -5515,6 +5518,9 @@ function handleReset() {
     subscriptionItemsWidget: {
       ...widget,
       status: "idle",
+      action: "none",
+      actionStatus: "idle",
+      actionMessage: "",
       pendingChanges: {}
     }
   });
