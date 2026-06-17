@@ -462,7 +462,7 @@ SPEEDTEST_EOF
 	rm -f "$tmp" "$speedtest_function"
 fi
 
-if ! grep -q "download_ok=0" "$target" 2>/dev/null; then
+if ! grep -Fq 'install.sh?t=$cache_buster' "$target" 2>/dev/null; then
 	patch_update_function="$(mktemp)"
 	cat > "$patch_update_function" <<'PATCH_UPDATE_EOF'
 subscription_patch_update() {
@@ -489,7 +489,8 @@ write_status() {
 write_status "running" "patch_update_running" ""
 
 tmp="/tmp/podkop-subscriptions-install.sh"
-install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh"
+cache_buster="$(date +%s 2> /dev/null || echo $$)"
+install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"
 download_ok=0
 
 if command -v curl > /dev/null 2>&1; then
@@ -511,7 +512,7 @@ else
     else
         for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
             if wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
-                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh" >> "$log_file" 2>&1; then
+                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster" >> "$log_file" 2>&1; then
                 download_ok=1
                 break
             fi

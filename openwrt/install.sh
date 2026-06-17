@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-ui-state-fix1}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-cachebuster-fix1}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -107,6 +107,55 @@ require_patch() {
 	command -v patch >/dev/null 2>&1 || fail "patch utility is required"
 }
 
+apply_runtime_patch() {
+	patch_file="$1"
+
+	patch -l -d / -p1 < "$patch_file"
+}
+
+stop_stale_list_update_downloads() {
+	ps w 2>/dev/null | awk '
+		/[p]odkop list_update/ { print $1 }
+		/[w]get .*raw\.githubusercontent\.com\/itdoginfo\/allow-domains/ { print $1 }
+		/[c]url .*raw\.githubusercontent\.com\/itdoginfo\/allow-domains/ { print $1 }
+		/[w]get .*\/discord\.lst/ { print $1 }
+		/[c]url .*\/discord\.lst/ { print $1 }
+	' | while read -r pid; do
+		case "$pid" in
+			"" | *[!0-9]*)
+				continue
+				;;
+		esac
+		kill "$pid" 2>/dev/null || true
+	done
+}
+
+run_podkop_reload() {
+	reload_command="$1"
+	reload_pid=""
+	seconds=0
+	timeout_seconds=90
+
+	stop_stale_list_update_downloads
+	sh -c "$reload_command" &
+	reload_pid="$!"
+
+	while kill -0 "$reload_pid" 2>/dev/null; do
+		if [ "$seconds" -ge "$timeout_seconds" ]; then
+			stop_stale_list_update_downloads
+			kill "$reload_pid" 2>/dev/null || true
+			sleep 2
+			kill -9 "$reload_pid" 2>/dev/null || true
+			wait "$reload_pid" 2>/dev/null || true
+			return 1
+		fi
+		sleep 1
+		seconds=$((seconds + 1))
+	done
+
+	wait "$reload_pid"
+}
+
 get_path_size() {
 	path="$1"
 
@@ -173,7 +222,7 @@ restore_runtime() {
 	done
 	rm -f /tmp/luci-indexcache
 	rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
-	[ -x /etc/init.d/podkop ] && /etc/init.d/podkop reload >/dev/null 2>&1 || true
+	[ -x /etc/init.d/podkop ] && run_podkop_reload "PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload" >/dev/null 2>&1 || true
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 }
 
@@ -192,6 +241,7 @@ has_latest_subscription_backend() {
 		grep -q "download_ok=0" /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'wget -T 30 -t 1 -O "$filepath" "$url"' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
+		grep -Fq 'install.sh?t=$cache_buster' /usr/bin/podkop 2>/dev/null &&
 		grep -q "curl -fsSL --connect-timeout 10 -m 30" /usr/lib/podkop/helpers.sh 2>/dev/null
 }
 
@@ -255,7 +305,7 @@ elif has_batch_subscription_backend; then
 	download "$RAW_BASE/$ACTIONS_UPGRADE_PATCH_FILE" "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"
 	backup_runtime
 
-	if ! patch -d / -p1 < "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"; then
+	if ! apply_runtime_patch "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"; then
 		abort_with_restore "runtime actions upgrade patch failed"
 	fi
 elif has_legacy_subscription_backend; then
@@ -263,7 +313,7 @@ elif has_legacy_subscription_backend; then
 	download "$RAW_BASE/$LEGACY_UPGRADE_PATCH_FILE" "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"
 	backup_runtime
 
-	if ! patch -d / -p1 < "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"; then
+	if ! apply_runtime_patch "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"; then
 		abort_with_restore "runtime legacy upgrade patch failed"
 	fi
 elif has_v0719_package_backend; then
@@ -271,7 +321,7 @@ elif has_v0719_package_backend; then
 	download "$RAW_BASE/$V0719_PATCH_FILE" "$tmp_dir/$V0719_PATCH_FILE"
 	backup_runtime
 
-	if ! patch -d / -p1 < "$tmp_dir/$V0719_PATCH_FILE"; then
+	if ! apply_runtime_patch "$tmp_dir/$V0719_PATCH_FILE"; then
 		abort_with_restore "runtime v0.7.19 patch failed"
 	fi
 else
@@ -279,7 +329,7 @@ else
 	download "$RAW_BASE/$PATCH_FILE" "$tmp_dir/$PATCH_FILE"
 	backup_runtime
 
-	if ! patch -d / -p1 < "$tmp_dir/$PATCH_FILE"; then
+	if ! apply_runtime_patch "$tmp_dir/$PATCH_FILE"; then
 		abort_with_restore "runtime patch failed"
 	fi
 fi
@@ -324,10 +374,10 @@ if [ -x /etc/init.d/podkop ]; then
 	if [ "$light_reload" -eq 1 ]; then
 		reload_command="PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload"
 	else
-		reload_command="/etc/init.d/podkop reload"
+		reload_command="PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload"
 	fi
 
-	if ! sh -c "$reload_command"; then
+	if ! run_podkop_reload "$reload_command"; then
 		abort_with_restore "podkop reload failed"
 	fi
 fi
