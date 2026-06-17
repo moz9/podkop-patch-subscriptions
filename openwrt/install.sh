@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-cachebuster-fix1}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-restore-fix1}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -222,7 +222,6 @@ restore_runtime() {
 	done
 	rm -f /tmp/luci-indexcache
 	rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
-	[ -x /etc/init.d/podkop ] && run_podkop_reload "PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload" >/dev/null 2>&1 || true
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 }
 
