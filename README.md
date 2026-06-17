@@ -11,7 +11,7 @@
 Выполнить уже внутри SSH-сессии на роутере:
 
 ```sh
-(wget -T 30 -t 1 -O /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh || curl -fsSL --connect-timeout 10 -m 30 -o /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh || for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do curl -fsSL --connect-timeout 10 -m 30 --resolve raw.githubusercontent.com:443:$ip -o /tmp/podkop-subscriptions-install.sh https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh && break; done) && sh /tmp/podkop-subscriptions-install.sh
+f=/tmp/podkop-subscriptions-install.sh; u="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$(date +%s)"; rm -f "$f"; (wget -T 30 -t 1 -O "$f" "$u" || curl -fsSL --connect-timeout 10 -m 30 -o "$f" "$u" || for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do curl -fsSL --connect-timeout 10 -m 30 --resolve raw.githubusercontent.com:443:$ip -o "$f" "$u" && break; done) && sh "$f"
 ```
 
 Установщик:
