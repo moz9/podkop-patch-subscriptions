@@ -1,0 +1,223 @@
+From 16ac5a6116b7f1e42850250a3356cbcc47af7e91 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Wed, 17 Jun 2026 13:27:59 +0300
+Subject: [PATCH] Stabilize subscription maintenance actions
+
+---
+ fe-app-podkop/locales/podkop.ru.po |  2 +-
+ luci-app-podkop/po/ru/podkop.po    |  2 +-
+ podkop/files/usr/bin/podkop        | 73 +++++++++++++++++++++++++++---
+ podkop/files/usr/lib/helpers.sh    | 21 +++++++--
+ 4 files changed, 87 insertions(+), 11 deletions(-)
+
+diff --git a/fe-app-podkop/locales/podkop.ru.po b/fe-app-podkop/locales/podkop.ru.po
+index 5a9171c..78d9d14 100644
+--- a/fe-app-podkop/locales/podkop.ru.po
++++ b/fe-app-podkop/locales/podkop.ru.po
+@@ -963,7 +963,7 @@ msgid "Unsaved changes"
+ msgstr "Несохранённые изменения"
+ 
+ msgid "Unsupported"
+-msgstr ""
++msgstr "Не поддерживается"
+ 
+ msgid "Unsupported config"
+ msgstr "Неподдерживаемый конфиг"
+diff --git a/luci-app-podkop/po/ru/podkop.po b/luci-app-podkop/po/ru/podkop.po
+index 5a9171c..78d9d14 100644
+--- a/luci-app-podkop/po/ru/podkop.po
++++ b/luci-app-podkop/po/ru/podkop.po
+@@ -963,7 +963,7 @@ msgid "Unsaved changes"
+ msgstr "Несохранённые изменения"
+ 
+ msgid "Unsupported"
+-msgstr ""
++msgstr "Не поддерживается"
+ 
+ msgid "Unsupported config"
+ msgstr "Неподдерживаемый конфиг"
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index b2387e1..e93fa68 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -149,17 +149,43 @@ start_main() {
+     fi
+ }
+ 
++kill_process_tree() {
++    local pid="$1"
++    local child
++
++    [ -n "$pid" ] || return 0
++    [ -d "/proc/$pid" ] || return 0
++
++    if [ -r "/proc/$pid/task/$pid/children" ]; then
++        for child in $(cat "/proc/$pid/task/$pid/children" 2> /dev/null); do
++            kill_process_tree "$child"
++        done
++    fi
++
++    kill "$pid" 2> /dev/null || true
++}
++
++stop_stale_list_update_downloads() {
++    ps w 2> /dev/null | awk '
++        /wget .*raw\.githubusercontent\.com\/itdoginfo\/allow-domains/ { print $1 }
++        /curl .*raw\.githubusercontent\.com\/itdoginfo\/allow-domains/ { print $1 }
++    ' | while read -r pid; do
++        [ -n "$pid" ] && kill "$pid" 2> /dev/null || true
++    done
++}
++
+ stop_main() {
+     log "Stopping the podkop"
+ 
+     if [ -f /var/run/podkop_list_update.pid ]; then
+         pid=$(cat /var/run/podkop_list_update.pid)
+         if kill -0 "$pid" 2> /dev/null; then
+-            kill "$pid" 2> /dev/null
++            kill_process_tree "$pid"
+             log "Stopped list_update"
+         fi
+         rm -f /var/run/podkop_list_update.pid
+     fi
++    stop_stale_list_update_downloads
+ 
+     remove_cron_job
+ 
+@@ -1761,7 +1787,7 @@ subscription_speedtest_result_success() {
+ 
+ subscription_speedtest() {
+     local section="$1"
+-    local items_cache_path active_items_file results_file clash_url auth_header selector_tag original_proxy \
++    local items_cache_path active_items_file results_file clash_url auth_header selector_tag urltest_tag original_proxy restore_proxy \
+         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
+         warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
+         output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
+@@ -1805,6 +1831,8 @@ subscription_speedtest() {
+     clash_url="$(get_clash_api_base_url)"
+     auth_header="$(get_clash_api_auth_header)"
+     selector_tag="$(get_outbound_tag_by_section "$section")"
++    urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
++    restore_proxy="$urltest_tag"
+     original_proxy="$(clash_api_wait_proxy_now "$clash_url" "$auth_header" "$selector_tag" 15)"
+ 
+     if [ -z "$original_proxy" ]; then
+@@ -1840,7 +1868,8 @@ subscription_speedtest() {
+ 
+     mixed_address="$(get_service_listen_address)"
+     if [ -z "$mixed_address" ]; then
+-        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
++            clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+         subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+         rm -f "$active_items_file" "$results_file"
+         echo '{"success":false,"error":"mixed_proxy_address_missing"}'
+@@ -1857,7 +1886,8 @@ subscription_speedtest() {
+     done
+ 
+     if [ "$clash_ready" -ne 1 ]; then
+-        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
++            clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+         subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+         rm -f "$active_items_file" "$results_file"
+         echo '{"success":false,"error":"selector_not_available"}'
+@@ -1930,7 +1960,8 @@ subscription_speedtest() {
+         index=$((index + 1))
+     done < "$active_items_file"
+ 
+-    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
++    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
++        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+     subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+ 
+     results_json="$(jq -s '.' "$results_file")"
+@@ -1967,7 +1998,37 @@ write_status() {
+ write_status "running" "patch_update_running" ""
+ 
+ tmp="/tmp/podkop-subscriptions-install.sh"
+-if ! wget -O "$tmp" "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh" > "$log_file" 2>&1; then
++install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh"
++download_ok=0
++
++if command -v curl > /dev/null 2>&1; then
++    if curl -fsSL --connect-timeout 10 -m 30 -o "$tmp" "$install_url" > "$log_file" 2>&1; then
++        download_ok=1
++    else
++        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
++            if curl -fsSL --connect-timeout 10 -m 30 \
++                --resolve "raw.githubusercontent.com:443:$ip" \
++                -o "$tmp" "$install_url" >> "$log_file" 2>&1; then
++                download_ok=1
++                break
++            fi
++        done
++    fi
++else
++    if wget -T 30 -t 1 -O "$tmp" "$install_url" > "$log_file" 2>&1; then
++        download_ok=1
++    else
++        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
++            if wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
++                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh" >> "$log_file" 2>&1; then
++                download_ok=1
++                break
++            fi
++        done
++    fi
++fi
++
++if [ "$download_ok" -ne 1 ] || [ ! -s "$tmp" ]; then
+     write_status "error" "download_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
+     exit 1
+ fi
+diff --git a/podkop/files/usr/lib/helpers.sh b/podkop/files/usr/lib/helpers.sh
+index c25edb8..1f9d516 100644
+--- a/podkop/files/usr/lib/helpers.sh
++++ b/podkop/files/usr/lib/helpers.sh
+@@ -260,17 +260,32 @@ download_to_file() {
+     local http_proxy_address="$3"
+     local retries="${4:-3}"
+     local wait="${5:-2}"
++    local attempt
+ 
+     for attempt in $(seq 1 "$retries"); do
++        rm -f "$filepath"
+         if [ -n "$http_proxy_address" ]; then
+-            http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" wget -O "$filepath" "$url" && break
++            if command -v curl > /dev/null 2>&1; then
++                curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
++                    [ -s "$filepath" ] && return 0
++            else
++                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
++                    wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++            fi
+         else
+-            wget -O "$filepath" "$url" && break
++            if command -v curl > /dev/null 2>&1; then
++                curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
++                    [ -s "$filepath" ] && return 0
++            else
++                wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++            fi
+         fi
+ 
+         log "Attempt $attempt/$retries to download $url failed" "warn"
+         sleep "$wait"
+     done
++
++    return 1
+ }
+ 
+ # Converts Windows-style line endings (CRLF) to Unix-style (LF)
+@@ -353,4 +368,4 @@ parse_domain_or_subnet_file_to_comma_string() {
+     done < "$filepath"
+ 
+     echo "$result"
+-}
+\ No newline at end of file
++}
+-- 
+2.54.0.windows.1
+

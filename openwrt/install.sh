@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-actions-fix1}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.17-subscriptions-stability-fix1}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -18,6 +18,7 @@ SUBSCRIPTIONS_FILE="subscriptions.js"
 
 RUNTIME_FILES="
 usr/bin/podkop
+usr/lib/podkop/helpers.sh
 usr/lib/podkop/sing_box_config_facade.sh
 www/luci-static/resources/view/podkop/main.js
 www/luci-static/resources/view/podkop/podkop.js
@@ -38,20 +39,48 @@ fail() {
 download() {
 	url="$1"
 	out="$2"
+	download_ok=0
+	raw_host=""
 
 	case "$url" in
 		*raw.githubusercontent.com*)
 			url="$url?podkop_patch=$(date +%s)"
+			raw_host="raw.githubusercontent.com"
 			;;
 	esac
 
 	if command -v curl >/dev/null 2>&1; then
-		curl -fsSL "$url" -o "$out"
+		if curl -fsSL --connect-timeout 10 -m 30 "$url" -o "$out"; then
+			download_ok=1
+		elif [ "$raw_host" = "raw.githubusercontent.com" ]; then
+			for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+				if curl -fsSL --connect-timeout 10 -m 30 \
+					--resolve "raw.githubusercontent.com:443:$ip" \
+					"$url" -o "$out"; then
+					download_ok=1
+					break
+				fi
+			done
+		fi
 	elif command -v wget >/dev/null 2>&1; then
-		wget -q -O "$out" "$url"
+		if wget -T 30 -t 1 -q -O "$out" "$url"; then
+			download_ok=1
+		elif [ "$raw_host" = "raw.githubusercontent.com" ]; then
+			clean_path="${url#https://raw.githubusercontent.com/}"
+			clean_path="${clean_path%%\?*}"
+			for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+				if wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
+					-q -O "$out" "https://$ip/$clean_path"; then
+					download_ok=1
+					break
+				fi
+			done
+		fi
 	else
 		fail "curl or wget is required"
 	fi
+
+	[ "$download_ok" -eq 1 ] && [ -s "$out" ] || fail "failed to download $url"
 }
 
 require_patch() {
@@ -148,7 +177,10 @@ has_latest_subscription_backend() {
 	[ "${count:-0}" -ge 3 ] &&
 		grep -q "benchmark_bytes" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_runtime_busy" /usr/bin/podkop 2>/dev/null &&
-		grep -q "clash_api_wait_proxy_now" /usr/bin/podkop 2>/dev/null
+		grep -q "clash_api_wait_proxy_now" /usr/bin/podkop 2>/dev/null &&
+		grep -q "stop_stale_list_update_downloads" /usr/bin/podkop 2>/dev/null &&
+		grep -q "download_ok=0" /usr/bin/podkop 2>/dev/null &&
+		grep -q "curl -fsSL --connect-timeout 10 -m 30" /usr/lib/podkop/helpers.sh 2>/dev/null
 }
 
 has_cache_only_subscription_backend() {

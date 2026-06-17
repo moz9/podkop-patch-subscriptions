@@ -3,6 +3,8 @@ set -eu
 
 target="${PODKOP_MAINTENANCE_TARGET:-/usr/bin/podkop}"
 tmp="${target}.tmp.$$"
+helper_target="${PODKOP_MAINTENANCE_HELPERS_TARGET:-/usr/lib/podkop/helpers.sh}"
+helper_tmp="${helper_target}.tmp.$$"
 
 if ! grep -q "get_subscription_items_cached" "$target" 2>/dev/null; then
 	exit 0
@@ -104,6 +106,72 @@ $0 == "    /etc/init.d/podkop reload > /dev/null 2>&1" {
 cat "$tmp" > "$target"
 rm -f "$tmp"
 
+needs_stop_tree=0
+if ! grep -q "stop_stale_list_update_downloads" "$target" 2>/dev/null; then
+	needs_stop_tree=1
+	awk '
+	$0 == "stop_main() {" {
+		print "kill_process_tree() {"
+		print "    local pid=\"$1\""
+		print "    local child"
+		print ""
+		print "    [ -n \"$pid\" ] || return 0"
+		print "    [ -d \"/proc/$pid\" ] || return 0"
+		print ""
+		print "    if [ -r \"/proc/$pid/task/$pid/children\" ]; then"
+		print "        for child in $(cat \"/proc/$pid/task/$pid/children\" 2> /dev/null); do"
+		print "            kill_process_tree \"$child\""
+		print "        done"
+		print "    fi"
+		print ""
+		print "    kill \"$pid\" 2> /dev/null || true"
+		print "}"
+		print ""
+		print "stop_stale_list_update_downloads() {"
+		print "    ps w 2> /dev/null | awk '\''"
+		print "        /wget .*raw\\.githubusercontent\\.com\\/itdoginfo\\/allow-domains/ { print $1 }"
+		print "        /curl .*raw\\.githubusercontent\\.com\\/itdoginfo\\/allow-domains/ { print $1 }"
+		print "    '\'' | while read -r pid; do"
+		print "        [ -n \"$pid\" ] && kill \"$pid\" 2> /dev/null || true"
+		print "    done"
+		print "}"
+		print ""
+		print
+		next
+	}
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
+if [ "$needs_stop_tree" -eq 1 ]; then
+	awk '
+$0 == "            kill \"$pid\" 2> /dev/null" {
+	print "            kill_process_tree \"$pid\""
+	next
+}
+
+$0 == "        rm -f /var/run/podkop_list_update.pid" {
+	print
+	print "    fi"
+	print "    stop_stale_list_update_downloads"
+	getline
+	next
+}
+
+{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
 if ! grep -q "clash_api_wait_proxy_now" "$target" 2>/dev/null; then
 	awk '
 	$0 == "clash_api_set_group_proxy_raw() {" {
@@ -168,12 +236,13 @@ fi
 if ! grep -q 'benchmark_bytes="8388608"' "$target" 2>/dev/null ||
 	! grep -q "clash_ready" "$target" 2>/dev/null ||
 	! grep -q "service_busy" "$target" 2>/dev/null ||
-	! grep -q "clash_api_wait_proxy_now" "$target" 2>/dev/null; then
+	! grep -q "clash_api_wait_proxy_now" "$target" 2>/dev/null ||
+	! grep -q "restore_proxy" "$target" 2>/dev/null; then
 	speedtest_function="$(mktemp)"
 	cat > "$speedtest_function" <<'SPEEDTEST_EOF'
 subscription_speedtest() {
     local section="$1"
-    local items_cache_path active_items_file results_file clash_url auth_header selector_tag original_proxy \
+    local items_cache_path active_items_file results_file clash_url auth_header selector_tag urltest_tag original_proxy restore_proxy \
         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
         warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
         output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
@@ -217,6 +286,8 @@ subscription_speedtest() {
     clash_url="$(get_clash_api_base_url)"
     auth_header="$(get_clash_api_auth_header)"
     selector_tag="$(get_outbound_tag_by_section "$section")"
+    urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
+    restore_proxy="$urltest_tag"
     original_proxy="$(clash_api_wait_proxy_now "$clash_url" "$auth_header" "$selector_tag" 15)"
 
     if [ -z "$original_proxy" ]; then
@@ -252,7 +323,8 @@ subscription_speedtest() {
 
     mixed_address="$(get_service_listen_address)"
     if [ -z "$mixed_address" ]; then
-        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
+            clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
         subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
         rm -f "$active_items_file" "$results_file"
         echo '{"success":false,"error":"mixed_proxy_address_missing"}'
@@ -269,7 +341,8 @@ subscription_speedtest() {
     done
 
     if [ "$clash_ready" -ne 1 ]; then
-        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
+            clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
         subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
         rm -f "$active_items_file" "$results_file"
         echo '{"success":false,"error":"selector_not_available"}'
@@ -342,7 +415,8 @@ subscription_speedtest() {
         index=$((index + 1))
     done < "$active_items_file"
 
-    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
+        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
     subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
 
     results_json="$(jq -s '.' "$results_file")"
@@ -388,4 +462,180 @@ SPEEDTEST_EOF
 	rm -f "$tmp" "$speedtest_function"
 fi
 
+if ! grep -q "download_ok=0" "$target" 2>/dev/null; then
+	patch_update_function="$(mktemp)"
+	cat > "$patch_update_function" <<'PATCH_UPDATE_EOF'
+subscription_patch_update() {
+    local status_file runner
+
+    status_file="$(subscription_patch_update_status_file)"
+    runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
+
+    cat > "$runner" << 'EOF'
+#!/bin/ash
+status_file="/tmp/podkop-subscriptions-patch-update.json"
+log_file="/tmp/podkop-subscriptions-patch-update.log"
+
+write_status() {
+    local state="$1"
+    local message="$2"
+    local log_tail="$3"
+    jq -cn --arg state "$state" --arg message "$message" \
+        --arg updatedAt "$(date -Iseconds 2> /dev/null || date)" \
+        --arg logTail "$log_tail" \
+        '{state:$state, message:$message, updatedAt:$updatedAt, logTail:$logTail}' > "$status_file"
+}
+
+write_status "running" "patch_update_running" ""
+
+tmp="/tmp/podkop-subscriptions-install.sh"
+install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh"
+download_ok=0
+
+if command -v curl > /dev/null 2>&1; then
+    if curl -fsSL --connect-timeout 10 -m 30 -o "$tmp" "$install_url" > "$log_file" 2>&1; then
+        download_ok=1
+    else
+        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+            if curl -fsSL --connect-timeout 10 -m 30 \
+                --resolve "raw.githubusercontent.com:443:$ip" \
+                -o "$tmp" "$install_url" >> "$log_file" 2>&1; then
+                download_ok=1
+                break
+            fi
+        done
+    fi
+else
+    if wget -T 30 -t 1 -O "$tmp" "$install_url" > "$log_file" 2>&1; then
+        download_ok=1
+    else
+        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+            if wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
+                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh" >> "$log_file" 2>&1; then
+                download_ok=1
+                break
+            fi
+        done
+    fi
+fi
+
+if [ "$download_ok" -ne 1 ] || [ ! -s "$tmp" ]; then
+    write_status "error" "download_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
+    exit 1
+fi
+
+if PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp" >> "$log_file" 2>&1; then
+    write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
+else
+    write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
+    exit 1
+fi
+EOF
+
+    chmod +x "$runner"
+    "$runner" > /dev/null 2>&1 &
+
+    echo '{"success":true,"started":true}'
+}
+PATCH_UPDATE_EOF
+
+	awk -v replacement_file="$patch_update_function" '
+	BEGIN {
+		while ((getline line < replacement_file) > 0) {
+			replacement[++replacement_count] = line
+		}
+		close(replacement_file)
+		in_patch_update = 0
+	}
+
+	$0 == "subscription_patch_update() {" {
+		for (i = 1; i <= replacement_count; i++) {
+			print replacement[i]
+		}
+		in_patch_update = 1
+		next
+	}
+
+	in_patch_update && $0 == "get_subscription_patch_update_status() {" {
+		in_patch_update = 0
+		print
+		next
+	}
+
+	in_patch_update {
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp" "$patch_update_function"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp" "$patch_update_function"
+fi
+
+if [ -f "$helper_target" ] && ! grep -q "curl -fsSL --connect-timeout 10 -m 30" "$helper_target" 2>/dev/null; then
+	awk '
+	BEGIN { in_download = 0 }
+
+	$0 == "download_to_file() {" {
+		print "download_to_file() {"
+		print "    local url=\"$1\""
+		print "    local filepath=\"$2\""
+		print "    local http_proxy_address=\"$3\""
+		print "    local retries=\"${4:-3}\""
+		print "    local wait=\"${5:-2}\""
+		print "    local attempt"
+		print ""
+		print "    for attempt in $(seq 1 \"$retries\"); do"
+		print "        rm -f \"$filepath\""
+		print "        if [ -n \"$http_proxy_address\" ]; then"
+		print "            if command -v curl > /dev/null 2>&1; then"
+		print "                curl -fsSL -x \"http://$http_proxy_address\" --connect-timeout 10 -m 30 -o \"$filepath\" \"$url\" &&"
+		print "                    [ -s \"$filepath\" ] && return 0"
+		print "            else"
+		print "                http_proxy=\"http://$http_proxy_address\" https_proxy=\"http://$http_proxy_address\" \\"
+		print "                    wget -T 30 -t 1 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
+		print "            fi"
+		print "        else"
+		print "            if command -v curl > /dev/null 2>&1; then"
+		print "                curl -fsSL --connect-timeout 10 -m 30 -o \"$filepath\" \"$url\" &&"
+		print "                    [ -s \"$filepath\" ] && return 0"
+		print "            else"
+		print "                wget -T 30 -t 1 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
+		print "            fi"
+		print "        fi"
+		print ""
+		print "        log \"Attempt $attempt/$retries to download $url failed\" \"warn\""
+		print "        sleep \"$wait\""
+		print "    done"
+		print ""
+		print "    return 1"
+		print "}"
+		in_download = 1
+		next
+	}
+
+	in_download && $0 == "# Converts Windows-style line endings (CRLF) to Unix-style (LF)" {
+		in_download = 0
+		print ""
+		print
+		next
+	}
+
+	in_download {
+		next
+	}
+
+	{ print }
+	' "$helper_target" > "$helper_tmp" || {
+		rm -f "$helper_tmp"
+		exit 1
+	}
+	cat "$helper_tmp" > "$helper_target"
+	rm -f "$helper_tmp"
+fi
+
 chmod 755 "$target"
+[ -f "$helper_target" ] && chmod 644 "$helper_target"
