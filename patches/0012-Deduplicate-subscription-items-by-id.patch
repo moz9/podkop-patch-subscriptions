@@ -1,0 +1,51 @@
+From 5c353aeda80dc57da4bc36710e27cb5e84d6b3ed Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Wed, 17 Jun 2026 13:52:07 +0300
+Subject: [PATCH] Deduplicate subscription items by id
+
+---
+ podkop/files/usr/bin/podkop | 13 ++++++++-----
+ 1 file changed, 8 insertions(+), 5 deletions(-)
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index e93fa68..69c463f 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1008,6 +1008,7 @@ download_subscription_to_file() {
+     local attempt
+ 
+     for attempt in $(seq 1 "$retries"); do
++        rm -f "$filepath"
+         if command -v curl > /dev/null 2>&1; then
+             if [ -n "$http_proxy_address" ]; then
+                 curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
+@@ -1017,10 +1018,10 @@ download_subscription_to_file() {
+             fi
+         else
+             if [ -n "$http_proxy_address" ]; then
+-                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" wget -O "$filepath" "$url" &&
+-                    [ -s "$filepath" ] && return 0
++                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
++                    wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+             else
+-                wget -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++                wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+             fi
+         fi
+ 
+@@ -1134,8 +1135,10 @@ refresh_subscription_cache() {
+ 
+     awk '!seen[$0]++' "$merged_links_file" > "$deduped_links_file"
+     awk '!seen[$0]++' "$merged_all_links_file" > "$deduped_all_links_file"
+-    awk '!seen[$0]++' "$merged_skipped_links_file" > "$deduped_skipped_links_file"
+-    awk '!seen[$0]++' "$merged_items_file" > "$deduped_items_file"
++    jq -c -s 'reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end) | .[]' \
++        "$merged_skipped_links_file" > "$deduped_skipped_links_file"
++    jq -c -s 'reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end) | .[]' \
++        "$merged_items_file" > "$deduped_items_file"
+     if [ ! -s "$deduped_links_file" ]; then
+         log "Subscriptions for section '$section' do not contain enabled proxy links supported by podkop" "warn"
+         rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
+-- 
+2.54.0.windows.1
+
