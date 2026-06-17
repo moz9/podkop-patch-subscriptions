@@ -854,6 +854,156 @@ if ! grep -q "subscription_action_lock_acquire \"speedtest\"" "$target" 2>/dev/n
 	rm -f "$tmp"
 fi
 
+if ! grep -q "patch_update_timeout_v1" "$target" 2>/dev/null; then
+	patch_update_function="$(mktemp)"
+	cat > "$patch_update_function" <<'PATCH_UPDATE_EOF'
+subscription_patch_update() {
+    local status_file runner
+
+    status_file="$(subscription_patch_update_status_file)"
+    runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
+
+    cat > "$runner" << 'EOF'
+#!/bin/ash
+status_file="/tmp/podkop-subscriptions-patch-update.json"
+log_file="/tmp/podkop-subscriptions-patch-update.log"
+patch_update_timeout_v1=1
+
+write_status() {
+    local state="$1"
+    local message="$2"
+    local log_tail="$3"
+    jq -cn --arg state "$state" --arg message "$message" \
+        --arg updatedAt "$(date -Iseconds 2> /dev/null || date)" \
+        --arg logTail "$log_tail" \
+        '{state:$state, message:$message, updatedAt:$updatedAt, logTail:$logTail}' > "$status_file"
+}
+
+kill_process_tree() {
+    local pid="$1"
+    local child
+
+    [ -n "$pid" ] || return 0
+    [ -d "/proc/$pid" ] || return 0
+
+    if [ -r "/proc/$pid/task/$pid/children" ]; then
+        for child in $(cat "/proc/$pid/task/$pid/children" 2> /dev/null); do
+            kill_process_tree "$child"
+        done
+    fi
+
+    kill "$pid" 2> /dev/null || true
+}
+
+run_with_timeout() {
+    local limit="$1"
+    local pid watchdog rc
+
+    shift
+    "$@" >> "$log_file" 2>&1 &
+    pid="$!"
+
+    (
+        sleep "$limit"
+        kill_process_tree "$pid"
+    ) &
+    watchdog="$!"
+
+    wait "$pid"
+    rc="$?"
+    kill "$watchdog" 2> /dev/null || true
+    wait "$watchdog" > /dev/null 2>&1 || true
+
+    return "$rc"
+}
+
+write_status "running" "patch_update_running" ""
+
+tmp="/tmp/podkop-subscriptions-install.sh"
+cache_buster="$(date +%s 2> /dev/null || echo $$)"
+install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"
+download_ok=0
+
+if command -v curl > /dev/null 2>&1; then
+    if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 -o "$tmp" "$install_url"; then
+        download_ok=1
+    else
+        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+            if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 \
+                --resolve "raw.githubusercontent.com:443:$ip" \
+                -o "$tmp" "$install_url"; then
+                download_ok=1
+                break
+            fi
+        done
+    fi
+else
+    if run_with_timeout 45 wget -T 30 -t 1 -O "$tmp" "$install_url"; then
+        download_ok=1
+    else
+        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+            if run_with_timeout 45 wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
+                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"; then
+                download_ok=1
+                break
+            fi
+        done
+    fi
+fi
+
+if [ "$download_ok" -ne 1 ] || [ ! -s "$tmp" ]; then
+    write_status "error" "download_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
+    exit 1
+fi
+
+if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp"; then
+    write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
+else
+    write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
+    exit 1
+fi
+EOF
+
+    chmod +x "$runner"
+    "$runner" > /dev/null 2>&1 &
+
+    echo '{"success":true,"started":true}'
+}
+PATCH_UPDATE_EOF
+
+	awk -v repl="$patch_update_function" '
+	BEGIN {
+		while ((getline line < repl) > 0) {
+			replacement = replacement line "\n"
+		}
+		in_patch_update = 0
+	}
+
+	$0 == "subscription_patch_update() {" {
+		printf "%s", replacement
+		in_patch_update = 1
+		next
+	}
+
+	in_patch_update && $0 == "get_subscription_patch_update_status() {" {
+		in_patch_update = 0
+		print
+		next
+	}
+
+	in_patch_update {
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp" "$patch_update_function"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp" "$patch_update_function"
+fi
+
 if [ -f "$helper_target" ] && ! grep -q "curl -fsSL --connect-timeout 10 -m 30" "$helper_target" 2>/dev/null; then
 	awk '
 	BEGIN { in_download = 0 }

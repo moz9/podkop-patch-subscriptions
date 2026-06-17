@@ -1,0 +1,1334 @@
+﻿From 8ee4b286c9fee54ef5e138ff50aa9eacbba00dad Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Thu, 18 Jun 2026 01:50:11 +0300
+Subject: [PATCH] Stabilize subscription patch update actions
+
+---
+ fe-app-podkop/locales/calls.json              | 107 ++++++++----------
+ fe-app-podkop/locales/podkop.pot              | 105 ++++++++---------
+ fe-app-podkop/locales/podkop.ru.po            |  10 +-
+ .../tabs/subscriptions/initController.ts      |  28 ++++-
+ .../luci-static/resources/view/podkop/main.js |  22 +++-
+ luci-app-podkop/po/ru/podkop.po               |  10 +-
+ luci-app-podkop/po/templates/podkop.pot       | 105 ++++++++---------
+ podkop/files/usr/bin/podkop                   |  53 +++++++--
+ 8 files changed, 236 insertions(+), 204 deletions(-)
+
+diff --git a/fe-app-podkop/locales/calls.json b/fe-app-podkop/locales/calls.json
+index f683a92..e8f7379 100644
+--- a/fe-app-podkop/locales/calls.json
++++ b/fe-app-podkop/locales/calls.json
+@@ -59,7 +59,7 @@
+     "call": "Additional marking rules found",
+     "key": "Additional marking rules found",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:106"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:104"
+     ]
+   },
+   {
+@@ -158,7 +158,7 @@
+     "key": "Cannot receive checks result",
+     "places": [
+       "src\\podkop\\tabs\\diagnostic\\checks\\runDnsCheck.ts:27",
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:28",
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:25",
+       "src\\podkop\\tabs\\diagnostic\\checks\\runSectionsCheck.ts:27",
+       "src\\podkop\\tabs\\diagnostic\\checks\\runSingBoxCheck.ts:25"
+     ]
+@@ -712,7 +712,7 @@
+     "call": "Failed to download patch update.",
+     "key": "Failed to download patch update.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:482"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:504"
+     ]
+   },
+   {
+@@ -731,13 +731,14 @@
+     "call": "Failed to install patch update.",
+     "key": "Failed to install patch update.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:484"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:506"
+     ]
+   },
+   {
+     "call": "Failed to load subscription configs",
+     "key": "Failed to load subscription configs",
+     "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:487",
+       "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:220",
+       "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:803"
+     ]
+@@ -746,44 +747,44 @@
+     "call": "Failed to run speed benchmark.",
+     "key": "Failed to run speed benchmark.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:430"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:450"
+     ]
+   },
+   {
+     "call": "Failed to save!",
+     "key": "Failed to save!",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:249"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:257"
+     ]
+   },
+   {
+     "call": "Failed to start patch update.",
+     "key": "Failed to start patch update.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:598",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:600"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:620",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:622"
+     ]
+   },
+   {
+     "call": "Failed to test latency.",
+     "key": "Failed to test latency.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:364",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:366"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:379",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:381"
+     ]
+   },
+   {
+     "call": "Failed to update subscription configs.",
+     "key": "Failed to update subscription configs.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:296"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:304"
+     ]
+   },
+   {
+     "call": "Failed to update subscription configs. Cache was kept.",
+     "key": "Failed to update subscription configs. Cache was kept.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:292"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:300"
+     ]
+   },
+   {
+@@ -1194,8 +1195,8 @@
+     "call": "Latency test completed.",
+     "key": "Latency test completed.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:355",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:357"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:370",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:372"
+     ]
+   },
+   {
+@@ -1223,6 +1224,8 @@
+     "call": "Loading subscription configs",
+     "key": "Loading subscription configs",
+     "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:318",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:395",
+       "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:216"
+     ]
+   },
+@@ -1265,7 +1268,7 @@
+     "call": "Mixed proxy address is not configured.",
+     "key": "Mixed proxy address is not configured.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:469"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:491"
+     ]
+   },
+   {
+@@ -1300,14 +1303,14 @@
+     "call": "No enabled supported configs to test.",
+     "key": "No enabled supported configs to test.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:467"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:489"
+     ]
+   },
+   {
+     "call": "No other marking rules found",
+     "key": "No other marking rules found",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:105"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:103"
+     ]
+   },
+   {
+@@ -1397,37 +1400,37 @@
+     "call": "Patch update failed.",
+     "key": "Patch update failed.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:559",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:583"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:581",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:605"
+     ]
+   },
+   {
+     "call": "Patch update is still running. Refresh the page later.",
+     "key": "Patch update is still running. Refresh the page later.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:527"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:549"
+     ]
+   },
+   {
+     "call": "Patch update started.",
+     "key": "Patch update started.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:559",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:583"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:581",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:605"
+     ]
+   },
+   {
+     "call": "Patch update status is unknown.",
+     "key": "Patch update status is unknown.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:486"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:508"
+     ]
+   },
+   {
+     "call": "Patch updated. Refresh the page in a minute.",
+     "key": "Patch updated. Refresh the page in a minute.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:480"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:502"
+     ]
+   },
+   {
+@@ -1488,21 +1491,21 @@
+     "call": "Podkop is restarting now. Try again in a minute.",
+     "key": "Podkop is restarting now. Try again in a minute.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:459"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:479"
+     ]
+   },
+   {
+     "call": "Podkop reload failed. Changes were not applied.",
+     "key": "Podkop reload failed. Changes were not applied.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:463"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:483"
+     ]
+   },
+   {
+     "call": "Podkop selector is not ready. Try again in a minute.",
+     "key": "Podkop selector is not ready. Try again in a minute.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:461"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:481"
+     ]
+   },
+   {
+@@ -1629,42 +1632,42 @@
+     "call": "Rules mangle counters",
+     "key": "Rules mangle counters",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:79"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:77"
+     ]
+   },
+   {
+     "call": "Rules mangle exist",
+     "key": "Rules mangle exist",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:74"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:72"
+     ]
+   },
+   {
+     "call": "Rules mangle output counters",
+     "key": "Rules mangle output counters",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:89"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:87"
+     ]
+   },
+   {
+     "call": "Rules mangle output exist",
+     "key": "Rules mangle output exist",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:84"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:82"
+     ]
+   },
+   {
+     "call": "Rules proxy counters",
+     "key": "Rules proxy counters",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:99"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:97"
+     ]
+   },
+   {
+     "call": "Rules proxy exist",
+     "key": "Rules proxy exist",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:94"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:92"
+     ]
+   },
+   {
+@@ -1686,14 +1689,7 @@
+     "call": "Running speed benchmark",
+     "key": "Running speed benchmark",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:397"
+-    ]
+-  },
+-  {
+-    "call": "Running speed benchmark. Active proxy may change briefly.",
+-    "key": "Running speed benchmark. Active proxy may change briefly.",
+-    "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:381"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:417"
+     ]
+   },
+   {
+@@ -1707,7 +1703,7 @@
+     "call": "Saved!",
+     "key": "Saved!",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:244"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:252"
+     ]
+   },
+   {
+@@ -1991,8 +1987,8 @@
+     "call": "Speed benchmark completed.",
+     "key": "Speed benchmark completed.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:422",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:424"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:442",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:444"
+     ]
+   },
+   {
+@@ -2006,7 +2002,7 @@
+     "call": "Starting patch update from GitHub.",
+     "key": "Starting patch update from GitHub.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:547"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:569"
+     ]
+   },
+   {
+@@ -2041,15 +2037,15 @@
+     "call": "Subscription cache is missing. Refresh subscriptions first.",
+     "key": "Subscription cache is missing. Refresh subscriptions first.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:465"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:485"
+     ]
+   },
+   {
+     "call": "Subscription configs updated.",
+     "key": "Subscription configs updated.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:283",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:285"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:291",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:293"
+     ]
+   },
+   {
+@@ -2105,7 +2101,7 @@
+     "call": "Table exist",
+     "key": "Table exist",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:69"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:67"
+     ]
+   },
+   {
+@@ -2121,14 +2117,7 @@
+     "call": "Testing latency",
+     "key": "Testing latency",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:325"
+-    ]
+-  },
+-  {
+-    "call": "Testing subscription latency.",
+-    "key": "Testing subscription latency.",
+-    "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:311"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:340"
+     ]
+   },
+   {
+@@ -2319,14 +2308,14 @@
+     "call": "Updating patch from GitHub.",
+     "key": "Updating patch from GitHub.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:478"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:500"
+     ]
+   },
+   {
+     "call": "Updating subscription configs. Podkop may be reloaded.",
+     "key": "Updating subscription configs. Podkop may be reloaded.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:269"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:277"
+     ]
+   },
+   {
+diff --git a/fe-app-podkop/locales/podkop.pot b/fe-app-podkop/locales/podkop.pot
+index 836d2fb..96fb142 100644
+--- a/fe-app-podkop/locales/podkop.pot
++++ b/fe-app-podkop/locales/podkop.pot
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-17 09:44+0300\n"
+-"PO-Revision-Date: 2026-06-17 09:44+0300\n"
++"POT-Creation-Date: 2026-06-17 22:46+0300\n"
++"PO-Revision-Date: 2026-06-17 22:46+0300\n"
+ "Last-Translator: Codex <codex@example.local>\n"
+ "Language-Team: LANGUAGE <LL@li.org>\n"
+ "Language: \n"
+@@ -48,7 +48,7 @@ msgstr ""
+ msgid "Active Connections"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:106
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:104
+ msgid "Additional marking rules found"
+ msgstr ""
+ 
+@@ -105,7 +105,7 @@ msgid "Cache file path cannot be empty"
+ msgstr ""
+ 
+ #: src\podkop\tabs\diagnostic\checks\runDnsCheck.ts:27
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:28
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:25
+ #: src\podkop\tabs\diagnostic\checks\runSectionsCheck.ts:27
+ #: src\podkop\tabs\diagnostic\checks\runSingBoxCheck.ts:25
+ msgid "Cannot receive checks result"
+@@ -428,7 +428,7 @@ msgstr ""
+ msgid "Failed to copy!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:482
++#: src\podkop\tabs\subscriptions\initController.ts:504
+ msgid "Failed to download patch update."
+ msgstr ""
+ 
+@@ -441,38 +441,39 @@ msgstr ""
+ msgid "Failed to execute!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:484
++#: src\podkop\tabs\subscriptions\initController.ts:506
+ msgid "Failed to install patch update."
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\initController.ts:487
+ #: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:220
+ #: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:803
+ msgid "Failed to load subscription configs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:430
++#: src\podkop\tabs\subscriptions\initController.ts:450
+ msgid "Failed to run speed benchmark."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:249
++#: src\podkop\tabs\subscriptions\initController.ts:257
+ msgid "Failed to save!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:598
+-#: src\podkop\tabs\subscriptions\initController.ts:600
++#: src\podkop\tabs\subscriptions\initController.ts:620
++#: src\podkop\tabs\subscriptions\initController.ts:622
+ msgid "Failed to start patch update."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:364
+-#: src\podkop\tabs\subscriptions\initController.ts:366
++#: src\podkop\tabs\subscriptions\initController.ts:379
++#: src\podkop\tabs\subscriptions\initController.ts:381
+ msgid "Failed to test latency."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:296
++#: src\podkop\tabs\subscriptions\initController.ts:304
+ msgid "Failed to update subscription configs."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:292
++#: src\podkop\tabs\subscriptions\initController.ts:300
+ msgid "Failed to update subscription configs. Cache was kept."
+ msgstr ""
+ 
+@@ -709,8 +710,8 @@ msgstr ""
+ msgid "Issues detected"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:355
+-#: src\podkop\tabs\subscriptions\initController.ts:357
++#: src\podkop\tabs\subscriptions\initController.ts:370
++#: src\podkop\tabs\subscriptions\initController.ts:372
+ msgid "Latency test completed."
+ msgstr ""
+ 
+@@ -726,6 +727,8 @@ msgstr ""
+ msgid "Loading"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\initController.ts:318
++#: src\podkop\tabs\subscriptions\initController.ts:395
+ #: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:216
+ msgid "Loading subscription configs"
+ msgstr ""
+@@ -750,7 +753,7 @@ msgstr ""
+ msgid "Memory Usage"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:469
++#: src\podkop\tabs\subscriptions\initController.ts:491
+ msgid "Mixed proxy address is not configured."
+ msgstr ""
+ 
+@@ -770,11 +773,11 @@ msgstr ""
+ msgid "Network Interface"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:467
++#: src\podkop\tabs\subscriptions\initController.ts:489
+ msgid "No enabled supported configs to test."
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:105
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:103
+ msgid "No other marking rules found"
+ msgstr ""
+ 
+@@ -828,25 +831,25 @@ msgstr ""
+ msgid "Patch"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:559
+-#: src\podkop\tabs\subscriptions\initController.ts:583
++#: src\podkop\tabs\subscriptions\initController.ts:581
++#: src\podkop\tabs\subscriptions\initController.ts:605
+ msgid "Patch update failed."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:527
++#: src\podkop\tabs\subscriptions\initController.ts:549
+ msgid "Patch update is still running. Refresh the page later."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:559
+-#: src\podkop\tabs\subscriptions\initController.ts:583
++#: src\podkop\tabs\subscriptions\initController.ts:581
++#: src\podkop\tabs\subscriptions\initController.ts:605
+ msgid "Patch update started."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:486
++#: src\podkop\tabs\subscriptions\initController.ts:508
+ msgid "Patch update status is unknown."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:480
++#: src\podkop\tabs\subscriptions\initController.ts:502
+ msgid "Patch updated. Refresh the page in a minute."
+ msgstr ""
+ 
+@@ -883,15 +886,15 @@ msgstr ""
+ msgid "Podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:459
++#: src\podkop\tabs\subscriptions\initController.ts:479
+ msgid "Podkop is restarting now. Try again in a minute."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:463
++#: src\podkop\tabs\subscriptions\initController.ts:483
+ msgid "Podkop reload failed. Changes were not applied."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:461
++#: src\podkop\tabs\subscriptions\initController.ts:481
+ msgid "Podkop selector is not ready. Try again in a minute."
+ msgstr ""
+ 
+@@ -964,27 +967,27 @@ msgstr ""
+ msgid "Routing Excluded IPs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:79
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:77
+ msgid "Rules mangle counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:74
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:72
+ msgid "Rules mangle exist"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:89
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:87
+ msgid "Rules mangle output counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:84
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:82
+ msgid "Rules mangle output exist"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:99
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:97
+ msgid "Rules proxy counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:94
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:92
+ msgid "Rules proxy exist"
+ msgstr ""
+ 
+@@ -997,19 +1000,15 @@ msgstr ""
+ msgid "Run speed benchmark"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:397
++#: src\podkop\tabs\subscriptions\initController.ts:417
+ msgid "Running speed benchmark"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:381
+-msgid "Running speed benchmark. Active proxy may change briefly."
+-msgstr ""
+-
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:394
+ msgid "Russia inside restrictions"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:244
++#: src\podkop\tabs\subscriptions\initController.ts:252
+ msgid "Saved!"
+ msgstr ""
+ 
+@@ -1173,8 +1172,8 @@ msgstr ""
+ msgid "Speed"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:422
+-#: src\podkop\tabs\subscriptions\initController.ts:424
++#: src\podkop\tabs\subscriptions\initController.ts:442
++#: src\podkop\tabs\subscriptions\initController.ts:444
+ msgid "Speed benchmark completed."
+ msgstr ""
+ 
+@@ -1182,7 +1181,7 @@ msgstr ""
+ msgid "Start podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:547
++#: src\podkop\tabs\subscriptions\initController.ts:569
+ msgid "Starting patch update from GitHub."
+ msgstr ""
+ 
+@@ -1202,12 +1201,12 @@ msgstr ""
+ msgid "Subscription cache is empty. Click refresh to load configs."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:465
++#: src\podkop\tabs\subscriptions\initController.ts:485
+ msgid "Subscription cache is missing. Refresh subscriptions first."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:283
+-#: src\podkop\tabs\subscriptions\initController.ts:285
++#: src\podkop\tabs\subscriptions\initController.ts:291
++#: src\podkop\tabs\subscriptions\initController.ts:293
+ msgid "Subscription configs updated."
+ msgstr ""
+ 
+@@ -1239,7 +1238,7 @@ msgstr ""
+ msgid "System information"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:69
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:67
+ msgid "Table exist"
+ msgstr ""
+ 
+@@ -1249,14 +1248,10 @@ msgstr ""
+ msgid "Test latency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:325
++#: src\podkop\tabs\subscriptions\initController.ts:340
+ msgid "Testing latency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:311
+-msgid "Testing subscription latency."
+-msgstr ""
+-
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:434
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:514
+ msgid "Text List"
+@@ -1369,11 +1364,11 @@ msgstr ""
+ msgid "Update patch"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:478
++#: src\podkop\tabs\subscriptions\initController.ts:500
+ msgid "Updating patch from GitHub."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:269
++#: src\podkop\tabs\subscriptions\initController.ts:277
+ msgid "Updating subscription configs. Podkop may be reloaded."
+ msgstr ""
+ 
+diff --git a/fe-app-podkop/locales/podkop.ru.po b/fe-app-podkop/locales/podkop.ru.po
+index 78d9d14..26ece2d 100644
+--- a/fe-app-podkop/locales/podkop.ru.po
++++ b/fe-app-podkop/locales/podkop.ru.po
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-17 12:44+0300\n"
+-"PO-Revision-Date: 2026-06-17 12:44+0300\n"
++"POT-Creation-Date: 2026-06-17 01:46+0300\n"
++"PO-Revision-Date: 2026-06-17 01:46+0300\n"
+ "Last-Translator: Codex\n"
+ "Language-Team: none\n"
+ "Language: ru\n"
+@@ -722,9 +722,6 @@ msgstr "Запустить бенчмарк скорости"
+ msgid "Running speed benchmark"
+ msgstr "Выполняем бенчмарк скорости"
+ 
+-msgid "Running speed benchmark. Active proxy may change briefly."
+-msgstr "Выполняем бенчмарк скорости. Активный прокси может ненадолго измениться."
+-
+ msgid "Russia inside restrictions"
+ msgstr "Ограничения Russia inside"
+ 
+@@ -905,9 +902,6 @@ msgstr "Тестирование задержки"
+ msgid "Testing latency"
+ msgstr "Проверяем задержку"
+ 
+-msgid "Testing subscription latency."
+-msgstr "Проверяем задержку конфигов подписок."
+-
+ msgid "Text List"
+ msgstr "Текстовый список"
+ 
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+index e033efe..bbcbf00 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+@@ -114,6 +114,8 @@ async function fetchSubscriptionItems(
+         actionStatus: 'idle',
+         actionMessage: '',
+         pendingChanges: {},
++        latencyByRow: {},
++        speedByRow: {},
+         data,
+       },
+     });
+@@ -308,16 +310,23 @@ async function handlePingSubscriptions() {
+     return;
+   }
+ 
+-  const sections = store.get().subscriptionItemsWidget.data;
+   const latencyByRow: Record<string, number> = {};
+ 
+   setActionState({
+     action: 'ping',
+     actionStatus: 'running',
+-    actionMessage: _('Testing subscription latency.'),
++    actionMessage: _('Loading subscription configs'),
+   });
+ 
+   try {
++    await fetchSubscriptionItems();
++
++    if (store.get().subscriptionItemsWidget.failed) {
++      throw new Error('subscription_items_load_failed');
++    }
++
++    const sections = store.get().subscriptionItemsWidget.data;
++
+     for (const section of sections) {
+       const enabledItems = getEnabledSupportedItems(section);
+ 
+@@ -378,18 +387,23 @@ async function handleSpeedtestSubscriptions() {
+     return;
+   }
+ 
+-  const sections = store.get().subscriptionItemsWidget.data;
+   const speedByRow: Record<string, Podkop.SubscriptionSpeedtestItem> = {};
+ 
+   setActionState({
+     action: 'speed',
+     actionStatus: 'running',
+-    actionMessage: _(
+-      'Running speed benchmark. Active proxy may change briefly.',
+-    ),
++    actionMessage: _('Loading subscription configs'),
+   });
+ 
+   try {
++    await fetchSubscriptionItems();
++
++    if (store.get().subscriptionItemsWidget.failed) {
++      throw new Error('subscription_items_load_failed');
++    }
++
++    const sections = store.get().subscriptionItemsWidget.data;
++
+     for (const section of sections) {
+       const enabledItems = getEnabledSupportedItems(section);
+ 
+@@ -469,6 +483,8 @@ function getSubscriptionActionErrorMessage(
+       return _('Podkop reload failed. Changes were not applied.');
+     case 'subscription_cache_missing':
+       return _('Subscription cache is missing. Refresh subscriptions first.');
++    case 'subscription_items_load_failed':
++      return _('Failed to load subscription configs');
+     case 'no_enabled_links':
+       return _('No enabled supported configs to test.');
+     case 'mixed_proxy_address_missing':
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index d209be0..3779e50 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -5478,6 +5478,8 @@ async function fetchSubscriptionItems(status = "idle") {
+         actionStatus: "idle",
+         actionMessage: "",
+         pendingChanges: {},
++        latencyByRow: {},
++        speedByRow: {},
+         data
+       }
+     });
+@@ -5633,14 +5635,18 @@ async function handlePingSubscriptions() {
+   if (!canRunServiceAction()) {
+     return;
+   }
+-  const sections = store.get().subscriptionItemsWidget.data;
+   const latencyByRow = {};
+   setActionState({
+     action: "ping",
+     actionStatus: "running",
+-    actionMessage: _("Testing subscription latency.")
++    actionMessage: _("Loading subscription configs")
+   });
+   try {
++    await fetchSubscriptionItems();
++    if (store.get().subscriptionItemsWidget.failed) {
++      throw new Error("subscription_items_load_failed");
++    }
++    const sections = store.get().subscriptionItemsWidget.data;
+     for (const section of sections) {
+       const enabledItems = getEnabledSupportedItems(section);
+       if (!enabledItems.length) {
+@@ -5692,16 +5698,18 @@ async function handleSpeedtestSubscriptions() {
+   if (!canRunServiceAction()) {
+     return;
+   }
+-  const sections = store.get().subscriptionItemsWidget.data;
+   const speedByRow = {};
+   setActionState({
+     action: "speed",
+     actionStatus: "running",
+-    actionMessage: _(
+-      "Running speed benchmark. Active proxy may change briefly."
+-    )
++    actionMessage: _("Loading subscription configs")
+   });
+   try {
++    await fetchSubscriptionItems();
++    if (store.get().subscriptionItemsWidget.failed) {
++      throw new Error("subscription_items_load_failed");
++    }
++    const sections = store.get().subscriptionItemsWidget.data;
+     for (const section of sections) {
+       const enabledItems = getEnabledSupportedItems(section);
+       if (!enabledItems.length) {
+@@ -5768,6 +5776,8 @@ function getSubscriptionActionErrorMessage(error, fallback) {
+       return _("Podkop reload failed. Changes were not applied.");
+     case "subscription_cache_missing":
+       return _("Subscription cache is missing. Refresh subscriptions first.");
++    case "subscription_items_load_failed":
++      return _("Failed to load subscription configs");
+     case "no_enabled_links":
+       return _("No enabled supported configs to test.");
+     case "mixed_proxy_address_missing":
+diff --git a/luci-app-podkop/po/ru/podkop.po b/luci-app-podkop/po/ru/podkop.po
+index 78d9d14..26ece2d 100644
+--- a/luci-app-podkop/po/ru/podkop.po
++++ b/luci-app-podkop/po/ru/podkop.po
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-17 12:44+0300\n"
+-"PO-Revision-Date: 2026-06-17 12:44+0300\n"
++"POT-Creation-Date: 2026-06-17 01:46+0300\n"
++"PO-Revision-Date: 2026-06-17 01:46+0300\n"
+ "Last-Translator: Codex\n"
+ "Language-Team: none\n"
+ "Language: ru\n"
+@@ -722,9 +722,6 @@ msgstr "Запустить бенчмарк скорости"
+ msgid "Running speed benchmark"
+ msgstr "Выполняем бенчмарк скорости"
+ 
+-msgid "Running speed benchmark. Active proxy may change briefly."
+-msgstr "Выполняем бенчмарк скорости. Активный прокси может ненадолго измениться."
+-
+ msgid "Russia inside restrictions"
+ msgstr "Ограничения Russia inside"
+ 
+@@ -905,9 +902,6 @@ msgstr "Тестирование задержки"
+ msgid "Testing latency"
+ msgstr "Проверяем задержку"
+ 
+-msgid "Testing subscription latency."
+-msgstr "Проверяем задержку конфигов подписок."
+-
+ msgid "Text List"
+ msgstr "Текстовый список"
+ 
+diff --git a/luci-app-podkop/po/templates/podkop.pot b/luci-app-podkop/po/templates/podkop.pot
+index 836d2fb..96fb142 100644
+--- a/luci-app-podkop/po/templates/podkop.pot
++++ b/luci-app-podkop/po/templates/podkop.pot
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-17 09:44+0300\n"
+-"PO-Revision-Date: 2026-06-17 09:44+0300\n"
++"POT-Creation-Date: 2026-06-17 22:46+0300\n"
++"PO-Revision-Date: 2026-06-17 22:46+0300\n"
+ "Last-Translator: Codex <codex@example.local>\n"
+ "Language-Team: LANGUAGE <LL@li.org>\n"
+ "Language: \n"
+@@ -48,7 +48,7 @@ msgstr ""
+ msgid "Active Connections"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:106
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:104
+ msgid "Additional marking rules found"
+ msgstr ""
+ 
+@@ -105,7 +105,7 @@ msgid "Cache file path cannot be empty"
+ msgstr ""
+ 
+ #: src\podkop\tabs\diagnostic\checks\runDnsCheck.ts:27
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:28
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:25
+ #: src\podkop\tabs\diagnostic\checks\runSectionsCheck.ts:27
+ #: src\podkop\tabs\diagnostic\checks\runSingBoxCheck.ts:25
+ msgid "Cannot receive checks result"
+@@ -428,7 +428,7 @@ msgstr ""
+ msgid "Failed to copy!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:482
++#: src\podkop\tabs\subscriptions\initController.ts:504
+ msgid "Failed to download patch update."
+ msgstr ""
+ 
+@@ -441,38 +441,39 @@ msgstr ""
+ msgid "Failed to execute!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:484
++#: src\podkop\tabs\subscriptions\initController.ts:506
+ msgid "Failed to install patch update."
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\initController.ts:487
+ #: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:220
+ #: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:803
+ msgid "Failed to load subscription configs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:430
++#: src\podkop\tabs\subscriptions\initController.ts:450
+ msgid "Failed to run speed benchmark."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:249
++#: src\podkop\tabs\subscriptions\initController.ts:257
+ msgid "Failed to save!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:598
+-#: src\podkop\tabs\subscriptions\initController.ts:600
++#: src\podkop\tabs\subscriptions\initController.ts:620
++#: src\podkop\tabs\subscriptions\initController.ts:622
+ msgid "Failed to start patch update."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:364
+-#: src\podkop\tabs\subscriptions\initController.ts:366
++#: src\podkop\tabs\subscriptions\initController.ts:379
++#: src\podkop\tabs\subscriptions\initController.ts:381
+ msgid "Failed to test latency."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:296
++#: src\podkop\tabs\subscriptions\initController.ts:304
+ msgid "Failed to update subscription configs."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:292
++#: src\podkop\tabs\subscriptions\initController.ts:300
+ msgid "Failed to update subscription configs. Cache was kept."
+ msgstr ""
+ 
+@@ -709,8 +710,8 @@ msgstr ""
+ msgid "Issues detected"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:355
+-#: src\podkop\tabs\subscriptions\initController.ts:357
++#: src\podkop\tabs\subscriptions\initController.ts:370
++#: src\podkop\tabs\subscriptions\initController.ts:372
+ msgid "Latency test completed."
+ msgstr ""
+ 
+@@ -726,6 +727,8 @@ msgstr ""
+ msgid "Loading"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\initController.ts:318
++#: src\podkop\tabs\subscriptions\initController.ts:395
+ #: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:216
+ msgid "Loading subscription configs"
+ msgstr ""
+@@ -750,7 +753,7 @@ msgstr ""
+ msgid "Memory Usage"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:469
++#: src\podkop\tabs\subscriptions\initController.ts:491
+ msgid "Mixed proxy address is not configured."
+ msgstr ""
+ 
+@@ -770,11 +773,11 @@ msgstr ""
+ msgid "Network Interface"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:467
++#: src\podkop\tabs\subscriptions\initController.ts:489
+ msgid "No enabled supported configs to test."
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:105
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:103
+ msgid "No other marking rules found"
+ msgstr ""
+ 
+@@ -828,25 +831,25 @@ msgstr ""
+ msgid "Patch"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:559
+-#: src\podkop\tabs\subscriptions\initController.ts:583
++#: src\podkop\tabs\subscriptions\initController.ts:581
++#: src\podkop\tabs\subscriptions\initController.ts:605
+ msgid "Patch update failed."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:527
++#: src\podkop\tabs\subscriptions\initController.ts:549
+ msgid "Patch update is still running. Refresh the page later."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:559
+-#: src\podkop\tabs\subscriptions\initController.ts:583
++#: src\podkop\tabs\subscriptions\initController.ts:581
++#: src\podkop\tabs\subscriptions\initController.ts:605
+ msgid "Patch update started."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:486
++#: src\podkop\tabs\subscriptions\initController.ts:508
+ msgid "Patch update status is unknown."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:480
++#: src\podkop\tabs\subscriptions\initController.ts:502
+ msgid "Patch updated. Refresh the page in a minute."
+ msgstr ""
+ 
+@@ -883,15 +886,15 @@ msgstr ""
+ msgid "Podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:459
++#: src\podkop\tabs\subscriptions\initController.ts:479
+ msgid "Podkop is restarting now. Try again in a minute."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:463
++#: src\podkop\tabs\subscriptions\initController.ts:483
+ msgid "Podkop reload failed. Changes were not applied."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:461
++#: src\podkop\tabs\subscriptions\initController.ts:481
+ msgid "Podkop selector is not ready. Try again in a minute."
+ msgstr ""
+ 
+@@ -964,27 +967,27 @@ msgstr ""
+ msgid "Routing Excluded IPs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:79
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:77
+ msgid "Rules mangle counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:74
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:72
+ msgid "Rules mangle exist"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:89
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:87
+ msgid "Rules mangle output counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:84
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:82
+ msgid "Rules mangle output exist"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:99
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:97
+ msgid "Rules proxy counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:94
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:92
+ msgid "Rules proxy exist"
+ msgstr ""
+ 
+@@ -997,19 +1000,15 @@ msgstr ""
+ msgid "Run speed benchmark"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:397
++#: src\podkop\tabs\subscriptions\initController.ts:417
+ msgid "Running speed benchmark"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:381
+-msgid "Running speed benchmark. Active proxy may change briefly."
+-msgstr ""
+-
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:394
+ msgid "Russia inside restrictions"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:244
++#: src\podkop\tabs\subscriptions\initController.ts:252
+ msgid "Saved!"
+ msgstr ""
+ 
+@@ -1173,8 +1172,8 @@ msgstr ""
+ msgid "Speed"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:422
+-#: src\podkop\tabs\subscriptions\initController.ts:424
++#: src\podkop\tabs\subscriptions\initController.ts:442
++#: src\podkop\tabs\subscriptions\initController.ts:444
+ msgid "Speed benchmark completed."
+ msgstr ""
+ 
+@@ -1182,7 +1181,7 @@ msgstr ""
+ msgid "Start podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:547
++#: src\podkop\tabs\subscriptions\initController.ts:569
+ msgid "Starting patch update from GitHub."
+ msgstr ""
+ 
+@@ -1202,12 +1201,12 @@ msgstr ""
+ msgid "Subscription cache is empty. Click refresh to load configs."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:465
++#: src\podkop\tabs\subscriptions\initController.ts:485
+ msgid "Subscription cache is missing. Refresh subscriptions first."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:283
+-#: src\podkop\tabs\subscriptions\initController.ts:285
++#: src\podkop\tabs\subscriptions\initController.ts:291
++#: src\podkop\tabs\subscriptions\initController.ts:293
+ msgid "Subscription configs updated."
+ msgstr ""
+ 
+@@ -1239,7 +1238,7 @@ msgstr ""
+ msgid "System information"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:69
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:67
+ msgid "Table exist"
+ msgstr ""
+ 
+@@ -1249,14 +1248,10 @@ msgstr ""
+ msgid "Test latency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:325
++#: src\podkop\tabs\subscriptions\initController.ts:340
+ msgid "Testing latency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:311
+-msgid "Testing subscription latency."
+-msgstr ""
+-
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:434
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:514
+ msgid "Text List"
+@@ -1369,11 +1364,11 @@ msgstr ""
+ msgid "Update patch"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:478
++#: src\podkop\tabs\subscriptions\initController.ts:500
+ msgid "Updating patch from GitHub."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:269
++#: src\podkop\tabs\subscriptions\initController.ts:277
+ msgid "Updating subscription configs. Podkop may be reloaded."
+ msgstr ""
+ 
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index b5b3fde..87bda23 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -2008,6 +2008,7 @@ subscription_patch_update() {
+ #!/bin/ash
+ status_file="/tmp/podkop-subscriptions-patch-update.json"
+ log_file="/tmp/podkop-subscriptions-patch-update.log"
++patch_update_timeout_v1=1
+ 
+ write_status() {
+     local state="$1"
+@@ -2019,6 +2020,44 @@ write_status() {
+         '{state:$state, message:$message, updatedAt:$updatedAt, logTail:$logTail}' > "$status_file"
+ }
+ 
++kill_process_tree() {
++    local pid="$1"
++    local child
++
++    [ -n "$pid" ] || return 0
++    [ -d "/proc/$pid" ] || return 0
++
++    if [ -r "/proc/$pid/task/$pid/children" ]; then
++        for child in $(cat "/proc/$pid/task/$pid/children" 2> /dev/null); do
++            kill_process_tree "$child"
++        done
++    fi
++
++    kill "$pid" 2> /dev/null || true
++}
++
++run_with_timeout() {
++    local limit="$1"
++    local pid watchdog rc
++
++    shift
++    "$@" >> "$log_file" 2>&1 &
++    pid="$!"
++
++    (
++        sleep "$limit"
++        kill_process_tree "$pid"
++    ) &
++    watchdog="$!"
++
++    wait "$pid"
++    rc="$?"
++    kill "$watchdog" 2> /dev/null || true
++    wait "$watchdog" > /dev/null 2>&1 || true
++
++    return "$rc"
++}
++
+ write_status "running" "patch_update_running" ""
+ 
+ tmp="/tmp/podkop-subscriptions-install.sh"
+@@ -2027,25 +2066,25 @@ install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/m
+ download_ok=0
+ 
+ if command -v curl > /dev/null 2>&1; then
+-    if curl -fsSL --connect-timeout 10 -m 30 -o "$tmp" "$install_url" > "$log_file" 2>&1; then
++    if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 -o "$tmp" "$install_url"; then
+         download_ok=1
+     else
+         for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+-            if curl -fsSL --connect-timeout 10 -m 30 \
++            if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 \
+                 --resolve "raw.githubusercontent.com:443:$ip" \
+-                -o "$tmp" "$install_url" >> "$log_file" 2>&1; then
++                -o "$tmp" "$install_url"; then
+                 download_ok=1
+                 break
+             fi
+         done
+     fi
+ else
+-    if wget -T 30 -t 1 -O "$tmp" "$install_url" > "$log_file" 2>&1; then
++    if run_with_timeout 45 wget -T 30 -t 1 -O "$tmp" "$install_url"; then
+         download_ok=1
+     else
+         for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+-            if wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
+-                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster" >> "$log_file" 2>&1; then
++            if run_with_timeout 45 wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
++                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"; then
+                 download_ok=1
+                 break
+             fi
+@@ -2058,7 +2097,7 @@ if [ "$download_ok" -ne 1 ] || [ ! -s "$tmp" ]; then
+     exit 1
+ fi
+ 
+-if PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp" >> "$log_file" 2>&1; then
++if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp"; then
+     write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
+ else
+     write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
+-- 
+2.54.0.windows.1
+
