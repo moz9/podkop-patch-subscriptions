@@ -1,0 +1,114 @@
+﻿From 0aaf73f6b9bea8e09d1878713a048bde45099c7a Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Thu, 18 Jun 2026 07:54:09 +0300
+Subject: [PATCH] Preserve community subnet cache on subscription reloads
+
+---
+ podkop/files/usr/bin/podkop | 70 ++++++++++++++++++++++++++++++++++---
+ 1 file changed, 65 insertions(+), 5 deletions(-)
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 58eaa0f..4bd5a02 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -34,6 +34,7 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
+ config_load "$PODKOP_CONFIG"
+ 
+ SUBSCRIPTION_CACHE_DIR="/etc/podkop/subscriptions"
++COMMUNITY_SUBNET_CACHE_DIR="$TMP_SING_BOX_FOLDER/community-subnets"
+ 
+ check_requirements() {
+     log "Check Requirements"
+@@ -131,6 +132,9 @@ start_main() {
+     # base
+     route_table_rule_mark
+     create_nft_rules
++    if [ "$PODKOP_SKIP_LIST_UPDATE" = "1" ]; then
++        config_foreach restore_cached_community_subnet_lists "section"
++    fi
+     sing_box_configure_service
+ 
+     # sing-box
+@@ -282,6 +286,55 @@ br_netfilter_disable() {
+     fi
+ }
+ 
++get_community_subnet_cache_path() {
++    local service="$1"
++
++    echo "$COMMUNITY_SUBNET_CACHE_DIR/$service.lst"
++}
++
++cache_community_subnet_list() {
++    local service="$1"
++    local filepath="$2"
++    local cache_path
++
++    [ -s "$filepath" ] || return 0
++    mkdir -p "$COMMUNITY_SUBNET_CACHE_DIR" || return 0
++    cache_path="$(get_community_subnet_cache_path "$service")"
++    cp "$filepath" "$cache_path" 2> /dev/null && chmod 600 "$cache_path" 2> /dev/null
++}
++
++restore_cached_community_subnet_list_handler() {
++    local service="$1"
++    local cache_path restore_community_subnet_cache_v1
++
++    restore_community_subnet_cache_v1=1
++    cache_path="$(get_community_subnet_cache_path "$service")"
++    [ -s "$cache_path" ] || return 0
++
++    if [ "$service" = "discord" ]; then
++        if ! nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME" > /dev/null 2>&1; then
++            nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
++        fi
++        if ! nft list chain inet "$NFT_TABLE_NAME" mangle 2> /dev/null | grep -q "@$NFT_DISCORD_SET_NAME"; then
++            nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr \
++                "@$NFT_DISCORD_SET_NAME" udp dport '{ 19000-20000, 50000-65535 }' meta mark set "$NFT_FAKEIP_MARK" counter
++        fi
++        nft_add_set_elements_from_file_chunked "$cache_path" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
++    else
++        nft_add_set_elements_from_file_chunked "$cache_path" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
++    fi
++}
++
++restore_cached_community_subnet_lists() {
++    local section="$1"
++    local community_lists
++
++    config_get community_lists "$section" "community_lists"
++    [ -n "$community_lists" ] || return 0
++
++    config_list_foreach "$section" "community_lists" restore_cached_community_subnet_list_handler
++}
++
+ # Main funcs
+ 
+ route_table_rule_mark() {
+@@ -3023,11 +3076,18 @@ import_community_service_subnet_list_handler() {
+     tmpfile=$(mktemp)
+     http_proxy_address="$(get_service_proxy_address)"
+ 
+-    download_to_file "$URL" "$tmpfile" "$http_proxy_address"
+-
+-    if [ $? -ne 0 ] || [ ! -s "$tmpfile" ]; then
+-        log "Download $service list failed" "error"
+-        return 1
++    if ! download_to_file "$URL" "$tmpfile" "$http_proxy_address" || [ ! -s "$tmpfile" ]; then
++        local cache_path
++        cache_path="$(get_community_subnet_cache_path "$service")"
++        if [ -s "$cache_path" ]; then
++            log "Download $service list failed, using cached subnet list" "warn"
++            cp "$cache_path" "$tmpfile"
++        else
++            log "Download $service list failed" "error"
++            return 1
++        fi
++    else
++        cache_community_subnet_list "$service" "$tmpfile"
+     fi
+ 
+     if [ "$service" = "discord" ]; then
+-- 
+2.54.0.windows.1
+

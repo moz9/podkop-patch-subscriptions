@@ -1,0 +1,109 @@
+﻿From f21a6da1d47b77a4322ddda1d3c366f37921885d Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Thu, 18 Jun 2026 07:57:45 +0300
+Subject: [PATCH] Persist community subnet cache for fast reloads
+
+---
+ podkop/files/usr/bin/podkop | 50 ++++++++++++++++++++++++++++++++++---
+ 1 file changed, 46 insertions(+), 4 deletions(-)
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 4bd5a02..cdcdae1 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -34,7 +34,7 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
+ config_load "$PODKOP_CONFIG"
+ 
+ SUBSCRIPTION_CACHE_DIR="/etc/podkop/subscriptions"
+-COMMUNITY_SUBNET_CACHE_DIR="$TMP_SING_BOX_FOLDER/community-subnets"
++COMMUNITY_SUBNET_CACHE_DIR="/etc/podkop/community-subnets"
+ 
+ check_requirements() {
+     log "Check Requirements"
+@@ -111,6 +111,8 @@ has_outbound_section() {
+ }
+ 
+ start_main() {
++    local skip_list_update_started=0
++
+     log "Starting podkop"
+ 
+     check_requirements
+@@ -134,6 +136,12 @@ start_main() {
+     create_nft_rules
+     if [ "$PODKOP_SKIP_LIST_UPDATE" = "1" ]; then
+         config_foreach restore_cached_community_subnet_lists "section"
++        if community_subnet_lists_enabled && ! nft_subnet_sets_have_elements; then
++            log "Cached community subnet lists are unavailable or empty, starting lists update in background" "warn"
++            list_update &
++            echo $! > /var/run/podkop_list_update.pid
++            skip_list_update_started=1
++        fi
+     fi
+     sing_box_configure_service
+ 
+@@ -146,7 +154,11 @@ start_main() {
+ 
+     log "Nice"
+     if [ "$PODKOP_SKIP_LIST_UPDATE" = "1" ]; then
+-        log "Skipping lists update for this reload" "debug"
++        if [ "$skip_list_update_started" -eq 1 ]; then
++            log "Started lists update because cached subnet lists are missing" "debug"
++        else
++            log "Skipping lists update for this reload" "debug"
++        fi
+     else
+         list_update &
+         echo $! > /var/run/podkop_list_update.pid
+@@ -305,9 +317,9 @@ cache_community_subnet_list() {
+ 
+ restore_cached_community_subnet_list_handler() {
+     local service="$1"
+-    local cache_path restore_community_subnet_cache_v1
++    local cache_path restore_community_subnet_cache_v2
+ 
+-    restore_community_subnet_cache_v1=1
++    restore_community_subnet_cache_v2=1
+     cache_path="$(get_community_subnet_cache_path "$service")"
+     [ -s "$cache_path" ] || return 0
+ 
+@@ -335,6 +347,36 @@ restore_cached_community_subnet_lists() {
+     config_list_foreach "$section" "community_lists" restore_cached_community_subnet_list_handler
+ }
+ 
++community_subnet_lists_enabled_handler() {
++    local section="$1"
++    local community_lists service
++
++    config_get community_lists "$section" "community_lists"
++    for service in $community_lists; do
++        case "$service" in
++        twitter | meta | telegram | cloudflare | hetzner | ovh | digitalocean | cloudfront | discord | roblox)
++            community_subnet_lists_found=1
++            return 0
++            ;;
++        esac
++    done
++}
++
++community_subnet_lists_enabled() {
++    community_subnet_lists_found=0
++    config_foreach community_subnet_lists_enabled_handler "section"
++    [ "$community_subnet_lists_found" -eq 1 ]
++}
++
++nft_subnet_sets_have_elements() {
++    nft list set inet "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME" 2> /dev/null |
++        grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}' &&
++        return 0
++
++    nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME" 2> /dev/null |
++        grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}'
++}
++
+ # Main funcs
+ 
+ route_table_rule_mark() {
+-- 
+2.54.0.windows.1
+

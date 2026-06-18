@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.18-subscriptions-subnet-cache-fix3}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-v2026.06.18-subscriptions-subnet-cache-fix4}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -41,6 +41,22 @@ download() {
 	out="$2"
 	download_ok=0
 	raw_host=""
+
+	case "$url" in
+		file://*)
+			src="${url#file://}"
+			[ -s "$src" ] || fail "local source not found: $src"
+			cp "$src" "$out" || fail "failed to copy $src"
+			[ -s "$out" ] || fail "local source is empty: $src"
+			return 0
+			;;
+		/*)
+			[ -s "$url" ] || fail "local source not found: $url"
+			cp "$url" "$out" || fail "failed to copy $url"
+			[ -s "$out" ] || fail "local source is empty: $url"
+			return 0
+			;;
+	esac
 
 	case "$url" in
 		*raw.githubusercontent.com*)
@@ -241,7 +257,7 @@ has_latest_subscription_backend() {
 		grep -q "patch_update_download_v2" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_timeout_v1" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_start_stop_daemon_v1" /usr/bin/podkop 2>/dev/null &&
-		grep -q "restore_community_subnet_cache_v1" /usr/bin/podkop 2>/dev/null &&
+		grep -q "restore_community_subnet_cache_v2" /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'wget -T 30 -t 1 -O "$filepath" "$url"' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'install.sh?t=$cache_buster' /usr/bin/podkop 2>/dev/null &&
