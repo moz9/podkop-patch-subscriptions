@@ -5478,8 +5478,6 @@ async function fetchSubscriptionItems(status = "idle") {
         actionStatus: "idle",
         actionMessage: "",
         pendingChanges: {},
-        latencyByRow: {},
-        speedByRow: {},
         data
       }
     });
@@ -5635,18 +5633,14 @@ async function handlePingSubscriptions() {
   if (!canRunServiceAction()) {
     return;
   }
+  const sections = store.get().subscriptionItemsWidget.data;
   const latencyByRow = {};
   setActionState({
     action: "ping",
     actionStatus: "running",
-    actionMessage: _("Loading subscription configs")
+    actionMessage: _("Testing subscription latency.")
   });
   try {
-    await fetchSubscriptionItems();
-    if (store.get().subscriptionItemsWidget.failed) {
-      throw new Error("subscription_items_load_failed");
-    }
-    const sections = store.get().subscriptionItemsWidget.data;
     for (const section of sections) {
       const enabledItems = getEnabledSupportedItems(section);
       if (!enabledItems.length) {
@@ -5698,18 +5692,16 @@ async function handleSpeedtestSubscriptions() {
   if (!canRunServiceAction()) {
     return;
   }
+  const sections = store.get().subscriptionItemsWidget.data;
   const speedByRow = {};
   setActionState({
     action: "speed",
     actionStatus: "running",
-    actionMessage: _("Loading subscription configs")
+    actionMessage: _(
+      "Running speed benchmark. Active proxy may change briefly."
+    )
   });
   try {
-    await fetchSubscriptionItems();
-    if (store.get().subscriptionItemsWidget.failed) {
-      throw new Error("subscription_items_load_failed");
-    }
-    const sections = store.get().subscriptionItemsWidget.data;
     for (const section of sections) {
       const enabledItems = getEnabledSupportedItems(section);
       if (!enabledItems.length) {
@@ -5776,8 +5768,6 @@ function getSubscriptionActionErrorMessage(error, fallback) {
       return _("Podkop reload failed. Changes were not applied.");
     case "subscription_cache_missing":
       return _("Subscription cache is missing. Refresh subscriptions first.");
-    case "subscription_items_load_failed":
-      return _("Failed to load subscription configs");
     case "no_enabled_links":
       return _("No enabled supported configs to test.");
     case "mixed_proxy_address_missing":
