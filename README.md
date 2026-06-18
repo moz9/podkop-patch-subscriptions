@@ -11,7 +11,7 @@
 Выполнять уже внутри SSH-сессии на роутере:
 
 ```sh
-wget --no-check-certificate -T 30 -O /tmp/podkop-i https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i && sh /tmp/podkop-i
+u=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i;f=/tmp/podkop-i;rm -f $f;(curl -fsSL --connect-timeout 10 -m 30 -o $f $u 2>/dev/null||wget --no-check-certificate -T 30 -O $f $u)&&sh $f
 ```
 
 Это одна и та же команда для первой установки и последующих обновлений.
