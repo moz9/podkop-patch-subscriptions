@@ -1,0 +1,67 @@
+From 94a4a050694a6dd6ea4839e5da2c4f2e52683e76 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Thu, 18 Jun 2026 08:09:54 +0300
+Subject: [PATCH] Fallback to wget after curl download failures
+
+---
+ podkop/files/usr/lib/helpers.sh | 30 +++++++++++++++++++++++++-----
+ 1 file changed, 25 insertions(+), 5 deletions(-)
+
+diff --git a/podkop/files/usr/lib/helpers.sh b/podkop/files/usr/lib/helpers.sh
+index 1f9d516..611ba15 100644
+--- a/podkop/files/usr/lib/helpers.sh
++++ b/podkop/files/usr/lib/helpers.sh
+@@ -260,7 +260,7 @@ download_to_file() {
+     local http_proxy_address="$3"
+     local retries="${4:-3}"
+     local wait="${5:-2}"
+-    local attempt
++    local attempt raw_path ip
+ 
+     for attempt in $(seq 1 "$retries"); do
+         rm -f "$filepath"
+@@ -268,17 +268,37 @@ download_to_file() {
+             if command -v curl > /dev/null 2>&1; then
+                 curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
+                     [ -s "$filepath" ] && return 0
+-            else
+-                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
+-                    wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+             fi
++            http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
++                wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+         else
+             if command -v curl > /dev/null 2>&1; then
+                 curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
+                     [ -s "$filepath" ] && return 0
+-            else
++            fi
++            if command -v wget > /dev/null 2>&1; then
+                 wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+             fi
++
++            case "$url" in
++            https://raw.githubusercontent.com/*)
++                raw_path="${url#https://raw.githubusercontent.com/}"
++                raw_path="${raw_path%%\?*}"
++                if command -v wget > /dev/null 2>&1; then
++                    for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
++                        wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
++                            -O "$filepath" "https://$ip/$raw_path" && [ -s "$filepath" ] && return 0
++                    done
++                fi
++                if command -v curl > /dev/null 2>&1; then
++                    for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
++                        curl -fsSL --connect-timeout 10 -m 30 \
++                            --resolve "raw.githubusercontent.com:443:$ip" \
++                            -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
++                    done
++                fi
++                ;;
++            esac
+         fi
+ 
+         log "Attempt $attempt/$retries to download $url failed" "warn"
+-- 
+2.54.0.windows.1
+
