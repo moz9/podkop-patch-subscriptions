@@ -1016,7 +1016,7 @@ SUBNET_CACHE_FUNCS_EOF
 		rm -f "$tmp"
 	fi
 
-	if ! grep -q "Download \\$service list failed, using cached subnet list" "$target" 2>/dev/null; then
+	if ! grep -q 'Download \$service list failed, using cached subnet list' "$target" 2>/dev/null; then
 		awk '
 		BEGIN { in_download_block = 0 }
 
