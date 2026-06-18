@@ -1308,7 +1308,7 @@ if [ -f "$helper_target" ] && ! grep -q "curl -fsSL --connect-timeout 10 -m 30" 
 	rm -f "$helper_tmp"
 fi
 
-if [ -f "$helper_target" ] && ! grep -q "raw.githubusercontent.com:443" "$helper_target" 2>/dev/null; then
+if [ -f "$helper_target" ] && { ! grep -q "raw.githubusercontent.com:443" "$helper_target" 2>/dev/null || grep -q "wget -T 30 -t" "$helper_target" 2>/dev/null; }; then
 	awk '
 	BEGIN { in_download = 0 }
 

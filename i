@@ -273,7 +273,9 @@ has_latest_subscription_backend() {
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'install.sh?t=$cache_buster' /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_action_lock_file" /usr/bin/podkop 2>/dev/null &&
-		grep -q "raw.githubusercontent.com:443" /usr/lib/podkop/helpers.sh 2>/dev/null
+		grep -q "raw.githubusercontent.com:443" /usr/lib/podkop/helpers.sh 2>/dev/null &&
+		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&
+		! grep -q "wget -T 30 -t" /usr/lib/podkop/helpers.sh 2>/dev/null
 }
 
 has_cache_only_subscription_backend() {
