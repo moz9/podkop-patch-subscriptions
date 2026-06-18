@@ -41,6 +41,7 @@ download() {
 	out="$2"
 	download_ok=0
 	raw_host=""
+	download_log="${PODKOP_PATCH_DOWNLOAD_LOG:-/tmp/podkop-subscriptions-install-download.log}"
 
 	case "$url" in
 		file://*)
@@ -66,13 +67,13 @@ download() {
 	esac
 
 	if command -v curl >/dev/null 2>&1; then
-		if curl -fsSL --connect-timeout 10 -m 30 "$url" -o "$out"; then
+		if curl -fsSL --connect-timeout 10 -m 30 "$url" -o "$out" >> "$download_log" 2>&1; then
 			download_ok=1
 		elif [ "$raw_host" = "raw.githubusercontent.com" ]; then
 			for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
 				if curl -fsSL --connect-timeout 10 -m 30 \
 					--resolve "raw.githubusercontent.com:443:$ip" \
-					"$url" -o "$out"; then
+					"$url" -o "$out" >> "$download_log" 2>&1; then
 					download_ok=1
 					break
 				fi
@@ -81,14 +82,14 @@ download() {
 	fi
 
 	if [ "$download_ok" -ne 1 ] && command -v wget >/dev/null 2>&1; then
-		if wget -T 30 -t 1 -q -O "$out" "$url"; then
+		if wget -T 30 -t 1 -q -O "$out" "$url" >> "$download_log" 2>&1; then
 			download_ok=1
 		elif [ "$raw_host" = "raw.githubusercontent.com" ]; then
 			clean_path="${url#https://raw.githubusercontent.com/}"
 			clean_path="${clean_path%%\?*}"
 			for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
 				if wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
-					-q -O "$out" "https://$ip/$clean_path"; then
+					-q -O "$out" "https://$ip/$clean_path" >> "$download_log" 2>&1; then
 					download_ok=1
 					break
 				fi
@@ -149,11 +150,13 @@ stop_stale_list_update_downloads() {
 run_podkop_reload() {
 	reload_command="$1"
 	reload_pid=""
+	reload_log="${PODKOP_PATCH_RELOAD_LOG:-/tmp/podkop-subscriptions-install-reload.log}"
 	seconds=0
 	timeout_seconds=90
 
+	: > "$reload_log"
 	stop_stale_list_update_downloads
-	sh -c "$reload_command" &
+	sh -c "$reload_command" >> "$reload_log" 2>&1 &
 	reload_pid="$!"
 
 	while kill -0 "$reload_pid" 2>/dev/null; do
@@ -163,13 +166,19 @@ run_podkop_reload() {
 			sleep 2
 			kill -9 "$reload_pid" 2>/dev/null || true
 			wait "$reload_pid" 2>/dev/null || true
+			tail -n 20 "$reload_log" 2>/dev/null || true
 			return 1
 		fi
 		sleep 1
 		seconds=$((seconds + 1))
 	done
 
-	wait "$reload_pid"
+	if ! wait "$reload_pid"; then
+		tail -n 20 "$reload_log" 2>/dev/null || true
+		return 1
+	fi
+
+	return 0
 }
 
 get_path_size() {
