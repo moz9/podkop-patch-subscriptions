@@ -235,7 +235,7 @@ if ! grep -q "subscription_runtime_busy" "$target" 2>/dev/null; then
 	rm -f "$tmp"
 fi
 
-if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288' "$target" 2>/dev/null ||
+if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0' "$target" 2>/dev/null ||
 	! grep -q "^get_subscription_benchmark_attempts()" "$target" 2>/dev/null; then
 	benchmark_helpers="$(mktemp)"
@@ -245,7 +245,7 @@ get_subscription_benchmark_port() {
 }
 
 get_subscription_benchmark_bytes() {
-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288}"
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304}"
 }
 
 get_subscription_benchmark_warmup_bytes() {
@@ -294,9 +294,10 @@ BENCHMARK_HELPERS_EOF
 	rm -f "$tmp" "$benchmark_helpers"
 fi
 
-if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288' "$target" 2>/dev/null ||
+if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0' "$target" 2>/dev/null ||
 	! grep -q -- '--connect-timeout 4' "$target" 2>/dev/null ||
+	! grep -q 'time_starttransfer' "$target" 2>/dev/null ||
 	! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null ||
 	! grep -q "clash_ready" "$target" 2>/dev/null ||
 	! grep -q "service_busy" "$target" 2>/dev/null ||
@@ -309,7 +310,7 @@ subscription_speedtest() {
     local items_cache_path active_items_file results_file clash_url auth_header selector_tag urltest_tag original_proxy restore_proxy \
         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
         warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
-        output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
+        output bytes_per_second time_total time_starttransfer size_download http_code results_json attempt best_bytes_per_second \
         best_time_total best_size_download best_http_code clash_ready
 
     if [ -z "$section" ]; then
@@ -458,14 +459,29 @@ subscription_speedtest() {
                     -x "http://$mixed_address:$mixed_port" \
                     --connect-timeout 4 \
                     -m 6 \
-                    -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
+                    -w '%{time_total} %{time_starttransfer} %{size_download} %{http_code}' \
                     "$benchmark_url" 2> /dev/null
             )"
 
-            bytes_per_second="$(echo "$output" | awk '{printf "%d", $1}')"
-            time_total="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
+            time_total="$(echo "$output" | awk '{print ($1 == "" ? 0 : $1)}')"
+            time_starttransfer="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
             size_download="$(echo "$output" | awk '{printf "%d", $3}')"
             http_code="$(echo "$output" | awk '{printf "%d", $4}')"
+            bytes_per_second="$(
+                awk -v size="$size_download" -v total="$time_total" -v start="$time_starttransfer" '
+                    BEGIN {
+                        transfer = total - start
+                        if (transfer <= 0) {
+                            transfer = total
+                        }
+                        if (transfer > 0) {
+                            printf "%d", size / transfer
+                        } else {
+                            printf "0"
+                        }
+                    }
+                '
+            )"
 
             if [ "${bytes_per_second:-0}" -gt "$best_bytes_per_second" ] &&
                 [ "${size_download:-0}" -ge "$min_size_download" ] &&
@@ -924,14 +940,15 @@ if ! grep -q "subscription_action_lock_acquire \"speedtest\"" "$target" 2>/dev/n
 	rm -f "$tmp"
 fi
 
-if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288" "$target" 2>/dev/null ||
+if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304" "$target" 2>/dev/null ||
 	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0" "$target" 2>/dev/null ||
 	! grep -q -- "--connect-timeout 4" "$target" 2>/dev/null ||
+	! grep -q "time_starttransfer" "$target" 2>/dev/null ||
 	! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null; then
 	sed -i \
-		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288#g' \
+		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304#g' \
 		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0#g' \
-		-e 's#echo "8388608"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288}"#' \
+		-e 's#echo "8388608"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304}"#' \
 		-e 's#echo "262144"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0}"#' \
 		-e 's#echo "2"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-1}"#' \
 		-e 's#benchmark_bytes="8388608"#benchmark_bytes="$(get_subscription_benchmark_bytes)"#' \

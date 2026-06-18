@@ -1,0 +1,67 @@
+From 482f72e92954aaaeb3df3b08708654590fbb9669 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Thu, 18 Jun 2026 20:16:22 +0300
+Subject: [PATCH] Compute subscription speed from transfer time
+
+---
+ podkop/files/usr/bin/podkop | 25 ++++++++++++++++++++-----
+ 1 file changed, 20 insertions(+), 5 deletions(-)
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 9e04577..b1a0241 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1819,7 +1819,7 @@ get_subscription_benchmark_port() {
+ }
+ 
+ get_subscription_benchmark_bytes() {
+-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288}"
++    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304}"
+ }
+ 
+ get_subscription_benchmark_warmup_bytes() {
+@@ -1903,7 +1903,7 @@ subscription_speedtest() {
+     local items_cache_path active_items_file results_file clash_url auth_header selector_tag urltest_tag original_proxy restore_proxy \
+         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
+         warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
+-        output bytes_per_second time_total size_download http_code results_json attempt best_bytes_per_second \
++        output bytes_per_second time_total time_starttransfer size_download http_code results_json attempt best_bytes_per_second \
+         best_time_total best_size_download best_http_code clash_ready
+ 
+     if [ -z "$section" ]; then
+@@ -2052,14 +2052,29 @@ subscription_speedtest() {
+                     -x "http://$mixed_address:$mixed_port" \
+                     --connect-timeout 4 \
+                     -m 6 \
+-                    -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
++                    -w '%{time_total} %{time_starttransfer} %{size_download} %{http_code}' \
+                     "$benchmark_url" 2> /dev/null
+             )"
+ 
+-            bytes_per_second="$(echo "$output" | awk '{printf "%d", $1}')"
+-            time_total="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
++            time_total="$(echo "$output" | awk '{print ($1 == "" ? 0 : $1)}')"
++            time_starttransfer="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
+             size_download="$(echo "$output" | awk '{printf "%d", $3}')"
+             http_code="$(echo "$output" | awk '{printf "%d", $4}')"
++            bytes_per_second="$(
++                awk -v size="$size_download" -v total="$time_total" -v start="$time_starttransfer" '
++                    BEGIN {
++                        transfer = total - start
++                        if (transfer <= 0) {
++                            transfer = total
++                        }
++                        if (transfer > 0) {
++                            printf "%d", size / transfer
++                        } else {
++                            printf "0"
++                        }
++                    }
++                '
++            )"
+ 
+             if [ "${bytes_per_second:-0}" -gt "$best_bytes_per_second" ] &&
+                 [ "${size_download:-0}" -ge "$min_size_download" ] &&
+-- 
+2.54.0.windows.1
+
