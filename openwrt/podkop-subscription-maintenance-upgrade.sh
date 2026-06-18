@@ -854,6 +854,208 @@ if ! grep -q "subscription_action_lock_acquire \"speedtest\"" "$target" 2>/dev/n
 	rm -f "$tmp"
 fi
 
+if ! grep -q "restore_community_subnet_cache_v2" "$target" 2>/dev/null; then
+	if grep -q '^COMMUNITY_SUBNET_CACHE_DIR=' "$target" 2>/dev/null; then
+		sed -i 's#^COMMUNITY_SUBNET_CACHE_DIR=.*#COMMUNITY_SUBNET_CACHE_DIR="/etc/podkop/community-subnets"#' "$target"
+	elif grep -q '^SUBSCRIPTION_CACHE_DIR=' "$target" 2>/dev/null; then
+		awk '
+		{
+			print
+			if ($0 ~ /^SUBSCRIPTION_CACHE_DIR=/) {
+				print "COMMUNITY_SUBNET_CACHE_DIR=\"/etc/podkop/community-subnets\""
+			}
+		}
+		' "$target" > "$tmp" || {
+			rm -f "$tmp"
+			exit 1
+		}
+		cat "$tmp" > "$target"
+		rm -f "$tmp"
+	fi
+
+	if ! grep -q "community_subnet_lists_enabled()" "$target" 2>/dev/null; then
+		functions_file="$(mktemp)"
+		cat > "$functions_file" <<'SUBNET_CACHE_FUNCS_EOF'
+get_community_subnet_cache_path() {
+    local service="$1"
+
+    echo "$COMMUNITY_SUBNET_CACHE_DIR/$service.lst"
+}
+
+cache_community_subnet_list() {
+    local service="$1"
+    local filepath="$2"
+    local cache_path
+
+    [ -s "$filepath" ] || return 0
+    mkdir -p "$COMMUNITY_SUBNET_CACHE_DIR" || return 0
+    cache_path="$(get_community_subnet_cache_path "$service")"
+    cp "$filepath" "$cache_path" 2> /dev/null && chmod 600 "$cache_path" 2> /dev/null
+}
+
+restore_cached_community_subnet_list_handler() {
+    local service="$1"
+    local cache_path restore_community_subnet_cache_v2
+
+    restore_community_subnet_cache_v2=1
+    cache_path="$(get_community_subnet_cache_path "$service")"
+    [ -s "$cache_path" ] || return 0
+
+    if [ "$service" = "discord" ]; then
+        if ! nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME" > /dev/null 2>&1; then
+            nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
+        fi
+        if ! nft list chain inet "$NFT_TABLE_NAME" mangle 2> /dev/null | grep -q "@$NFT_DISCORD_SET_NAME"; then
+            nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr \
+                "@$NFT_DISCORD_SET_NAME" udp dport '{ 19000-20000, 50000-65535 }' meta mark set "$NFT_FAKEIP_MARK" counter
+        fi
+        nft_add_set_elements_from_file_chunked "$cache_path" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
+    else
+        nft_add_set_elements_from_file_chunked "$cache_path" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    fi
+}
+
+restore_cached_community_subnet_lists() {
+    local section="$1"
+    local community_lists
+
+    config_get community_lists "$section" "community_lists"
+    [ -n "$community_lists" ] || return 0
+
+    config_list_foreach "$section" "community_lists" restore_cached_community_subnet_list_handler
+}
+
+community_subnet_lists_enabled_handler() {
+    local section="$1"
+    local community_lists service
+
+    config_get community_lists "$section" "community_lists"
+    for service in $community_lists; do
+        case "$service" in
+        twitter | meta | telegram | cloudflare | hetzner | ovh | digitalocean | cloudfront | discord | roblox)
+            community_subnet_lists_found=1
+            return 0
+            ;;
+        esac
+    done
+}
+
+community_subnet_lists_enabled() {
+    community_subnet_lists_found=0
+    config_foreach community_subnet_lists_enabled_handler "section"
+    [ "$community_subnet_lists_found" -eq 1 ]
+}
+
+nft_subnet_sets_have_elements() {
+    nft list set inet "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME" 2> /dev/null |
+        grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}' &&
+        return 0
+
+    nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME" 2> /dev/null |
+        grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}'
+}
+
+SUBNET_CACHE_FUNCS_EOF
+		awk -v funcs="$functions_file" '
+		BEGIN {
+			while ((getline line < funcs) > 0) {
+				block = block line "\n"
+			}
+		}
+		$0 == "# Main funcs" {
+			printf "%s", block
+			print
+			next
+		}
+		{ print }
+		' "$target" > "$tmp" || {
+			rm -f "$tmp" "$functions_file"
+			exit 1
+		}
+		cat "$tmp" > "$target"
+		rm -f "$tmp" "$functions_file"
+	fi
+
+	if ! grep -q "Cached community subnet lists are unavailable" "$target" 2>/dev/null; then
+		awk '
+		$0 == "start_main() {" {
+			print
+			print "    local skip_list_update_started=0"
+			next
+		}
+
+		$0 == "    create_nft_rules" {
+			print
+			print "    if [ \"$PODKOP_SKIP_LIST_UPDATE\" = \"1\" ]; then"
+			print "        config_foreach restore_cached_community_subnet_lists \"section\""
+			print "        if community_subnet_lists_enabled && ! nft_subnet_sets_have_elements; then"
+			print "            log \"Cached community subnet lists are unavailable or empty, starting lists update in background\" \"warn\""
+			print "            list_update &"
+			print "            echo $! > /var/run/podkop_list_update.pid"
+			print "            skip_list_update_started=1"
+			print "        fi"
+			print "    fi"
+			next
+		}
+
+		$0 == "        log \"Skipping lists update for this reload\" \"debug\"" {
+			print "        if [ \"$skip_list_update_started\" -eq 1 ]; then"
+			print "            log \"Started lists update because cached subnet lists are missing\" \"debug\""
+			print "        else"
+			print "            log \"Skipping lists update for this reload\" \"debug\""
+			print "        fi"
+			next
+		}
+
+		{ print }
+		' "$target" > "$tmp" || {
+			rm -f "$tmp"
+			exit 1
+		}
+		cat "$tmp" > "$target"
+		rm -f "$tmp"
+	fi
+
+	if ! grep -q "Download \\$service list failed, using cached subnet list" "$target" 2>/dev/null; then
+		awk '
+		BEGIN { in_download_block = 0 }
+
+		$0 == "    download_to_file \"$URL\" \"$tmpfile\" \"$http_proxy_address\"" {
+			print "    if ! download_to_file \"$URL\" \"$tmpfile\" \"$http_proxy_address\" || [ ! -s \"$tmpfile\" ]; then"
+			print "        local cache_path"
+			print "        cache_path=\"$(get_community_subnet_cache_path \"$service\")\""
+			print "        if [ -s \"$cache_path\" ]; then"
+			print "            log \"Download $service list failed, using cached subnet list\" \"warn\""
+			print "            cp \"$cache_path\" \"$tmpfile\""
+			print "        else"
+			print "            log \"Download $service list failed\" \"error\""
+			print "            return 1"
+			print "        fi"
+			print "    else"
+			print "        cache_community_subnet_list \"$service\" \"$tmpfile\""
+			print "    fi"
+			in_download_block = 1
+			next
+		}
+
+		in_download_block && $0 == "    if [ \"$service\" = \"discord\" ]; then" {
+			in_download_block = 0
+			print
+			next
+		}
+
+		in_download_block { next }
+
+		{ print }
+		' "$target" > "$tmp" || {
+			rm -f "$tmp"
+			exit 1
+		}
+		cat "$tmp" > "$target"
+		rm -f "$tmp"
+	fi
+fi
+
 if ! grep -q "patch_update_start_stop_daemon_v1" "$target" 2>/dev/null; then
 	patch_update_function="$(mktemp)"
 	cat > "$patch_update_function" <<'PATCH_UPDATE_EOF'
