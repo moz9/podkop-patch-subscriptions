@@ -6,13 +6,15 @@
 
 Здесь хранится только патч, который добавляет режим `Subscription URLTest` и вкладку управления конфигами из подписок.
 
-## Установка на OpenWrt одной командой
+## Установка и обновление на OpenWrt
 
-Выполнить уже внутри SSH-сессии на роутере:
+Выполнять уже внутри SSH-сессии на роутере:
 
 ```sh
-f=/tmp/podkop-subscriptions-install.sh; u="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$(date +%s)"; rm -f "$f"; (wget -T 30 -t 1 -O "$f" "$u" || curl -fsSL --connect-timeout 10 -m 30 -o "$f" "$u" || for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do curl -fsSL --connect-timeout 10 -m 30 --resolve raw.githubusercontent.com:443:$ip -o "$f" "$u" && break; done) && sh "$f"
+wget --no-check-certificate -O- https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i | sh
 ```
+
+Это одна и та же команда для первой установки и последующих обновлений.
 
 Установщик:
 
@@ -26,7 +28,7 @@ f=/tmp/podkop-subscriptions-install.sh; u="https://raw.githubusercontent.com/moz
 
 ## Что добавляет патч
 
-- режим `Subscription URLTest` для чтения proxy-конфигов из HTTP/HTTPS подписок;
+- режим `Subscription URLTest` для чтения proxy-конфигов из HTTP/HTTPS-подписок;
 - поддержку нескольких подписок в одной секции;
 - кеш последней рабочей версии подписки;
 - фильтрацию неподдерживаемых Podkop конфигов до генерации sing-box;
@@ -34,6 +36,7 @@ f=/tmp/podkop-subscriptions-install.sh; u="https://raw.githubusercontent.com/moz
 - вкладку `Подписки` для включения и исключения отдельных конфигов;
 - пакетное применение изменений с одним перезапуском Podkop;
 - компактные действия во вкладке `Подписки`: обновить, ping, быстрый тест скорости, обновить патч;
+- кеш community subnet списков, чтобы быстрый reload не оставлял `podkop_subnets` пустым;
 - русские строки интерфейса для добавленных элементов.
 
 ## Патч для исходников
