@@ -26,10 +26,10 @@ index 1f9d516..611ba15 100644
                      [ -s "$filepath" ] && return 0
 -            else
 -                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
--                    wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+-                    wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
              fi
 +            http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-+                wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++                wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
          else
              if command -v curl > /dev/null 2>&1; then
                  curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
@@ -37,7 +37,7 @@ index 1f9d516..611ba15 100644
 -            else
 +            fi
 +            if command -v wget > /dev/null 2>&1; then
-                 wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+                 wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
              fi
 +
 +            case "$url" in
@@ -46,7 +46,7 @@ index 1f9d516..611ba15 100644
 +                raw_path="${raw_path%%\?*}"
 +                if command -v wget > /dev/null 2>&1; then
 +                    for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
-+                        wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
++                        wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
 +                            -O "$filepath" "https://$ip/$raw_path" && [ -s "$filepath" ] && return 0
 +                    done
 +                fi

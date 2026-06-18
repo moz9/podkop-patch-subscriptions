@@ -26,10 +26,10 @@ index e93fa68..69c463f 100755
 -                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" wget -O "$filepath" "$url" &&
 -                    [ -s "$filepath" ] && return 0
 +                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-+                    wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++                    wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
              else
 -                wget -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
-+                wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++                wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
              fi
          fi
  

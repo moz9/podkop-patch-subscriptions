@@ -24,7 +24,7 @@ index 69c463f..718c5f7 100755
 @@ -2023,7 +2024,7 @@ else
      else
          for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
-             if wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
+             if wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
 -                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh" >> "$log_file" 2>&1; then
 +                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster" >> "$log_file" 2>&1; then
                  download_ok=1

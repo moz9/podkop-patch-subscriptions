@@ -82,13 +82,13 @@ download() {
 	fi
 
 	if [ "$download_ok" -ne 1 ] && command -v wget >/dev/null 2>&1; then
-		if wget -T 30 -t 1 -q -O "$out" "$url" >> "$download_log" 2>&1; then
+		if wget -T 30 -q -O "$out" "$url" >> "$download_log" 2>&1; then
 			download_ok=1
 		elif [ "$raw_host" = "raw.githubusercontent.com" ]; then
 			clean_path="${url#https://raw.githubusercontent.com/}"
 			clean_path="${clean_path%%\?*}"
 			for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
-				if wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
+				if wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
 					-q -O "$out" "https://$ip/$clean_path" >> "$download_log" 2>&1; then
 					download_ok=1
 					break
@@ -269,7 +269,7 @@ has_latest_subscription_backend() {
 		grep -q "restore_community_subnet_cache_v2" /usr/bin/podkop 2>/dev/null &&
 		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES" /usr/bin/podkop 2>/dev/null &&
 		grep -q "exit 130' INT TERM HUP" /usr/bin/podkop 2>/dev/null &&
-		grep -Fq 'wget -T 30 -t 1 -O "$filepath" "$url"' /usr/bin/podkop 2>/dev/null &&
+		grep -Fq 'wget -T 30 -O "$filepath" "$url"' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'install.sh?t=$cache_buster' /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_action_lock_file" /usr/bin/podkop 2>/dev/null &&

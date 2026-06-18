@@ -155,11 +155,11 @@ index b2387e1..e93fa68 100755
 +        done
 +    fi
 +else
-+    if wget -T 30 -t 1 -O "$tmp" "$install_url" > "$log_file" 2>&1; then
++    if wget -T 30 -O "$tmp" "$install_url" > "$log_file" 2>&1; then
 +        download_ok=1
 +    else
 +        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
-+            if wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
++            if wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
 +                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh" >> "$log_file" 2>&1; then
 +                download_ok=1
 +                break
@@ -191,7 +191,7 @@ index c25edb8..1f9d516 100644
 +                    [ -s "$filepath" ] && return 0
 +            else
 +                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-+                    wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++                    wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
 +            fi
          else
 -            wget -O "$filepath" "$url" && break
@@ -199,7 +199,7 @@ index c25edb8..1f9d516 100644
 +                curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
 +                    [ -s "$filepath" ] && return 0
 +            else
-+                wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++                wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
 +            fi
          fi
  

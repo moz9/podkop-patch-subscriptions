@@ -512,11 +512,11 @@ if command -v curl > /dev/null 2>&1; then
 fi
 
 if [ "$download_ok" -ne 1 ] && command -v wget > /dev/null 2>&1; then
-    if wget -T 30 -t 1 -O "$tmp" "$install_url" > "$log_file" 2>&1; then
+    if wget -T 30 -O "$tmp" "$install_url" > "$log_file" 2>&1; then
         download_ok=1
     else
         for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
-            if wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
+            if wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
                 -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster" >> "$log_file" 2>&1; then
                 download_ok=1
                 break
@@ -581,7 +581,7 @@ PATCH_UPDATE_EOF
 	rm -f "$tmp" "$patch_update_function"
 fi
 
-if ! grep -Fq 'wget -T 30 -t 1 -O "$filepath" "$url"' "$target" 2>/dev/null; then
+if ! grep -Fq 'wget -T 30 -O "$filepath" "$url"' "$target" 2>/dev/null; then
 	subscription_download_function="$(mktemp)"
 	cat > "$subscription_download_function" <<'SUBSCRIPTION_DOWNLOAD_EOF'
 download_subscription_to_file() {
@@ -604,9 +604,9 @@ download_subscription_to_file() {
         else
             if [ -n "$http_proxy_address" ]; then
                 http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-                    wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+                    wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
             else
-                wget -T 30 -t 1 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+                wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
             fi
         fi
 
@@ -1174,11 +1174,11 @@ if command -v curl > /dev/null 2>&1; then
         done
     fi
 else
-    if run_with_timeout 45 wget -T 30 -t 1 -O "$tmp" "$install_url"; then
+    if run_with_timeout 45 wget -T 30 -O "$tmp" "$install_url"; then
         download_ok=1
     else
         for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
-            if run_with_timeout 45 wget -T 30 -t 1 --no-check-certificate --header="Host: raw.githubusercontent.com" \
+            if run_with_timeout 45 wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
                 -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"; then
                 download_ok=1
                 break
@@ -1267,14 +1267,14 @@ if [ -f "$helper_target" ] && ! grep -q "curl -fsSL --connect-timeout 10 -m 30" 
 		print "                    [ -s \"$filepath\" ] && return 0"
 		print "            else"
 		print "                http_proxy=\"http://$http_proxy_address\" https_proxy=\"http://$http_proxy_address\" \\"
-		print "                    wget -T 30 -t 1 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
+		print "                    wget -T 30 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
 		print "            fi"
 		print "        else"
 		print "            if command -v curl > /dev/null 2>&1; then"
 		print "                curl -fsSL --connect-timeout 10 -m 30 -o \"$filepath\" \"$url\" &&"
 		print "                    [ -s \"$filepath\" ] && return 0"
 		print "            else"
-		print "                wget -T 30 -t 1 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
+		print "                wget -T 30 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
 		print "            fi"
 		print "        fi"
 		print ""
@@ -1331,7 +1331,7 @@ if [ -f "$helper_target" ] && ! grep -q "raw.githubusercontent.com:443" "$helper
 		print "            fi"
 		print "            if command -v wget > /dev/null 2>&1; then"
 		print "                http_proxy=\"http://$http_proxy_address\" https_proxy=\"http://$http_proxy_address\" \\"
-		print "                    wget -T 30 -t 1 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
+		print "                    wget -T 30 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
 		print "            fi"
 		print "        else"
 		print "            if command -v curl > /dev/null 2>&1; then"
@@ -1339,7 +1339,7 @@ if [ -f "$helper_target" ] && ! grep -q "raw.githubusercontent.com:443" "$helper
 		print "                    [ -s \"$filepath\" ] && return 0"
 		print "            fi"
 		print "            if command -v wget > /dev/null 2>&1; then"
-		print "                wget -T 30 -t 1 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
+		print "                wget -T 30 -O \"$filepath\" \"$url\" && [ -s \"$filepath\" ] && return 0"
 		print "            fi"
 		print ""
 		print "            case \"$url\" in"
@@ -1348,7 +1348,7 @@ if [ -f "$helper_target" ] && ! grep -q "raw.githubusercontent.com:443" "$helper
 		print "                raw_path=\"${raw_path%%\\?*}\""
 		print "                if command -v wget > /dev/null 2>&1; then"
 		print "                    for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do"
-		print "                        wget -T 30 -t 1 --no-check-certificate --header=\"Host: raw.githubusercontent.com\" \\"
+		print "                        wget -T 30 --no-check-certificate --header=\"Host: raw.githubusercontent.com\" \\"
 		print "                            -O \"$filepath\" \"https://$ip/$raw_path\" && [ -s \"$filepath\" ] && return 0"
 		print "                    done"
 		print "                fi"
