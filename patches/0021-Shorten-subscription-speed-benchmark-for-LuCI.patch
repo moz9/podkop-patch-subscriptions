@@ -1,0 +1,61 @@
+From e39a3e9c3c97e01fe83a1d02b1557677a4e5e887 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Thu, 18 Jun 2026 16:00:57 +0300
+Subject: [PATCH] Shorten subscription speed benchmark for LuCI
+
+---
+ podkop/files/usr/bin/podkop | 21 +++++++++++----------
+ 1 file changed, 11 insertions(+), 10 deletions(-)
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 771cb78..9e04577 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1819,11 +1819,11 @@ get_subscription_benchmark_port() {
+ }
+ 
+ get_subscription_benchmark_bytes() {
+-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-2097152}"
++    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288}"
+ }
+ 
+ get_subscription_benchmark_warmup_bytes() {
+-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-131072}"
++    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0}"
+ }
+ 
+ get_subscription_benchmark_attempts() {
+@@ -2034,12 +2034,13 @@ subscription_speedtest() {
+             continue
+         fi
+ 
+-        sleep 1
+-        curl -L -s -o /dev/null \
+-            -x "http://$mixed_address:$mixed_port" \
+-            --connect-timeout 6 \
+-            -m 8 \
+-            "$warmup_url" > /dev/null 2>&1 || true
++        if [ "$warmup_bytes" -gt 0 ]; then
++            curl -L -s -o /dev/null \
++                -x "http://$mixed_address:$mixed_port" \
++                --connect-timeout 3 \
++                -m 4 \
++                "$warmup_url" > /dev/null 2>&1 || true
++        fi
+ 
+         best_bytes_per_second=0
+         best_time_total=0
+@@ -2049,8 +2050,8 @@ subscription_speedtest() {
+             output="$(
+                 curl -L -s -o /dev/null \
+                     -x "http://$mixed_address:$mixed_port" \
+-                    --connect-timeout 8 \
+-                    -m 12 \
++                    --connect-timeout 4 \
++                    -m 6 \
+                     -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
+                     "$benchmark_url" 2> /dev/null
+             )"
+-- 
+2.54.0.windows.1
+

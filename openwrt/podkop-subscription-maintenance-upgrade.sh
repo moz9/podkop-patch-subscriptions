@@ -235,7 +235,69 @@ if ! grep -q "subscription_runtime_busy" "$target" 2>/dev/null; then
 	rm -f "$tmp"
 fi
 
-if ! grep -q 'benchmark_bytes="8388608"' "$target" 2>/dev/null ||
+if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288' "$target" 2>/dev/null ||
+	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0' "$target" 2>/dev/null ||
+	! grep -q "^get_subscription_benchmark_attempts()" "$target" 2>/dev/null; then
+	benchmark_helpers="$(mktemp)"
+	cat > "$benchmark_helpers" <<'BENCHMARK_HELPERS_EOF'
+get_subscription_benchmark_port() {
+    echo "42080"
+}
+
+get_subscription_benchmark_bytes() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288}"
+}
+
+get_subscription_benchmark_warmup_bytes() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0}"
+}
+
+get_subscription_benchmark_attempts() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-1}"
+}
+BENCHMARK_HELPERS_EOF
+
+	awk -v helpers="$benchmark_helpers" '
+	BEGIN {
+		inserted = 0
+		skip = 0
+	}
+
+	$0 ~ /^get_subscription_benchmark_(port|bytes|warmup_bytes|attempts)\(\) \{$/ {
+		skip = 1
+		next
+	}
+
+	skip && $0 == "}" {
+		skip = 0
+		next
+	}
+
+	skip {
+		next
+	}
+
+	!inserted && ($0 == "subscription_runtime_busy() {" || $0 == "subscription_speedtest() {") {
+		while ((getline line < helpers) > 0) {
+			print line
+		}
+		print ""
+		inserted = 1
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp" "$benchmark_helpers"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp" "$benchmark_helpers"
+fi
+
+if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288' "$target" 2>/dev/null ||
+	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0' "$target" 2>/dev/null ||
+	! grep -q -- '--connect-timeout 4' "$target" 2>/dev/null ||
+	! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null ||
 	! grep -q "clash_ready" "$target" 2>/dev/null ||
 	! grep -q "service_busy" "$target" 2>/dev/null ||
 	! grep -q "clash_api_wait_proxy_now" "$target" 2>/dev/null ||
@@ -264,6 +326,12 @@ subscription_speedtest() {
         echo '{"success":false,"error":"service_busy"}'
         return 1
     fi
+
+    if ! subscription_action_lock_acquire "speedtest"; then
+        echo '{"success":false,"error":"service_busy"}'
+        return 1
+    fi
+    trap 'subscription_action_lock_release' EXIT INT TERM
 
     items_cache_path="$(get_subscription_items_cache_path "$section")"
     if [ ! -s "$items_cache_path" ]; then
@@ -303,6 +371,7 @@ subscription_speedtest() {
     mixed_port="$original_mixed_port"
     [ -n "$mixed_port" ] || mixed_port="$(get_subscription_benchmark_port "$section")"
     mixed_changed=0
+    trap 'clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 || clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true; subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1; rm -f "$active_items_file" "$results_file"; subscription_action_lock_release; exit 130' INT TERM HUP
 
     if [ "$original_mixed_enabled" != "1" ] || [ -z "$original_mixed_port" ]; then
         uci -q set "podkop.$section.mixed_proxy_enabled=1"
@@ -351,9 +420,9 @@ subscription_speedtest() {
         return 1
     fi
 
-    benchmark_bytes="8388608"
-    warmup_bytes="262144"
-    benchmark_attempts="2"
+    benchmark_bytes="$(get_subscription_benchmark_bytes)"
+    warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"
+    benchmark_attempts="$(get_subscription_benchmark_attempts)"
     min_size_download=$((benchmark_bytes * 9 / 10))
     benchmark_url="https://speed.cloudflare.com/__down?bytes=$benchmark_bytes"
     warmup_url="https://speed.cloudflare.com/__down?bytes=$warmup_bytes"
@@ -371,12 +440,13 @@ subscription_speedtest() {
             continue
         fi
 
-        sleep 1
-        curl -L -s -o /dev/null \
-            -x "http://$mixed_address:$mixed_port" \
-            --connect-timeout 6 \
-            -m 10 \
-            "$warmup_url" > /dev/null 2>&1 || true
+        if [ "$warmup_bytes" -gt 0 ]; then
+            curl -L -s -o /dev/null \
+                -x "http://$mixed_address:$mixed_port" \
+                --connect-timeout 3 \
+                -m 4 \
+                "$warmup_url" > /dev/null 2>&1 || true
+        fi
 
         best_bytes_per_second=0
         best_time_total=0
@@ -386,8 +456,8 @@ subscription_speedtest() {
             output="$(
                 curl -L -s -o /dev/null \
                     -x "http://$mixed_address:$mixed_port" \
-                    --connect-timeout 8 \
-                    -m 35 \
+                    --connect-timeout 4 \
+                    -m 6 \
                     -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
                     "$benchmark_url" 2> /dev/null
             )"
@@ -854,18 +924,25 @@ if ! grep -q "subscription_action_lock_acquire \"speedtest\"" "$target" 2>/dev/n
 	rm -f "$tmp"
 fi
 
-if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES" "$target" 2>/dev/null ||
+if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288" "$target" 2>/dev/null ||
+	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0" "$target" 2>/dev/null ||
+	! grep -q -- "--connect-timeout 4" "$target" 2>/dev/null ||
 	! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null; then
 	sed -i \
-		-e 's#echo "8388608"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-2097152}"#' \
-		-e 's#echo "262144"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-131072}"#' \
+		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288#g' \
+		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0#g' \
+		-e 's#echo "8388608"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288}"#' \
+		-e 's#echo "262144"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0}"#' \
 		-e 's#echo "2"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-1}"#' \
 		-e 's#benchmark_bytes="8388608"#benchmark_bytes="$(get_subscription_benchmark_bytes)"#' \
 		-e 's#warmup_bytes="262144"#warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"#' \
 		-e 's#benchmark_attempts="2"#benchmark_attempts="$(get_subscription_benchmark_attempts)"#' \
 		-e 's#\[ "$mixed_changed" -eq 1 \]#\[ "${mixed_changed:-0}" -eq 1 \]#' \
-		-e 's#-m 10#-m 8#' \
-		-e 's#-m 35#-m 12#' \
+		-e 's#--connect-timeout 6#--connect-timeout 3#g' \
+		-e 's#--connect-timeout 8#--connect-timeout 4#g' \
+		-e 's#-m 10#-m 4#g' \
+		-e 's#-m 35#-m 6#g' \
+		-e 's#-m 12#-m 6#g' \
 		"$target"
 
 	if ! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null; then
@@ -1394,4 +1471,8 @@ if [ -f "$helper_target" ] && { ! grep -q "raw.githubusercontent.com:443" "$help
 fi
 
 chmod 755 "$target"
-[ -f "$helper_target" ] && chmod 644 "$helper_target"
+if [ -f "$helper_target" ]; then
+	chmod 644 "$helper_target"
+fi
+
+exit 0

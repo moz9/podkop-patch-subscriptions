@@ -267,6 +267,9 @@ has_latest_subscription_backend() {
 		grep -q "restore_community_subnet_cache_v2" /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -q "raw.githubusercontent.com:443" /usr/lib/podkop/helpers.sh 2>/dev/null &&
+		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288" /usr/bin/podkop 2>/dev/null &&
+		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0" /usr/bin/podkop 2>/dev/null &&
+		grep -q -- "--connect-timeout 4" /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/lib/podkop/helpers.sh 2>/dev/null
 }
@@ -385,11 +388,11 @@ get_subscription_benchmark_port() {
 }
 
 get_subscription_benchmark_bytes() {
-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-2097152}"
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-524288}"
 }
 
 get_subscription_benchmark_warmup_bytes() {
-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-131072}"
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0}"
 }
 
 get_subscription_benchmark_attempts() {
