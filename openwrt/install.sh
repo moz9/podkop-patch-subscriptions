@@ -271,6 +271,7 @@ has_latest_subscription_backend() {
 		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0" /usr/bin/podkop 2>/dev/null &&
 		grep -q -- "--connect-timeout 4" /usr/bin/podkop 2>/dev/null &&
 		grep -q "time_starttransfer" /usr/bin/podkop 2>/dev/null &&
+		grep -q 'subscription_speedtest "$2" "$3"' /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/lib/podkop/helpers.sh 2>/dev/null
 }

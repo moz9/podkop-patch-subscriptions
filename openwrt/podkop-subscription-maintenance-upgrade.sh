@@ -298,6 +298,7 @@ if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304' "$target" 2>/dev/nul
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0' "$target" 2>/dev/null ||
 	! grep -q -- '--connect-timeout 4' "$target" 2>/dev/null ||
 	! grep -q 'time_starttransfer' "$target" 2>/dev/null ||
+	! grep -q 'local only_id="$2"' "$target" 2>/dev/null ||
 	! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null ||
 	! grep -q "clash_ready" "$target" 2>/dev/null ||
 	! grep -q "service_busy" "$target" 2>/dev/null ||
@@ -307,6 +308,7 @@ if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304' "$target" 2>/dev/nul
 	cat > "$speedtest_function" <<'SPEEDTEST_EOF'
 subscription_speedtest() {
     local section="$1"
+    local only_id="$2"
     local items_cache_path active_items_file results_file clash_url auth_header selector_tag urltest_tag original_proxy restore_proxy \
         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
         warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
@@ -346,11 +348,22 @@ subscription_speedtest() {
 
     active_items_file="$(mktemp)"
     results_file="$(mktemp)"
-    jq -c '.[] | select(.supported == true and .enabled == true)' "$items_cache_path" > "$active_items_file"
+    if [ -n "$only_id" ]; then
+        jq -c --arg id "$only_id" \
+            '[.[] | select(.supported == true and .enabled == true)] | to_entries[] | select(.value.id == $id) | .value + {activeIndex:(.key + 1)}' \
+            "$items_cache_path" > "$active_items_file"
+    else
+        jq -c '[.[] | select(.supported == true and .enabled == true)] | to_entries[] | .value + {activeIndex:(.key + 1)}' \
+            "$items_cache_path" > "$active_items_file"
+    fi
 
     if [ ! -s "$active_items_file" ]; then
         rm -f "$active_items_file" "$results_file"
-        echo '{"success":false,"error":"no_enabled_links"}'
+        if [ -n "$only_id" ]; then
+            echo '{"success":false,"error":"subscription_link_not_available"}'
+        else
+            echo '{"success":false,"error":"no_enabled_links"}'
+        fi
         return 1
     fi
 
@@ -433,6 +446,7 @@ subscription_speedtest() {
 
         id="$(echo "$item_json" | jq -r '.id')"
         name="$(echo "$item_json" | jq -r '.name // ""')"
+        index="$(echo "$item_json" | jq -r '.activeIndex')"
         tag="$(get_outbound_tag_by_section "$section-$index")"
 
         if ! clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$tag"; then
@@ -944,6 +958,7 @@ if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304" "$target" 2>/dev/nul
 	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0" "$target" 2>/dev/null ||
 	! grep -q -- "--connect-timeout 4" "$target" 2>/dev/null ||
 	! grep -q "time_starttransfer" "$target" 2>/dev/null ||
+	! grep -q 'local only_id="$2"' "$target" 2>/dev/null ||
 	! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null; then
 	sed -i \
 		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304#g' \
@@ -978,6 +993,11 @@ if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304" "$target" 2>/dev/nul
 		cat "$tmp" > "$target"
 		rm -f "$tmp"
 	fi
+fi
+
+if grep -q 'subscription_speedtest "$2"' "$target" 2>/dev/null &&
+	! grep -q 'subscription_speedtest "$2" "$3"' "$target" 2>/dev/null; then
+	sed -i 's#subscription_speedtest "$2"#subscription_speedtest "$2" "$3"#' "$target"
 fi
 
 if ! grep -q "restore_community_subnet_cache_v2" "$target" 2>/dev/null; then

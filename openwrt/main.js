@@ -710,9 +710,9 @@ var PodkopShellMethods = {
     "/usr/bin/podkop",
     12e4
   ),
-  benchmarkSubscriptionSection: async (section) => callBaseMethod(
+  benchmarkSubscriptionSection: async (section, itemId) => callBaseMethod(
     Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST,
-    [section],
+    itemId ? [section, itemId] : [section],
     "/usr/bin/podkop",
     3e5
   ),
@@ -5419,6 +5419,17 @@ function sleep(ms) {
 function getEnabledSupportedItems(section) {
   return section.items.filter((item) => item.supported && item.enabled);
 }
+async function getSubscriptionSectionsForAction() {
+  let sections = store.get().subscriptionItemsWidget.data;
+  if (!sections.length) {
+    await fetchSubscriptionItems();
+    if (store.get().subscriptionItemsWidget.failed) {
+      throw new Error("subscription_items_load_failed");
+    }
+    sections = store.get().subscriptionItemsWidget.data;
+  }
+  return sections;
+}
 function isActionRunning() {
   return store.get().subscriptionItemsWidget.actionStatus === "running";
 }
@@ -5478,6 +5489,8 @@ async function fetchSubscriptionItems(status = "idle") {
         actionStatus: "idle",
         actionMessage: "",
         pendingChanges: {},
+        latencyByRow: {},
+        speedByRow: {},
         data
       }
     });
@@ -5633,14 +5646,14 @@ async function handlePingSubscriptions() {
   if (!canRunServiceAction()) {
     return;
   }
-  const sections = store.get().subscriptionItemsWidget.data;
   const latencyByRow = {};
   setActionState({
     action: "ping",
     actionStatus: "running",
-    actionMessage: _("Testing subscription latency.")
+    actionMessage: _("Loading subscription configs")
   });
   try {
+    const sections = await getSubscriptionSectionsForAction();
     for (const section of sections) {
       const enabledItems = getEnabledSupportedItems(section);
       if (!enabledItems.length) {
@@ -5692,35 +5705,42 @@ async function handleSpeedtestSubscriptions() {
   if (!canRunServiceAction()) {
     return;
   }
-  const sections = store.get().subscriptionItemsWidget.data;
   const speedByRow = {};
   setActionState({
     action: "speed",
     actionStatus: "running",
-    actionMessage: _(
-      "Running speed benchmark. Active proxy may change briefly."
-    )
+    actionMessage: _("Loading subscription configs")
   });
   try {
+    const sections = await getSubscriptionSectionsForAction();
     for (const section of sections) {
       const enabledItems = getEnabledSupportedItems(section);
       if (!enabledItems.length) {
         continue;
       }
-      setActionState({
-        action: "speed",
-        actionStatus: "running",
-        actionMessage: `${_("Running speed benchmark")}: ${section.displayName}`
-      });
-      const result = await PodkopShellMethods.benchmarkSubscriptionSection(
-        section.code
-      );
-      if (!result.success || !result.data.success) {
-        throw new Error(result.success ? result.data.error : result.error);
+      for (const item of enabledItems) {
+        setActionState({
+          action: "speed",
+          actionStatus: "running",
+          actionMessage: `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`
+        });
+        const result = await PodkopShellMethods.benchmarkSubscriptionSection(
+          section.code,
+          item.id
+        );
+        if (!result.success || !result.data.success) {
+          throw new Error(result.success ? result.data.error : result.error);
+        }
+        (result.data.results ?? []).forEach((speedItem) => {
+          speedByRow[getRowId2(section.code, speedItem.id)] = speedItem;
+        });
+        store.set({
+          subscriptionItemsWidget: {
+            ...store.get().subscriptionItemsWidget,
+            speedByRow
+          }
+        });
       }
-      (result.data.results ?? []).forEach((item) => {
-        speedByRow[getRowId2(section.code, item.id)] = item;
-      });
     }
     store.set({
       subscriptionItemsWidget: {
@@ -5768,6 +5788,8 @@ function getSubscriptionActionErrorMessage(error, fallback) {
       return _("Podkop reload failed. Changes were not applied.");
     case "subscription_cache_missing":
       return _("Subscription cache is missing. Refresh subscriptions first.");
+    case "subscription_items_load_failed":
+      return _("Failed to load subscription configs");
     case "no_enabled_links":
       return _("No enabled supported configs to test.");
     case "mixed_proxy_address_missing":

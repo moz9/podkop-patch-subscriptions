@@ -1,0 +1,197 @@
+From 050e1c26dae7703e4ecfd14c2c32c517e313ac6f Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Thu, 18 Jun 2026 22:25:06 +0300
+Subject: [PATCH] Run subscription speed benchmarks per item
+
+---
+ .../src/podkop/methods/shell/index.ts         |  4 +-
+ .../tabs/subscriptions/initController.ts      | 38 +++++++++++-------
+ .../luci-static/resources/view/podkop/main.js | 39 ++++++++++++-------
+ podkop/files/usr/bin/podkop                   | 19 +++++++--
+ 4 files changed, 66 insertions(+), 34 deletions(-)
+
+diff --git a/fe-app-podkop/src/podkop/methods/shell/index.ts b/fe-app-podkop/src/podkop/methods/shell/index.ts
+index 48ab397..45620f9 100644
+--- a/fe-app-podkop/src/podkop/methods/shell/index.ts
++++ b/fe-app-podkop/src/podkop/methods/shell/index.ts
+@@ -87,10 +87,10 @@ export const PodkopShellMethods = {
+       '/usr/bin/podkop',
+       120000,
+     ),
+-  benchmarkSubscriptionSection: async (section: string) =>
++  benchmarkSubscriptionSection: async (section: string, itemId?: string) =>
+     callBaseMethod<Podkop.SubscriptionSpeedtestResult>(
+       Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST,
+-      [section],
++      itemId ? [section, itemId] : [section],
+       '/usr/bin/podkop',
+       300000,
+     ),
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+index 6b124b6..7de069a 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+@@ -415,23 +415,33 @@ async function handleSpeedtestSubscriptions() {
+         continue;
+       }
+ 
+-      setActionState({
+-        action: 'speed',
+-        actionStatus: 'running',
+-        actionMessage: `${_('Running speed benchmark')}: ${section.displayName}`,
+-      });
++      for (const item of enabledItems) {
++        setActionState({
++          action: 'speed',
++          actionStatus: 'running',
++          actionMessage: `${_('Running speed benchmark')}: ${section.displayName} / ${item.name}`,
++        });
+ 
+-      const result = await PodkopShellMethods.benchmarkSubscriptionSection(
+-        section.code,
+-      );
++        const result = await PodkopShellMethods.benchmarkSubscriptionSection(
++          section.code,
++          item.id,
++        );
+ 
+-      if (!result.success || !result.data.success) {
+-        throw new Error(result.success ? result.data.error : result.error);
+-      }
++        if (!result.success || !result.data.success) {
++          throw new Error(result.success ? result.data.error : result.error);
++        }
+ 
+-      (result.data.results ?? []).forEach((item) => {
+-        speedByRow[getRowId(section.code, item.id)] = item;
+-      });
++        (result.data.results ?? []).forEach((speedItem) => {
++          speedByRow[getRowId(section.code, speedItem.id)] = speedItem;
++        });
++
++        store.set({
++          subscriptionItemsWidget: {
++            ...store.get().subscriptionItemsWidget,
++            speedByRow,
++          },
++        });
++      }
+     }
+ 
+     store.set({
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index 4e34b94..502edfd 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -710,9 +710,9 @@ var PodkopShellMethods = {
+     "/usr/bin/podkop",
+     12e4
+   ),
+-  benchmarkSubscriptionSection: async (section) => callBaseMethod(
++  benchmarkSubscriptionSection: async (section, itemId) => callBaseMethod(
+     Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST,
+-    [section],
++    itemId ? [section, itemId] : [section],
+     "/usr/bin/podkop",
+     3e5
+   ),
+@@ -5718,20 +5718,29 @@ async function handleSpeedtestSubscriptions() {
+       if (!enabledItems.length) {
+         continue;
+       }
+-      setActionState({
+-        action: "speed",
+-        actionStatus: "running",
+-        actionMessage: `${_("Running speed benchmark")}: ${section.displayName}`
+-      });
+-      const result = await PodkopShellMethods.benchmarkSubscriptionSection(
+-        section.code
+-      );
+-      if (!result.success || !result.data.success) {
+-        throw new Error(result.success ? result.data.error : result.error);
++      for (const item of enabledItems) {
++        setActionState({
++          action: "speed",
++          actionStatus: "running",
++          actionMessage: `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`
++        });
++        const result = await PodkopShellMethods.benchmarkSubscriptionSection(
++          section.code,
++          item.id
++        );
++        if (!result.success || !result.data.success) {
++          throw new Error(result.success ? result.data.error : result.error);
++        }
++        (result.data.results ?? []).forEach((speedItem) => {
++          speedByRow[getRowId2(section.code, speedItem.id)] = speedItem;
++        });
++        store.set({
++          subscriptionItemsWidget: {
++            ...store.get().subscriptionItemsWidget,
++            speedByRow
++          }
++        });
+       }
+-      (result.data.results ?? []).forEach((item) => {
+-        speedByRow[getRowId2(section.code, item.id)] = item;
+-      });
+     }
+     store.set({
+       subscriptionItemsWidget: {
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index b1a0241..61d4ec3 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1900,6 +1900,7 @@ subscription_speedtest_result_success() {
+ 
+ subscription_speedtest() {
+     local section="$1"
++    local only_id="$2"
+     local items_cache_path active_items_file results_file clash_url auth_header selector_tag urltest_tag original_proxy restore_proxy \
+         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
+         warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
+@@ -1939,11 +1940,22 @@ subscription_speedtest() {
+ 
+     active_items_file="$(mktemp)"
+     results_file="$(mktemp)"
+-    jq -c '.[] | select(.supported == true and .enabled == true)' "$items_cache_path" > "$active_items_file"
++    if [ -n "$only_id" ]; then
++        jq -c --arg id "$only_id" \
++            '[.[] | select(.supported == true and .enabled == true)] | to_entries[] | select(.value.id == $id) | .value + {activeIndex:(.key + 1)}' \
++            "$items_cache_path" > "$active_items_file"
++    else
++        jq -c '[.[] | select(.supported == true and .enabled == true)] | to_entries[] | .value + {activeIndex:(.key + 1)}' \
++            "$items_cache_path" > "$active_items_file"
++    fi
+ 
+     if [ ! -s "$active_items_file" ]; then
+         rm -f "$active_items_file" "$results_file"
+-        echo '{"success":false,"error":"no_enabled_links"}'
++        if [ -n "$only_id" ]; then
++            echo '{"success":false,"error":"subscription_link_not_available"}'
++        else
++            echo '{"success":false,"error":"no_enabled_links"}'
++        fi
+         return 1
+     fi
+ 
+@@ -2026,6 +2038,7 @@ subscription_speedtest() {
+ 
+         id="$(echo "$item_json" | jq -r '.id')"
+         name="$(echo "$item_json" | jq -r '.name // ""')"
++        index="$(echo "$item_json" | jq -r '.activeIndex')"
+         tag="$(get_outbound_tag_by_section "$section-$index")"
+ 
+         if ! clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$tag"; then
+@@ -4551,7 +4564,7 @@ subscription_update_json)
+     subscription_update_json "$2"
+     ;;
+ subscription_speedtest)
+-    subscription_speedtest "$2"
++    subscription_speedtest "$2" "$3"
+     ;;
+ subscription_patch_update)
+     subscription_patch_update
+-- 
+2.54.0.windows.1
+
