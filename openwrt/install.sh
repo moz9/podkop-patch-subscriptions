@@ -374,6 +374,62 @@ for runtime_file in /usr/bin/podkop /usr/lib/podkop/helpers.sh; do
 	fi
 done
 
+if grep -q "get_subscription_benchmark_bytes" /usr/bin/podkop 2>/dev/null &&
+	{ ! grep -q "^get_subscription_benchmark_bytes()" /usr/bin/podkop 2>/dev/null ||
+		! grep -q "^get_subscription_benchmark_warmup_bytes()" /usr/bin/podkop 2>/dev/null ||
+		! grep -q "^get_subscription_benchmark_attempts()" /usr/bin/podkop 2>/dev/null; }; then
+	benchmark_helpers="$tmp_dir/subscription-benchmark-helpers.sh"
+	cat > "$benchmark_helpers" <<'BENCHMARK_HELPERS_EOF'
+get_subscription_benchmark_port() {
+    echo "42080"
+}
+
+get_subscription_benchmark_bytes() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-2097152}"
+}
+
+get_subscription_benchmark_warmup_bytes() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-131072}"
+}
+
+get_subscription_benchmark_attempts() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-1}"
+}
+BENCHMARK_HELPERS_EOF
+
+	awk -v helpers="$benchmark_helpers" '
+	BEGIN {
+		inserted = 0
+		skip = 0
+	}
+
+	$0 ~ /^get_subscription_benchmark_(port|bytes|warmup_bytes|attempts)\(\) \{$/ {
+		skip = 1
+		next
+	}
+
+	skip && $0 == "}" {
+		skip = 0
+		next
+	}
+
+	skip {
+		next
+	}
+
+	!inserted && $0 == "subscription_speedtest() {" {
+		while ((getline line < helpers) > 0) {
+			print line
+		}
+		print ""
+		inserted = 1
+	}
+
+	{ print }
+	' /usr/bin/podkop > "$tmp_dir/podkop.benchmark" || abort_with_restore "failed to restore subscription benchmark helpers"
+	cat "$tmp_dir/podkop.benchmark" > /usr/bin/podkop
+fi
+
 mkdir -p /www/luci-static/resources/view/podkop
 cp "$tmp_dir/$MAIN_JS_FILE" /www/luci-static/resources/view/podkop/main.js
 cp "$tmp_dir/$SUBSCRIPTIONS_FILE" /www/luci-static/resources/view/podkop/subscriptions.js
