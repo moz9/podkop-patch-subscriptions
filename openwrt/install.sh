@@ -258,6 +258,8 @@ has_latest_subscription_backend() {
 		grep -q "patch_update_timeout_v1" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_start_stop_daemon_v1" /usr/bin/podkop 2>/dev/null &&
 		grep -q "restore_community_subnet_cache_v2" /usr/bin/podkop 2>/dev/null &&
+		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES" /usr/bin/podkop 2>/dev/null &&
+		grep -q "exit 130' INT TERM HUP" /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'wget -T 30 -t 1 -O "$filepath" "$url"' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'install.sh?t=$cache_buster' /usr/bin/podkop 2>/dev/null &&

@@ -1,0 +1,70 @@
+From fe204c7ac22d9f5d4bd0e90d2e3d44e1e9fa05eb Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Thu, 18 Jun 2026 14:08:54 +0300
+Subject: [PATCH] Keep subscription speedtest within LuCI timeout
+
+---
+ podkop/files/usr/bin/podkop | 13 +++++++------
+ 1 file changed, 7 insertions(+), 6 deletions(-)
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 63bca4c..56d64ad 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1819,15 +1819,15 @@ get_subscription_benchmark_port() {
+ }
+ 
+ get_subscription_benchmark_bytes() {
+-    echo "8388608"
++    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-2097152}"
+ }
+ 
+ get_subscription_benchmark_warmup_bytes() {
+-    echo "262144"
++    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-131072}"
+ }
+ 
+ get_subscription_benchmark_attempts() {
+-    echo "2"
++    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-1}"
+ }
+ 
+ subscription_runtime_busy() {
+@@ -1852,7 +1852,7 @@ subscription_speedtest_restore_mixed_proxy() {
+     local original_mixed_port="$3"
+     local mixed_changed="$4"
+ 
+-    [ "$mixed_changed" -eq 1 ] || return 0
++    [ "${mixed_changed:-0}" -eq 1 ] || return 0
+ 
+     if [ -n "$original_mixed_enabled" ]; then
+         uci -q set "podkop.$section.mixed_proxy_enabled=$original_mixed_enabled"
+@@ -1965,6 +1965,7 @@ subscription_speedtest() {
+     mixed_port="$original_mixed_port"
+     [ -n "$mixed_port" ] || mixed_port="$(get_subscription_benchmark_port "$section")"
+     mixed_changed=0
++    trap 'clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 || clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true; subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1; rm -f "$active_items_file" "$results_file"; subscription_action_lock_release; exit 130' INT TERM HUP
+ 
+     if [ "$original_mixed_enabled" != "1" ] || [ -z "$original_mixed_port" ]; then
+         uci -q set "podkop.$section.mixed_proxy_enabled=1"
+@@ -2037,7 +2038,7 @@ subscription_speedtest() {
+         curl -L -s -o /dev/null \
+             -x "http://$mixed_address:$mixed_port" \
+             --connect-timeout 6 \
+-            -m 10 \
++            -m 8 \
+             "$warmup_url" > /dev/null 2>&1 || true
+ 
+         best_bytes_per_second=0
+@@ -2049,7 +2050,7 @@ subscription_speedtest() {
+                 curl -L -s -o /dev/null \
+                     -x "http://$mixed_address:$mixed_port" \
+                     --connect-timeout 8 \
+-                    -m 35 \
++                    -m 12 \
+                     -w '%{speed_download} %{time_total} %{size_download} %{http_code}' \
+                     "$benchmark_url" 2> /dev/null
+             )"
+-- 
+2.54.0.windows.1
+

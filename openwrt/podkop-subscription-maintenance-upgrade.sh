@@ -854,6 +854,38 @@ if ! grep -q "subscription_action_lock_acquire \"speedtest\"" "$target" 2>/dev/n
 	rm -f "$tmp"
 fi
 
+if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES" "$target" 2>/dev/null ||
+	! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null; then
+	sed -i \
+		-e 's#echo "8388608"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-2097152}"#' \
+		-e 's#echo "262144"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-131072}"#' \
+		-e 's#echo "2"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-1}"#' \
+		-e 's#benchmark_bytes="8388608"#benchmark_bytes="$(get_subscription_benchmark_bytes)"#' \
+		-e 's#warmup_bytes="262144"#warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"#' \
+		-e 's#benchmark_attempts="2"#benchmark_attempts="$(get_subscription_benchmark_attempts)"#' \
+		-e 's#\[ "$mixed_changed" -eq 1 \]#\[ "${mixed_changed:-0}" -eq 1 \]#' \
+		-e 's#-m 10#-m 8#' \
+		-e 's#-m 35#-m 12#' \
+		"$target"
+
+	if ! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null; then
+		awk '
+		$0 == "    mixed_changed=0" {
+			print
+			print "    trap '\''clash_api_set_group_proxy_raw \"$clash_url\" \"$auth_header\" \"$selector_tag\" \"$restore_proxy\" > /dev/null 2>&1 || clash_api_set_group_proxy_raw \"$clash_url\" \"$auth_header\" \"$selector_tag\" \"$original_proxy\" > /dev/null 2>&1 || true; subscription_speedtest_restore_mixed_proxy \"$section\" \"$original_mixed_enabled\" \"$original_mixed_port\" \"$mixed_changed\" > /dev/null 2>&1; rm -f \"$active_items_file\" \"$results_file\"; subscription_action_lock_release; exit 130'\'' INT TERM HUP"
+			next
+		}
+
+		{ print }
+		' "$target" > "$tmp" || {
+			rm -f "$tmp"
+			exit 1
+		}
+		cat "$tmp" > "$target"
+		rm -f "$tmp"
+	fi
+fi
+
 if ! grep -q "restore_community_subnet_cache_v2" "$target" 2>/dev/null; then
 	if grep -q '^COMMUNITY_SUBNET_CACHE_DIR=' "$target" 2>/dev/null; then
 		sed -i 's#^COMMUNITY_SUBNET_CACHE_DIR=.*#COMMUNITY_SUBNET_CACHE_DIR="/etc/podkop/community-subnets"#' "$target"
