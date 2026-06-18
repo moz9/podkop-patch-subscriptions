@@ -258,21 +258,14 @@ abort_with_restore() {
 has_latest_subscription_backend() {
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
 	[ "${count:-0}" -ge 3 ] &&
-		grep -q "benchmark_bytes" /usr/bin/podkop 2>/dev/null &&
-		grep -q "subscription_runtime_busy" /usr/bin/podkop 2>/dev/null &&
-		grep -q "clash_api_wait_proxy_now" /usr/bin/podkop 2>/dev/null &&
-		grep -q "stop_stale_list_update_downloads" /usr/bin/podkop 2>/dev/null &&
-		grep -q "download_ok=0" /usr/bin/podkop 2>/dev/null &&
-		grep -q "patch_update_download_v2" /usr/bin/podkop 2>/dev/null &&
-		grep -q "patch_update_timeout_v1" /usr/bin/podkop 2>/dev/null &&
-		grep -q "patch_update_start_stop_daemon_v1" /usr/bin/podkop 2>/dev/null &&
+		grep -q "get_subscription_items_cached" /usr/bin/podkop 2>/dev/null &&
+		grep -q "set_subscription_links_enabled" /usr/bin/podkop 2>/dev/null &&
+		grep -q "subscription_update_json" /usr/bin/podkop 2>/dev/null &&
+		grep -q "subscription_speedtest" /usr/bin/podkop 2>/dev/null &&
+		grep -q "subscription_patch_update" /usr/bin/podkop 2>/dev/null &&
+		grep -q "get_subscription_patch_update_status" /usr/bin/podkop 2>/dev/null &&
 		grep -q "restore_community_subnet_cache_v2" /usr/bin/podkop 2>/dev/null &&
-		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES" /usr/bin/podkop 2>/dev/null &&
-		grep -q "exit 130' INT TERM HUP" /usr/bin/podkop 2>/dev/null &&
-		grep -Fq 'wget -T 30 -O "$filepath" "$url"' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
-		grep -Fq 'install.sh?t=$cache_buster' /usr/bin/podkop 2>/dev/null &&
-		grep -q "subscription_action_lock_file" /usr/bin/podkop 2>/dev/null &&
 		grep -q "raw.githubusercontent.com:443" /usr/lib/podkop/helpers.sh 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/lib/podkop/helpers.sh 2>/dev/null
