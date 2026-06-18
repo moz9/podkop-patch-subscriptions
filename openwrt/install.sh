@@ -375,6 +375,12 @@ if ! has_latest_subscription_backend && has_subscription_backend; then
 	fi
 fi
 
+for runtime_file in /usr/bin/podkop /usr/lib/podkop/helpers.sh; do
+	if [ -f "$runtime_file" ]; then
+		sed -i 's/wget -T 30 -t 1 /wget -T 30 /g' "$runtime_file"
+	fi
+done
+
 mkdir -p /www/luci-static/resources/view/podkop
 cp "$tmp_dir/$MAIN_JS_FILE" /www/luci-static/resources/view/podkop/main.js
 cp "$tmp_dir/$SUBSCRIPTIONS_FILE" /www/luci-static/resources/view/podkop/subscriptions.js
