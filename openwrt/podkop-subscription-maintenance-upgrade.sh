@@ -1072,6 +1072,162 @@ if grep -q 'subscription_speedtest "$2"' "$target" 2>/dev/null &&
 	sed -i 's#subscription_speedtest "$2"#subscription_speedtest "$2" "$3"#' "$target"
 fi
 
+if ! grep -q '^subscription_speedtest_status_file()' "$target" 2>/dev/null; then
+	async_file="$tmp_dir/subscription-speedtest-async.sh"
+	cat > "$async_file" << 'ASYNC_EOF'
+subscription_speedtest_status_file() {
+    echo "/tmp/podkop-subscriptions-speedtest.json"
+}
+
+subscription_speedtest_start() {
+    local section="$1"
+    local item_id="$2"
+    local status_file runner state pid
+
+    if [ -z "$section" ] || [ -z "$item_id" ]; then
+        echo '{"success":false,"error":"section_and_item_required"}'
+        return 1
+    fi
+
+    status_file="$(subscription_speedtest_status_file)"
+    if [ -s "$status_file" ]; then
+        state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
+        pid="$(jq -r '.pid // ""' "$status_file" 2> /dev/null)"
+        if [ "$state" = "running" ] && subscription_action_lock_pid_alive "$pid"; then
+            echo '{"success":false,"error":"service_busy"}'
+            return 1
+        fi
+    fi
+
+    runner="/tmp/podkop-subscriptions-speedtest-runner.sh"
+    cat > "$runner" << 'EOF'
+#!/bin/ash
+status_file="/tmp/podkop-subscriptions-speedtest.json"
+section="$1"
+item_id="$2"
+
+write_status() {
+    local state="$1"
+    local message="$2"
+    local result_file="$3"
+    local log_tail="$4"
+    local updated_at
+
+    updated_at="$(date -Iseconds 2> /dev/null || date)"
+
+    if [ -n "$result_file" ] && [ -s "$result_file" ]; then
+        jq -cn --arg state "$state" --arg message "$message" \
+            --arg section "$section" --arg itemId "$item_id" \
+            --arg updatedAt "$updated_at" --argjson pid "$$" \
+            --arg logTail "$log_tail" --slurpfile result "$result_file" \
+            '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail, result:($result[0] // null)}' \
+            > "$status_file"
+    else
+        jq -cn --arg state "$state" --arg message "$message" \
+            --arg section "$section" --arg itemId "$item_id" \
+            --arg updatedAt "$updated_at" --argjson pid "$$" \
+            --arg logTail "$log_tail" \
+            '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
+            > "$status_file"
+    fi
+}
+
+result_file="$(mktemp)"
+output_file="$(mktemp)"
+
+write_status "running" "speedtest_running" "" ""
+
+/usr/bin/podkop subscription_speedtest "$section" "$item_id" > "$output_file" 2>&1
+rc="$?"
+
+if [ "$rc" -eq 0 ] && jq -e '.success == true' "$output_file" > /dev/null 2>&1; then
+    cp "$output_file" "$result_file"
+    write_status "success" "speedtest_success" "$result_file" ""
+else
+    message="speedtest_failed"
+    if jq -e '.error' "$output_file" > /dev/null 2>&1; then
+        message="$(jq -r '.error // "speedtest_failed"' "$output_file" 2> /dev/null)"
+    fi
+    write_status "error" "$message" "" "$(tail -n 20 "$output_file" 2> /dev/null)"
+    rm -f "$result_file" "$output_file"
+    exit 1
+fi
+
+rm -f "$result_file" "$output_file"
+EOF
+
+    chmod +x "$runner"
+    if command -v start-stop-daemon > /dev/null 2>&1; then
+        start-stop-daemon -S -b -x "$runner" -- "$section" "$item_id" > /dev/null 2>&1
+    elif command -v setsid > /dev/null 2>&1; then
+        setsid "$runner" "$section" "$item_id" < /dev/null > /dev/null 2>&1 &
+    else
+        "$runner" "$section" "$item_id" < /dev/null > /dev/null 2>&1 &
+    fi
+
+    echo '{"success":true,"started":true}'
+}
+
+get_subscription_speedtest_status() {
+    local status_file
+
+    status_file="$(subscription_speedtest_status_file)"
+    if [ -s "$status_file" ]; then
+        cat "$status_file"
+    else
+        echo '{"state":"idle","message":"","section":"","itemId":"","updatedAt":"","logTail":""}'
+    fi
+}
+ASYNC_EOF
+
+	awk -v insert_file="$async_file" '
+		$0 == "show_help() {" && ! inserted {
+			while ((getline line < insert_file) > 0) {
+				print line
+			}
+			close(insert_file)
+			print ""
+			inserted = 1
+		}
+		{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp" "$async_file"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp" "$async_file"
+fi
+
+if ! grep -q '^subscription_speedtest_start)' "$target" 2>/dev/null; then
+	awk '
+		$0 == "    subscription_speedtest   Benchmark enabled subscription proxy items for a section" {
+			print
+			print "    subscription_speedtest_start"
+			print "                            Start background benchmark for one subscription proxy item"
+			print "    get_subscription_speedtest_status"
+			print "                            Show background subscription benchmark status"
+			next
+		}
+
+		$0 == "subscription_patch_update)" && ! inserted {
+			print "subscription_speedtest_start)"
+			print "    subscription_speedtest_start \"$2\" \"$3\""
+			print "    ;;"
+			print "get_subscription_speedtest_status)"
+			print "    get_subscription_speedtest_status"
+			print "    ;;"
+			inserted = 1
+		}
+
+		{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
 if ! grep -q "restore_community_subnet_cache_v2" "$target" 2>/dev/null; then
 	if grep -q '^COMMUNITY_SUBNET_CACHE_DIR=' "$target" 2>/dev/null; then
 		sed -i 's#^COMMUNITY_SUBNET_CACHE_DIR=.*#COMMUNITY_SUBNET_CACHE_DIR="/etc/podkop/community-subnets"#' "$target"

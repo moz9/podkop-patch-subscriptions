@@ -623,6 +623,8 @@ var Podkop;
     AvailableMethods2["CHECK_LOGS"] = "check_logs";
     AvailableMethods2["SUBSCRIPTION_UPDATE_JSON"] = "subscription_update_json";
     AvailableMethods2["SUBSCRIPTION_SPEEDTEST"] = "subscription_speedtest";
+    AvailableMethods2["SUBSCRIPTION_SPEEDTEST_START"] = "subscription_speedtest_start";
+    AvailableMethods2["GET_SUBSCRIPTION_SPEEDTEST_STATUS"] = "get_subscription_speedtest_status";
     AvailableMethods2["SUBSCRIPTION_PATCH_UPDATE"] = "subscription_patch_update";
     AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_STATUS"] = "get_subscription_patch_update_status";
     AvailableMethods2["GET_SYSTEM_INFO"] = "get_system_info";
@@ -715,6 +717,18 @@ var PodkopShellMethods = {
     itemId ? [section, itemId] : [section],
     "/usr/bin/podkop",
     3e5
+  ),
+  startSubscriptionSpeedtest: async (section, itemId) => callBaseMethod(
+    Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST_START,
+    [section, itemId],
+    "/usr/bin/podkop",
+    15e3
+  ),
+  getSubscriptionSpeedtestStatus: async () => callBaseMethod(
+    Podkop.AvailableMethods.GET_SUBSCRIPTION_SPEEDTEST_STATUS,
+    [],
+    "/usr/bin/podkop",
+    15e3
   ),
   updateSubscriptionPatch: async () => callBaseMethod(
     Podkop.AvailableMethods.SUBSCRIPTION_PATCH_UPDATE,
@@ -5732,16 +5746,20 @@ async function handleSpeedtestSubscriptions() {
         setActionState({
           action: "speed",
           actionStatus: "running",
-          actionMessage: `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`
+          actionMessage: `${_("Starting speed benchmark")}: ${section.displayName} / ${item.name}`
         });
-        const result = await PodkopShellMethods.benchmarkSubscriptionSection(
+        const started = await PodkopShellMethods.startSubscriptionSpeedtest(
           section.code,
           item.id
         );
-        if (!result.success || !result.data.success) {
-          throw new Error(result.success ? result.data.error : result.error);
+        if (!started.success || !started.data.success) {
+          throw new Error(started.success ? started.data.error : started.error);
         }
-        (result.data.results ?? []).forEach((speedItem) => {
+        const result = await pollSpeedtestStatus(section, item);
+        if (!result.success) {
+          throw new Error(result.error);
+        }
+        (result.results ?? []).forEach((speedItem) => {
           speedByRow[getRowId2(section.code, speedItem.id)] = speedItem;
         });
         store.set({
@@ -5778,6 +5796,47 @@ async function handleSpeedtestSubscriptions() {
     });
     showToast(message, "error");
   }
+}
+function getSpeedtestStatusMessage(status, section, item) {
+  switch (status.message) {
+    case "speedtest_running":
+      return `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`;
+    case "speedtest_success":
+      return `${_("Speed benchmark completed")}: ${section.displayName} / ${item.name}`;
+    case "service_busy":
+      return _("Podkop is restarting now. Try again in a minute.");
+    case "download_failed":
+      return `${_("Download failed")}: ${item.name}`;
+    case "select_failed":
+      return `${_("Failed to select config")}: ${item.name}`;
+    default:
+      return status.message || `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`;
+  }
+}
+async function pollSpeedtestStatus(section, item) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    await sleep(1e3);
+    const status = await PodkopShellMethods.getSubscriptionSpeedtestStatus();
+    if (!status.success) {
+      continue;
+    }
+    if (status.data.section !== section.code || status.data.itemId !== item.id) {
+      continue;
+    }
+    setActionState({
+      action: "speed",
+      actionStatus: status.data.state === "error" ? "error" : "running",
+      actionMessage: getSpeedtestStatusMessage(status.data, section, item)
+    });
+    if (status.data.state === "running") {
+      continue;
+    }
+    if (status.data.state === "success" && status.data.result) {
+      return status.data.result;
+    }
+    throw new Error(status.data.message || "speedtest_failed");
+  }
+  throw new Error("speedtest_timeout");
 }
 function getErrorText(error) {
   if (error instanceof Error) {
