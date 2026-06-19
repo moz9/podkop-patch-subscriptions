@@ -267,6 +267,14 @@ has_latest_subscription_backend() {
 		grep -q "restore_community_subnet_cache_v2" /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -q "raw.githubusercontent.com:443" /usr/lib/podkop/helpers.sh 2>/dev/null &&
+		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608" /usr/bin/podkop 2>/dev/null &&
+		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4" /usr/bin/podkop 2>/dev/null &&
+		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15" /usr/bin/podkop 2>/dev/null &&
+		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0" /usr/bin/podkop 2>/dev/null &&
+		grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3" /usr/bin/podkop 2>/dev/null &&
+		grep -q -- "--connect-timeout 4" /usr/bin/podkop 2>/dev/null &&
+		grep -q "time_starttransfer" /usr/bin/podkop 2>/dev/null &&
+		grep -q 'subscription_speedtest "$2" "$3"' /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/lib/podkop/helpers.sh 2>/dev/null
 }
@@ -376,8 +384,11 @@ done
 
 if grep -q "get_subscription_benchmark_bytes" /usr/bin/podkop 2>/dev/null &&
 	{ ! grep -q "^get_subscription_benchmark_bytes()" /usr/bin/podkop 2>/dev/null ||
+		! grep -q "^get_subscription_benchmark_streams()" /usr/bin/podkop 2>/dev/null ||
+		! grep -q "^get_subscription_benchmark_timeout()" /usr/bin/podkop 2>/dev/null ||
 		! grep -q "^get_subscription_benchmark_warmup_bytes()" /usr/bin/podkop 2>/dev/null ||
-		! grep -q "^get_subscription_benchmark_attempts()" /usr/bin/podkop 2>/dev/null; }; then
+		! grep -q "^get_subscription_benchmark_attempts()" /usr/bin/podkop 2>/dev/null ||
+		! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3" /usr/bin/podkop 2>/dev/null; }; then
 	benchmark_helpers="$tmp_dir/subscription-benchmark-helpers.sh"
 	cat > "$benchmark_helpers" <<'BENCHMARK_HELPERS_EOF'
 get_subscription_benchmark_port() {
@@ -385,15 +396,23 @@ get_subscription_benchmark_port() {
 }
 
 get_subscription_benchmark_bytes() {
-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-2097152}"
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608}"
+}
+
+get_subscription_benchmark_streams() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4}"
+}
+
+get_subscription_benchmark_timeout() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15}"
 }
 
 get_subscription_benchmark_warmup_bytes() {
-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-131072}"
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0}"
 }
 
 get_subscription_benchmark_attempts() {
-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-1}"
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3}"
 }
 BENCHMARK_HELPERS_EOF
 
@@ -403,7 +422,7 @@ BENCHMARK_HELPERS_EOF
 		skip = 0
 	}
 
-	$0 ~ /^get_subscription_benchmark_(port|bytes|warmup_bytes|attempts)\(\) \{$/ {
+	$0 ~ /^get_subscription_benchmark_(port|bytes|streams|timeout|warmup_bytes|attempts)\(\) \{$/ {
 		skip = 1
 		next
 	}

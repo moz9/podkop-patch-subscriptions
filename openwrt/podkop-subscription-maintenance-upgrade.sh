@@ -235,8 +235,11 @@ if ! grep -q "subscription_runtime_busy" "$target" 2>/dev/null; then
 	rm -f "$tmp"
 fi
 
-if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304' "$target" 2>/dev/null ||
+if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608' "$target" 2>/dev/null ||
+	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4' "$target" 2>/dev/null ||
+	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0' "$target" 2>/dev/null ||
+	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3' "$target" 2>/dev/null ||
 	! grep -q "^get_subscription_benchmark_attempts()" "$target" 2>/dev/null; then
 	benchmark_helpers="$(mktemp)"
 	cat > "$benchmark_helpers" <<'BENCHMARK_HELPERS_EOF'
@@ -245,7 +248,15 @@ get_subscription_benchmark_port() {
 }
 
 get_subscription_benchmark_bytes() {
-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304}"
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608}"
+}
+
+get_subscription_benchmark_streams() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4}"
+}
+
+get_subscription_benchmark_timeout() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15}"
 }
 
 get_subscription_benchmark_warmup_bytes() {
@@ -253,7 +264,7 @@ get_subscription_benchmark_warmup_bytes() {
 }
 
 get_subscription_benchmark_attempts() {
-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-1}"
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3}"
 }
 BENCHMARK_HELPERS_EOF
 
@@ -263,7 +274,7 @@ BENCHMARK_HELPERS_EOF
 		skip = 0
 	}
 
-	$0 ~ /^get_subscription_benchmark_(port|bytes|warmup_bytes|attempts)\(\) \{$/ {
+	$0 ~ /^get_subscription_benchmark_(port|bytes|streams|timeout|warmup_bytes|attempts)\(\) \{$/ {
 		skip = 1
 		next
 	}
@@ -294,8 +305,11 @@ BENCHMARK_HELPERS_EOF
 	rm -f "$tmp" "$benchmark_helpers"
 fi
 
-if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304' "$target" 2>/dev/null ||
+if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608' "$target" 2>/dev/null ||
+	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4' "$target" 2>/dev/null ||
+	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0' "$target" 2>/dev/null ||
+	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3' "$target" 2>/dev/null ||
 	! grep -q -- '--connect-timeout 4' "$target" 2>/dev/null ||
 	! grep -q 'time_starttransfer' "$target" 2>/dev/null ||
 	! grep -q 'local only_id="$2"' "$target" 2>/dev/null ||
@@ -311,9 +325,9 @@ subscription_speedtest() {
     local only_id="$2"
     local items_cache_path active_items_file results_file clash_url auth_header selector_tag urltest_tag original_proxy restore_proxy \
         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
-        warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
-        output bytes_per_second time_total time_starttransfer size_download http_code results_json attempt best_bytes_per_second \
-        best_time_total best_size_download best_http_code clash_ready
+        warmup_url benchmark_bytes benchmark_streams benchmark_timeout warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
+        output output_dir stream stream_file bytes_per_second time_total time_starttransfer transfer_time size_download http_code success_http_code results_json attempt best_bytes_per_second \
+        best_time_total best_size_download best_http_code clash_ready completed_streams total_size max_time cache_buster
 
     if [ -z "$section" ]; then
         echo '{"success":false,"error":"section_required"}'
@@ -435,8 +449,20 @@ subscription_speedtest() {
     fi
 
     benchmark_bytes="$(get_subscription_benchmark_bytes)"
+    benchmark_streams="$(get_subscription_benchmark_streams)"
+    benchmark_timeout="$(get_subscription_benchmark_timeout)"
     warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"
     benchmark_attempts="$(get_subscription_benchmark_attempts)"
+    case "$benchmark_bytes" in ''|*[!0-9]*) benchmark_bytes=8388608 ;; esac
+    case "$benchmark_streams" in ''|*[!0-9]*) benchmark_streams=4 ;; esac
+    case "$benchmark_timeout" in ''|*[!0-9]*) benchmark_timeout=15 ;; esac
+    case "$warmup_bytes" in ''|*[!0-9]*) warmup_bytes=0 ;; esac
+    case "$benchmark_attempts" in ''|*[!0-9]*) benchmark_attempts=3 ;; esac
+    [ "$benchmark_bytes" -gt 0 ] || benchmark_bytes=8388608
+    [ "$benchmark_streams" -gt 0 ] || benchmark_streams=1
+    [ "$benchmark_streams" -le 8 ] || benchmark_streams=8
+    [ "$benchmark_timeout" -ge 5 ] || benchmark_timeout=5
+    [ "$benchmark_attempts" -gt 0 ] || benchmark_attempts=3
     min_size_download=$((benchmark_bytes * 9 / 10))
     benchmark_url="https://speed.cloudflare.com/__down?bytes=$benchmark_bytes"
     warmup_url="https://speed.cloudflare.com/__down?bytes=$warmup_bytes"
@@ -468,28 +494,72 @@ subscription_speedtest() {
         best_size_download=0
         best_http_code=0
         for attempt in $(seq 1 "$benchmark_attempts"); do
-            output="$(
+            output_dir="$(mktemp -d)" || continue
+            cache_buster="$(date +%s)-$$-$attempt"
+            stream=1
+            while [ "$stream" -le "$benchmark_streams" ]; do
+                stream_file="$output_dir/$stream.out"
                 curl -L -s -o /dev/null \
                     -x "http://$mixed_address:$mixed_port" \
                     --connect-timeout 4 \
-                    -m 6 \
+                    -m "$benchmark_timeout" \
                     -w '%{time_total} %{time_starttransfer} %{size_download} %{http_code}' \
-                    "$benchmark_url" 2> /dev/null
-            )"
+                    "$benchmark_url&stream=$stream&r=$cache_buster" > "$stream_file" 2> /dev/null &
+                stream=$((stream + 1))
+            done
+            wait
 
-            time_total="$(echo "$output" | awk '{print ($1 == "" ? 0 : $1)}')"
-            time_starttransfer="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
-            size_download="$(echo "$output" | awk '{printf "%d", $3}')"
-            http_code="$(echo "$output" | awk '{printf "%d", $4}')"
-            bytes_per_second="$(
-                awk -v size="$size_download" -v total="$time_total" -v start="$time_starttransfer" '
-                    BEGIN {
-                        transfer = total - start
-                        if (transfer <= 0) {
-                            transfer = total
+            completed_streams=0
+            total_size=0
+            max_time=0
+            success_http_code=0
+            stream=1
+            while [ "$stream" -le "$benchmark_streams" ]; do
+                stream_file="$output_dir/$stream.out"
+                output="$(cat "$stream_file" 2> /dev/null)"
+                time_total="$(echo "$output" | awk '{print ($1 == "" ? 0 : $1)}')"
+                time_starttransfer="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
+                size_download="$(echo "$output" | awk '{printf "%d", $3}')"
+                http_code="$(echo "$output" | awk '{printf "%d", $4}')"
+                transfer_time="$(
+                    awk -v total="$time_total" -v start="$time_starttransfer" '
+                        BEGIN {
+                            transfer = total - start
+                            if (transfer <= 0) {
+                                transfer = total
+                            }
+                            print transfer
                         }
-                        if (transfer > 0) {
-                            printf "%d", size / transfer
+                    '
+                )"
+
+                if [ "${size_download:-0}" -ge "$min_size_download" ] &&
+                    [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
+                    completed_streams=$((completed_streams + 1))
+                    total_size=$((total_size + size_download))
+                    success_http_code="$http_code"
+                    max_time="$(
+                        awk -v current="$max_time" -v candidate="$transfer_time" '
+                            BEGIN {
+                                if (candidate > current) {
+                                    print candidate
+                                } else {
+                                    print current
+                                }
+                            }
+                        '
+                    )"
+                fi
+
+                stream=$((stream + 1))
+            done
+            rm -rf "$output_dir"
+
+            bytes_per_second="$(
+                awk -v size="$total_size" -v total="$max_time" '
+                    BEGIN {
+                        if (total > 0) {
+                            printf "%d", size / total
                         } else {
                             printf "0"
                         }
@@ -498,12 +568,11 @@ subscription_speedtest() {
             )"
 
             if [ "${bytes_per_second:-0}" -gt "$best_bytes_per_second" ] &&
-                [ "${size_download:-0}" -ge "$min_size_download" ] &&
-                [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
+                [ "${completed_streams:-0}" -gt 0 ]; then
                 best_bytes_per_second="${bytes_per_second:-0}"
-                best_time_total="${time_total:-0}"
-                best_size_download="${size_download:-0}"
-                best_http_code="${http_code:-0}"
+                best_time_total="${max_time:-0}"
+                best_size_download="${total_size:-0}"
+                best_http_code="${success_http_code:-0}"
             fi
         done
 
@@ -954,18 +1023,21 @@ if ! grep -q "subscription_action_lock_acquire \"speedtest\"" "$target" 2>/dev/n
 	rm -f "$tmp"
 fi
 
-if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304" "$target" 2>/dev/null ||
+if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608" "$target" 2>/dev/null ||
+	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4" "$target" 2>/dev/null ||
+	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15" "$target" 2>/dev/null ||
 	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0" "$target" 2>/dev/null ||
+	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3" "$target" 2>/dev/null ||
 	! grep -q -- "--connect-timeout 4" "$target" 2>/dev/null ||
 	! grep -q "time_starttransfer" "$target" 2>/dev/null ||
 	! grep -q 'local only_id="$2"' "$target" 2>/dev/null ||
 	! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null; then
 	sed -i \
-		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304#g' \
+		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608#g' \
 		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0#g' \
-		-e 's#echo "8388608"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304}"#' \
+		-e 's#echo "8388608"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608}"#' \
 		-e 's#echo "262144"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0}"#' \
-		-e 's#echo "2"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-1}"#' \
+		-e 's#echo "2"#echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3}"#' \
 		-e 's#benchmark_bytes="8388608"#benchmark_bytes="$(get_subscription_benchmark_bytes)"#' \
 		-e 's#warmup_bytes="262144"#warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"#' \
 		-e 's#benchmark_attempts="2"#benchmark_attempts="$(get_subscription_benchmark_attempts)"#' \

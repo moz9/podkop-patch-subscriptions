@@ -4800,6 +4800,16 @@ function getRowId(sectionCode, itemId) {
 function getSourceId(sectionCode, sourceIndex) {
   return `${sectionCode}:${sourceIndex}`;
 }
+function formatMbitPerSecond(bytesPerSecond) {
+  const mbitPerSecond = bytesPerSecond * 8 / 1e6;
+  if (mbitPerSecond >= 100) {
+    return `${mbitPerSecond.toFixed(0)} Mbit/s`;
+  }
+  if (mbitPerSecond >= 10) {
+    return `${mbitPerSecond.toFixed(1)} Mbit/s`;
+  }
+  return `${mbitPerSecond.toFixed(2)} Mbit/s`;
+}
 function getPendingCount(pendingChanges) {
   return Object.keys(pendingChanges).length;
 }
@@ -5084,7 +5094,7 @@ function renderRow({
     if (!speed.success || !speed.bytesPerSecond) {
       return _("Error");
     }
-    return `${prettyBytes(speed.bytesPerSecond)}/s`;
+    return formatMbitPerSecond(speed.bytesPerSecond);
   }
   return E(
     "tr",

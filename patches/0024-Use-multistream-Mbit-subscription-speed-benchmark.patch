@@ -1,0 +1,253 @@
+From 5bd77cf3746e034f6e65e29bf3c1b7fa04060871 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Fri, 19 Jun 2026 09:50:14 +0300
+Subject: [PATCH] Use multistream Mbit subscription speed benchmark
+
+---
+ .../partials/renderSubscriptionSections.ts    |  17 ++-
+ .../luci-static/resources/view/podkop/main.js |  12 +-
+ podkop/files/usr/bin/podkop                   | 113 ++++++++++++++----
+ 3 files changed, 114 insertions(+), 28 deletions(-)
+
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
+index 4db2b0c..3eb5d18 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
+@@ -1,5 +1,4 @@
+ import { renderButton } from '../../../../partials';
+-import { prettyBytes } from '../../../../helpers/prettyBytes';
+ import { Podkop } from '../../../types';
+ import {
+   renderCogIcon24,
+@@ -59,6 +58,20 @@ function getSourceId(sectionCode: string, sourceIndex: number) {
+   return `${sectionCode}:${sourceIndex}`;
+ }
+ 
++function formatMbitPerSecond(bytesPerSecond: number) {
++  const mbitPerSecond = (bytesPerSecond * 8) / 1000000;
++
++  if (mbitPerSecond >= 100) {
++    return `${mbitPerSecond.toFixed(0)} Mbit/s`;
++  }
++
++  if (mbitPerSecond >= 10) {
++    return `${mbitPerSecond.toFixed(1)} Mbit/s`;
++  }
++
++  return `${mbitPerSecond.toFixed(2)} Mbit/s`;
++}
++
+ function getPendingCount(pendingChanges: Record<string, boolean>) {
+   return Object.keys(pendingChanges).length;
+ }
+@@ -460,7 +473,7 @@ function renderRow({
+       return _('Error');
+     }
+ 
+-    return `${prettyBytes(speed.bytesPerSecond)}/s`;
++    return formatMbitPerSecond(speed.bytesPerSecond);
+   }
+ 
+   return E(
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index 502edfd..b8804cf 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -4800,6 +4800,16 @@ function getRowId(sectionCode, itemId) {
+ function getSourceId(sectionCode, sourceIndex) {
+   return `${sectionCode}:${sourceIndex}`;
+ }
++function formatMbitPerSecond(bytesPerSecond) {
++  const mbitPerSecond = bytesPerSecond * 8 / 1e6;
++  if (mbitPerSecond >= 100) {
++    return `${mbitPerSecond.toFixed(0)} Mbit/s`;
++  }
++  if (mbitPerSecond >= 10) {
++    return `${mbitPerSecond.toFixed(1)} Mbit/s`;
++  }
++  return `${mbitPerSecond.toFixed(2)} Mbit/s`;
++}
+ function getPendingCount(pendingChanges) {
+   return Object.keys(pendingChanges).length;
+ }
+@@ -5084,7 +5094,7 @@ function renderRow({
+     if (!speed.success || !speed.bytesPerSecond) {
+       return _("Error");
+     }
+-    return `${prettyBytes(speed.bytesPerSecond)}/s`;
++    return formatMbitPerSecond(speed.bytesPerSecond);
+   }
+   return E(
+     "tr",
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 61d4ec3..d04347f 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1819,7 +1819,15 @@ get_subscription_benchmark_port() {
+ }
+ 
+ get_subscription_benchmark_bytes() {
+-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-4194304}"
++    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608}"
++}
++
++get_subscription_benchmark_streams() {
++    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4}"
++}
++
++get_subscription_benchmark_timeout() {
++    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15}"
+ }
+ 
+ get_subscription_benchmark_warmup_bytes() {
+@@ -1827,7 +1835,7 @@ get_subscription_benchmark_warmup_bytes() {
+ }
+ 
+ get_subscription_benchmark_attempts() {
+-    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-1}"
++    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3}"
+ }
+ 
+ subscription_runtime_busy() {
+@@ -1903,9 +1911,9 @@ subscription_speedtest() {
+     local only_id="$2"
+     local items_cache_path active_items_file results_file clash_url auth_header selector_tag urltest_tag original_proxy restore_proxy \
+         original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
+-        warmup_url benchmark_bytes warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
+-        output bytes_per_second time_total time_starttransfer size_download http_code results_json attempt best_bytes_per_second \
+-        best_time_total best_size_download best_http_code clash_ready
++        warmup_url benchmark_bytes benchmark_streams benchmark_timeout warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
++        output output_dir stream stream_file bytes_per_second time_total time_starttransfer transfer_time size_download http_code success_http_code results_json attempt best_bytes_per_second \
++        best_time_total best_size_download best_http_code clash_ready completed_streams total_size max_time cache_buster
+ 
+     if [ -z "$section" ]; then
+         echo '{"success":false,"error":"section_required"}'
+@@ -2027,8 +2035,20 @@ subscription_speedtest() {
+     fi
+ 
+     benchmark_bytes="$(get_subscription_benchmark_bytes)"
++    benchmark_streams="$(get_subscription_benchmark_streams)"
++    benchmark_timeout="$(get_subscription_benchmark_timeout)"
+     warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"
+     benchmark_attempts="$(get_subscription_benchmark_attempts)"
++    case "$benchmark_bytes" in ''|*[!0-9]*) benchmark_bytes=8388608 ;; esac
++    case "$benchmark_streams" in ''|*[!0-9]*) benchmark_streams=4 ;; esac
++    case "$benchmark_timeout" in ''|*[!0-9]*) benchmark_timeout=15 ;; esac
++    case "$warmup_bytes" in ''|*[!0-9]*) warmup_bytes=0 ;; esac
++    case "$benchmark_attempts" in ''|*[!0-9]*) benchmark_attempts=3 ;; esac
++    [ "$benchmark_bytes" -gt 0 ] || benchmark_bytes=8388608
++    [ "$benchmark_streams" -gt 0 ] || benchmark_streams=1
++    [ "$benchmark_streams" -le 8 ] || benchmark_streams=8
++    [ "$benchmark_timeout" -ge 5 ] || benchmark_timeout=5
++    [ "$benchmark_attempts" -gt 0 ] || benchmark_attempts=3
+     min_size_download=$((benchmark_bytes * 9 / 10))
+     benchmark_url="https://speed.cloudflare.com/__down?bytes=$benchmark_bytes"
+     warmup_url="https://speed.cloudflare.com/__down?bytes=$warmup_bytes"
+@@ -2060,28 +2080,72 @@ subscription_speedtest() {
+         best_size_download=0
+         best_http_code=0
+         for attempt in $(seq 1 "$benchmark_attempts"); do
+-            output="$(
++            output_dir="$(mktemp -d)" || continue
++            cache_buster="$(date +%s)-$$-$attempt"
++            stream=1
++            while [ "$stream" -le "$benchmark_streams" ]; do
++                stream_file="$output_dir/$stream.out"
+                 curl -L -s -o /dev/null \
+                     -x "http://$mixed_address:$mixed_port" \
+                     --connect-timeout 4 \
+-                    -m 6 \
++                    -m "$benchmark_timeout" \
+                     -w '%{time_total} %{time_starttransfer} %{size_download} %{http_code}' \
+-                    "$benchmark_url" 2> /dev/null
+-            )"
++                    "$benchmark_url&stream=$stream&r=$cache_buster" > "$stream_file" 2> /dev/null &
++                stream=$((stream + 1))
++            done
++            wait
++
++            completed_streams=0
++            total_size=0
++            max_time=0
++            success_http_code=0
++            stream=1
++            while [ "$stream" -le "$benchmark_streams" ]; do
++                stream_file="$output_dir/$stream.out"
++                output="$(cat "$stream_file" 2> /dev/null)"
++                time_total="$(echo "$output" | awk '{print ($1 == "" ? 0 : $1)}')"
++                time_starttransfer="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
++                size_download="$(echo "$output" | awk '{printf "%d", $3}')"
++                http_code="$(echo "$output" | awk '{printf "%d", $4}')"
++                transfer_time="$(
++                    awk -v total="$time_total" -v start="$time_starttransfer" '
++                        BEGIN {
++                            transfer = total - start
++                            if (transfer <= 0) {
++                                transfer = total
++                            }
++                            print transfer
++                        }
++                    '
++                )"
++
++                if [ "${size_download:-0}" -ge "$min_size_download" ] &&
++                    [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
++                    completed_streams=$((completed_streams + 1))
++                    total_size=$((total_size + size_download))
++                    success_http_code="$http_code"
++                    max_time="$(
++                        awk -v current="$max_time" -v candidate="$transfer_time" '
++                            BEGIN {
++                                if (candidate > current) {
++                                    print candidate
++                                } else {
++                                    print current
++                                }
++                            }
++                        '
++                    )"
++                fi
++
++                stream=$((stream + 1))
++            done
++            rm -rf "$output_dir"
+ 
+-            time_total="$(echo "$output" | awk '{print ($1 == "" ? 0 : $1)}')"
+-            time_starttransfer="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
+-            size_download="$(echo "$output" | awk '{printf "%d", $3}')"
+-            http_code="$(echo "$output" | awk '{printf "%d", $4}')"
+             bytes_per_second="$(
+-                awk -v size="$size_download" -v total="$time_total" -v start="$time_starttransfer" '
++                awk -v size="$total_size" -v total="$max_time" '
+                     BEGIN {
+-                        transfer = total - start
+-                        if (transfer <= 0) {
+-                            transfer = total
+-                        }
+-                        if (transfer > 0) {
+-                            printf "%d", size / transfer
++                        if (total > 0) {
++                            printf "%d", size / total
+                         } else {
+                             printf "0"
+                         }
+@@ -2090,12 +2154,11 @@ subscription_speedtest() {
+             )"
+ 
+             if [ "${bytes_per_second:-0}" -gt "$best_bytes_per_second" ] &&
+-                [ "${size_download:-0}" -ge "$min_size_download" ] &&
+-                [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
++                [ "${completed_streams:-0}" -gt 0 ]; then
+                 best_bytes_per_second="${bytes_per_second:-0}"
+-                best_time_total="${time_total:-0}"
+-                best_size_download="${size_download:-0}"
+-                best_http_code="${http_code:-0}"
++                best_time_total="${max_time:-0}"
++                best_size_download="${total_size:-0}"
++                best_http_code="${success_http_code:-0}"
+             fi
+         done
+ 
+-- 
+2.54.0.windows.1
+
