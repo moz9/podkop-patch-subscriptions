@@ -1082,7 +1082,7 @@ subscription_speedtest_status_file() {
 subscription_speedtest_start() {
     local section="$1"
     local item_id="$2"
-    local status_file runner state pid
+    local status_file runner state pid updated_at
 
     if [ -z "$section" ] || [ -z "$item_id" ]; then
         echo '{"success":false,"error":"section_and_item_required"}'
@@ -1098,6 +1098,14 @@ subscription_speedtest_start() {
             return 1
         fi
     fi
+
+    updated_at="$(date -Iseconds 2> /dev/null || date)"
+    jq -cn --arg state "running" --arg message "speedtest_running" \
+        --arg section "$section" --arg itemId "$item_id" \
+        --arg updatedAt "$updated_at" --argjson pid "$$" \
+        --arg logTail "" \
+        '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
+        > "$status_file"
 
     runner="/tmp/podkop-subscriptions-speedtest-runner.sh"
     cat > "$runner" << 'EOF'
@@ -1196,6 +1204,39 @@ ASYNC_EOF
 	}
 	cat "$tmp" > "$target"
 	rm -f "$tmp" "$async_file"
+fi
+
+if grep -q '^subscription_speedtest_start()' "$target" 2>/dev/null &&
+	! grep -q -- '--arg state "running" --arg message "speedtest_running"' "$target" 2>/dev/null; then
+	sed -i 's#local status_file runner state pid$#local status_file runner state pid updated_at#' "$target"
+	awk '
+		/^subscription_speedtest_start\(\) \{/ {
+			in_speedtest_start = 1
+		}
+
+		in_speedtest_start && $0 == "    runner=\"/tmp/podkop-subscriptions-speedtest-runner.sh\"" && ! inserted {
+			print "    updated_at=\"$(date -Iseconds 2> /dev/null || date)\""
+			print "    jq -cn --arg state \"running\" --arg message \"speedtest_running\" \\"
+			print "        --arg section \"$section\" --arg itemId \"$item_id\" \\"
+			print "        --arg updatedAt \"$updated_at\" --argjson pid \"$$\" \\"
+			print "        --arg logTail \"\" \\"
+			print "        '\''{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}'\'' \\"
+			print "        > \"$status_file\""
+			print ""
+			inserted = 1
+		}
+
+		/^get_subscription_speedtest_status\(\) \{/ {
+			in_speedtest_start = 0
+		}
+
+		{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
 fi
 
 if ! grep -q '^subscription_speedtest_start)' "$target" 2>/dev/null; then

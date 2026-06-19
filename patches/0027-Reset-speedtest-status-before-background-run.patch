@@ -1,0 +1,120 @@
+From c4a29fd68501eeab81f48876626b2a20cceb992d Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Sat, 20 Jun 2026 02:42:15 +0300
+Subject: [PATCH] Reset speedtest status before background run
+
+---
+ fe-app-podkop/locales/podkop.ru.po                     |  9 +++++++++
+ .../src/podkop/tabs/subscriptions/initController.ts    | 10 ++++++++++
+ .../htdocs/luci-static/resources/view/podkop/main.js   | 10 ++++++++++
+ luci-app-podkop/po/ru/podkop.po                        |  9 +++++++++
+ podkop/files/usr/bin/podkop                            | 10 +++++++++-
+ 5 files changed, 47 insertions(+), 1 deletion(-)
+
+diff --git a/fe-app-podkop/locales/podkop.ru.po b/fe-app-podkop/locales/podkop.ru.po
+index 2629371..3ce0cc9 100644
+--- a/fe-app-podkop/locales/podkop.ru.po
++++ b/fe-app-podkop/locales/podkop.ru.po
+@@ -1069,3 +1069,12 @@ msgstr "?????????? ?? ???????"
+ 
+ msgid "Failed to select config"
+ msgstr "?? ??????? ??????? ??????"
++
++msgid "Speed benchmark timed out. Try again or test fewer configs."
++msgstr "Бенчмарк скорости превысил лимит времени. Попробуйте снова или тестируйте меньше конфигов."
++
++msgid "Speed benchmark failed."
++msgstr "Бенчмарк скорости не выполнен."
++
++msgid "Speed benchmark target is missing."
++msgstr "Не выбран конфиг для бенчмарка скорости."
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+index 711475e..eb68507 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+@@ -567,6 +567,16 @@ function getSubscriptionActionErrorMessage(
+       return _('No enabled supported configs to test.');
+     case 'mixed_proxy_address_missing':
+       return _('Mixed proxy address is not configured.');
++    case 'speedtest_timeout':
++      return _('Speed benchmark timed out. Try again or test fewer configs.');
++    case 'speedtest_failed':
++      return _('Speed benchmark failed.');
++    case 'section_and_item_required':
++      return _('Speed benchmark target is missing.');
++    case 'download_failed':
++      return _('Download failed');
++    case 'select_failed':
++      return _('Failed to select config');
+     default:
+       return fallback;
+   }
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index c117472..6408921 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -5863,6 +5863,16 @@ function getSubscriptionActionErrorMessage(error, fallback) {
+       return _("No enabled supported configs to test.");
+     case "mixed_proxy_address_missing":
+       return _("Mixed proxy address is not configured.");
++    case "speedtest_timeout":
++      return _("Speed benchmark timed out. Try again or test fewer configs.");
++    case "speedtest_failed":
++      return _("Speed benchmark failed.");
++    case "section_and_item_required":
++      return _("Speed benchmark target is missing.");
++    case "download_failed":
++      return _("Download failed");
++    case "select_failed":
++      return _("Failed to select config");
+     default:
+       return fallback;
+   }
+diff --git a/luci-app-podkop/po/ru/podkop.po b/luci-app-podkop/po/ru/podkop.po
+index 2629371..3ce0cc9 100644
+--- a/luci-app-podkop/po/ru/podkop.po
++++ b/luci-app-podkop/po/ru/podkop.po
+@@ -1069,3 +1069,12 @@ msgstr "?????????? ?? ???????"
+ 
+ msgid "Failed to select config"
+ msgstr "?? ??????? ??????? ??????"
++
++msgid "Speed benchmark timed out. Try again or test fewer configs."
++msgstr "Бенчмарк скорости превысил лимит времени. Попробуйте снова или тестируйте меньше конфигов."
++
++msgid "Speed benchmark failed."
++msgstr "Бенчмарк скорости не выполнен."
++
++msgid "Speed benchmark target is missing."
++msgstr "Не выбран конфиг для бенчмарка скорости."
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 7f0b6a2..ff5c7f9 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -2189,7 +2189,7 @@ subscription_speedtest_status_file() {
+ subscription_speedtest_start() {
+     local section="$1"
+     local item_id="$2"
+-    local status_file runner state pid
++    local status_file runner state pid updated_at
+ 
+     if [ -z "$section" ] || [ -z "$item_id" ]; then
+         echo '{"success":false,"error":"section_and_item_required"}'
+@@ -2206,6 +2206,14 @@ subscription_speedtest_start() {
+         fi
+     fi
+ 
++    updated_at="$(date -Iseconds 2> /dev/null || date)"
++    jq -cn --arg state "running" --arg message "speedtest_running" \
++        --arg section "$section" --arg itemId "$item_id" \
++        --arg updatedAt "$updated_at" --argjson pid "$$" \
++        --arg logTail "" \
++        '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
++        > "$status_file"
++
+     runner="/tmp/podkop-subscriptions-speedtest-runner.sh"
+     cat > "$runner" << 'EOF'
+ #!/bin/ash
+-- 
+2.54.0.windows.1
+

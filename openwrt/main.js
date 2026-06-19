@@ -5863,6 +5863,16 @@ function getSubscriptionActionErrorMessage(error, fallback) {
       return _("No enabled supported configs to test.");
     case "mixed_proxy_address_missing":
       return _("Mixed proxy address is not configured.");
+    case "speedtest_timeout":
+      return _("Speed benchmark timed out. Try again or test fewer configs.");
+    case "speedtest_failed":
+      return _("Speed benchmark failed.");
+    case "section_and_item_required":
+      return _("Speed benchmark target is missing.");
+    case "download_failed":
+      return _("Download failed");
+    case "select_failed":
+      return _("Failed to select config");
     default:
       return fallback;
   }
