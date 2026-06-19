@@ -1,0 +1,39 @@
+From 2045385df898ac7188d2d961986042db86e2fe83 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Sat, 20 Jun 2026 01:32:07 +0300
+Subject: [PATCH] Handle transient idle speedtest status
+
+---
+ fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts   | 2 +-
+ .../htdocs/luci-static/resources/view/podkop/main.js            | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+index 9aa7faa..711475e 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+@@ -522,7 +522,7 @@ async function pollSpeedtestStatus(
+       actionMessage: getSpeedtestStatusMessage(status.data, section, item),
+     });
+ 
+-    if (status.data.state === 'running') {
++    if (status.data.state === 'running' || status.data.state === 'idle') {
+       continue;
+     }
+ 
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index 73aacbb..c117472 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -5828,7 +5828,7 @@ async function pollSpeedtestStatus(section, item) {
+       actionStatus: status.data.state === "error" ? "error" : "running",
+       actionMessage: getSpeedtestStatusMessage(status.data, section, item)
+     });
+-    if (status.data.state === "running") {
++    if (status.data.state === "running" || status.data.state === "idle") {
+       continue;
+     }
+     if (status.data.state === "success" && status.data.result) {
+-- 
+2.54.0.windows.1
+

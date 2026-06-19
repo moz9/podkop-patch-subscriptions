@@ -5828,7 +5828,7 @@ async function pollSpeedtestStatus(section, item) {
       actionStatus: status.data.state === "error" ? "error" : "running",
       actionMessage: getSpeedtestStatusMessage(status.data, section, item)
     });
-    if (status.data.state === "running") {
+    if (status.data.state === "running" || status.data.state === "idle") {
       continue;
     }
     if (status.data.state === "success" && status.data.result) {
