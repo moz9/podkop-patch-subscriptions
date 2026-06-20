@@ -1418,28 +1418,46 @@ get_subscription_speedtest_status() {
 }
 ASYNC_CURRENT_EOF
 
-	awk -v insert_file="$async_file" '
-		$0 == "subscription_speedtest_status_file() {" && ! inserted {
-			while ((getline line < insert_file) > 0) {
-				print line
+	if grep -q '^subscription_patch_update_status_file()' "$target" 2>/dev/null; then
+		awk -v insert_file="$async_file" '
+			$0 == "subscription_speedtest_status_file() {" && ! inserted {
+				while ((getline line < insert_file) > 0) {
+					print line
+				}
+				close(insert_file)
+				inserted = 1
+				skip = 1
+				next
 			}
-			close(insert_file)
-			inserted = 1
-			skip = 1
-			next
-		}
 
-		skip && $0 == "subscription_patch_update_status_file() {" {
-			skip = 0
-			print
-			next
-		}
+			skip && $0 == "subscription_patch_update_status_file() {" {
+				skip = 0
+				print
+				next
+			}
 
-		!skip { print }
-	' "$target" > "$tmp" || {
-		rm -f "$tmp" "$async_file"
-		exit 1
-	}
+			!skip { print }
+		' "$target" > "$tmp" || {
+			rm -f "$tmp" "$async_file"
+			exit 1
+		}
+	else
+		awk -v insert_file="$async_file" '
+			$0 == "show_help() {" && ! inserted {
+				while ((getline line < insert_file) > 0) {
+					print line
+				}
+				close(insert_file)
+				print ""
+				inserted = 1
+			}
+
+			{ print }
+		' "$target" > "$tmp" || {
+			rm -f "$tmp" "$async_file"
+			exit 1
+		}
+	fi
 	cat "$tmp" > "$target"
 	rm -f "$tmp" "$async_file"
 fi

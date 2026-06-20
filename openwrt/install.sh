@@ -258,6 +258,7 @@ abort_with_restore() {
 has_latest_subscription_backend() {
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
 	[ "${count:-0}" -ge 3 ] &&
+		grep -q '^case "\$1" in' /usr/bin/podkop 2>/dev/null &&
 		grep -q "get_subscription_items_cached" /usr/bin/podkop 2>/dev/null &&
 		grep -q "set_subscription_links_enabled" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_update_json" /usr/bin/podkop 2>/dev/null &&
@@ -282,6 +283,185 @@ has_latest_subscription_backend() {
 		grep -q -- '--arg state "running" --arg message "speedtest_running"' /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/lib/podkop/helpers.sh 2>/dev/null
+}
+
+ensure_podkop_dispatcher() {
+	target="$1"
+
+	if grep -q '^case "\$1" in' "$target" 2>/dev/null; then
+		return 0
+	fi
+
+	cat >> "$target" <<'DISPATCHER_EOF'
+
+show_help() {
+    cat <<'HELP_EOF'
+Usage: podkop <command>
+
+Available commands:
+    start
+    stop
+    reload
+    restart
+    main
+    list_update
+    subscription_update
+    subscription_update_json
+    subscription_speedtest
+    subscription_speedtest_start
+    subscription_speedtest_stop
+    get_subscription_speedtest_status
+    subscription_patch_update
+    get_subscription_patch_update_status
+    check_proxy
+    check_nft
+    check_nft_rules
+    check_sing_box
+    check_logs
+    check_sing_box_logs
+    check_fakeip
+    clash_api
+    get_subscription_cached_links
+    get_subscription_skipped_links
+    get_subscription_items
+    get_subscription_items_cached
+    set_subscription_link_enabled
+    set_subscription_links_enabled
+    show_config
+    show_version
+    show_sing_box_config
+    show_sing_box_version
+    show_system_info
+    get_status
+    get_sing_box_status
+    get_system_info
+    check_dns_available
+    global_check
+HELP_EOF
+}
+
+case "$1" in
+start)
+    start
+    ;;
+stop)
+    stop
+    ;;
+reload)
+    reload
+    ;;
+restart)
+    restart
+    ;;
+main)
+    main
+    ;;
+list_update)
+    list_update
+    ;;
+subscription_update)
+    subscription_update "$2"
+    ;;
+subscription_update_json)
+    subscription_update_json "$2"
+    ;;
+subscription_speedtest)
+    subscription_speedtest "$2" "$3"
+    ;;
+subscription_speedtest_start)
+    subscription_speedtest_start "$2" "$3"
+    ;;
+subscription_speedtest_stop)
+    subscription_speedtest_stop
+    ;;
+get_subscription_speedtest_status)
+    get_subscription_speedtest_status
+    ;;
+subscription_patch_update)
+    subscription_patch_update
+    ;;
+get_subscription_patch_update_status)
+    get_subscription_patch_update_status
+    ;;
+check_proxy)
+    check_proxy
+    ;;
+check_nft)
+    check_nft
+    ;;
+check_nft_rules)
+    check_nft_rules
+    ;;
+check_sing_box)
+    check_sing_box
+    ;;
+check_logs)
+    check_logs
+    ;;
+check_sing_box_logs)
+    check_sing_box_logs
+    ;;
+check_fakeip)
+    check_fakeip
+    ;;
+clash_api)
+    clash_api "$2" "$3" "$4"
+    ;;
+get_subscription_cached_links)
+    get_subscription_cached_links "$2"
+    ;;
+get_subscription_skipped_links)
+    get_subscription_skipped_links "$2"
+    ;;
+get_subscription_items)
+    get_subscription_items "$2"
+    ;;
+get_subscription_items_cached)
+    get_subscription_items_cached "$2"
+    ;;
+set_subscription_link_enabled)
+    set_subscription_link_enabled "$2" "$3" "$4"
+    ;;
+set_subscription_links_enabled)
+    shift
+    set_subscription_links_enabled "$@"
+    ;;
+show_config)
+    show_config
+    ;;
+show_version)
+    show_version
+    ;;
+show_sing_box_config)
+    show_sing_box_config
+    ;;
+show_sing_box_version)
+    show_sing_box_version
+    ;;
+show_system_info)
+    show_system_info
+    ;;
+get_status)
+    get_status
+    ;;
+get_sing_box_status)
+    get_sing_box_status
+    ;;
+get_system_info)
+    get_system_info
+    ;;
+check_dns_available)
+    check_dns_available
+    ;;
+global_check)
+    global_check "${2:-}"
+    ;;
+*)
+    show_help
+    exit 1
+    ;;
+esac
+DISPATCHER_EOF
 }
 
 has_cache_only_subscription_backend() {
@@ -387,6 +567,11 @@ for runtime_file in /usr/bin/podkop /usr/lib/podkop/helpers.sh; do
 	fi
 done
 
+if [ -f /usr/bin/podkop ]; then
+	sed -i 's#CLASH_URL="$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"#CLASH_URL="http://$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"#g' /usr/bin/podkop
+	ensure_podkop_dispatcher /usr/bin/podkop
+fi
+
 if grep -q "get_subscription_benchmark_bytes" /usr/bin/podkop 2>/dev/null &&
 	{ ! grep -q "^get_subscription_benchmark_bytes()" /usr/bin/podkop 2>/dev/null ||
 		! grep -q "^get_subscription_benchmark_streams()" /usr/bin/podkop 2>/dev/null ||
@@ -471,8 +656,14 @@ chmod 755 /usr/bin/podkop
 [ -f /www/luci-static/resources/view/podkop/subscriptions.js ] && chmod 644 /www/luci-static/resources/view/podkop/subscriptions.js
 chmod 644 /usr/lib/lua/luci/i18n/podkop.ru.lmo
 
+ensure_podkop_dispatcher /usr/bin/podkop
+
 if ! ash -n /usr/bin/podkop; then
 	abort_with_restore "podkop syntax check failed"
+fi
+
+if [ -z "$(/usr/bin/podkop show_version 2>/dev/null)" ]; then
+	abort_with_restore "podkop command dispatcher check failed"
 fi
 
 if [ -f /usr/lib/podkop/sing_box_config_facade.sh ] && ! ash -n /usr/lib/podkop/sing_box_config_facade.sh; then
