@@ -275,7 +275,9 @@ has_latest_subscription_backend() {
 		grep -q -- "--connect-timeout 4" /usr/bin/podkop 2>/dev/null &&
 		grep -q "time_starttransfer" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_speedtest_start" /usr/bin/podkop 2>/dev/null &&
+		grep -q "subscription_speedtest_stop" /usr/bin/podkop 2>/dev/null &&
 		grep -q "get_subscription_speedtest_status" /usr/bin/podkop 2>/dev/null &&
+		grep -q "subscription_speedtest_restore_state_file" /usr/bin/podkop 2>/dev/null &&
 		grep -q 'subscription_speedtest "$2" "$3"' /usr/bin/podkop 2>/dev/null &&
 		grep -q -- '--arg state "running" --arg message "speedtest_running"' /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&

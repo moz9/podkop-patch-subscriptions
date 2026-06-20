@@ -624,6 +624,7 @@ var Podkop;
     AvailableMethods2["SUBSCRIPTION_UPDATE_JSON"] = "subscription_update_json";
     AvailableMethods2["SUBSCRIPTION_SPEEDTEST"] = "subscription_speedtest";
     AvailableMethods2["SUBSCRIPTION_SPEEDTEST_START"] = "subscription_speedtest_start";
+    AvailableMethods2["SUBSCRIPTION_SPEEDTEST_STOP"] = "subscription_speedtest_stop";
     AvailableMethods2["GET_SUBSCRIPTION_SPEEDTEST_STATUS"] = "get_subscription_speedtest_status";
     AvailableMethods2["SUBSCRIPTION_PATCH_UPDATE"] = "subscription_patch_update";
     AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_STATUS"] = "get_subscription_patch_update_status";
@@ -724,6 +725,12 @@ var PodkopShellMethods = {
     "/usr/bin/podkop",
     15e3
   ),
+  stopSubscriptionSpeedtest: async () => callBaseMethod(
+    Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST_STOP,
+    [],
+    "/usr/bin/podkop",
+    15e3
+  ),
   getSubscriptionSpeedtestStatus: async () => callBaseMethod(
     Podkop.AvailableMethods.GET_SUBSCRIPTION_SPEEDTEST_STATUS,
     [],
@@ -782,7 +789,7 @@ function getSubscriptionSkippedReasonLabel(reason) {
     case "unsupported_protocol":
       return _("Unsupported protocol");
     case "unsupported_transport":
-      return _("Unsupported transport");
+      return _("Not supported");
     case "unsupported_security":
       return _("Unsupported security");
     case "invalid_config":
@@ -4838,7 +4845,7 @@ function getReasonLabel(reason) {
   const labels = {
     user_excluded: _("Excluded"),
     unsupported_protocol: _("Unsupported protocol"),
-    unsupported_transport: _("Unsupported transport"),
+    unsupported_transport: _("Not supported"),
     unsupported_security: _("Unsupported security"),
     invalid_config: _("Invalid config")
   };
@@ -4986,6 +4993,7 @@ function renderToolbar({
   onPatchUpdate
 }) {
   const actionRunning = actionStatus === "running";
+  const speedRunning = action === "speed" && actionRunning;
   const canRunAction = !loading && !failed && !applying && !actionRunning;
   const canRunSubscriptionAction = canRunAction && pendingCount === 0;
   const canRunPatchAction = !loading && !applying && !actionRunning && pendingCount === 0;
@@ -5035,14 +5043,14 @@ function renderToolbar({
           disabled: !canRunSubscriptionAction
         }),
         renderButton({
-          text: _("Speed"),
-          title: _("Run speed benchmark"),
-          ariaLabel: _("Run speed benchmark"),
-          icon: renderSquareChartGanttIcon24,
+          text: speedRunning ? _("Stop") : _("Speed"),
+          title: speedRunning ? _("Stop speed benchmark") : _("Run speed benchmark"),
+          ariaLabel: speedRunning ? _("Stop speed benchmark") : _("Run speed benchmark"),
+          icon: speedRunning ? renderCircleStopIcon24 : renderSquareChartGanttIcon24,
           hideText: true,
           onClick: onSpeedtest,
-          loading: action === "speed" && actionRunning,
-          disabled: !canRunSubscriptionAction
+          loading: false,
+          disabled: speedRunning ? false : !canRunSubscriptionAction
         }),
         renderButton({
           text: _("Patch"),
@@ -5166,7 +5174,7 @@ function renderSourceTable({
     E("table", { class: "pdk_subscriptions-page__table" }, [
       E("thead", {}, [
         E("tr", {}, [
-          E("th", {}, _("Use")),
+          E("th", {}, _("On")),
           E("th", {}, _("Config")),
           E("th", {}, _("Protocol")),
           E("th", {}, _("Transport")),
@@ -5431,6 +5439,7 @@ function render3() {
 }
 
 // src/podkop/tabs/subscriptions/initController.ts
+var speedtestRunToken = 0;
 function getRowId2(sectionCode, itemId) {
   return `${sectionCode}:${itemId}`;
 }
@@ -5456,6 +5465,10 @@ async function getSubscriptionSectionsForAction() {
 }
 function isActionRunning() {
   return store.get().subscriptionItemsWidget.actionStatus === "running";
+}
+function isSpeedtestRunning() {
+  const widget = store.get().subscriptionItemsWidget;
+  return widget.action === "speed" && widget.actionStatus === "running";
 }
 function canRunServiceAction() {
   const widget = store.get().subscriptionItemsWidget;
@@ -5726,10 +5739,31 @@ async function handlePingSubscriptions() {
   }
 }
 async function handleSpeedtestSubscriptions() {
+  if (isSpeedtestRunning()) {
+    try {
+      await stopSpeedtestSubscriptions();
+    } catch (error) {
+      logger.error("[SUBSCRIPTIONS]", "failed to stop subscription speedtest");
+      logger.error("[SUBSCRIPTIONS]", error);
+      const message = getSubscriptionActionErrorMessage(
+        error,
+        _("Failed to stop speed benchmark.")
+      );
+      setActionState({
+        action: "speed",
+        actionStatus: "error",
+        actionMessage: message
+      });
+      showToast(message, "error");
+    }
+    return;
+  }
   if (!canRunServiceAction()) {
     return;
   }
   const speedByRow = {};
+  const runToken = speedtestRunToken += 1;
+  let failedItems = 0;
   setActionState({
     action: "speed",
     actionStatus: "running",
@@ -5743,25 +5777,47 @@ async function handleSpeedtestSubscriptions() {
         continue;
       }
       for (const item of enabledItems) {
+        if (runToken !== speedtestRunToken) {
+          throw new Error("speedtest_cancelled");
+        }
         setActionState({
           action: "speed",
           actionStatus: "running",
           actionMessage: `${_("Starting speed benchmark")}: ${section.displayName} / ${item.name}`
         });
-        const started = await PodkopShellMethods.startSubscriptionSpeedtest(
-          section.code,
-          item.id
-        );
-        if (!started.success || !started.data.success) {
-          throw new Error(started.success ? started.data.error : started.error);
+        try {
+          const started = await PodkopShellMethods.startSubscriptionSpeedtest(
+            section.code,
+            item.id
+          );
+          if (!started.success || !started.data.success) {
+            throw new Error(
+              started.success ? started.data.error : started.error
+            );
+          }
+          const result = await pollSpeedtestStatus(section, item, runToken);
+          if (!result.success) {
+            throw new Error(result.error);
+          }
+          if (!result.results?.length) {
+            throw new Error("speedtest_failed");
+          }
+          (result.results ?? []).forEach((speedItem) => {
+            speedByRow[getRowId2(section.code, speedItem.id)] = speedItem;
+          });
+        } catch (error) {
+          if (getErrorText(error) === "speedtest_cancelled") {
+            throw error;
+          }
+          failedItems += 1;
+          speedByRow[getRowId2(section.code, item.id)] = {
+            id: item.id,
+            tag: "",
+            name: item.name,
+            success: false,
+            error: getErrorText(error) || "speedtest_failed"
+          };
         }
-        const result = await pollSpeedtestStatus(section, item);
-        if (!result.success) {
-          throw new Error(result.error);
-        }
-        (result.results ?? []).forEach((speedItem) => {
-          speedByRow[getRowId2(section.code, speedItem.id)] = speedItem;
-        });
         store.set({
           subscriptionItemsWidget: {
             ...store.get().subscriptionItemsWidget,
@@ -5779,10 +5835,22 @@ async function handleSpeedtestSubscriptions() {
     setActionState({
       action: "speed",
       actionStatus: "success",
-      actionMessage: _("Speed benchmark completed.")
+      actionMessage: failedItems > 0 ? _("Speed benchmark completed. Some configs failed.") : _("Speed benchmark completed.")
     });
-    showToast(_("Speed benchmark completed."), "success");
+    showToast(
+      failedItems > 0 ? _("Speed benchmark completed. Some configs failed.") : _("Speed benchmark completed."),
+      "success"
+    );
   } catch (error) {
+    if (getErrorText(error) === "speedtest_cancelled") {
+      setActionState({
+        action: "speed",
+        actionStatus: "success",
+        actionMessage: _("Speed benchmark stopped.")
+      });
+      showToast(_("Speed benchmark stopped."), "success");
+      return;
+    }
     logger.error("[SUBSCRIPTIONS]", "failed to run subscription speedtest");
     logger.error("[SUBSCRIPTIONS]", error);
     const message = getSubscriptionActionErrorMessage(
@@ -5796,6 +5864,24 @@ async function handleSpeedtestSubscriptions() {
     });
     showToast(message, "error");
   }
+}
+async function stopSpeedtestSubscriptions() {
+  speedtestRunToken += 1;
+  setActionState({
+    action: "speed",
+    actionStatus: "running",
+    actionMessage: _("Stopping speed benchmark")
+  });
+  const stopped = await PodkopShellMethods.stopSubscriptionSpeedtest();
+  if (!stopped.success || !stopped.data.success) {
+    throw new Error(stopped.success ? stopped.data.error : stopped.error);
+  }
+  setActionState({
+    action: "speed",
+    actionStatus: "success",
+    actionMessage: _("Speed benchmark stopped.")
+  });
+  showToast(_("Speed benchmark stopped."), "success");
 }
 function getSpeedtestStatusMessage(status, section, item) {
   switch (status.message) {
@@ -5813,8 +5899,11 @@ function getSpeedtestStatusMessage(status, section, item) {
       return status.message || `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`;
   }
 }
-async function pollSpeedtestStatus(section, item) {
+async function pollSpeedtestStatus(section, item, runToken) {
   for (let attempt = 0; attempt < 180; attempt += 1) {
+    if (runToken !== speedtestRunToken) {
+      throw new Error("speedtest_cancelled");
+    }
     await sleep(1e3);
     const status = await PodkopShellMethods.getSubscriptionSpeedtestStatus();
     if (!status.success) {
@@ -5830,6 +5919,9 @@ async function pollSpeedtestStatus(section, item) {
     });
     if (status.data.state === "running" || status.data.state === "idle") {
       continue;
+    }
+    if (status.data.state === "cancelled") {
+      throw new Error("speedtest_cancelled");
     }
     if (status.data.state === "success" && status.data.result) {
       return status.data.result;
@@ -5867,6 +5959,8 @@ function getSubscriptionActionErrorMessage(error, fallback) {
       return _("Speed benchmark timed out. Try again or test fewer configs.");
     case "speedtest_failed":
       return _("Speed benchmark failed.");
+    case "speedtest_cancelled":
+      return _("Speed benchmark stopped.");
     case "section_and_item_required":
       return _("Speed benchmark target is missing.");
     case "download_failed":

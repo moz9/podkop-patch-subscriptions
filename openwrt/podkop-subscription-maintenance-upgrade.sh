@@ -1073,7 +1073,7 @@ if grep -q 'subscription_speedtest "$2"' "$target" 2>/dev/null &&
 fi
 
 if ! grep -q '^subscription_speedtest_status_file()' "$target" 2>/dev/null; then
-	async_file="$tmp_dir/subscription-speedtest-async.sh"
+	async_file="$(mktemp)"
 	cat > "$async_file" << 'ASYNC_EOF'
 subscription_speedtest_status_file() {
     echo "/tmp/podkop-subscriptions-speedtest.json"
@@ -1239,12 +1239,219 @@ if grep -q '^subscription_speedtest_start()' "$target" 2>/dev/null &&
 	rm -f "$tmp"
 fi
 
+if ! grep -q '^subscription_speedtest_stop()' "$target" 2>/dev/null ||
+	! grep -q '^subscription_speedtest_restore_state_file()' "$target" 2>/dev/null; then
+	async_file="$(mktemp)"
+	cat > "$async_file" << 'ASYNC_CURRENT_EOF'
+subscription_speedtest_status_file() {
+    echo "/tmp/podkop-subscriptions-speedtest.json"
+}
+
+subscription_speedtest_restore_state_file() {
+    echo "/tmp/podkop-subscriptions-speedtest-restore.json"
+}
+
+subscription_speedtest_write_status() {
+    local state="$1"
+    local message="$2"
+    local section="$3"
+    local item_id="$4"
+    local pid="$5"
+    local status_file updated_at
+
+    status_file="$(subscription_speedtest_status_file)"
+    updated_at="$(date -Iseconds 2> /dev/null || date)"
+    jq -cn --arg state "$state" --arg message "$message" \
+        --arg section "$section" --arg itemId "$item_id" \
+        --arg updatedAt "$updated_at" --argjson pid "${pid:-0}" \
+        --arg logTail "" \
+        '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
+        > "$status_file"
+}
+
+subscription_speedtest_start() {
+    local section="$1"
+    local item_id="$2"
+    local status_file restore_file runner state pid original_mixed_enabled original_mixed_port
+
+    if [ -z "$section" ] || [ -z "$item_id" ]; then
+        echo '{"success":false,"error":"section_and_item_required"}'
+        return 1
+    fi
+
+    status_file="$(subscription_speedtest_status_file)"
+    if [ -s "$status_file" ]; then
+        state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
+        pid="$(jq -r '.pid // ""' "$status_file" 2> /dev/null)"
+        if [ "$state" = "running" ] && subscription_action_lock_pid_alive "$pid"; then
+            echo '{"success":false,"error":"service_busy"}'
+            return 1
+        fi
+    fi
+
+    subscription_speedtest_write_status "running" "speedtest_running" "$section" "$item_id" "$$"
+
+    restore_file="$(subscription_speedtest_restore_state_file)"
+    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
+    config_get original_mixed_port "$section" "mixed_proxy_port"
+    jq -cn --arg section "$section" \
+        --arg originalMixedEnabled "$original_mixed_enabled" \
+        --arg originalMixedPort "$original_mixed_port" \
+        '{section:$section, originalMixedEnabled:$originalMixedEnabled, originalMixedPort:$originalMixedPort}' \
+        > "$restore_file"
+
+    runner="/tmp/podkop-subscriptions-speedtest-runner.sh"
+    cat > "$runner" << 'EOF'
+#!/bin/ash
+status_file="/tmp/podkop-subscriptions-speedtest.json"
+restore_file="/tmp/podkop-subscriptions-speedtest-restore.json"
+section="$1"
+item_id="$2"
+
+write_status() {
+    local state="$1"
+    local message="$2"
+    local result_file="$3"
+    local log_tail="$4"
+    local updated_at
+
+    updated_at="$(date -Iseconds 2> /dev/null || date)"
+
+    if [ -n "$result_file" ] && [ -s "$result_file" ]; then
+        jq -cn --arg state "$state" --arg message "$message" \
+            --arg section "$section" --arg itemId "$item_id" \
+            --arg updatedAt "$updated_at" --argjson pid "$$" \
+            --arg logTail "$log_tail" --slurpfile result "$result_file" \
+            '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail, result:($result[0] // null)}' \
+            > "$status_file"
+    else
+        jq -cn --arg state "$state" --arg message "$message" \
+            --arg section "$section" --arg itemId "$item_id" \
+            --arg updatedAt "$updated_at" --argjson pid "$$" \
+            --arg logTail "$log_tail" \
+            '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
+            > "$status_file"
+    fi
+}
+
+result_file="$(mktemp)"
+output_file="$(mktemp)"
+
+write_status "running" "speedtest_running" "" ""
+
+/usr/bin/podkop subscription_speedtest "$section" "$item_id" > "$output_file" 2>&1
+rc="$?"
+
+if [ "$rc" -eq 0 ] && jq -e '.success == true' "$output_file" > /dev/null 2>&1; then
+    cp "$output_file" "$result_file"
+    write_status "success" "speedtest_success" "$result_file" ""
+else
+    message="speedtest_failed"
+    if jq -e '.error' "$output_file" > /dev/null 2>&1; then
+        message="$(jq -r '.error // "speedtest_failed"' "$output_file" 2> /dev/null)"
+    fi
+    write_status "error" "$message" "" "$(tail -n 20 "$output_file" 2> /dev/null)"
+    rm -f "$result_file" "$output_file" "$restore_file"
+    exit 1
+fi
+
+rm -f "$result_file" "$output_file" "$restore_file"
+EOF
+
+    chmod +x "$runner"
+    if command -v start-stop-daemon > /dev/null 2>&1; then
+        start-stop-daemon -S -b -x "$runner" -- "$section" "$item_id" > /dev/null 2>&1
+    elif command -v setsid > /dev/null 2>&1; then
+        setsid "$runner" "$section" "$item_id" < /dev/null > /dev/null 2>&1 &
+    else
+        "$runner" "$section" "$item_id" < /dev/null > /dev/null 2>&1 &
+    fi
+
+    echo '{"success":true,"started":true}'
+}
+
+subscription_speedtest_stop() {
+    local status_file restore_file state pid section item_id restore_section original_mixed_enabled original_mixed_port
+
+    status_file="$(subscription_speedtest_status_file)"
+    restore_file="$(subscription_speedtest_restore_state_file)"
+    if [ ! -s "$status_file" ]; then
+        echo '{"success":true,"stopped":false}'
+        return 0
+    fi
+
+    state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
+    pid="$(jq -r '.pid // ""' "$status_file" 2> /dev/null)"
+    section="$(jq -r '.section // ""' "$status_file" 2> /dev/null)"
+    item_id="$(jq -r '.itemId // ""' "$status_file" 2> /dev/null)"
+
+    if [ "$state" = "running" ] && subscription_action_lock_pid_alive "$pid"; then
+        kill_process_tree "$pid" > /dev/null 2>&1 || true
+        sleep 1
+    fi
+
+    if [ -s "$restore_file" ]; then
+        restore_section="$(jq -r '.section // ""' "$restore_file" 2> /dev/null)"
+        original_mixed_enabled="$(jq -r '.originalMixedEnabled // ""' "$restore_file" 2> /dev/null)"
+        original_mixed_port="$(jq -r '.originalMixedPort // ""' "$restore_file" 2> /dev/null)"
+        if [ -n "$restore_section" ]; then
+            subscription_speedtest_restore_mixed_proxy "$restore_section" "$original_mixed_enabled" "$original_mixed_port" 1 > /dev/null 2>&1 || true
+        fi
+        rm -f "$restore_file"
+    elif [ -n "$section" ]; then
+        subscription_speedtest_restore_mixed_proxy "$section" "" "" 1 > /dev/null 2>&1 || true
+    fi
+
+    subscription_speedtest_write_status "cancelled" "speedtest_cancelled" "$section" "$item_id" "0"
+    echo '{"success":true,"stopped":true}'
+}
+
+get_subscription_speedtest_status() {
+    local status_file
+
+    status_file="$(subscription_speedtest_status_file)"
+    if [ -s "$status_file" ]; then
+        cat "$status_file"
+    else
+        echo '{"state":"idle","message":"","section":"","itemId":"","updatedAt":"","logTail":""}'
+    fi
+}
+ASYNC_CURRENT_EOF
+
+	awk -v insert_file="$async_file" '
+		$0 == "subscription_speedtest_status_file() {" && ! inserted {
+			while ((getline line < insert_file) > 0) {
+				print line
+			}
+			close(insert_file)
+			inserted = 1
+			skip = 1
+			next
+		}
+
+		skip && $0 == "subscription_patch_update_status_file() {" {
+			skip = 0
+			print
+			next
+		}
+
+		!skip { print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp" "$async_file"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp" "$async_file"
+fi
+
 if ! grep -q '^subscription_speedtest_start)' "$target" 2>/dev/null; then
 	awk '
 		$0 == "    subscription_speedtest   Benchmark enabled subscription proxy items for a section" {
 			print
 			print "    subscription_speedtest_start"
 			print "                            Start background benchmark for one subscription proxy item"
+			print "    subscription_speedtest_stop"
+			print "                            Stop background subscription benchmark"
 			print "    get_subscription_speedtest_status"
 			print "                            Show background subscription benchmark status"
 			next
@@ -1254,8 +1461,29 @@ if ! grep -q '^subscription_speedtest_start)' "$target" 2>/dev/null; then
 			print "subscription_speedtest_start)"
 			print "    subscription_speedtest_start \"$2\" \"$3\""
 			print "    ;;"
+			print "subscription_speedtest_stop)"
+			print "    subscription_speedtest_stop"
+			print "    ;;"
 			print "get_subscription_speedtest_status)"
 			print "    get_subscription_speedtest_status"
+			print "    ;;"
+			inserted = 1
+		}
+
+		{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
+if ! grep -q '^subscription_speedtest_stop)' "$target" 2>/dev/null; then
+	awk '
+		$0 == "get_subscription_speedtest_status)" && ! inserted {
+			print "subscription_speedtest_stop)"
+			print "    subscription_speedtest_stop"
 			print "    ;;"
 			inserted = 1
 		}
