@@ -5044,8 +5044,8 @@ function renderToolbar({
         }),
         renderButton({
           text: speedRunning ? _("Stop") : _("Speed"),
-          title: speedRunning ? _("Stop speed benchmark") : _("Run speed benchmark"),
-          ariaLabel: speedRunning ? _("Stop speed benchmark") : _("Run speed benchmark"),
+          title: speedRunning ? _("Stop speed test") : _("Run speed test"),
+          ariaLabel: speedRunning ? _("Stop speed test") : _("Run speed test"),
           icon: speedRunning ? renderCircleStopIcon24 : renderSquareChartGanttIcon24,
           hideText: true,
           onClick: onSpeedtest,
@@ -5102,16 +5102,16 @@ function renderRow({
   const speed = speedByRow[rowId];
   function renderLatency() {
     if (!item.supported || !effectiveEnabled) {
-      return "\u2014";
+      return "-";
     }
-    return typeof latency === "number" && latency > 0 ? `${latency} ms` : "\u2014";
+    return typeof latency === "number" && latency > 0 ? `${latency} ms` : "-";
   }
   function renderSpeed() {
     if (!item.supported || !effectiveEnabled) {
-      return "\u2014";
+      return "-";
     }
     if (!speed) {
-      return "\u2014";
+      return "-";
     }
     if (!speed.success || !speed.bytesPerSecond) {
       return _("Error");
@@ -5747,7 +5747,7 @@ async function handleSpeedtestSubscriptions() {
       logger.error("[SUBSCRIPTIONS]", error);
       const message = getSubscriptionActionErrorMessage(
         error,
-        _("Failed to stop speed benchmark.")
+        _("Failed to stop speed test.")
       );
       setActionState({
         action: "speed",
@@ -5783,7 +5783,7 @@ async function handleSpeedtestSubscriptions() {
         setActionState({
           action: "speed",
           actionStatus: "running",
-          actionMessage: `${_("Starting speed benchmark")}: ${section.displayName} / ${item.name}`
+          actionMessage: `${_("Starting speed test")}: ${section.displayName} / ${item.name}`
         });
         try {
           const started = await PodkopShellMethods.startSubscriptionSpeedtest(
@@ -5835,10 +5835,10 @@ async function handleSpeedtestSubscriptions() {
     setActionState({
       action: "speed",
       actionStatus: "success",
-      actionMessage: failedItems > 0 ? _("Speed benchmark completed. Some configs failed.") : _("Speed benchmark completed.")
+      actionMessage: failedItems > 0 ? _("Speed test completed. Some configs failed.") : _("Speed test completed.")
     });
     showToast(
-      failedItems > 0 ? _("Speed benchmark completed. Some configs failed.") : _("Speed benchmark completed."),
+      failedItems > 0 ? _("Speed test completed. Some configs failed.") : _("Speed test completed."),
       "success"
     );
   } catch (error) {
@@ -5846,16 +5846,16 @@ async function handleSpeedtestSubscriptions() {
       setActionState({
         action: "speed",
         actionStatus: "success",
-        actionMessage: _("Speed benchmark stopped.")
+        actionMessage: _("Speed test stopped.")
       });
-      showToast(_("Speed benchmark stopped."), "success");
+      showToast(_("Speed test stopped."), "success");
       return;
     }
     logger.error("[SUBSCRIPTIONS]", "failed to run subscription speedtest");
     logger.error("[SUBSCRIPTIONS]", error);
     const message = getSubscriptionActionErrorMessage(
       error,
-      _("Failed to run speed benchmark.")
+      _("Failed to run speed test.")
     );
     setActionState({
       action: "speed",
@@ -5870,7 +5870,7 @@ async function stopSpeedtestSubscriptions() {
   setActionState({
     action: "speed",
     actionStatus: "running",
-    actionMessage: _("Stopping speed benchmark")
+    actionMessage: _("Stopping speed test")
   });
   const stopped = await PodkopShellMethods.stopSubscriptionSpeedtest();
   if (!stopped.success || !stopped.data.success) {
@@ -5879,16 +5879,16 @@ async function stopSpeedtestSubscriptions() {
   setActionState({
     action: "speed",
     actionStatus: "success",
-    actionMessage: _("Speed benchmark stopped.")
+    actionMessage: _("Speed test stopped.")
   });
-  showToast(_("Speed benchmark stopped."), "success");
+  showToast(_("Speed test stopped."), "success");
 }
 function getSpeedtestStatusMessage(status, section, item) {
   switch (status.message) {
     case "speedtest_running":
-      return `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`;
+      return `${_("Running speed test")}: ${section.displayName} / ${item.name}`;
     case "speedtest_success":
-      return `${_("Speed benchmark completed")}: ${section.displayName} / ${item.name}`;
+      return `${_("Speed test completed")}: ${section.displayName} / ${item.name}`;
     case "service_busy":
       return _("Podkop is restarting now. Try again in a minute.");
     case "download_failed":
@@ -5896,7 +5896,7 @@ function getSpeedtestStatusMessage(status, section, item) {
     case "select_failed":
       return `${_("Failed to select config")}: ${item.name}`;
     default:
-      return status.message || `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`;
+      return status.message || `${_("Running speed test")}: ${section.displayName} / ${item.name}`;
   }
 }
 async function pollSpeedtestStatus(section, item, runToken) {
@@ -5914,7 +5914,7 @@ async function pollSpeedtestStatus(section, item, runToken) {
     }
     setActionState({
       action: "speed",
-      actionStatus: status.data.state === "error" ? "error" : "running",
+      actionStatus: "running",
       actionMessage: getSpeedtestStatusMessage(status.data, section, item)
     });
     if (status.data.state === "running" || status.data.state === "idle") {
@@ -5956,13 +5956,13 @@ function getSubscriptionActionErrorMessage(error, fallback) {
     case "mixed_proxy_address_missing":
       return _("Mixed proxy address is not configured.");
     case "speedtest_timeout":
-      return _("Speed benchmark timed out. Try again or test fewer configs.");
+      return _("Speed test timed out. Try again or test fewer configs.");
     case "speedtest_failed":
-      return _("Speed benchmark failed.");
+      return _("Speed test failed.");
     case "speedtest_cancelled":
-      return _("Speed benchmark stopped.");
+      return _("Speed test stopped.");
     case "section_and_item_required":
-      return _("Speed benchmark target is missing.");
+      return _("Speed test target is missing.");
     case "download_failed":
       return _("Download failed");
     case "select_failed":
@@ -6141,8 +6141,11 @@ async function initController3() {
 
 // src/podkop/tabs/subscriptions/styles.ts
 var styles5 = `
+#cbi-podkop-subscriptions,
+#cbi-podkop-subscriptions-_mount_node,
 #cbi-podkop-subscriptions-_mount_node > div {
     width: 100%;
+    box-sizing: border-box;
 }
 
 #cbi-podkop-subscriptions > h3 {
@@ -6151,13 +6154,19 @@ var styles5 = `
 
 .pdk_subscriptions-page {
     width: 100%;
+    min-width: 0;
 }
 
 .pdk_subscriptions-page__content {
     width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
 }
 
 .pdk_subscriptions-page__toolbar {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -6169,8 +6178,13 @@ var styles5 = `
 }
 
 .pdk_subscriptions-page__toolbar-message {
+    flex: 1 1 auto;
+    min-width: 0;
     color: var(--text-color-medium);
     line-height: 1.35;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .pdk_subscriptions-page__toolbar-actions {
@@ -6204,6 +6218,8 @@ var styles5 = `
 }
 
 .pdk_subscriptions-page__sections {
+    width: 100%;
+    min-width: 0;
     display: grid;
     grid-template-columns: 1fr;
     grid-row-gap: 10px;
@@ -6211,6 +6227,9 @@ var styles5 = `
 }
 
 .pdk_subscriptions-page__section {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     border: 2px var(--background-color-low, lightgray) solid;
     border-radius: 4px;
     padding: 10px;
@@ -6229,6 +6248,9 @@ var styles5 = `
 }
 
 .pdk_subscriptions-page__source-group {
+    width: 100%;
+    min-width: 0;
+    box-sizing: border-box;
     border: 1px var(--background-color-low, lightgray) solid;
     border-radius: 4px;
     overflow: hidden;
@@ -6282,11 +6304,15 @@ var styles5 = `
 }
 
 .pdk_subscriptions-page__table-wrap {
+    width: 100%;
+    min-width: 0;
     overflow-x: auto;
 }
 
 .pdk_subscriptions-page__table {
     width: 100%;
+    min-width: 820px;
+    table-layout: fixed;
     border-collapse: collapse;
 }
 
@@ -6296,6 +6322,8 @@ var styles5 = `
     border-bottom: 1px var(--background-color-low, lightgray) solid;
     text-align: left;
     white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .pdk_subscriptions-page__table th {
@@ -6303,7 +6331,39 @@ var styles5 = `
 }
 
 .pdk_subscriptions-page__toggle-cell {
-    width: 48px;
+    width: 58px;
+}
+
+.pdk_subscriptions-page__table th:nth-child(1),
+.pdk_subscriptions-page__table td:nth-child(1) {
+    width: 58px;
+}
+
+.pdk_subscriptions-page__table th:nth-child(2),
+.pdk_subscriptions-page__table td:nth-child(2) {
+    width: 22%;
+}
+
+.pdk_subscriptions-page__table th:nth-child(3),
+.pdk_subscriptions-page__table td:nth-child(3) {
+    width: 105px;
+}
+
+.pdk_subscriptions-page__table th:nth-child(4),
+.pdk_subscriptions-page__table td:nth-child(4) {
+    width: 115px;
+}
+
+.pdk_subscriptions-page__table th:nth-child(5),
+.pdk_subscriptions-page__table td:nth-child(5),
+.pdk_subscriptions-page__table th:nth-child(6),
+.pdk_subscriptions-page__table td:nth-child(6) {
+    width: 110px;
+}
+
+.pdk_subscriptions-page__table th:nth-child(7),
+.pdk_subscriptions-page__table td:nth-child(7) {
+    width: 150px;
 }
 
 .pdk_subscriptions-page__row--unsupported {
@@ -6349,6 +6409,10 @@ var styles5 = `
     .pdk_subscriptions-page__toolbar {
         align-items: flex-start;
         flex-direction: column;
+    }
+
+    .pdk_subscriptions-page__toolbar-message {
+        white-space: normal;
     }
 
     .pdk_subscriptions-page__toolbar-actions {

@@ -1,0 +1,4296 @@
+From a3eebccd79681d0b0f4950695a062c9676f3218b Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Sat, 20 Jun 2026 11:37:32 +0300
+Subject: [PATCH] Polish subscription speed test UI
+
+---
+ fe-app-podkop/locales/calls.json              | 362 +++++++++++-------
+ fe-app-podkop/locales/podkop.pot              | 301 +++++++++------
+ fe-app-podkop/locales/podkop.ru.po            |  98 ++---
+ .../methods/custom/getDashboardSections.ts    |   2 +-
+ .../src/podkop/methods/shell/index.ts         |   7 +
+ .../tabs/subscriptions/initController.ts      | 194 ++++++++--
+ .../partials/renderSubscriptionSections.ts    |  32 +-
+ .../src/podkop/tabs/subscriptions/styles.ts   |  66 +++-
+ fe-app-podkop/src/podkop/types.ts             |   9 +-
+ .../luci-static/resources/view/podkop/main.js | 261 ++++++++++---
+ luci-app-podkop/po/ru/podkop.po               |  98 ++---
+ luci-app-podkop/po/templates/podkop.pot       | 301 +++++++++------
+ podkop/files/usr/bin/podkop                   | 160 ++++++--
+ 13 files changed, 1309 insertions(+), 582 deletions(-)
+
+diff --git a/fe-app-podkop/locales/calls.json b/fe-app-podkop/locales/calls.json
+index f683a92..aaf226e 100644
+--- a/fe-app-podkop/locales/calls.json
++++ b/fe-app-podkop/locales/calls.json
+@@ -31,21 +31,21 @@
+     "call": "Action completed",
+     "key": "Action completed",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:236"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:250"
+     ]
+   },
+   {
+     "call": "Action failed",
+     "key": "Action failed",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:232"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:246"
+     ]
+   },
+   {
+     "call": "Action is running",
+     "key": "Action is running",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:228"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:242"
+     ]
+   },
+   {
+@@ -59,7 +59,7 @@
+     "call": "Additional marking rules found",
+     "key": "Additional marking rules found",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:106"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:104"
+     ]
+   },
+   {
+@@ -80,14 +80,14 @@
+     "call": "Apply",
+     "key": "Apply",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:389"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:410"
+     ]
+   },
+   {
+     "call": "Applying changes. Podkop will be restarted once.",
+     "key": "Applying changes. Podkop will be restarted once.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:224"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:238"
+     ]
+   },
+   {
+@@ -158,7 +158,7 @@
+     "key": "Cannot receive checks result",
+     "places": [
+       "src\\podkop\\tabs\\diagnostic\\checks\\runDnsCheck.ts:27",
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:28",
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:25",
+       "src\\podkop\\tabs\\diagnostic\\checks\\runSectionsCheck.ts:27",
+       "src\\podkop\\tabs\\diagnostic\\checks\\runSingBoxCheck.ts:25"
+     ]
+@@ -167,7 +167,7 @@
+     "call": "Changes applied. Podkop has been restarted.",
+     "key": "Changes applied. Podkop has been restarted.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:248"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:262"
+     ]
+   },
+   {
+@@ -213,7 +213,7 @@
+     "call": "Click Apply to restart Podkop once.",
+     "key": "Click Apply to restart Podkop once.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:244"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:258"
+     ]
+   },
+   {
+@@ -227,7 +227,7 @@
+     "call": "Collapse subscription",
+     "key": "Collapse subscription",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:600"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:621"
+     ]
+   },
+   {
+@@ -241,7 +241,7 @@
+     "call": "Config",
+     "key": "Config",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:539"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:560"
+     ]
+   },
+   {
+@@ -255,7 +255,7 @@
+     "call": "Configs",
+     "key": "Configs",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:187"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:201"
+     ]
+   },
+   {
+@@ -318,7 +318,7 @@
+     "call": "Default",
+     "key": "Default",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:491"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:512"
+     ]
+   },
+   {
+@@ -467,6 +467,14 @@
+       "src\\partials\\modal\\renderModal.ts:15"
+     ]
+   },
++  {
++    "call": "Download failed",
++    "key": "Download failed",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:591",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:685"
++    ]
++  },
+   {
+     "call": "Download Lists via Proxy/VPN",
+     "key": "Download Lists via Proxy/VPN",
+@@ -585,7 +593,7 @@
+     "call": "Error",
+     "key": "Error",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:460"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:481"
+     ]
+   },
+   {
+@@ -683,22 +691,22 @@
+     "call": "Excluded",
+     "key": "Excluded",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:86",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:117"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:100",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:131"
+     ]
+   },
+   {
+     "call": "Expand subscription",
+     "key": "Expand subscription",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:599"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:620"
+     ]
+   },
+   {
+     "call": "Failed to apply changes. Podkop was not changed.",
+     "key": "Failed to apply changes. Podkop was not changed.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:240"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:254"
+     ]
+   },
+   {
+@@ -712,7 +720,7 @@
+     "call": "Failed to download patch update.",
+     "key": "Failed to download patch update.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:482"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:700"
+     ]
+   },
+   {
+@@ -731,59 +739,75 @@
+     "call": "Failed to install patch update.",
+     "key": "Failed to install patch update.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:484"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:702"
+     ]
+   },
+   {
+     "call": "Failed to load subscription configs",
+     "key": "Failed to load subscription configs",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:220",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:803"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:671",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:234",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:824"
+     ]
+   },
+   {
+-    "call": "Failed to run speed benchmark.",
+-    "key": "Failed to run speed benchmark.",
++    "call": "Failed to run speed test.",
++    "key": "Failed to run speed test.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:430"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:545"
+     ]
+   },
+   {
+     "call": "Failed to save!",
+     "key": "Failed to save!",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:249"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:281"
++    ]
++  },
++  {
++    "call": "Failed to select config",
++    "key": "Failed to select config",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:593",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:687"
+     ]
+   },
+   {
+     "call": "Failed to start patch update.",
+     "key": "Failed to start patch update.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:598",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:600"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:816",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:818"
++    ]
++  },
++  {
++    "call": "Failed to stop speed test.",
++    "key": "Failed to stop speed test.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:412"
+     ]
+   },
+   {
+     "call": "Failed to test latency.",
+     "key": "Failed to test latency.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:364",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:366"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:397",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:399"
+     ]
+   },
+   {
+     "call": "Failed to update subscription configs.",
+     "key": "Failed to update subscription configs.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:296"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:328"
+     ]
+   },
+   {
+     "call": "Failed to update subscription configs. Cache was kept.",
+     "key": "Failed to update subscription configs. Cache was kept.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:292"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:324"
+     ]
+   },
+   {
+@@ -840,8 +864,8 @@
+     "call": "Included",
+     "key": "Included",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:117",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:188"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:131",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:202"
+     ]
+   },
+   {
+@@ -870,7 +894,7 @@
+     "key": "Invalid config",
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:20",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:90"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:104"
+     ]
+   },
+   {
+@@ -1194,8 +1218,8 @@
+     "call": "Latency test completed.",
+     "key": "Latency test completed.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:355",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:357"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:388",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:390"
+     ]
+   },
+   {
+@@ -1216,14 +1240,16 @@
+     "call": "Loading",
+     "key": "Loading",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:801"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:822"
+     ]
+   },
+   {
+     "call": "Loading subscription configs",
+     "key": "Loading subscription configs",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:216"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:342",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:436",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:230"
+     ]
+   },
+   {
+@@ -1265,7 +1291,7 @@
+     "call": "Mixed proxy address is not configured.",
+     "key": "Mixed proxy address is not configured.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:469"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:675"
+     ]
+   },
+   {
+@@ -1300,21 +1326,21 @@
+     "call": "No enabled supported configs to test.",
+     "key": "No enabled supported configs to test.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:467"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:673"
+     ]
+   },
+   {
+     "call": "No other marking rules found",
+     "key": "No other marking rules found",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:105"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:103"
+     ]
+   },
+   {
+     "call": "No Subscription URLTest sections",
+     "key": "No Subscription URLTest sections",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:738"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:759"
+     ]
+   },
+   {
+@@ -1351,6 +1377,21 @@
+       "src\\podkop\\tabs\\diagnostic\\diagnostic.store.ts:87"
+     ]
+   },
++  {
++    "call": "Not supported",
++    "key": "Not supported",
++    "places": [
++      "src\\podkop\\methods\\custom\\getDashboardSections.ts:16",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:102"
++    ]
++  },
++  {
++    "call": "On",
++    "key": "On",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:559"
++    ]
++  },
+   {
+     "call": "Operation timed out",
+     "key": "Operation timed out",
+@@ -1390,44 +1431,44 @@
+     "call": "Patch",
+     "key": "Patch",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:378"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:399"
+     ]
+   },
+   {
+     "call": "Patch update failed.",
+     "key": "Patch update failed.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:559",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:583"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:777",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:801"
+     ]
+   },
+   {
+     "call": "Patch update is still running. Refresh the page later.",
+     "key": "Patch update is still running. Refresh the page later.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:527"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:745"
+     ]
+   },
+   {
+     "call": "Patch update started.",
+     "key": "Patch update started.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:559",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:583"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:777",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:801"
+     ]
+   },
+   {
+     "call": "Patch update status is unknown.",
+     "key": "Patch update status is unknown.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:486"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:704"
+     ]
+   },
+   {
+     "call": "Patch updated. Refresh the page in a minute.",
+     "key": "Patch updated. Refresh the page in a minute.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:480"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:698"
+     ]
+   },
+   {
+@@ -1473,8 +1514,8 @@
+     "call": "Ping",
+     "key": "Ping",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:358",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:542"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:373",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:563"
+     ]
+   },
+   {
+@@ -1488,21 +1529,22 @@
+     "call": "Podkop is restarting now. Try again in a minute.",
+     "key": "Podkop is restarting now. Try again in a minute.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:459"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:589",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:663"
+     ]
+   },
+   {
+     "call": "Podkop reload failed. Changes were not applied.",
+     "key": "Podkop reload failed. Changes were not applied.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:463"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:667"
+     ]
+   },
+   {
+     "call": "Podkop selector is not ready. Try again in a minute.",
+     "key": "Podkop selector is not ready. Try again in a minute.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:461"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:665"
+     ]
+   },
+   {
+@@ -1523,7 +1565,7 @@
+     "call": "Protocol",
+     "key": "Protocol",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:540"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:561"
+     ]
+   },
+   {
+@@ -1551,15 +1593,15 @@
+     "call": "Refresh",
+     "key": "Refresh",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:348"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:363"
+     ]
+   },
+   {
+     "call": "Refresh subscription configs",
+     "key": "Refresh subscription configs",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:349",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:350"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:364",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:365"
+     ]
+   },
+   {
+@@ -1587,7 +1629,7 @@
+     "call": "Reset",
+     "key": "Reset",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:395"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:416"
+     ]
+   },
+   {
+@@ -1629,42 +1671,42 @@
+     "call": "Rules mangle counters",
+     "key": "Rules mangle counters",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:79"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:77"
+     ]
+   },
+   {
+     "call": "Rules mangle exist",
+     "key": "Rules mangle exist",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:74"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:72"
+     ]
+   },
+   {
+     "call": "Rules mangle output counters",
+     "key": "Rules mangle output counters",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:89"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:87"
+     ]
+   },
+   {
+     "call": "Rules mangle output exist",
+     "key": "Rules mangle output exist",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:84"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:82"
+     ]
+   },
+   {
+     "call": "Rules proxy counters",
+     "key": "Rules proxy counters",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:99"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:97"
+     ]
+   },
+   {
+     "call": "Rules proxy exist",
+     "key": "Rules proxy exist",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:94"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:92"
+     ]
+   },
+   {
+@@ -1675,25 +1717,19 @@
+     ]
+   },
+   {
+-    "call": "Run speed benchmark",
+-    "key": "Run speed benchmark",
+-    "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:369",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:370"
+-    ]
+-  },
+-  {
+-    "call": "Running speed benchmark",
+-    "key": "Running speed benchmark",
++    "call": "Run speed test",
++    "key": "Run speed test",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:397"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:386",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:389"
+     ]
+   },
+   {
+-    "call": "Running speed benchmark. Active proxy may change briefly.",
+-    "key": "Running speed benchmark. Active proxy may change briefly.",
++    "call": "Running speed test",
++    "key": "Running speed test",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:381"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:585",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:595"
+     ]
+   },
+   {
+@@ -1707,7 +1743,7 @@
+     "call": "Saved!",
+     "key": "Saved!",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:244"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:276"
+     ]
+   },
+   {
+@@ -1742,7 +1778,7 @@
+     "call": "Select configs, then click Apply to restart Podkop once.",
+     "key": "Select configs, then click Apply to restart Podkop once.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:251"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:265"
+     ]
+   },
+   {
+@@ -1862,7 +1898,7 @@
+     "call": "Server",
+     "key": "Server",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:97"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:111"
+     ]
+   },
+   {
+@@ -1983,16 +2019,63 @@
+     "call": "Speed",
+     "key": "Speed",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:368",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:543"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:383",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:564"
++    ]
++  },
++  {
++    "call": "Speed test completed",
++    "key": "Speed test completed",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:587"
++    ]
++  },
++  {
++    "call": "Speed test completed.",
++    "key": "Speed test completed.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:521",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:526"
++    ]
++  },
++  {
++    "call": "Speed test completed. Some configs failed.",
++    "key": "Speed test completed. Some configs failed.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:520",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:525"
++    ]
++  },
++  {
++    "call": "Speed test failed.",
++    "key": "Speed test failed.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:679"
++    ]
++  },
++  {
++    "call": "Speed test stopped.",
++    "key": "Speed test stopped.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:534",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:536",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:573",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:575",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:681"
++    ]
++  },
++  {
++    "call": "Speed test target is missing.",
++    "key": "Speed test target is missing.",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:683"
+     ]
+   },
+   {
+-    "call": "Speed benchmark completed.",
+-    "key": "Speed benchmark completed.",
++    "call": "Speed test timed out. Try again or test fewer configs.",
++    "key": "Speed test timed out. Try again or test fewer configs.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:422",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:424"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:677"
+     ]
+   },
+   {
+@@ -2006,14 +2089,28 @@
+     "call": "Starting patch update from GitHub.",
+     "key": "Starting patch update from GitHub.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:547"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:765"
++    ]
++  },
++  {
++    "call": "Starting speed test",
++    "key": "Starting speed test",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:457"
+     ]
+   },
+   {
+     "call": "Status",
+     "key": "Status",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:544"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:565"
++    ]
++  },
++  {
++    "call": "Stop",
++    "key": "Stop",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:383"
+     ]
+   },
+   {
+@@ -2023,33 +2120,48 @@
+       "src\\podkop\\tabs\\diagnostic\\partials\\renderAvailableActions.ts:59"
+     ]
+   },
++  {
++    "call": "Stop speed test",
++    "key": "Stop speed test",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:385",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:388"
++    ]
++  },
++  {
++    "call": "Stopping speed test",
++    "key": "Stopping speed test",
++    "places": [
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:561"
++    ]
++  },
+   {
+     "call": "Subscription",
+     "key": "Subscription",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:627"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:648"
+     ]
+   },
+   {
+     "call": "Subscription cache is empty. Click refresh to load configs.",
+     "key": "Subscription cache is empty. Click refresh to load configs.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:691"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:712"
+     ]
+   },
+   {
+     "call": "Subscription cache is missing. Refresh subscriptions first.",
+     "key": "Subscription cache is missing. Refresh subscriptions first.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:465"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:669"
+     ]
+   },
+   {
+     "call": "Subscription configs updated.",
+     "key": "Subscription configs updated.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:283",
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:285"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:315",
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:317"
+     ]
+   },
+   {
+@@ -2105,7 +2217,7 @@
+     "call": "Table exist",
+     "key": "Table exist",
+     "places": [
+-      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:69"
++      "src\\podkop\\tabs\\diagnostic\\checks\\runNftCheck.ts:67"
+     ]
+   },
+   {
+@@ -2113,22 +2225,15 @@
+     "key": "Test latency",
+     "places": [
+       "src\\podkop\\tabs\\dashboard\\partials\\renderSections.ts:114",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:359",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:360"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:374",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:375"
+     ]
+   },
+   {
+     "call": "Testing latency",
+     "key": "Testing latency",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:325"
+-    ]
+-  },
+-  {
+-    "call": "Testing subscription latency.",
+-    "key": "Testing subscription latency.",
+-    "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:311"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:358"
+     ]
+   },
+   {
+@@ -2192,7 +2297,7 @@
+     "call": "Transport",
+     "key": "Transport",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:541"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:562"
+     ]
+   },
+   {
+@@ -2250,7 +2355,7 @@
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:266",
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:267",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:490"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:511"
+     ]
+   },
+   {
+@@ -2264,14 +2369,14 @@
+     "call": "Unsaved changes",
+     "key": "Unsaved changes",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:244"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:258"
+     ]
+   },
+   {
+     "call": "Unsupported",
+     "key": "Unsupported",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:192"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:206"
+     ]
+   },
+   {
+@@ -2280,7 +2385,7 @@
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:22",
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:263",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:93"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:107"
+     ]
+   },
+   {
+@@ -2288,7 +2393,7 @@
+     "key": "Unsupported protocol",
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:14",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:87"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:101"
+     ]
+   },
+   {
+@@ -2296,37 +2401,29 @@
+     "key": "Unsupported security",
+     "places": [
+       "src\\podkop\\methods\\custom\\getDashboardSections.ts:18",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:89"
+-    ]
+-  },
+-  {
+-    "call": "Unsupported transport",
+-    "key": "Unsupported transport",
+-    "places": [
+-      "src\\podkop\\methods\\custom\\getDashboardSections.ts:16",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:88"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:103"
+     ]
+   },
+   {
+     "call": "Update patch",
+     "key": "Update patch",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:379",
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:380"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:400",
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:401"
+     ]
+   },
+   {
+     "call": "Updating patch from GitHub.",
+     "key": "Updating patch from GitHub.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:478"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:696"
+     ]
+   },
+   {
+     "call": "Updating subscription configs. Podkop may be reloaded.",
+     "key": "Updating subscription configs. Podkop may be reloaded.",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\initController.ts:269"
++      "src\\podkop\\tabs\\subscriptions\\initController.ts:301"
+     ]
+   },
+   {
+@@ -2386,13 +2483,6 @@
+       "..\\luci-app-podkop\\htdocs\\luci-static\\resources\\view\\podkop\\section.js:187"
+     ]
+   },
+-  {
+-    "call": "Use",
+-    "key": "Use",
+-    "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:538"
+-    ]
+-  },
+   {
+     "call": "User Domain List Type",
+     "key": "User Domain List Type",
+@@ -2505,14 +2595,14 @@
+     "call": "Will be excluded",
+     "key": "Will be excluded",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:114"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:128"
+     ]
+   },
+   {
+     "call": "Will be included",
+     "key": "Will be included",
+     "places": [
+-      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:114"
++      "src\\podkop\\tabs\\subscriptions\\partials\\renderSubscriptionSections.ts:128"
+     ]
+   },
+   {
+diff --git a/fe-app-podkop/locales/podkop.pot b/fe-app-podkop/locales/podkop.pot
+index 836d2fb..952202f 100644
+--- a/fe-app-podkop/locales/podkop.pot
++++ b/fe-app-podkop/locales/podkop.pot
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-17 09:44+0300\n"
+-"PO-Revision-Date: 2026-06-17 09:44+0300\n"
++"POT-Creation-Date: 2026-06-20 08:28+0300\n"
++"PO-Revision-Date: 2026-06-20 08:28+0300\n"
+ "Last-Translator: Codex <codex@example.local>\n"
+ "Language-Team: LANGUAGE <LL@li.org>\n"
+ "Language: \n"
+@@ -32,15 +32,15 @@ msgstr ""
+ msgid "✘ Stopped"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:236
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:250
+ msgid "Action completed"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:232
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:246
+ msgid "Action failed"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:228
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:242
+ msgid "Action is running"
+ msgstr ""
+ 
+@@ -48,7 +48,7 @@ msgstr ""
+ msgid "Active Connections"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:106
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:104
+ msgid "Additional marking rules found"
+ msgstr ""
+ 
+@@ -60,11 +60,11 @@ msgstr ""
+ msgid "Applicable for SOCKS and Shadowsocks proxy"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:389
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:410
+ msgid "Apply"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:224
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:238
+ msgid "Applying changes. Podkop will be restarted once."
+ msgstr ""
+ 
+@@ -105,13 +105,13 @@ msgid "Cache file path cannot be empty"
+ msgstr ""
+ 
+ #: src\podkop\tabs\diagnostic\checks\runDnsCheck.ts:27
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:28
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:25
+ #: src\podkop\tabs\diagnostic\checks\runSectionsCheck.ts:27
+ #: src\podkop\tabs\diagnostic\checks\runSingBoxCheck.ts:25
+ msgid "Cannot receive checks result"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:248
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:262
+ msgid "Changes applied. Podkop has been restarted."
+ msgstr ""
+ 
+@@ -139,7 +139,7 @@ msgstr ""
+ msgid "CIDR must be between 0 and 32"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:244
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:258
+ msgid "Click Apply to restart Podkop once."
+ msgstr ""
+ 
+@@ -147,7 +147,7 @@ msgstr ""
+ msgid "Close"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:600
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:621
+ msgid "Collapse subscription"
+ msgstr ""
+ 
+@@ -155,7 +155,7 @@ msgstr ""
+ msgid "Community Lists"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:539
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:560
+ msgid "Config"
+ msgstr ""
+ 
+@@ -163,7 +163,7 @@ msgstr ""
+ msgid "Config File Path"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:187
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:201
+ msgid "Configs"
+ msgstr ""
+ 
+@@ -199,7 +199,7 @@ msgstr ""
+ msgid "Dashboard currently unavailable"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:491
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:512
+ msgid "Default"
+ msgstr ""
+ 
+@@ -289,6 +289,11 @@ msgstr ""
+ msgid "Download"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\initController.ts:591
++#: src\podkop\tabs\subscriptions\initController.ts:685
++msgid "Download failed"
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\settings.js:288
+ msgid "Download Lists via Proxy/VPN"
+ msgstr ""
+@@ -355,7 +360,7 @@ msgstr ""
+ msgid "Enter subnets in CIDR notation (e.g. 103.21.244.0/22) or single IP addresses"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:460
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:481
+ msgid "Error"
+ msgstr ""
+ 
+@@ -411,16 +416,16 @@ msgstr ""
+ msgid "Exclude NTP protocol traffic from the tunnel to prevent it from being routed through the proxy or VPN"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:86
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:117
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:100
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:131
+ msgid "Excluded"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:599
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:620
+ msgid "Expand subscription"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:240
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:254
+ msgid "Failed to apply changes. Podkop was not changed."
+ msgstr ""
+ 
+@@ -428,7 +433,7 @@ msgstr ""
+ msgid "Failed to copy!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:482
++#: src\podkop\tabs\subscriptions\initController.ts:700
+ msgid "Failed to download patch update."
+ msgstr ""
+ 
+@@ -441,38 +446,48 @@ msgstr ""
+ msgid "Failed to execute!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:484
++#: src\podkop\tabs\subscriptions\initController.ts:702
+ msgid "Failed to install patch update."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:220
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:803
++#: src\podkop\tabs\subscriptions\initController.ts:671
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:234
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:824
+ msgid "Failed to load subscription configs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:430
+-msgid "Failed to run speed benchmark."
++#: src\podkop\tabs\subscriptions\initController.ts:545
++msgid "Failed to run speed test."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:249
++#: src\podkop\tabs\subscriptions\initController.ts:281
+ msgid "Failed to save!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:598
+-#: src\podkop\tabs\subscriptions\initController.ts:600
++#: src\podkop\tabs\subscriptions\initController.ts:593
++#: src\podkop\tabs\subscriptions\initController.ts:687
++msgid "Failed to select config"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:816
++#: src\podkop\tabs\subscriptions\initController.ts:818
+ msgid "Failed to start patch update."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:364
+-#: src\podkop\tabs\subscriptions\initController.ts:366
++#: src\podkop\tabs\subscriptions\initController.ts:412
++msgid "Failed to stop speed test."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:397
++#: src\podkop\tabs\subscriptions\initController.ts:399
+ msgid "Failed to test latency."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:296
++#: src\podkop\tabs\subscriptions\initController.ts:328
+ msgid "Failed to update subscription configs."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:292
++#: src\podkop\tabs\subscriptions\initController.ts:324
+ msgid "Failed to update subscription configs. Cache was kept."
+ msgstr ""
+ 
+@@ -505,8 +520,8 @@ msgstr ""
+ msgid "HTTP/HTTPS subscription links with proxy URLs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:117
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:188
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:131
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:202
+ msgid "Included"
+ msgstr ""
+ 
+@@ -523,7 +538,7 @@ msgid "Interface monitoring for Bad WAN"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:20
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:90
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:104
+ msgid "Invalid config"
+ msgstr ""
+ 
+@@ -709,8 +724,8 @@ msgstr ""
+ msgid "Issues detected"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:355
+-#: src\podkop\tabs\subscriptions\initController.ts:357
++#: src\podkop\tabs\subscriptions\initController.ts:388
++#: src\podkop\tabs\subscriptions\initController.ts:390
+ msgid "Latency test completed."
+ msgstr ""
+ 
+@@ -722,11 +737,13 @@ msgstr ""
+ msgid "List Update Frequency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:801
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:822
+ msgid "Loading"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:216
++#: src\podkop\tabs\subscriptions\initController.ts:342
++#: src\podkop\tabs\subscriptions\initController.ts:436
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:230
+ msgid "Loading subscription configs"
+ msgstr ""
+ 
+@@ -750,7 +767,7 @@ msgstr ""
+ msgid "Memory Usage"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:469
++#: src\podkop\tabs\subscriptions\initController.ts:675
+ msgid "Mixed proxy address is not configured."
+ msgstr ""
+ 
+@@ -770,15 +787,15 @@ msgstr ""
+ msgid "Network Interface"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:467
++#: src\podkop\tabs\subscriptions\initController.ts:673
+ msgid "No enabled supported configs to test."
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:105
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:103
+ msgid "No other marking rules found"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:738
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:759
+ msgid "No Subscription URLTest sections"
+ msgstr ""
+ 
+@@ -804,6 +821,15 @@ msgstr ""
+ msgid "Not running"
+ msgstr ""
+ 
++#: src\podkop\methods\custom\getDashboardSections.ts:16
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:102
++msgid "Not supported"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:559
++msgid "On"
++msgstr ""
++
+ #: src\helpers\withTimeout.ts:7
+ msgid "Operation timed out"
+ msgstr ""
+@@ -824,29 +850,29 @@ msgstr ""
+ msgid "Output Network Interface"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:378
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:399
+ msgid "Patch"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:559
+-#: src\podkop\tabs\subscriptions\initController.ts:583
++#: src\podkop\tabs\subscriptions\initController.ts:777
++#: src\podkop\tabs\subscriptions\initController.ts:801
+ msgid "Patch update failed."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:527
++#: src\podkop\tabs\subscriptions\initController.ts:745
+ msgid "Patch update is still running. Refresh the page later."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:559
+-#: src\podkop\tabs\subscriptions\initController.ts:583
++#: src\podkop\tabs\subscriptions\initController.ts:777
++#: src\podkop\tabs\subscriptions\initController.ts:801
+ msgid "Patch update started."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:486
++#: src\podkop\tabs\subscriptions\initController.ts:704
+ msgid "Patch update status is unknown."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:480
++#: src\podkop\tabs\subscriptions\initController.ts:698
+ msgid "Patch updated. Refresh the page in a minute."
+ msgstr ""
+ 
+@@ -874,8 +900,8 @@ msgstr ""
+ msgid "Pending"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:358
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:542
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:373
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:563
+ msgid "Ping"
+ msgstr ""
+ 
+@@ -883,15 +909,16 @@ msgstr ""
+ msgid "Podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:459
++#: src\podkop\tabs\subscriptions\initController.ts:589
++#: src\podkop\tabs\subscriptions\initController.ts:663
+ msgid "Podkop is restarting now. Try again in a minute."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:463
++#: src\podkop\tabs\subscriptions\initController.ts:667
+ msgid "Podkop reload failed. Changes were not applied."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:461
++#: src\podkop\tabs\subscriptions\initController.ts:665
+ msgid "Podkop selector is not ready. Try again in a minute."
+ msgstr ""
+ 
+@@ -903,7 +930,7 @@ msgstr ""
+ msgid "Podkop will not modify your DHCP configuration"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:540
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:561
+ msgid "Protocol"
+ msgstr ""
+ 
+@@ -919,12 +946,12 @@ msgstr ""
+ msgid "Proxy traffic is routed via FakeIP"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:348
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:363
+ msgid "Refresh"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:349
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:350
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:364
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:365
+ msgid "Refresh subscription configs"
+ msgstr ""
+ 
+@@ -940,7 +967,7 @@ msgstr ""
+ msgid "Remote Subnet Lists"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:395
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:416
+ msgid "Reset"
+ msgstr ""
+ 
+@@ -964,27 +991,27 @@ msgstr ""
+ msgid "Routing Excluded IPs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:79
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:77
+ msgid "Rules mangle counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:74
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:72
+ msgid "Rules mangle exist"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:89
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:87
+ msgid "Rules mangle output counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:84
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:82
+ msgid "Rules mangle output exist"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:99
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:97
+ msgid "Rules proxy counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:94
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:92
+ msgid "Rules proxy exist"
+ msgstr ""
+ 
+@@ -992,24 +1019,21 @@ msgstr ""
+ msgid "Run Diagnostic"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:369
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:370
+-msgid "Run speed benchmark"
+-msgstr ""
+-
+-#: src\podkop\tabs\subscriptions\initController.ts:397
+-msgid "Running speed benchmark"
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:386
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:389
++msgid "Run speed test"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:381
+-msgid "Running speed benchmark. Active proxy may change briefly."
++#: src\podkop\tabs\subscriptions\initController.ts:585
++#: src\podkop\tabs\subscriptions\initController.ts:595
++msgid "Running speed test"
+ msgstr ""
+ 
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:394
+ msgid "Russia inside restrictions"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:244
++#: src\podkop\tabs\subscriptions\initController.ts:276
+ msgid "Saved!"
+ msgstr ""
+ 
+@@ -1029,7 +1053,7 @@ msgstr ""
+ msgid "Select between VPN and Proxy connection methods for traffic routing"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:251
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:265
+ msgid "Select configs, then click Apply to restart Podkop once."
+ msgstr ""
+ 
+@@ -1098,7 +1122,7 @@ msgstr ""
+ msgid "Selector Proxy Links"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:97
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:111
+ msgid "Server"
+ msgstr ""
+ 
+@@ -1168,46 +1192,92 @@ msgstr ""
+ msgid "Specify the path to the list file located on the router filesystem"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:368
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:543
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:383
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:564
+ msgid "Speed"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:422
+-#: src\podkop\tabs\subscriptions\initController.ts:424
+-msgid "Speed benchmark completed."
++#: src\podkop\tabs\subscriptions\initController.ts:587
++msgid "Speed test completed"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:521
++#: src\podkop\tabs\subscriptions\initController.ts:526
++msgid "Speed test completed."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:520
++#: src\podkop\tabs\subscriptions\initController.ts:525
++msgid "Speed test completed. Some configs failed."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:679
++msgid "Speed test failed."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:534
++#: src\podkop\tabs\subscriptions\initController.ts:536
++#: src\podkop\tabs\subscriptions\initController.ts:573
++#: src\podkop\tabs\subscriptions\initController.ts:575
++#: src\podkop\tabs\subscriptions\initController.ts:681
++msgid "Speed test stopped."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:683
++msgid "Speed test target is missing."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:677
++msgid "Speed test timed out. Try again or test fewer configs."
+ msgstr ""
+ 
+ #: src\podkop\tabs\diagnostic\partials\renderAvailableActions.ts:69
+ msgid "Start podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:547
++#: src\podkop\tabs\subscriptions\initController.ts:765
+ msgid "Starting patch update from GitHub."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:544
++#: src\podkop\tabs\subscriptions\initController.ts:457
++msgid "Starting speed test"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:565
+ msgid "Status"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:383
++msgid "Stop"
++msgstr ""
++
+ #: src\podkop\tabs\diagnostic\partials\renderAvailableActions.ts:59
+ msgid "Stop podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:627
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:385
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:388
++msgid "Stop speed test"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:561
++msgid "Stopping speed test"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:648
+ msgid "Subscription"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:691
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:712
+ msgid "Subscription cache is empty. Click refresh to load configs."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:465
++#: src\podkop\tabs\subscriptions\initController.ts:669
+ msgid "Subscription cache is missing. Refresh subscriptions first."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:283
+-#: src\podkop\tabs\subscriptions\initController.ts:285
++#: src\podkop\tabs\subscriptions\initController.ts:315
++#: src\podkop\tabs\subscriptions\initController.ts:317
+ msgid "Subscription configs updated."
+ msgstr ""
+ 
+@@ -1239,24 +1309,20 @@ msgstr ""
+ msgid "System information"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:69
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:67
+ msgid "Table exist"
+ msgstr ""
+ 
+ #: src\podkop\tabs\dashboard\partials\renderSections.ts:114
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:359
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:360
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:374
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:375
+ msgid "Test latency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:325
++#: src\podkop\tabs\subscriptions\initController.ts:358
+ msgid "Testing latency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:311
+-msgid "Testing subscription latency."
+-msgstr ""
+-
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:434
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:514
+ msgid "Text List"
+@@ -1290,7 +1356,7 @@ msgstr ""
+ msgid "Traffic Total"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:541
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:562
+ msgid "Transport"
+ msgstr ""
+ 
+@@ -1327,7 +1393,7 @@ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:266
+ #: src\podkop\methods\custom\getDashboardSections.ts:267
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:490
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:511
+ msgid "Unknown"
+ msgstr ""
+ 
+@@ -1335,45 +1401,40 @@ msgstr ""
+ msgid "Unknown error"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:244
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:258
+ msgid "Unsaved changes"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:192
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:206
+ msgid "Unsupported"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:22
+ #: src\podkop\methods\custom\getDashboardSections.ts:263
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:93
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:107
+ msgid "Unsupported config"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:14
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:87
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:101
+ msgid "Unsupported protocol"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:18
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:89
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:103
+ msgid "Unsupported security"
+ msgstr ""
+ 
+-#: src\podkop\methods\custom\getDashboardSections.ts:16
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:88
+-msgid "Unsupported transport"
+-msgstr ""
+-
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:379
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:380
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:400
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:401
+ msgid "Update patch"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:478
++#: src\podkop\tabs\subscriptions\initController.ts:696
+ msgid "Updating patch from GitHub."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:269
++#: src\podkop\tabs\subscriptions\initController.ts:301
+ msgid "Updating subscription configs. Podkop may be reloaded."
+ msgstr ""
+ 
+@@ -1410,10 +1471,6 @@ msgstr ""
+ msgid "URLTest Tolerance"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:538
+-msgid "Use"
+-msgstr ""
+-
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:429
+ msgid "User Domain List Type"
+ msgstr ""
+@@ -1483,11 +1540,11 @@ msgstr ""
+ msgid "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:114
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:128
+ msgid "Will be excluded"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:114
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:128
+ msgid "Will be included"
+ msgstr ""
+ 
+diff --git a/fe-app-podkop/locales/podkop.ru.po b/fe-app-podkop/locales/podkop.ru.po
+index fcdd60a..0c4065f 100644
+--- a/fe-app-podkop/locales/podkop.ru.po
++++ b/fe-app-podkop/locales/podkop.ru.po
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-17 12:44+0300\n"
+-"PO-Revision-Date: 2026-06-17 12:44+0300\n"
++"POT-Creation-Date: 2026-06-20 11:28+0300\n"
++"PO-Revision-Date: 2026-06-20 11:28+0300\n"
+ "Last-Translator: Codex\n"
+ "Language-Team: none\n"
+ "Language: ru\n"
+@@ -212,6 +212,9 @@ msgstr "Входящий"
+ msgid "Download"
+ msgstr "Скачать"
+ 
++msgid "Download failed"
++msgstr "Не удалось скачать"
++
+ msgid "Download Lists via Proxy/VPN"
+ msgstr "Скачивать списки через Proxy/VPN"
+ 
+@@ -326,15 +329,21 @@ msgstr "Не удалось установить обновление патча
+ msgid "Failed to load subscription configs"
+ msgstr "Не удалось загрузить конфиги подписок"
+ 
+-msgid "Failed to run speed benchmark."
+-msgstr "Не удалось выполнить бенчмарк скорости."
++msgid "Failed to run speed test."
++msgstr "Не удалось выполнить тест скорости."
+ 
+ msgid "Failed to save!"
+ msgstr "Не удалось сохранить!"
+ 
++msgid "Failed to select config"
++msgstr "Не удалось выбрать конфиг"
++
+ msgid "Failed to start patch update."
+ msgstr "Не удалось запустить обновление патча."
+ 
++msgid "Failed to stop speed test."
++msgstr "Не удалось остановить тест скорости."
++
+ msgid "Failed to test latency."
+ msgstr "Не удалось проверить задержку."
+ 
+@@ -581,6 +590,12 @@ msgstr "Не отвечает"
+ msgid "Not running"
+ msgstr "Не запущено"
+ 
++msgid "Not supported"
++msgstr "Не поддерживается"
++
++msgid "On"
++msgstr "Вкл"
++
+ msgid "Operation timed out"
+ msgstr "Время ожидания истекло"
+ 
+@@ -716,14 +731,11 @@ msgstr "Правила прокси существуют"
+ msgid "Run Diagnostic"
+ msgstr "Запустить диагностику"
+ 
+-msgid "Run speed benchmark"
+-msgstr "Запустить бенчмарк скорости"
++msgid "Run speed test"
++msgstr "Запустить тест скорости"
+ 
+-msgid "Running speed benchmark"
+-msgstr "Выполняем бенчмарк скорости"
+-
+-msgid "Running speed benchmark. Active proxy may change briefly."
+-msgstr "Выполняем бенчмарк скорости. Активный прокси может ненадолго измениться."
++msgid "Running speed test"
++msgstr "Идёт тест скорости"
+ 
+ msgid "Russia inside restrictions"
+ msgstr "Ограничения Russia inside"
+@@ -848,8 +860,26 @@ msgstr "Укажите путь к файлу списка, расположен
+ msgid "Speed"
+ msgstr "Скорость"
+ 
+-msgid "Speed benchmark completed."
+-msgstr "Бенчмарк скорости завершён."
++msgid "Speed test completed"
++msgstr "Тест скорости завершён"
++
++msgid "Speed test completed."
++msgstr "Тест скорости завершён."
++
++msgid "Speed test completed. Some configs failed."
++msgstr "Тест скорости завершён. Часть конфигов не сработала."
++
++msgid "Speed test failed."
++msgstr "Тест скорости не выполнен."
++
++msgid "Speed test stopped."
++msgstr ""
++
++msgid "Speed test target is missing."
++msgstr "Не выбран конфиг для теста скорости."
++
++msgid "Speed test timed out. Try again or test fewer configs."
++msgstr "Тест скорости превысил лимит времени. Попробуйте снова или тестируйте меньше конфигов."
+ 
+ msgid "Start podkop"
+ msgstr "Запустить podkop"
+@@ -857,12 +887,24 @@ msgstr "Запустить podkop"
+ msgid "Starting patch update from GitHub."
+ msgstr "Запускаем обновление патча с GitHub."
+ 
++msgid "Starting speed test"
++msgstr "Запускаем тест скорости"
++
+ msgid "Status"
+ msgstr "Статус"
+ 
++msgid "Stop"
++msgstr "Стоп"
++
+ msgid "Stop podkop"
+ msgstr "Остановить podkop"
+ 
++msgid "Stop speed test"
++msgstr "Остановить тест скорости"
++
++msgid "Stopping speed test"
++msgstr "Останавливаем тест скорости"
++
+ msgid "Subscription"
+ msgstr "Подписка"
+ 
+@@ -905,9 +947,6 @@ msgstr "Тестирование задержки"
+ msgid "Testing latency"
+ msgstr "Проверяем задержку"
+ 
+-msgid "Testing subscription latency."
+-msgstr "Проверяем задержку конфигов подписок."
+-
+ msgid "Text List"
+ msgstr "Текстовый список"
+ 
+@@ -974,9 +1013,6 @@ msgstr "Неподдерживаемый протокол"
+ msgid "Unsupported security"
+ msgstr "Неподдерживаемая защита"
+ 
+-msgid "Unsupported transport"
+-msgstr "Неподдерживаемый транспорт"
+-
+ msgid "Update patch"
+ msgstr "Обновить патч"
+ 
+@@ -1010,9 +1046,6 @@ msgstr "URLTest ссылка для проверки"
+ msgid "URLTest Tolerance"
+ msgstr "URLTest допустимое отклонение"
+ 
+-msgid "Use"
+-msgstr "Использовать"
+-
+ msgid "User Domain List Type"
+ msgstr "Тип пользовательского списка доменов"
+ 
+@@ -1063,24 +1096,3 @@ msgstr "Секретный ключ YACD"
+ 
+ msgid "You can select Output Network Interface, by default autodetect"
+ msgstr "Вы можете выбрать выходной сетевой интерфейс, по умолчанию он определяется автоматически."
+-
+-msgid "Starting speed benchmark"
+-msgstr "????????? ???????? ????????"
+-
+-msgid "Speed benchmark completed"
+-msgstr "???????? ???????? ????????"
+-
+-msgid "Download failed"
+-msgstr "?????????? ?? ???????"
+-
+-msgid "Failed to select config"
+-msgstr "?? ??????? ??????? ??????"
+-
+-msgid "Speed benchmark timed out. Try again or test fewer configs."
+-msgstr "Бенчмарк скорости превысил лимит времени. Попробуйте снова или тестируйте меньше конфигов."
+-
+-msgid "Speed benchmark failed."
+-msgstr "Бенчмарк скорости не выполнен."
+-
+-msgid "Speed benchmark target is missing."
+-msgstr "Не выбран конфиг для бенчмарка скорости."
+diff --git a/fe-app-podkop/src/podkop/methods/custom/getDashboardSections.ts b/fe-app-podkop/src/podkop/methods/custom/getDashboardSections.ts
+index 1cfe51f..92a29d2 100644
+--- a/fe-app-podkop/src/podkop/methods/custom/getDashboardSections.ts
++++ b/fe-app-podkop/src/podkop/methods/custom/getDashboardSections.ts
+@@ -13,7 +13,7 @@ function getSubscriptionSkippedReasonLabel(reason: string) {
+     case 'unsupported_protocol':
+       return _('Unsupported protocol');
+     case 'unsupported_transport':
+-      return _('Unsupported transport');
++      return _('Not supported');
+     case 'unsupported_security':
+       return _('Unsupported security');
+     case 'invalid_config':
+diff --git a/fe-app-podkop/src/podkop/methods/shell/index.ts b/fe-app-podkop/src/podkop/methods/shell/index.ts
+index 8346750..040067e 100644
+--- a/fe-app-podkop/src/podkop/methods/shell/index.ts
++++ b/fe-app-podkop/src/podkop/methods/shell/index.ts
+@@ -101,6 +101,13 @@ export const PodkopShellMethods = {
+       '/usr/bin/podkop',
+       15000,
+     ),
++  stopSubscriptionSpeedtest: async () =>
++    callBaseMethod<Podkop.SubscriptionSpeedtestStopResult>(
++      Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST_STOP,
++      [],
++      '/usr/bin/podkop',
++      15000,
++    ),
+   getSubscriptionSpeedtestStatus: async () =>
+     callBaseMethod<Podkop.SubscriptionSpeedtestStatus>(
+       Podkop.AvailableMethods.GET_SUBSCRIPTION_SPEEDTEST_STATUS,
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+index f14553d..1e47f24 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+@@ -15,6 +15,8 @@ type SubscriptionItemsStatus =
+ type SubscriptionItemsAction = 'none' | 'refresh' | 'ping' | 'speed' | 'patch';
+ type SubscriptionItemsActionStatus = 'idle' | 'running' | 'success' | 'error';
+ 
++let speedtestRunToken = 0;
++
+ function getRowId(sectionCode: string, itemId: string) {
+   return `${sectionCode}:${itemId}`;
+ }
+@@ -31,10 +33,32 @@ function getEnabledSupportedItems(section: Podkop.SubscriptionItemsSection) {
+   return section.items.filter((item) => item.supported && item.enabled);
+ }
+ 
++async function getSubscriptionSectionsForAction() {
++  let sections = store.get().subscriptionItemsWidget.data;
++
++  if (!sections.length) {
++    await fetchSubscriptionItems();
++
++    if (store.get().subscriptionItemsWidget.failed) {
++      throw new Error('subscription_items_load_failed');
++    }
++
++    sections = store.get().subscriptionItemsWidget.data;
++  }
++
++  return sections;
++}
++
+ function isActionRunning() {
+   return store.get().subscriptionItemsWidget.actionStatus === 'running';
+ }
+ 
++function isSpeedtestRunning() {
++  const widget = store.get().subscriptionItemsWidget;
++
++  return widget.action === 'speed' && widget.actionStatus === 'running';
++}
++
+ function canRunServiceAction() {
+   const widget = store.get().subscriptionItemsWidget;
+ 
+@@ -114,6 +138,8 @@ async function fetchSubscriptionItems(
+         actionStatus: 'idle',
+         actionMessage: '',
+         pendingChanges: {},
++        latencyByRow: {},
++        speedByRow: {},
+         data,
+       },
+     });
+@@ -308,16 +334,17 @@ async function handlePingSubscriptions() {
+     return;
+   }
+ 
+-  const sections = store.get().subscriptionItemsWidget.data;
+   const latencyByRow: Record<string, number> = {};
+ 
+   setActionState({
+     action: 'ping',
+     actionStatus: 'running',
+-    actionMessage: _('Testing subscription latency.'),
++    actionMessage: _('Loading subscription configs'),
+   });
+ 
+   try {
++    const sections = await getSubscriptionSectionsForAction();
++
+     for (const section of sections) {
+       const enabledItems = getEnabledSupportedItems(section);
+ 
+@@ -374,22 +401,44 @@ async function handlePingSubscriptions() {
+ }
+ 
+ async function handleSpeedtestSubscriptions() {
++  if (isSpeedtestRunning()) {
++    try {
++      await stopSpeedtestSubscriptions();
++    } catch (error) {
++      logger.error('[SUBSCRIPTIONS]', 'failed to stop subscription speedtest');
++      logger.error('[SUBSCRIPTIONS]', error);
++      const message = getSubscriptionActionErrorMessage(
++        error,
++        _('Failed to stop speed test.'),
++      );
++      setActionState({
++        action: 'speed',
++        actionStatus: 'error',
++        actionMessage: message,
++      });
++      showToast(message, 'error');
++    }
++
++    return;
++  }
++
+   if (!canRunServiceAction()) {
+     return;
+   }
+ 
+-  const sections = store.get().subscriptionItemsWidget.data;
+   const speedByRow: Record<string, Podkop.SubscriptionSpeedtestItem> = {};
++  const runToken = (speedtestRunToken += 1);
++  let failedItems = 0;
+ 
+   setActionState({
+     action: 'speed',
+     actionStatus: 'running',
+-    actionMessage: _(
+-      'Running speed benchmark. Active proxy may change briefly.',
+-    ),
++    actionMessage: _('Loading subscription configs'),
+   });
+ 
+   try {
++    const sections = await getSubscriptionSectionsForAction();
++
+     for (const section of sections) {
+       const enabledItems = getEnabledSupportedItems(section);
+ 
+@@ -398,31 +447,56 @@ async function handleSpeedtestSubscriptions() {
+       }
+ 
+       for (const item of enabledItems) {
++        if (runToken !== speedtestRunToken) {
++          throw new Error('speedtest_cancelled');
++        }
++
+         setActionState({
+           action: 'speed',
+           actionStatus: 'running',
+-          actionMessage: `${_('Starting speed benchmark')}: ${section.displayName} / ${item.name}`,
++          actionMessage: `${_('Starting speed test')}: ${section.displayName} / ${item.name}`,
+         });
+ 
+-        const started = await PodkopShellMethods.startSubscriptionSpeedtest(
+-          section.code,
+-          item.id,
+-        );
+-
+-        if (!started.success || !started.data.success) {
+-          throw new Error(started.success ? started.data.error : started.error);
+-        }
+-
+-        const result = await pollSpeedtestStatus(section, item);
++        try {
++          const started = await PodkopShellMethods.startSubscriptionSpeedtest(
++            section.code,
++            item.id,
++          );
+ 
+-        if (!result.success) {
+-          throw new Error(result.error);
++          if (!started.success || !started.data.success) {
++            throw new Error(
++              started.success ? started.data.error : started.error,
++            );
++          }
++
++          const result = await pollSpeedtestStatus(section, item, runToken);
++
++          if (!result.success) {
++            throw new Error(result.error);
++          }
++
++          if (!result.results?.length) {
++            throw new Error('speedtest_failed');
++          }
++
++          (result.results ?? []).forEach((speedItem) => {
++            speedByRow[getRowId(section.code, speedItem.id)] = speedItem;
++          });
++        } catch (error) {
++          if (getErrorText(error) === 'speedtest_cancelled') {
++            throw error;
++          }
++
++          failedItems += 1;
++          speedByRow[getRowId(section.code, item.id)] = {
++            id: item.id,
++            tag: '',
++            name: item.name,
++            success: false,
++            error: getErrorText(error) || 'speedtest_failed',
++          };
+         }
+ 
+-        (result.results ?? []).forEach((speedItem) => {
+-          speedByRow[getRowId(section.code, speedItem.id)] = speedItem;
+-        });
+-
+         store.set({
+           subscriptionItemsWidget: {
+             ...store.get().subscriptionItemsWidget,
+@@ -441,15 +515,34 @@ async function handleSpeedtestSubscriptions() {
+     setActionState({
+       action: 'speed',
+       actionStatus: 'success',
+-      actionMessage: _('Speed benchmark completed.'),
++      actionMessage:
++        failedItems > 0
++          ? _('Speed test completed. Some configs failed.')
++          : _('Speed test completed.'),
+     });
+-    showToast(_('Speed benchmark completed.'), 'success');
++    showToast(
++      failedItems > 0
++        ? _('Speed test completed. Some configs failed.')
++        : _('Speed test completed.'),
++      'success',
++    );
+   } catch (error) {
++    if (getErrorText(error) === 'speedtest_cancelled') {
++      setActionState({
++        action: 'speed',
++        actionStatus: 'success',
++        actionMessage: _('Speed test stopped.'),
++      });
++      showToast(_('Speed test stopped.'), 'success');
++
++      return;
++    }
++
+     logger.error('[SUBSCRIPTIONS]', 'failed to run subscription speedtest');
+     logger.error('[SUBSCRIPTIONS]', error);
+     const message = getSubscriptionActionErrorMessage(
+       error,
+-      _('Failed to run speed benchmark.'),
++      _('Failed to run speed test.'),
+     );
+     setActionState({
+       action: 'speed',
+@@ -460,6 +553,28 @@ async function handleSpeedtestSubscriptions() {
+   }
+ }
+ 
++async function stopSpeedtestSubscriptions() {
++  speedtestRunToken += 1;
++  setActionState({
++    action: 'speed',
++    actionStatus: 'running',
++    actionMessage: _('Stopping speed test'),
++  });
++
++  const stopped = await PodkopShellMethods.stopSubscriptionSpeedtest();
++
++  if (!stopped.success || !stopped.data.success) {
++    throw new Error(stopped.success ? stopped.data.error : stopped.error);
++  }
++
++  setActionState({
++    action: 'speed',
++    actionStatus: 'success',
++    actionMessage: _('Speed test stopped.'),
++  });
++  showToast(_('Speed test stopped.'), 'success');
++}
++
+ function getSpeedtestStatusMessage(
+   status: Podkop.SubscriptionSpeedtestStatus,
+   section: Podkop.SubscriptionItemsSection,
+@@ -467,9 +582,9 @@ function getSpeedtestStatusMessage(
+ ) {
+   switch (status.message) {
+     case 'speedtest_running':
+-      return `${_('Running speed benchmark')}: ${section.displayName} / ${item.name}`;
++      return `${_('Running speed test')}: ${section.displayName} / ${item.name}`;
+     case 'speedtest_success':
+-      return `${_('Speed benchmark completed')}: ${section.displayName} / ${item.name}`;
++      return `${_('Speed test completed')}: ${section.displayName} / ${item.name}`;
+     case 'service_busy':
+       return _('Podkop is restarting now. Try again in a minute.');
+     case 'download_failed':
+@@ -477,15 +592,20 @@ function getSpeedtestStatusMessage(
+     case 'select_failed':
+       return `${_('Failed to select config')}: ${item.name}`;
+     default:
+-      return status.message || `${_('Running speed benchmark')}: ${section.displayName} / ${item.name}`;
++      return status.message || `${_('Running speed test')}: ${section.displayName} / ${item.name}`;
+   }
+ }
+ 
+ async function pollSpeedtestStatus(
+   section: Podkop.SubscriptionItemsSection,
+   item: Podkop.SubscriptionItem,
++  runToken: number,
+ ) {
+   for (let attempt = 0; attempt < 180; attempt += 1) {
++    if (runToken !== speedtestRunToken) {
++      throw new Error('speedtest_cancelled');
++    }
++
+     await sleep(1000);
+ 
+     const status = await PodkopShellMethods.getSubscriptionSpeedtestStatus();
+@@ -500,7 +620,7 @@ async function pollSpeedtestStatus(
+ 
+     setActionState({
+       action: 'speed',
+-      actionStatus: status.data.state === 'error' ? 'error' : 'running',
++      actionStatus: 'running',
+       actionMessage: getSpeedtestStatusMessage(status.data, section, item),
+     });
+ 
+@@ -508,6 +628,10 @@ async function pollSpeedtestStatus(
+       continue;
+     }
+ 
++    if (status.data.state === 'cancelled') {
++      throw new Error('speedtest_cancelled');
++    }
++
+     if (status.data.state === 'success' && status.data.result) {
+       return status.data.result;
+     }
+@@ -543,16 +667,20 @@ function getSubscriptionActionErrorMessage(
+       return _('Podkop reload failed. Changes were not applied.');
+     case 'subscription_cache_missing':
+       return _('Subscription cache is missing. Refresh subscriptions first.');
++    case 'subscription_items_load_failed':
++      return _('Failed to load subscription configs');
+     case 'no_enabled_links':
+       return _('No enabled supported configs to test.');
+     case 'mixed_proxy_address_missing':
+       return _('Mixed proxy address is not configured.');
+     case 'speedtest_timeout':
+-      return _('Speed benchmark timed out. Try again or test fewer configs.');
++      return _('Speed test timed out. Try again or test fewer configs.');
+     case 'speedtest_failed':
+-      return _('Speed benchmark failed.');
++      return _('Speed test failed.');
++    case 'speedtest_cancelled':
++      return _('Speed test stopped.');
+     case 'section_and_item_required':
+-      return _('Speed benchmark target is missing.');
++      return _('Speed test target is missing.');
+     case 'download_failed':
+       return _('Download failed');
+     case 'select_failed':
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
+index 3eb5d18..2ef435b 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
+@@ -1,6 +1,7 @@
+ import { renderButton } from '../../../../partials';
+ import { Podkop } from '../../../types';
+ import {
++  renderCircleStopIcon24,
+   renderCogIcon24,
+   renderRotateCcwIcon24,
+   renderSearchIcon24,
+@@ -98,7 +99,7 @@ function getReasonLabel(reason: string) {
+   const labels: Record<string, string> = {
+     user_excluded: _('Excluded'),
+     unsupported_protocol: _('Unsupported protocol'),
+-    unsupported_transport: _('Unsupported transport'),
++    unsupported_transport: _('Not supported'),
+     unsupported_security: _('Unsupported security'),
+     invalid_config: _('Invalid config'),
+   };
+@@ -324,6 +325,7 @@ function renderToolbar({
+   onPatchUpdate: () => void;
+ }) {
+   const actionRunning = actionStatus === 'running';
++  const speedRunning = action === 'speed' && actionRunning;
+   const canRunAction = !loading && !failed && !applying && !actionRunning;
+   const canRunSubscriptionAction = canRunAction && pendingCount === 0;
+   const canRunPatchAction =
+@@ -378,14 +380,20 @@ function renderToolbar({
+           disabled: !canRunSubscriptionAction,
+         }),
+         renderButton({
+-          text: _('Speed'),
+-          title: _('Run speed benchmark'),
+-          ariaLabel: _('Run speed benchmark'),
+-          icon: renderSquareChartGanttIcon24,
++          text: speedRunning ? _('Stop') : _('Speed'),
++          title: speedRunning
++            ? _('Stop speed test')
++            : _('Run speed test'),
++          ariaLabel: speedRunning
++            ? _('Stop speed test')
++            : _('Run speed test'),
++          icon: speedRunning
++            ? renderCircleStopIcon24
++            : renderSquareChartGanttIcon24,
+           hideText: true,
+           onClick: onSpeedtest,
+-          loading: action === 'speed' && actionRunning,
+-          disabled: !canRunSubscriptionAction,
++          loading: false,
++          disabled: speedRunning ? false : !canRunSubscriptionAction,
+         }),
+         renderButton({
+           text: _('Patch'),
+@@ -454,19 +462,19 @@ function renderRow({
+ 
+   function renderLatency() {
+     if (!item.supported || !effectiveEnabled) {
+-      return '—';
++      return '-';
+     }
+ 
+-    return typeof latency === 'number' && latency > 0 ? `${latency} ms` : '—';
++    return typeof latency === 'number' && latency > 0 ? `${latency} ms` : '-';
+   }
+ 
+   function renderSpeed() {
+     if (!item.supported || !effectiveEnabled) {
+-      return '—';
++      return '-';
+     }
+ 
+     if (!speed) {
+-      return '—';
++      return '-';
+     }
+ 
+     if (!speed.success || !speed.bytesPerSecond) {
+@@ -548,7 +556,7 @@ function renderSourceTable({
+     E('table', { class: 'pdk_subscriptions-page__table' }, [
+       E('thead', {}, [
+         E('tr', {}, [
+-          E('th', {}, _('Use')),
++          E('th', {}, _('On')),
+           E('th', {}, _('Config')),
+           E('th', {}, _('Protocol')),
+           E('th', {}, _('Transport')),
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
+index 7dfbce7..f425f7f 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
+@@ -1,7 +1,10 @@
+ // language=CSS
+ export const styles = `
++#cbi-podkop-subscriptions,
++#cbi-podkop-subscriptions-_mount_node,
+ #cbi-podkop-subscriptions-_mount_node > div {
+     width: 100%;
++    box-sizing: border-box;
+ }
+ 
+ #cbi-podkop-subscriptions > h3 {
+@@ -10,13 +13,19 @@ export const styles = `
+ 
+ .pdk_subscriptions-page {
+     width: 100%;
++    min-width: 0;
+ }
+ 
+ .pdk_subscriptions-page__content {
+     width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
+ }
+ 
+ .pdk_subscriptions-page__toolbar {
++    width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
+     display: flex;
+     align-items: center;
+     justify-content: space-between;
+@@ -28,8 +37,13 @@ export const styles = `
+ }
+ 
+ .pdk_subscriptions-page__toolbar-message {
++    flex: 1 1 auto;
++    min-width: 0;
+     color: var(--text-color-medium);
+     line-height: 1.35;
++    overflow: hidden;
++    text-overflow: ellipsis;
++    white-space: nowrap;
+ }
+ 
+ .pdk_subscriptions-page__toolbar-actions {
+@@ -63,6 +77,8 @@ export const styles = `
+ }
+ 
+ .pdk_subscriptions-page__sections {
++    width: 100%;
++    min-width: 0;
+     display: grid;
+     grid-template-columns: 1fr;
+     grid-row-gap: 10px;
+@@ -70,6 +86,9 @@ export const styles = `
+ }
+ 
+ .pdk_subscriptions-page__section {
++    width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
+     border: 2px var(--background-color-low, lightgray) solid;
+     border-radius: 4px;
+     padding: 10px;
+@@ -88,6 +107,9 @@ export const styles = `
+ }
+ 
+ .pdk_subscriptions-page__source-group {
++    width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
+     border: 1px var(--background-color-low, lightgray) solid;
+     border-radius: 4px;
+     overflow: hidden;
+@@ -141,11 +163,15 @@ export const styles = `
+ }
+ 
+ .pdk_subscriptions-page__table-wrap {
++    width: 100%;
++    min-width: 0;
+     overflow-x: auto;
+ }
+ 
+ .pdk_subscriptions-page__table {
+     width: 100%;
++    min-width: 820px;
++    table-layout: fixed;
+     border-collapse: collapse;
+ }
+ 
+@@ -155,6 +181,8 @@ export const styles = `
+     border-bottom: 1px var(--background-color-low, lightgray) solid;
+     text-align: left;
+     white-space: nowrap;
++    overflow: hidden;
++    text-overflow: ellipsis;
+ }
+ 
+ .pdk_subscriptions-page__table th {
+@@ -162,7 +190,39 @@ export const styles = `
+ }
+ 
+ .pdk_subscriptions-page__toggle-cell {
+-    width: 48px;
++    width: 58px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(1),
++.pdk_subscriptions-page__table td:nth-child(1) {
++    width: 58px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(2),
++.pdk_subscriptions-page__table td:nth-child(2) {
++    width: 22%;
++}
++
++.pdk_subscriptions-page__table th:nth-child(3),
++.pdk_subscriptions-page__table td:nth-child(3) {
++    width: 105px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(4),
++.pdk_subscriptions-page__table td:nth-child(4) {
++    width: 115px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(5),
++.pdk_subscriptions-page__table td:nth-child(5),
++.pdk_subscriptions-page__table th:nth-child(6),
++.pdk_subscriptions-page__table td:nth-child(6) {
++    width: 110px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(7),
++.pdk_subscriptions-page__table td:nth-child(7) {
++    width: 150px;
+ }
+ 
+ .pdk_subscriptions-page__row--unsupported {
+@@ -210,6 +270,10 @@ export const styles = `
+         flex-direction: column;
+     }
+ 
++    .pdk_subscriptions-page__toolbar-message {
++        white-space: normal;
++    }
++
+     .pdk_subscriptions-page__toolbar-actions {
+         width: 100%;
+     }
+diff --git a/fe-app-podkop/src/podkop/types.ts b/fe-app-podkop/src/podkop/types.ts
+index b35aa82..b2ecafb 100644
+--- a/fe-app-podkop/src/podkop/types.ts
++++ b/fe-app-podkop/src/podkop/types.ts
+@@ -67,6 +67,7 @@ export namespace Podkop {
+     SUBSCRIPTION_UPDATE_JSON = 'subscription_update_json',
+     SUBSCRIPTION_SPEEDTEST = 'subscription_speedtest',
+     SUBSCRIPTION_SPEEDTEST_START = 'subscription_speedtest_start',
++    SUBSCRIPTION_SPEEDTEST_STOP = 'subscription_speedtest_stop',
+     GET_SUBSCRIPTION_SPEEDTEST_STATUS = 'get_subscription_speedtest_status',
+     SUBSCRIPTION_PATCH_UPDATE = 'subscription_patch_update',
+     GET_SUBSCRIPTION_PATCH_UPDATE_STATUS = 'get_subscription_patch_update_status',
+@@ -167,8 +168,14 @@ export namespace Podkop {
+     error?: string;
+   }
+ 
++  export interface SubscriptionSpeedtestStopResult {
++    success: boolean;
++    stopped?: boolean;
++    error?: string;
++  }
++
+   export interface SubscriptionSpeedtestStatus {
+-    state: 'idle' | 'running' | 'success' | 'error';
++    state: 'idle' | 'running' | 'success' | 'error' | 'cancelled';
+     message: string;
+     section: string;
+     itemId: string;
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index 340e37c..271ab9a 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -624,6 +624,7 @@ var Podkop;
+     AvailableMethods2["SUBSCRIPTION_UPDATE_JSON"] = "subscription_update_json";
+     AvailableMethods2["SUBSCRIPTION_SPEEDTEST"] = "subscription_speedtest";
+     AvailableMethods2["SUBSCRIPTION_SPEEDTEST_START"] = "subscription_speedtest_start";
++    AvailableMethods2["SUBSCRIPTION_SPEEDTEST_STOP"] = "subscription_speedtest_stop";
+     AvailableMethods2["GET_SUBSCRIPTION_SPEEDTEST_STATUS"] = "get_subscription_speedtest_status";
+     AvailableMethods2["SUBSCRIPTION_PATCH_UPDATE"] = "subscription_patch_update";
+     AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_STATUS"] = "get_subscription_patch_update_status";
+@@ -724,6 +725,12 @@ var PodkopShellMethods = {
+     "/usr/bin/podkop",
+     15e3
+   ),
++  stopSubscriptionSpeedtest: async () => callBaseMethod(
++    Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST_STOP,
++    [],
++    "/usr/bin/podkop",
++    15e3
++  ),
+   getSubscriptionSpeedtestStatus: async () => callBaseMethod(
+     Podkop.AvailableMethods.GET_SUBSCRIPTION_SPEEDTEST_STATUS,
+     [],
+@@ -782,7 +789,7 @@ function getSubscriptionSkippedReasonLabel(reason) {
+     case "unsupported_protocol":
+       return _("Unsupported protocol");
+     case "unsupported_transport":
+-      return _("Unsupported transport");
++      return _("Not supported");
+     case "unsupported_security":
+       return _("Unsupported security");
+     case "invalid_config":
+@@ -4838,7 +4845,7 @@ function getReasonLabel(reason) {
+   const labels = {
+     user_excluded: _("Excluded"),
+     unsupported_protocol: _("Unsupported protocol"),
+-    unsupported_transport: _("Unsupported transport"),
++    unsupported_transport: _("Not supported"),
+     unsupported_security: _("Unsupported security"),
+     invalid_config: _("Invalid config")
+   };
+@@ -4986,6 +4993,7 @@ function renderToolbar({
+   onPatchUpdate
+ }) {
+   const actionRunning = actionStatus === "running";
++  const speedRunning = action === "speed" && actionRunning;
+   const canRunAction = !loading && !failed && !applying && !actionRunning;
+   const canRunSubscriptionAction = canRunAction && pendingCount === 0;
+   const canRunPatchAction = !loading && !applying && !actionRunning && pendingCount === 0;
+@@ -5035,14 +5043,14 @@ function renderToolbar({
+           disabled: !canRunSubscriptionAction
+         }),
+         renderButton({
+-          text: _("Speed"),
+-          title: _("Run speed benchmark"),
+-          ariaLabel: _("Run speed benchmark"),
+-          icon: renderSquareChartGanttIcon24,
++          text: speedRunning ? _("Stop") : _("Speed"),
++          title: speedRunning ? _("Stop speed test") : _("Run speed test"),
++          ariaLabel: speedRunning ? _("Stop speed test") : _("Run speed test"),
++          icon: speedRunning ? renderCircleStopIcon24 : renderSquareChartGanttIcon24,
+           hideText: true,
+           onClick: onSpeedtest,
+-          loading: action === "speed" && actionRunning,
+-          disabled: !canRunSubscriptionAction
++          loading: false,
++          disabled: speedRunning ? false : !canRunSubscriptionAction
+         }),
+         renderButton({
+           text: _("Patch"),
+@@ -5094,16 +5102,16 @@ function renderRow({
+   const speed = speedByRow[rowId];
+   function renderLatency() {
+     if (!item.supported || !effectiveEnabled) {
+-      return "\u2014";
++      return "-";
+     }
+-    return typeof latency === "number" && latency > 0 ? `${latency} ms` : "\u2014";
++    return typeof latency === "number" && latency > 0 ? `${latency} ms` : "-";
+   }
+   function renderSpeed() {
+     if (!item.supported || !effectiveEnabled) {
+-      return "\u2014";
++      return "-";
+     }
+     if (!speed) {
+-      return "\u2014";
++      return "-";
+     }
+     if (!speed.success || !speed.bytesPerSecond) {
+       return _("Error");
+@@ -5166,7 +5174,7 @@ function renderSourceTable({
+     E("table", { class: "pdk_subscriptions-page__table" }, [
+       E("thead", {}, [
+         E("tr", {}, [
+-          E("th", {}, _("Use")),
++          E("th", {}, _("On")),
+           E("th", {}, _("Config")),
+           E("th", {}, _("Protocol")),
+           E("th", {}, _("Transport")),
+@@ -5431,6 +5439,7 @@ function render3() {
+ }
+ 
+ // src/podkop/tabs/subscriptions/initController.ts
++var speedtestRunToken = 0;
+ function getRowId2(sectionCode, itemId) {
+   return `${sectionCode}:${itemId}`;
+ }
+@@ -5443,9 +5452,24 @@ function sleep(ms) {
+ function getEnabledSupportedItems(section) {
+   return section.items.filter((item) => item.supported && item.enabled);
+ }
++async function getSubscriptionSectionsForAction() {
++  let sections = store.get().subscriptionItemsWidget.data;
++  if (!sections.length) {
++    await fetchSubscriptionItems();
++    if (store.get().subscriptionItemsWidget.failed) {
++      throw new Error("subscription_items_load_failed");
++    }
++    sections = store.get().subscriptionItemsWidget.data;
++  }
++  return sections;
++}
+ function isActionRunning() {
+   return store.get().subscriptionItemsWidget.actionStatus === "running";
+ }
++function isSpeedtestRunning() {
++  const widget = store.get().subscriptionItemsWidget;
++  return widget.action === "speed" && widget.actionStatus === "running";
++}
+ function canRunServiceAction() {
+   const widget = store.get().subscriptionItemsWidget;
+   return !widget.loading && !widget.failed && !widget.applying && !isActionRunning() && getPendingCount2(widget.pendingChanges) === 0;
+@@ -5502,6 +5526,8 @@ async function fetchSubscriptionItems(status = "idle") {
+         actionStatus: "idle",
+         actionMessage: "",
+         pendingChanges: {},
++        latencyByRow: {},
++        speedByRow: {},
+         data
+       }
+     });
+@@ -5657,14 +5683,14 @@ async function handlePingSubscriptions() {
+   if (!canRunServiceAction()) {
+     return;
+   }
+-  const sections = store.get().subscriptionItemsWidget.data;
+   const latencyByRow = {};
+   setActionState({
+     action: "ping",
+     actionStatus: "running",
+-    actionMessage: _("Testing subscription latency.")
++    actionMessage: _("Loading subscription configs")
+   });
+   try {
++    const sections = await getSubscriptionSectionsForAction();
+     for (const section of sections) {
+       const enabledItems = getEnabledSupportedItems(section);
+       if (!enabledItems.length) {
+@@ -5713,44 +5739,85 @@ async function handlePingSubscriptions() {
+   }
+ }
+ async function handleSpeedtestSubscriptions() {
++  if (isSpeedtestRunning()) {
++    try {
++      await stopSpeedtestSubscriptions();
++    } catch (error) {
++      logger.error("[SUBSCRIPTIONS]", "failed to stop subscription speedtest");
++      logger.error("[SUBSCRIPTIONS]", error);
++      const message = getSubscriptionActionErrorMessage(
++        error,
++        _("Failed to stop speed test.")
++      );
++      setActionState({
++        action: "speed",
++        actionStatus: "error",
++        actionMessage: message
++      });
++      showToast(message, "error");
++    }
++    return;
++  }
+   if (!canRunServiceAction()) {
+     return;
+   }
+-  const sections = store.get().subscriptionItemsWidget.data;
+   const speedByRow = {};
++  const runToken = speedtestRunToken += 1;
++  let failedItems = 0;
+   setActionState({
+     action: "speed",
+     actionStatus: "running",
+-    actionMessage: _(
+-      "Running speed benchmark. Active proxy may change briefly."
+-    )
++    actionMessage: _("Loading subscription configs")
+   });
+   try {
++    const sections = await getSubscriptionSectionsForAction();
+     for (const section of sections) {
+       const enabledItems = getEnabledSupportedItems(section);
+       if (!enabledItems.length) {
+         continue;
+       }
+       for (const item of enabledItems) {
++        if (runToken !== speedtestRunToken) {
++          throw new Error("speedtest_cancelled");
++        }
+         setActionState({
+           action: "speed",
+           actionStatus: "running",
+-          actionMessage: `${_("Starting speed benchmark")}: ${section.displayName} / ${item.name}`
++          actionMessage: `${_("Starting speed test")}: ${section.displayName} / ${item.name}`
+         });
+-        const started = await PodkopShellMethods.startSubscriptionSpeedtest(
+-          section.code,
+-          item.id
+-        );
+-        if (!started.success || !started.data.success) {
+-          throw new Error(started.success ? started.data.error : started.error);
+-        }
+-        const result = await pollSpeedtestStatus(section, item);
+-        if (!result.success) {
+-          throw new Error(result.error);
++        try {
++          const started = await PodkopShellMethods.startSubscriptionSpeedtest(
++            section.code,
++            item.id
++          );
++          if (!started.success || !started.data.success) {
++            throw new Error(
++              started.success ? started.data.error : started.error
++            );
++          }
++          const result = await pollSpeedtestStatus(section, item, runToken);
++          if (!result.success) {
++            throw new Error(result.error);
++          }
++          if (!result.results?.length) {
++            throw new Error("speedtest_failed");
++          }
++          (result.results ?? []).forEach((speedItem) => {
++            speedByRow[getRowId2(section.code, speedItem.id)] = speedItem;
++          });
++        } catch (error) {
++          if (getErrorText(error) === "speedtest_cancelled") {
++            throw error;
++          }
++          failedItems += 1;
++          speedByRow[getRowId2(section.code, item.id)] = {
++            id: item.id,
++            tag: "",
++            name: item.name,
++            success: false,
++            error: getErrorText(error) || "speedtest_failed"
++          };
+         }
+-        (result.results ?? []).forEach((speedItem) => {
+-          speedByRow[getRowId2(section.code, speedItem.id)] = speedItem;
+-        });
+         store.set({
+           subscriptionItemsWidget: {
+             ...store.get().subscriptionItemsWidget,
+@@ -5768,15 +5835,27 @@ async function handleSpeedtestSubscriptions() {
+     setActionState({
+       action: "speed",
+       actionStatus: "success",
+-      actionMessage: _("Speed benchmark completed.")
++      actionMessage: failedItems > 0 ? _("Speed test completed. Some configs failed.") : _("Speed test completed.")
+     });
+-    showToast(_("Speed benchmark completed."), "success");
++    showToast(
++      failedItems > 0 ? _("Speed test completed. Some configs failed.") : _("Speed test completed."),
++      "success"
++    );
+   } catch (error) {
++    if (getErrorText(error) === "speedtest_cancelled") {
++      setActionState({
++        action: "speed",
++        actionStatus: "success",
++        actionMessage: _("Speed test stopped.")
++      });
++      showToast(_("Speed test stopped."), "success");
++      return;
++    }
+     logger.error("[SUBSCRIPTIONS]", "failed to run subscription speedtest");
+     logger.error("[SUBSCRIPTIONS]", error);
+     const message = getSubscriptionActionErrorMessage(
+       error,
+-      _("Failed to run speed benchmark.")
++      _("Failed to run speed test.")
+     );
+     setActionState({
+       action: "speed",
+@@ -5786,12 +5865,30 @@ async function handleSpeedtestSubscriptions() {
+     showToast(message, "error");
+   }
+ }
++async function stopSpeedtestSubscriptions() {
++  speedtestRunToken += 1;
++  setActionState({
++    action: "speed",
++    actionStatus: "running",
++    actionMessage: _("Stopping speed test")
++  });
++  const stopped = await PodkopShellMethods.stopSubscriptionSpeedtest();
++  if (!stopped.success || !stopped.data.success) {
++    throw new Error(stopped.success ? stopped.data.error : stopped.error);
++  }
++  setActionState({
++    action: "speed",
++    actionStatus: "success",
++    actionMessage: _("Speed test stopped.")
++  });
++  showToast(_("Speed test stopped."), "success");
++}
+ function getSpeedtestStatusMessage(status, section, item) {
+   switch (status.message) {
+     case "speedtest_running":
+-      return `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`;
++      return `${_("Running speed test")}: ${section.displayName} / ${item.name}`;
+     case "speedtest_success":
+-      return `${_("Speed benchmark completed")}: ${section.displayName} / ${item.name}`;
++      return `${_("Speed test completed")}: ${section.displayName} / ${item.name}`;
+     case "service_busy":
+       return _("Podkop is restarting now. Try again in a minute.");
+     case "download_failed":
+@@ -5799,11 +5896,14 @@ function getSpeedtestStatusMessage(status, section, item) {
+     case "select_failed":
+       return `${_("Failed to select config")}: ${item.name}`;
+     default:
+-      return status.message || `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`;
++      return status.message || `${_("Running speed test")}: ${section.displayName} / ${item.name}`;
+   }
+ }
+-async function pollSpeedtestStatus(section, item) {
++async function pollSpeedtestStatus(section, item, runToken) {
+   for (let attempt = 0; attempt < 180; attempt += 1) {
++    if (runToken !== speedtestRunToken) {
++      throw new Error("speedtest_cancelled");
++    }
+     await sleep(1e3);
+     const status = await PodkopShellMethods.getSubscriptionSpeedtestStatus();
+     if (!status.success) {
+@@ -5814,12 +5914,15 @@ async function pollSpeedtestStatus(section, item) {
+     }
+     setActionState({
+       action: "speed",
+-      actionStatus: status.data.state === "error" ? "error" : "running",
++      actionStatus: "running",
+       actionMessage: getSpeedtestStatusMessage(status.data, section, item)
+     });
+     if (status.data.state === "running" || status.data.state === "idle") {
+       continue;
+     }
++    if (status.data.state === "cancelled") {
++      throw new Error("speedtest_cancelled");
++    }
+     if (status.data.state === "success" && status.data.result) {
+       return status.data.result;
+     }
+@@ -5846,16 +5949,20 @@ function getSubscriptionActionErrorMessage(error, fallback) {
+       return _("Podkop reload failed. Changes were not applied.");
+     case "subscription_cache_missing":
+       return _("Subscription cache is missing. Refresh subscriptions first.");
++    case "subscription_items_load_failed":
++      return _("Failed to load subscription configs");
+     case "no_enabled_links":
+       return _("No enabled supported configs to test.");
+     case "mixed_proxy_address_missing":
+       return _("Mixed proxy address is not configured.");
+     case "speedtest_timeout":
+-      return _("Speed benchmark timed out. Try again or test fewer configs.");
++      return _("Speed test timed out. Try again or test fewer configs.");
+     case "speedtest_failed":
+-      return _("Speed benchmark failed.");
++      return _("Speed test failed.");
++    case "speedtest_cancelled":
++      return _("Speed test stopped.");
+     case "section_and_item_required":
+-      return _("Speed benchmark target is missing.");
++      return _("Speed test target is missing.");
+     case "download_failed":
+       return _("Download failed");
+     case "select_failed":
+@@ -6034,8 +6141,11 @@ async function initController3() {
+ 
+ // src/podkop/tabs/subscriptions/styles.ts
+ var styles5 = `
++#cbi-podkop-subscriptions,
++#cbi-podkop-subscriptions-_mount_node,
+ #cbi-podkop-subscriptions-_mount_node > div {
+     width: 100%;
++    box-sizing: border-box;
+ }
+ 
+ #cbi-podkop-subscriptions > h3 {
+@@ -6044,13 +6154,19 @@ var styles5 = `
+ 
+ .pdk_subscriptions-page {
+     width: 100%;
++    min-width: 0;
+ }
+ 
+ .pdk_subscriptions-page__content {
+     width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
+ }
+ 
+ .pdk_subscriptions-page__toolbar {
++    width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
+     display: flex;
+     align-items: center;
+     justify-content: space-between;
+@@ -6062,8 +6178,13 @@ var styles5 = `
+ }
+ 
+ .pdk_subscriptions-page__toolbar-message {
++    flex: 1 1 auto;
++    min-width: 0;
+     color: var(--text-color-medium);
+     line-height: 1.35;
++    overflow: hidden;
++    text-overflow: ellipsis;
++    white-space: nowrap;
+ }
+ 
+ .pdk_subscriptions-page__toolbar-actions {
+@@ -6097,6 +6218,8 @@ var styles5 = `
+ }
+ 
+ .pdk_subscriptions-page__sections {
++    width: 100%;
++    min-width: 0;
+     display: grid;
+     grid-template-columns: 1fr;
+     grid-row-gap: 10px;
+@@ -6104,6 +6227,9 @@ var styles5 = `
+ }
+ 
+ .pdk_subscriptions-page__section {
++    width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
+     border: 2px var(--background-color-low, lightgray) solid;
+     border-radius: 4px;
+     padding: 10px;
+@@ -6122,6 +6248,9 @@ var styles5 = `
+ }
+ 
+ .pdk_subscriptions-page__source-group {
++    width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
+     border: 1px var(--background-color-low, lightgray) solid;
+     border-radius: 4px;
+     overflow: hidden;
+@@ -6175,11 +6304,15 @@ var styles5 = `
+ }
+ 
+ .pdk_subscriptions-page__table-wrap {
++    width: 100%;
++    min-width: 0;
+     overflow-x: auto;
+ }
+ 
+ .pdk_subscriptions-page__table {
+     width: 100%;
++    min-width: 820px;
++    table-layout: fixed;
+     border-collapse: collapse;
+ }
+ 
+@@ -6189,6 +6322,8 @@ var styles5 = `
+     border-bottom: 1px var(--background-color-low, lightgray) solid;
+     text-align: left;
+     white-space: nowrap;
++    overflow: hidden;
++    text-overflow: ellipsis;
+ }
+ 
+ .pdk_subscriptions-page__table th {
+@@ -6196,7 +6331,39 @@ var styles5 = `
+ }
+ 
+ .pdk_subscriptions-page__toggle-cell {
+-    width: 48px;
++    width: 58px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(1),
++.pdk_subscriptions-page__table td:nth-child(1) {
++    width: 58px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(2),
++.pdk_subscriptions-page__table td:nth-child(2) {
++    width: 22%;
++}
++
++.pdk_subscriptions-page__table th:nth-child(3),
++.pdk_subscriptions-page__table td:nth-child(3) {
++    width: 105px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(4),
++.pdk_subscriptions-page__table td:nth-child(4) {
++    width: 115px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(5),
++.pdk_subscriptions-page__table td:nth-child(5),
++.pdk_subscriptions-page__table th:nth-child(6),
++.pdk_subscriptions-page__table td:nth-child(6) {
++    width: 110px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(7),
++.pdk_subscriptions-page__table td:nth-child(7) {
++    width: 150px;
+ }
+ 
+ .pdk_subscriptions-page__row--unsupported {
+@@ -6244,6 +6411,10 @@ var styles5 = `
+         flex-direction: column;
+     }
+ 
++    .pdk_subscriptions-page__toolbar-message {
++        white-space: normal;
++    }
++
+     .pdk_subscriptions-page__toolbar-actions {
+         width: 100%;
+     }
+diff --git a/luci-app-podkop/po/ru/podkop.po b/luci-app-podkop/po/ru/podkop.po
+index fcdd60a..0c4065f 100644
+--- a/luci-app-podkop/po/ru/podkop.po
++++ b/luci-app-podkop/po/ru/podkop.po
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-17 12:44+0300\n"
+-"PO-Revision-Date: 2026-06-17 12:44+0300\n"
++"POT-Creation-Date: 2026-06-20 11:28+0300\n"
++"PO-Revision-Date: 2026-06-20 11:28+0300\n"
+ "Last-Translator: Codex\n"
+ "Language-Team: none\n"
+ "Language: ru\n"
+@@ -212,6 +212,9 @@ msgstr "Входящий"
+ msgid "Download"
+ msgstr "Скачать"
+ 
++msgid "Download failed"
++msgstr "Не удалось скачать"
++
+ msgid "Download Lists via Proxy/VPN"
+ msgstr "Скачивать списки через Proxy/VPN"
+ 
+@@ -326,15 +329,21 @@ msgstr "Не удалось установить обновление патча
+ msgid "Failed to load subscription configs"
+ msgstr "Не удалось загрузить конфиги подписок"
+ 
+-msgid "Failed to run speed benchmark."
+-msgstr "Не удалось выполнить бенчмарк скорости."
++msgid "Failed to run speed test."
++msgstr "Не удалось выполнить тест скорости."
+ 
+ msgid "Failed to save!"
+ msgstr "Не удалось сохранить!"
+ 
++msgid "Failed to select config"
++msgstr "Не удалось выбрать конфиг"
++
+ msgid "Failed to start patch update."
+ msgstr "Не удалось запустить обновление патча."
+ 
++msgid "Failed to stop speed test."
++msgstr "Не удалось остановить тест скорости."
++
+ msgid "Failed to test latency."
+ msgstr "Не удалось проверить задержку."
+ 
+@@ -581,6 +590,12 @@ msgstr "Не отвечает"
+ msgid "Not running"
+ msgstr "Не запущено"
+ 
++msgid "Not supported"
++msgstr "Не поддерживается"
++
++msgid "On"
++msgstr "Вкл"
++
+ msgid "Operation timed out"
+ msgstr "Время ожидания истекло"
+ 
+@@ -716,14 +731,11 @@ msgstr "Правила прокси существуют"
+ msgid "Run Diagnostic"
+ msgstr "Запустить диагностику"
+ 
+-msgid "Run speed benchmark"
+-msgstr "Запустить бенчмарк скорости"
++msgid "Run speed test"
++msgstr "Запустить тест скорости"
+ 
+-msgid "Running speed benchmark"
+-msgstr "Выполняем бенчмарк скорости"
+-
+-msgid "Running speed benchmark. Active proxy may change briefly."
+-msgstr "Выполняем бенчмарк скорости. Активный прокси может ненадолго измениться."
++msgid "Running speed test"
++msgstr "Идёт тест скорости"
+ 
+ msgid "Russia inside restrictions"
+ msgstr "Ограничения Russia inside"
+@@ -848,8 +860,26 @@ msgstr "Укажите путь к файлу списка, расположен
+ msgid "Speed"
+ msgstr "Скорость"
+ 
+-msgid "Speed benchmark completed."
+-msgstr "Бенчмарк скорости завершён."
++msgid "Speed test completed"
++msgstr "Тест скорости завершён"
++
++msgid "Speed test completed."
++msgstr "Тест скорости завершён."
++
++msgid "Speed test completed. Some configs failed."
++msgstr "Тест скорости завершён. Часть конфигов не сработала."
++
++msgid "Speed test failed."
++msgstr "Тест скорости не выполнен."
++
++msgid "Speed test stopped."
++msgstr ""
++
++msgid "Speed test target is missing."
++msgstr "Не выбран конфиг для теста скорости."
++
++msgid "Speed test timed out. Try again or test fewer configs."
++msgstr "Тест скорости превысил лимит времени. Попробуйте снова или тестируйте меньше конфигов."
+ 
+ msgid "Start podkop"
+ msgstr "Запустить podkop"
+@@ -857,12 +887,24 @@ msgstr "Запустить podkop"
+ msgid "Starting patch update from GitHub."
+ msgstr "Запускаем обновление патча с GitHub."
+ 
++msgid "Starting speed test"
++msgstr "Запускаем тест скорости"
++
+ msgid "Status"
+ msgstr "Статус"
+ 
++msgid "Stop"
++msgstr "Стоп"
++
+ msgid "Stop podkop"
+ msgstr "Остановить podkop"
+ 
++msgid "Stop speed test"
++msgstr "Остановить тест скорости"
++
++msgid "Stopping speed test"
++msgstr "Останавливаем тест скорости"
++
+ msgid "Subscription"
+ msgstr "Подписка"
+ 
+@@ -905,9 +947,6 @@ msgstr "Тестирование задержки"
+ msgid "Testing latency"
+ msgstr "Проверяем задержку"
+ 
+-msgid "Testing subscription latency."
+-msgstr "Проверяем задержку конфигов подписок."
+-
+ msgid "Text List"
+ msgstr "Текстовый список"
+ 
+@@ -974,9 +1013,6 @@ msgstr "Неподдерживаемый протокол"
+ msgid "Unsupported security"
+ msgstr "Неподдерживаемая защита"
+ 
+-msgid "Unsupported transport"
+-msgstr "Неподдерживаемый транспорт"
+-
+ msgid "Update patch"
+ msgstr "Обновить патч"
+ 
+@@ -1010,9 +1046,6 @@ msgstr "URLTest ссылка для проверки"
+ msgid "URLTest Tolerance"
+ msgstr "URLTest допустимое отклонение"
+ 
+-msgid "Use"
+-msgstr "Использовать"
+-
+ msgid "User Domain List Type"
+ msgstr "Тип пользовательского списка доменов"
+ 
+@@ -1063,24 +1096,3 @@ msgstr "Секретный ключ YACD"
+ 
+ msgid "You can select Output Network Interface, by default autodetect"
+ msgstr "Вы можете выбрать выходной сетевой интерфейс, по умолчанию он определяется автоматически."
+-
+-msgid "Starting speed benchmark"
+-msgstr "????????? ???????? ????????"
+-
+-msgid "Speed benchmark completed"
+-msgstr "???????? ???????? ????????"
+-
+-msgid "Download failed"
+-msgstr "?????????? ?? ???????"
+-
+-msgid "Failed to select config"
+-msgstr "?? ??????? ??????? ??????"
+-
+-msgid "Speed benchmark timed out. Try again or test fewer configs."
+-msgstr "Бенчмарк скорости превысил лимит времени. Попробуйте снова или тестируйте меньше конфигов."
+-
+-msgid "Speed benchmark failed."
+-msgstr "Бенчмарк скорости не выполнен."
+-
+-msgid "Speed benchmark target is missing."
+-msgstr "Не выбран конфиг для бенчмарка скорости."
+diff --git a/luci-app-podkop/po/templates/podkop.pot b/luci-app-podkop/po/templates/podkop.pot
+index 836d2fb..952202f 100644
+--- a/luci-app-podkop/po/templates/podkop.pot
++++ b/luci-app-podkop/po/templates/podkop.pot
+@@ -7,8 +7,8 @@ msgid ""
+ msgstr ""
+ "Project-Id-Version: PODKOP\n"
+ "Report-Msgid-Bugs-To: \n"
+-"POT-Creation-Date: 2026-06-17 09:44+0300\n"
+-"PO-Revision-Date: 2026-06-17 09:44+0300\n"
++"POT-Creation-Date: 2026-06-20 08:28+0300\n"
++"PO-Revision-Date: 2026-06-20 08:28+0300\n"
+ "Last-Translator: Codex <codex@example.local>\n"
+ "Language-Team: LANGUAGE <LL@li.org>\n"
+ "Language: \n"
+@@ -32,15 +32,15 @@ msgstr ""
+ msgid "✘ Stopped"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:236
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:250
+ msgid "Action completed"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:232
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:246
+ msgid "Action failed"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:228
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:242
+ msgid "Action is running"
+ msgstr ""
+ 
+@@ -48,7 +48,7 @@ msgstr ""
+ msgid "Active Connections"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:106
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:104
+ msgid "Additional marking rules found"
+ msgstr ""
+ 
+@@ -60,11 +60,11 @@ msgstr ""
+ msgid "Applicable for SOCKS and Shadowsocks proxy"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:389
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:410
+ msgid "Apply"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:224
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:238
+ msgid "Applying changes. Podkop will be restarted once."
+ msgstr ""
+ 
+@@ -105,13 +105,13 @@ msgid "Cache file path cannot be empty"
+ msgstr ""
+ 
+ #: src\podkop\tabs\diagnostic\checks\runDnsCheck.ts:27
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:28
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:25
+ #: src\podkop\tabs\diagnostic\checks\runSectionsCheck.ts:27
+ #: src\podkop\tabs\diagnostic\checks\runSingBoxCheck.ts:25
+ msgid "Cannot receive checks result"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:248
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:262
+ msgid "Changes applied. Podkop has been restarted."
+ msgstr ""
+ 
+@@ -139,7 +139,7 @@ msgstr ""
+ msgid "CIDR must be between 0 and 32"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:244
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:258
+ msgid "Click Apply to restart Podkop once."
+ msgstr ""
+ 
+@@ -147,7 +147,7 @@ msgstr ""
+ msgid "Close"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:600
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:621
+ msgid "Collapse subscription"
+ msgstr ""
+ 
+@@ -155,7 +155,7 @@ msgstr ""
+ msgid "Community Lists"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:539
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:560
+ msgid "Config"
+ msgstr ""
+ 
+@@ -163,7 +163,7 @@ msgstr ""
+ msgid "Config File Path"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:187
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:201
+ msgid "Configs"
+ msgstr ""
+ 
+@@ -199,7 +199,7 @@ msgstr ""
+ msgid "Dashboard currently unavailable"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:491
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:512
+ msgid "Default"
+ msgstr ""
+ 
+@@ -289,6 +289,11 @@ msgstr ""
+ msgid "Download"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\initController.ts:591
++#: src\podkop\tabs\subscriptions\initController.ts:685
++msgid "Download failed"
++msgstr ""
++
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\settings.js:288
+ msgid "Download Lists via Proxy/VPN"
+ msgstr ""
+@@ -355,7 +360,7 @@ msgstr ""
+ msgid "Enter subnets in CIDR notation (e.g. 103.21.244.0/22) or single IP addresses"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:460
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:481
+ msgid "Error"
+ msgstr ""
+ 
+@@ -411,16 +416,16 @@ msgstr ""
+ msgid "Exclude NTP protocol traffic from the tunnel to prevent it from being routed through the proxy or VPN"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:86
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:117
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:100
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:131
+ msgid "Excluded"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:599
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:620
+ msgid "Expand subscription"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:240
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:254
+ msgid "Failed to apply changes. Podkop was not changed."
+ msgstr ""
+ 
+@@ -428,7 +433,7 @@ msgstr ""
+ msgid "Failed to copy!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:482
++#: src\podkop\tabs\subscriptions\initController.ts:700
+ msgid "Failed to download patch update."
+ msgstr ""
+ 
+@@ -441,38 +446,48 @@ msgstr ""
+ msgid "Failed to execute!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:484
++#: src\podkop\tabs\subscriptions\initController.ts:702
+ msgid "Failed to install patch update."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:220
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:803
++#: src\podkop\tabs\subscriptions\initController.ts:671
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:234
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:824
+ msgid "Failed to load subscription configs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:430
+-msgid "Failed to run speed benchmark."
++#: src\podkop\tabs\subscriptions\initController.ts:545
++msgid "Failed to run speed test."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:249
++#: src\podkop\tabs\subscriptions\initController.ts:281
+ msgid "Failed to save!"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:598
+-#: src\podkop\tabs\subscriptions\initController.ts:600
++#: src\podkop\tabs\subscriptions\initController.ts:593
++#: src\podkop\tabs\subscriptions\initController.ts:687
++msgid "Failed to select config"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:816
++#: src\podkop\tabs\subscriptions\initController.ts:818
+ msgid "Failed to start patch update."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:364
+-#: src\podkop\tabs\subscriptions\initController.ts:366
++#: src\podkop\tabs\subscriptions\initController.ts:412
++msgid "Failed to stop speed test."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:397
++#: src\podkop\tabs\subscriptions\initController.ts:399
+ msgid "Failed to test latency."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:296
++#: src\podkop\tabs\subscriptions\initController.ts:328
+ msgid "Failed to update subscription configs."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:292
++#: src\podkop\tabs\subscriptions\initController.ts:324
+ msgid "Failed to update subscription configs. Cache was kept."
+ msgstr ""
+ 
+@@ -505,8 +520,8 @@ msgstr ""
+ msgid "HTTP/HTTPS subscription links with proxy URLs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:117
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:188
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:131
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:202
+ msgid "Included"
+ msgstr ""
+ 
+@@ -523,7 +538,7 @@ msgid "Interface monitoring for Bad WAN"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:20
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:90
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:104
+ msgid "Invalid config"
+ msgstr ""
+ 
+@@ -709,8 +724,8 @@ msgstr ""
+ msgid "Issues detected"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:355
+-#: src\podkop\tabs\subscriptions\initController.ts:357
++#: src\podkop\tabs\subscriptions\initController.ts:388
++#: src\podkop\tabs\subscriptions\initController.ts:390
+ msgid "Latency test completed."
+ msgstr ""
+ 
+@@ -722,11 +737,13 @@ msgstr ""
+ msgid "List Update Frequency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:801
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:822
+ msgid "Loading"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:216
++#: src\podkop\tabs\subscriptions\initController.ts:342
++#: src\podkop\tabs\subscriptions\initController.ts:436
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:230
+ msgid "Loading subscription configs"
+ msgstr ""
+ 
+@@ -750,7 +767,7 @@ msgstr ""
+ msgid "Memory Usage"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:469
++#: src\podkop\tabs\subscriptions\initController.ts:675
+ msgid "Mixed proxy address is not configured."
+ msgstr ""
+ 
+@@ -770,15 +787,15 @@ msgstr ""
+ msgid "Network Interface"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:467
++#: src\podkop\tabs\subscriptions\initController.ts:673
+ msgid "No enabled supported configs to test."
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:105
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:103
+ msgid "No other marking rules found"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:738
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:759
+ msgid "No Subscription URLTest sections"
+ msgstr ""
+ 
+@@ -804,6 +821,15 @@ msgstr ""
+ msgid "Not running"
+ msgstr ""
+ 
++#: src\podkop\methods\custom\getDashboardSections.ts:16
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:102
++msgid "Not supported"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:559
++msgid "On"
++msgstr ""
++
+ #: src\helpers\withTimeout.ts:7
+ msgid "Operation timed out"
+ msgstr ""
+@@ -824,29 +850,29 @@ msgstr ""
+ msgid "Output Network Interface"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:378
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:399
+ msgid "Patch"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:559
+-#: src\podkop\tabs\subscriptions\initController.ts:583
++#: src\podkop\tabs\subscriptions\initController.ts:777
++#: src\podkop\tabs\subscriptions\initController.ts:801
+ msgid "Patch update failed."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:527
++#: src\podkop\tabs\subscriptions\initController.ts:745
+ msgid "Patch update is still running. Refresh the page later."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:559
+-#: src\podkop\tabs\subscriptions\initController.ts:583
++#: src\podkop\tabs\subscriptions\initController.ts:777
++#: src\podkop\tabs\subscriptions\initController.ts:801
+ msgid "Patch update started."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:486
++#: src\podkop\tabs\subscriptions\initController.ts:704
+ msgid "Patch update status is unknown."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:480
++#: src\podkop\tabs\subscriptions\initController.ts:698
+ msgid "Patch updated. Refresh the page in a minute."
+ msgstr ""
+ 
+@@ -874,8 +900,8 @@ msgstr ""
+ msgid "Pending"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:358
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:542
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:373
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:563
+ msgid "Ping"
+ msgstr ""
+ 
+@@ -883,15 +909,16 @@ msgstr ""
+ msgid "Podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:459
++#: src\podkop\tabs\subscriptions\initController.ts:589
++#: src\podkop\tabs\subscriptions\initController.ts:663
+ msgid "Podkop is restarting now. Try again in a minute."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:463
++#: src\podkop\tabs\subscriptions\initController.ts:667
+ msgid "Podkop reload failed. Changes were not applied."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:461
++#: src\podkop\tabs\subscriptions\initController.ts:665
+ msgid "Podkop selector is not ready. Try again in a minute."
+ msgstr ""
+ 
+@@ -903,7 +930,7 @@ msgstr ""
+ msgid "Podkop will not modify your DHCP configuration"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:540
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:561
+ msgid "Protocol"
+ msgstr ""
+ 
+@@ -919,12 +946,12 @@ msgstr ""
+ msgid "Proxy traffic is routed via FakeIP"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:348
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:363
+ msgid "Refresh"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:349
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:350
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:364
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:365
+ msgid "Refresh subscription configs"
+ msgstr ""
+ 
+@@ -940,7 +967,7 @@ msgstr ""
+ msgid "Remote Subnet Lists"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:395
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:416
+ msgid "Reset"
+ msgstr ""
+ 
+@@ -964,27 +991,27 @@ msgstr ""
+ msgid "Routing Excluded IPs"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:79
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:77
+ msgid "Rules mangle counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:74
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:72
+ msgid "Rules mangle exist"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:89
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:87
+ msgid "Rules mangle output counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:84
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:82
+ msgid "Rules mangle output exist"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:99
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:97
+ msgid "Rules proxy counters"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:94
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:92
+ msgid "Rules proxy exist"
+ msgstr ""
+ 
+@@ -992,24 +1019,21 @@ msgstr ""
+ msgid "Run Diagnostic"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:369
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:370
+-msgid "Run speed benchmark"
+-msgstr ""
+-
+-#: src\podkop\tabs\subscriptions\initController.ts:397
+-msgid "Running speed benchmark"
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:386
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:389
++msgid "Run speed test"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:381
+-msgid "Running speed benchmark. Active proxy may change briefly."
++#: src\podkop\tabs\subscriptions\initController.ts:585
++#: src\podkop\tabs\subscriptions\initController.ts:595
++msgid "Running speed test"
+ msgstr ""
+ 
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:394
+ msgid "Russia inside restrictions"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:244
++#: src\podkop\tabs\subscriptions\initController.ts:276
+ msgid "Saved!"
+ msgstr ""
+ 
+@@ -1029,7 +1053,7 @@ msgstr ""
+ msgid "Select between VPN and Proxy connection methods for traffic routing"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:251
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:265
+ msgid "Select configs, then click Apply to restart Podkop once."
+ msgstr ""
+ 
+@@ -1098,7 +1122,7 @@ msgstr ""
+ msgid "Selector Proxy Links"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:97
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:111
+ msgid "Server"
+ msgstr ""
+ 
+@@ -1168,46 +1192,92 @@ msgstr ""
+ msgid "Specify the path to the list file located on the router filesystem"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:368
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:543
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:383
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:564
+ msgid "Speed"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:422
+-#: src\podkop\tabs\subscriptions\initController.ts:424
+-msgid "Speed benchmark completed."
++#: src\podkop\tabs\subscriptions\initController.ts:587
++msgid "Speed test completed"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:521
++#: src\podkop\tabs\subscriptions\initController.ts:526
++msgid "Speed test completed."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:520
++#: src\podkop\tabs\subscriptions\initController.ts:525
++msgid "Speed test completed. Some configs failed."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:679
++msgid "Speed test failed."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:534
++#: src\podkop\tabs\subscriptions\initController.ts:536
++#: src\podkop\tabs\subscriptions\initController.ts:573
++#: src\podkop\tabs\subscriptions\initController.ts:575
++#: src\podkop\tabs\subscriptions\initController.ts:681
++msgid "Speed test stopped."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:683
++msgid "Speed test target is missing."
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:677
++msgid "Speed test timed out. Try again or test fewer configs."
+ msgstr ""
+ 
+ #: src\podkop\tabs\diagnostic\partials\renderAvailableActions.ts:69
+ msgid "Start podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:547
++#: src\podkop\tabs\subscriptions\initController.ts:765
+ msgid "Starting patch update from GitHub."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:544
++#: src\podkop\tabs\subscriptions\initController.ts:457
++msgid "Starting speed test"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:565
+ msgid "Status"
+ msgstr ""
+ 
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:383
++msgid "Stop"
++msgstr ""
++
+ #: src\podkop\tabs\diagnostic\partials\renderAvailableActions.ts:59
+ msgid "Stop podkop"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:627
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:385
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:388
++msgid "Stop speed test"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\initController.ts:561
++msgid "Stopping speed test"
++msgstr ""
++
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:648
+ msgid "Subscription"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:691
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:712
+ msgid "Subscription cache is empty. Click refresh to load configs."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:465
++#: src\podkop\tabs\subscriptions\initController.ts:669
+ msgid "Subscription cache is missing. Refresh subscriptions first."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:283
+-#: src\podkop\tabs\subscriptions\initController.ts:285
++#: src\podkop\tabs\subscriptions\initController.ts:315
++#: src\podkop\tabs\subscriptions\initController.ts:317
+ msgid "Subscription configs updated."
+ msgstr ""
+ 
+@@ -1239,24 +1309,20 @@ msgstr ""
+ msgid "System information"
+ msgstr ""
+ 
+-#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:69
++#: src\podkop\tabs\diagnostic\checks\runNftCheck.ts:67
+ msgid "Table exist"
+ msgstr ""
+ 
+ #: src\podkop\tabs\dashboard\partials\renderSections.ts:114
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:359
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:360
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:374
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:375
+ msgid "Test latency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:325
++#: src\podkop\tabs\subscriptions\initController.ts:358
+ msgid "Testing latency"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:311
+-msgid "Testing subscription latency."
+-msgstr ""
+-
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:434
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:514
+ msgid "Text List"
+@@ -1290,7 +1356,7 @@ msgstr ""
+ msgid "Traffic Total"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:541
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:562
+ msgid "Transport"
+ msgstr ""
+ 
+@@ -1327,7 +1393,7 @@ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:266
+ #: src\podkop\methods\custom\getDashboardSections.ts:267
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:490
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:511
+ msgid "Unknown"
+ msgstr ""
+ 
+@@ -1335,45 +1401,40 @@ msgstr ""
+ msgid "Unknown error"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:244
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:258
+ msgid "Unsaved changes"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:192
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:206
+ msgid "Unsupported"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:22
+ #: src\podkop\methods\custom\getDashboardSections.ts:263
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:93
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:107
+ msgid "Unsupported config"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:14
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:87
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:101
+ msgid "Unsupported protocol"
+ msgstr ""
+ 
+ #: src\podkop\methods\custom\getDashboardSections.ts:18
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:89
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:103
+ msgid "Unsupported security"
+ msgstr ""
+ 
+-#: src\podkop\methods\custom\getDashboardSections.ts:16
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:88
+-msgid "Unsupported transport"
+-msgstr ""
+-
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:379
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:380
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:400
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:401
+ msgid "Update patch"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:478
++#: src\podkop\tabs\subscriptions\initController.ts:696
+ msgid "Updating patch from GitHub."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\initController.ts:269
++#: src\podkop\tabs\subscriptions\initController.ts:301
+ msgid "Updating subscription configs. Podkop may be reloaded."
+ msgstr ""
+ 
+@@ -1410,10 +1471,6 @@ msgstr ""
+ msgid "URLTest Tolerance"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:538
+-msgid "Use"
+-msgstr ""
+-
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\section.js:429
+ msgid "User Domain List Type"
+ msgstr ""
+@@ -1483,11 +1540,11 @@ msgstr ""
+ msgid "Warning: Russia inside can only be used with %s. %s already in Russia inside and have been removed from selection."
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:114
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:128
+ msgid "Will be excluded"
+ msgstr ""
+ 
+-#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:114
++#: src\podkop\tabs\subscriptions\partials\renderSubscriptionSections.ts:128
+ msgid "Will be included"
+ msgstr ""
+ 
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 4f86ed4..adbcabb 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1658,7 +1658,7 @@ set_subscription_links_enabled() {
+ 
+     reload_required="$SUBSCRIPTION_CACHE_CHANGED"
+     if [ "$reload_required" -eq 1 ]; then
+-        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
+             echo '{"success":false,"error":"reload_failed"}'
+             return 1
+         fi
+@@ -1720,7 +1720,7 @@ subscription_update() {
+ 
+     if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
+         echolog "Subscription cache changed, reloading podkop..."
+-        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload
++        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload
+         return $?
+     fi
+ 
+@@ -1876,7 +1876,7 @@ subscription_speedtest_restore_mixed_proxy() {
+ 
+     uci commit podkop > /dev/null 2>&1 || return 1
+     config_load "$PODKOP_CONFIG"
+-    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1
++    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
+ }
+ 
+ subscription_speedtest_result_error() {
+@@ -1998,7 +1998,7 @@ subscription_speedtest() {
+         config_load "$PODKOP_CONFIG"
+         mixed_changed=1
+ 
+-        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload > /dev/null 2>&1; then
++        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
+             subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+             rm -f "$active_items_file" "$results_file"
+             echo '{"success":false,"error":"reload_failed"}'
+@@ -2186,10 +2186,32 @@ subscription_speedtest_status_file() {
+     echo "/tmp/podkop-subscriptions-speedtest.json"
+ }
+ 
++subscription_speedtest_restore_state_file() {
++    echo "/tmp/podkop-subscriptions-speedtest-restore.json"
++}
++
++subscription_speedtest_write_status() {
++    local state="$1"
++    local message="$2"
++    local section="$3"
++    local item_id="$4"
++    local pid="$5"
++    local status_file updated_at
++
++    status_file="$(subscription_speedtest_status_file)"
++    updated_at="$(date -Iseconds 2> /dev/null || date)"
++    jq -cn --arg state "$state" --arg message "$message" \
++        --arg section "$section" --arg itemId "$item_id" \
++        --arg updatedAt "$updated_at" --argjson pid "${pid:-0}" \
++        --arg logTail "" \
++        '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
++        > "$status_file"
++}
++
+ subscription_speedtest_start() {
+     local section="$1"
+     local item_id="$2"
+-    local status_file runner state pid updated_at
++    local status_file restore_file runner state pid original_mixed_enabled original_mixed_port
+ 
+     if [ -z "$section" ] || [ -z "$item_id" ]; then
+         echo '{"success":false,"error":"section_and_item_required"}'
+@@ -2206,18 +2228,22 @@ subscription_speedtest_start() {
+         fi
+     fi
+ 
+-    updated_at="$(date -Iseconds 2> /dev/null || date)"
+-    jq -cn --arg state "running" --arg message "speedtest_running" \
+-        --arg section "$section" --arg itemId "$item_id" \
+-        --arg updatedAt "$updated_at" --argjson pid "$$" \
+-        --arg logTail "" \
+-        '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
+-        > "$status_file"
++    subscription_speedtest_write_status "running" "speedtest_running" "$section" "$item_id" "$$"
++
++    restore_file="$(subscription_speedtest_restore_state_file)"
++    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
++    config_get original_mixed_port "$section" "mixed_proxy_port"
++    jq -cn --arg section "$section" \
++        --arg originalMixedEnabled "$original_mixed_enabled" \
++        --arg originalMixedPort "$original_mixed_port" \
++        '{section:$section, originalMixedEnabled:$originalMixedEnabled, originalMixedPort:$originalMixedPort}' \
++        > "$restore_file"
+ 
+     runner="/tmp/podkop-subscriptions-speedtest-runner.sh"
+     cat > "$runner" << 'EOF'
+ #!/bin/ash
+ status_file="/tmp/podkop-subscriptions-speedtest.json"
++restore_file="/tmp/podkop-subscriptions-speedtest-restore.json"
+ section="$1"
+ item_id="$2"
+ 
+@@ -2264,11 +2290,11 @@ else
+         message="$(jq -r '.error // "speedtest_failed"' "$output_file" 2> /dev/null)"
+     fi
+     write_status "error" "$message" "" "$(tail -n 20 "$output_file" 2> /dev/null)"
+-    rm -f "$result_file" "$output_file"
++    rm -f "$result_file" "$output_file" "$restore_file"
+     exit 1
+ fi
+ 
+-rm -f "$result_file" "$output_file"
++rm -f "$result_file" "$output_file" "$restore_file"
+ EOF
+ 
+     chmod +x "$runner"
+@@ -2283,6 +2309,42 @@ EOF
+     echo '{"success":true,"started":true}'
+ }
+ 
++subscription_speedtest_stop() {
++    local status_file restore_file state pid section item_id restore_section original_mixed_enabled original_mixed_port
++
++    status_file="$(subscription_speedtest_status_file)"
++    restore_file="$(subscription_speedtest_restore_state_file)"
++    if [ ! -s "$status_file" ]; then
++        echo '{"success":true,"stopped":false}'
++        return 0
++    fi
++
++    state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
++    pid="$(jq -r '.pid // ""' "$status_file" 2> /dev/null)"
++    section="$(jq -r '.section // ""' "$status_file" 2> /dev/null)"
++    item_id="$(jq -r '.itemId // ""' "$status_file" 2> /dev/null)"
++
++    if [ "$state" = "running" ] && subscription_action_lock_pid_alive "$pid"; then
++        kill_process_tree "$pid" > /dev/null 2>&1 || true
++        sleep 1
++    fi
++
++    if [ -s "$restore_file" ]; then
++        restore_section="$(jq -r '.section // ""' "$restore_file" 2> /dev/null)"
++        original_mixed_enabled="$(jq -r '.originalMixedEnabled // ""' "$restore_file" 2> /dev/null)"
++        original_mixed_port="$(jq -r '.originalMixedPort // ""' "$restore_file" 2> /dev/null)"
++        if [ -n "$restore_section" ]; then
++            subscription_speedtest_restore_mixed_proxy "$restore_section" "$original_mixed_enabled" "$original_mixed_port" 1 > /dev/null 2>&1 || true
++        fi
++        rm -f "$restore_file"
++    elif [ -n "$section" ]; then
++        subscription_speedtest_restore_mixed_proxy "$section" "" "" 1 > /dev/null 2>&1 || true
++    fi
++
++    subscription_speedtest_write_status "cancelled" "speedtest_cancelled" "$section" "$item_id" "0"
++    echo '{"success":true,"stopped":true}'
++}
++
+ get_subscription_speedtest_status() {
+     local status_file
+ 
+@@ -2299,7 +2361,9 @@ subscription_patch_update_status_file() {
+ }
+ 
+ subscription_patch_update() {
+-    local status_file runner
++    local status_file runner patch_update_start_stop_daemon_v1
++
++    patch_update_start_stop_daemon_v1=1
+ 
+     status_file="$(subscription_patch_update_status_file)"
+     runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
+@@ -2308,6 +2372,7 @@ subscription_patch_update() {
+ #!/bin/ash
+ status_file="/tmp/podkop-subscriptions-patch-update.json"
+ log_file="/tmp/podkop-subscriptions-patch-update.log"
++patch_update_timeout_v1=1
+ 
+ write_status() {
+     local state="$1"
+@@ -2319,6 +2384,44 @@ write_status() {
+         '{state:$state, message:$message, updatedAt:$updatedAt, logTail:$logTail}' > "$status_file"
+ }
+ 
++kill_process_tree() {
++    local pid="$1"
++    local child
++
++    [ -n "$pid" ] || return 0
++    [ -d "/proc/$pid" ] || return 0
++
++    if [ -r "/proc/$pid/task/$pid/children" ]; then
++        for child in $(cat "/proc/$pid/task/$pid/children" 2> /dev/null); do
++            kill_process_tree "$child"
++        done
++    fi
++
++    kill "$pid" 2> /dev/null || true
++}
++
++run_with_timeout() {
++    local limit="$1"
++    local pid watchdog rc
++
++    shift
++    "$@" >> "$log_file" 2>&1 &
++    pid="$!"
++
++    (
++        sleep "$limit"
++        kill_process_tree "$pid"
++    ) &
++    watchdog="$!"
++
++    wait "$pid"
++    rc="$?"
++    kill "$watchdog" 2> /dev/null || true
++    wait "$watchdog" > /dev/null 2>&1 || true
++
++    return "$rc"
++}
++
+ write_status "running" "patch_update_running" ""
+ 
+ tmp="/tmp/podkop-subscriptions-install.sh"
+@@ -2327,25 +2430,25 @@ install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/m
+ download_ok=0
+ 
+ if command -v curl > /dev/null 2>&1; then
+-    if curl -fsSL --connect-timeout 10 -m 30 -o "$tmp" "$install_url" > "$log_file" 2>&1; then
++    if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 -o "$tmp" "$install_url"; then
+         download_ok=1
+     else
+         for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+-            if curl -fsSL --connect-timeout 10 -m 30 \
++            if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 \
+                 --resolve "raw.githubusercontent.com:443:$ip" \
+-                -o "$tmp" "$install_url" >> "$log_file" 2>&1; then
++                -o "$tmp" "$install_url"; then
+                 download_ok=1
+                 break
+             fi
+         done
+     fi
+ else
+-    if wget -T 30 -O "$tmp" "$install_url" > "$log_file" 2>&1; then
++    if run_with_timeout 45 wget -T 30 -O "$tmp" "$install_url"; then
+         download_ok=1
+     else
+         for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+-            if wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
+-                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster" >> "$log_file" 2>&1; then
++            if run_with_timeout 45 wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
++                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"; then
+                 download_ok=1
+                 break
+             fi
+@@ -2358,7 +2461,7 @@ if [ "$download_ok" -ne 1 ] || [ ! -s "$tmp" ]; then
+     exit 1
+ fi
+ 
+-if PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp" >> "$log_file" 2>&1; then
++if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp"; then
+     write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
+ else
+     write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
+@@ -2367,7 +2470,13 @@ fi
+ EOF
+ 
+     chmod +x "$runner"
+-    "$runner" > /dev/null 2>&1 &
++    if command -v start-stop-daemon > /dev/null 2>&1; then
++        start-stop-daemon -S -b -x "$runner" > /dev/null 2>&1
++    elif command -v setsid > /dev/null 2>&1; then
++        setsid "$runner" < /dev/null > /dev/null 2>&1 &
++    else
++        "$runner" < /dev/null > /dev/null 2>&1 &
++    fi
+ 
+     echo '{"success":true,"started":true}'
+ }
+@@ -4631,6 +4740,8 @@ Available commands:
+     subscription_speedtest   Benchmark enabled subscription proxy items for a section
+     subscription_speedtest_start
+                             Start background benchmark for one subscription proxy item
++    subscription_speedtest_stop
++                            Stop background subscription benchmark
+     get_subscription_speedtest_status
+                             Show background subscription benchmark status
+     subscription_patch_update
+@@ -4701,6 +4812,9 @@ subscription_speedtest)
+ subscription_speedtest_start)
+     subscription_speedtest_start "$2" "$3"
+     ;;
++subscription_speedtest_stop)
++    subscription_speedtest_stop
++    ;;
+ get_subscription_speedtest_status)
+     get_subscription_speedtest_status
+     ;;
+-- 
+2.54.0.windows.1
+
