@@ -283,7 +283,7 @@ has_latest_subscription_backend() {
 		grep -q "Subscription download via service proxy failed; trying direct download" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription sources that could not be downloaded" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_noop_v1" /usr/bin/podkop 2>/dev/null &&
-		grep -q "fakeip_route_check_v1" /usr/bin/podkop 2>/dev/null &&
+		grep -q "fakeip_route_check_v2" /usr/bin/podkop 2>/dev/null &&
 		grep -q 'subscription_speedtest "$2" "$3"' /usr/bin/podkop 2>/dev/null &&
 		grep -q -- '--arg state "running" --arg message "speedtest_running"' /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&
