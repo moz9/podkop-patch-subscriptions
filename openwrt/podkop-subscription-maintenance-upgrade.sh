@@ -29,18 +29,19 @@ if ! grep -q 'sing_box_cf_proxy_domain "$config" "$SB_TPROXY_INBOUND_TAG" "$FAKE
 	rm -f "$tmp"
 fi
 
-if ! grep -q "fakeip_route_check_v2" "$target" 2>/dev/null; then
+if ! grep -q "fakeip_route_check_v3" "$target" 2>/dev/null; then
 	awk '
 	BEGIN { in_check_fakeip = 0 }
 
 	$0 == "check_fakeip() {" {
 		print "check_fakeip() {"
-		print "    local response_file curl_meta http_code remote_ip fakeip_address body fakeip_status proxy_ip fakeip_route_check_v2"
+		print "    local response_file curl_meta http_code remote_ip fakeip_address body fakeip_status proxy_ip fakeip_timeout fakeip_route_check_v3"
 		print ""
-		print "    fakeip_route_check_v2=1"
+		print "    fakeip_route_check_v3=1"
 		print "    FAKEIP_TEST_DOMAIN=\"${FAKEIP_TEST_DOMAIN:-fakeip.podkop.fyi}\""
+		print "    fakeip_timeout=\"${PODKOP_FAKEIP_CHECK_TIMEOUT:-8}\""
 		print "    response_file=\"$(mktemp)\""
-		print "    curl_meta=$(curl -m 3 -s -o \"$response_file\" -w \"%{http_code} %{remote_ip}\" \"https://$FAKEIP_TEST_DOMAIN/check\" 2> /dev/null)"
+		print "    curl_meta=$(curl -m \"$fakeip_timeout\" -s -o \"$response_file\" -w \"%{http_code} %{remote_ip}\" \"https://$FAKEIP_TEST_DOMAIN/check\" 2> /dev/null)"
 		print "    body=\"$(cat \"$response_file\" 2> /dev/null)\""
 		print "    rm -f \"$response_file\""
 		print ""
