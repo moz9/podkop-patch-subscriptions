@@ -15,6 +15,7 @@ UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
 MAIN_JS_FILE="main.js"
 LMO_FILE="podkop.ru.lmo.base64"
 SUBSCRIPTIONS_FILE="subscriptions.js"
+LMO_DECODED_FILE="podkop.ru.lmo"
 
 RUNTIME_FILES="
 usr/bin/podkop
@@ -281,10 +282,30 @@ has_latest_subscription_backend() {
 		grep -q "subscription_speedtest_restore_state_file" /usr/bin/podkop 2>/dev/null &&
 		grep -q "Subscription download via service proxy failed; trying direct download" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription sources that could not be downloaded" /usr/bin/podkop 2>/dev/null &&
+		grep -q "patch_update_noop_v1" /usr/bin/podkop 2>/dev/null &&
 		grep -q 'subscription_speedtest "$2" "$3"' /usr/bin/podkop 2>/dev/null &&
 		grep -q -- '--arg state "running" --arg message "speedtest_running"' /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/lib/podkop/helpers.sh 2>/dev/null
+}
+
+decode_lmo_asset() {
+	if [ -s "$tmp_dir/$LMO_DECODED_FILE" ]; then
+		return 0
+	fi
+
+	base64 -d < "$tmp_dir/$LMO_FILE" > "$tmp_dir/$LMO_DECODED_FILE"
+}
+
+luci_assets_current() {
+	decode_lmo_asset || return 1
+
+	[ -f /www/luci-static/resources/view/podkop/main.js ] &&
+		cmp -s /www/luci-static/resources/view/podkop/main.js "$tmp_dir/$MAIN_JS_FILE" &&
+		[ -f /www/luci-static/resources/view/podkop/subscriptions.js ] &&
+		cmp -s /www/luci-static/resources/view/podkop/subscriptions.js "$tmp_dir/$SUBSCRIPTIONS_FILE" &&
+		[ -f /usr/lib/lua/luci/i18n/podkop.ru.lmo ] &&
+		cmp -s /usr/lib/lua/luci/i18n/podkop.ru.lmo "$tmp_dir/$LMO_DECODED_FILE"
 }
 
 ensure_podkop_dispatcher() {
@@ -502,6 +523,12 @@ download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
 
+if [ "${PODKOP_PATCH_FORCE:-0}" != "1" ] && has_latest_subscription_backend && luci_assets_current; then
+	log "Subscription URLTest patch is already up to date; nothing to do."
+	log "PODKOP_PATCH_NOOP=1"
+	exit 0
+fi
+
 if has_latest_subscription_backend; then
 	log "Subscription URLTest backend is already up to date; refreshing LuCI files."
 	backup_runtime
@@ -646,9 +673,10 @@ cp "$tmp_dir/$MAIN_JS_FILE" /www/luci-static/resources/view/podkop/main.js
 cp "$tmp_dir/$SUBSCRIPTIONS_FILE" /www/luci-static/resources/view/podkop/subscriptions.js
 
 mkdir -p /usr/lib/lua/luci/i18n
-if ! base64 -d < "$tmp_dir/$LMO_FILE" > /usr/lib/lua/luci/i18n/podkop.ru.lmo; then
+if ! decode_lmo_asset; then
 	abort_with_restore "failed to install LuCI translation"
 fi
+cp "$tmp_dir/$LMO_DECODED_FILE" /usr/lib/lua/luci/i18n/podkop.ru.lmo || abort_with_restore "failed to install LuCI translation"
 
 chmod 755 /usr/bin/podkop
 [ -f /usr/lib/podkop/sing_box_config_facade.sh ] && chmod 644 /usr/lib/podkop/sing_box_config_facade.sh

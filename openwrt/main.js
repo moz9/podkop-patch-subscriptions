@@ -5975,6 +5975,8 @@ function getPatchUpdateMessage(status) {
   switch (status.message) {
     case "patch_update_running":
       return _("Updating patch from GitHub.");
+    case "patch_update_noop":
+      return "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D.";
     case "patch_update_success":
       return _("Patch updated. Refresh the page in a minute.");
     case "download_failed":
@@ -6006,7 +6008,7 @@ async function pollPatchUpdateStatus() {
         actionStatus: status.data.state === "success" ? "success" : "error",
         actionMessage: getPatchUpdateMessage(status.data)
       });
-      return status.data.state === "success";
+      return status.data;
     } catch (error) {
       logger.error("[SUBSCRIPTIONS]", "failed to poll patch update status");
       logger.error("[SUBSCRIPTIONS]", error);
@@ -6017,7 +6019,7 @@ async function pollPatchUpdateStatus() {
     actionStatus: "success",
     actionMessage: _("Patch update is still running. Refresh the page later.")
   });
-  return true;
+  return { state: "success", message: "patch_update_running" };
 }
 async function handlePatchUpdate() {
   const widget = store.get().subscriptionItemsWidget;
@@ -6034,9 +6036,10 @@ async function handlePatchUpdate() {
     if (!result.success || !result.data.success) {
       throw new Error(result.success ? result.data.error : result.error);
     }
-    const success = await pollPatchUpdateStatus();
+    const status = await pollPatchUpdateStatus();
+    const success = status.state === "success";
     showToast(
-      success ? _("Patch update started.") : _("Patch update failed."),
+      status.message === "patch_update_noop" ? "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D." : success ? _("Patch update started.") : _("Patch update failed."),
       success ? "success" : "error"
     );
   } catch (error) {
@@ -6051,9 +6054,10 @@ async function handlePatchUpdate() {
           actionMessage: getPatchUpdateMessage(status.data)
         });
         if (status.data.state === "running") {
-          const success = await pollPatchUpdateStatus();
+          const status2 = await pollPatchUpdateStatus();
+          const success = status2.state === "success";
           showToast(
-            success ? _("Patch update started.") : _("Patch update failed."),
+            status2.message === "patch_update_noop" ? "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D." : success ? _("Patch update started.") : _("Patch update failed."),
             success ? "success" : "error"
           );
         }

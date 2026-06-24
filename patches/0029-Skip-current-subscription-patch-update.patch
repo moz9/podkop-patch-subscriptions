@@ -1,0 +1,162 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.local>
+Date: Wed, 24 Jun 2026 18:23:39 +03:00
+Subject: [PATCH] Skip current subscription patch update
+
+---
+ .../podkop/tabs/subscriptions/initController.ts    | 24 ++++++++++++++++------
+ .../luci-static/resources/view/podkop/main.js      | 16 +++++++++------
+ podkop/files/usr/bin/podkop                        |  9 ++++++--
+ 3 files changed, 35 insertions(+), 14 deletions(-)
+
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+index 1e47f24..8909ea3 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+@@ -694,6 +694,8 @@ function getPatchUpdateMessage(status: Podkop.SubscriptionPatchUpdateStatus) {
+   switch (status.message) {
+     case 'patch_update_running':
+       return _('Updating patch from GitHub.');
++    case 'patch_update_noop':
++      return 'Патч уже актуален.';
+     case 'patch_update_success':
+       return _('Patch updated. Refresh the page in a minute.');
+     case 'download_failed':
+@@ -732,7 +734,7 @@ async function pollPatchUpdateStatus() {
+         actionMessage: getPatchUpdateMessage(status.data),
+       });
+ 
+-      return status.data.state === 'success';
++      return status.data;
+     } catch (error) {
+       logger.error('[SUBSCRIPTIONS]', 'failed to poll patch update status');
+       logger.error('[SUBSCRIPTIONS]', error);
+@@ -745,7 +747,7 @@ async function pollPatchUpdateStatus() {
+     actionMessage: _('Patch update is still running. Refresh the page later.'),
+   });
+ 
+-  return true;
++  return { state: 'success', message: 'patch_update_running' };
+ }
+ 
+ async function handlePatchUpdate() {
+@@ -772,9 +774,14 @@ async function handlePatchUpdate() {
+       throw new Error(result.success ? result.data.error : result.error);
+     }
+ 
+-    const success = await pollPatchUpdateStatus();
++    const status = await pollPatchUpdateStatus();
++    const success = status.state === 'success';
+     showToast(
+-      success ? _('Patch update started.') : _('Patch update failed.'),
++      status.message === 'patch_update_noop'
++        ? 'Патч уже актуален.'
++        : success
++          ? _('Patch update started.')
++          : _('Patch update failed.'),
+       success ? 'success' : 'error',
+     );
+   } catch (error) {
+@@ -796,9 +803,14 @@ async function handlePatchUpdate() {
+         });
+ 
+         if (status.data.state === 'running') {
+-          const success = await pollPatchUpdateStatus();
++          const status = await pollPatchUpdateStatus();
++          const success = status.state === 'success';
+           showToast(
+-            success ? _('Patch update started.') : _('Patch update failed.'),
++            status.message === 'patch_update_noop'
++              ? 'Патч уже актуален.'
++              : success
++                ? _('Patch update started.')
++                : _('Patch update failed.'),
+             success ? 'success' : 'error',
+           );
+         }
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index 271ab9a..6d9a041 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -5975,6 +5975,8 @@ function getPatchUpdateMessage(status) {
+   switch (status.message) {
+     case "patch_update_running":
+       return _("Updating patch from GitHub.");
++    case "patch_update_noop":
++      return "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D.";
+     case "patch_update_success":
+       return _("Patch updated. Refresh the page in a minute.");
+     case "download_failed":
+@@ -6006,7 +6008,7 @@ async function pollPatchUpdateStatus() {
+         actionStatus: status.data.state === "success" ? "success" : "error",
+         actionMessage: getPatchUpdateMessage(status.data)
+       });
+-      return status.data.state === "success";
++      return status.data;
+     } catch (error) {
+       logger.error("[SUBSCRIPTIONS]", "failed to poll patch update status");
+       logger.error("[SUBSCRIPTIONS]", error);
+@@ -6017,7 +6019,7 @@ async function pollPatchUpdateStatus() {
+     actionStatus: "success",
+     actionMessage: _("Patch update is still running. Refresh the page later.")
+   });
+-  return true;
++  return { state: "success", message: "patch_update_running" };
+ }
+ async function handlePatchUpdate() {
+   const widget = store.get().subscriptionItemsWidget;
+@@ -6034,9 +6036,10 @@ async function handlePatchUpdate() {
+     if (!result.success || !result.data.success) {
+       throw new Error(result.success ? result.data.error : result.error);
+     }
+-    const success = await pollPatchUpdateStatus();
++    const status = await pollPatchUpdateStatus();
++    const success = status.state === "success";
+     showToast(
+-      success ? _("Patch update started.") : _("Patch update failed."),
++      status.message === "patch_update_noop" ? "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D." : success ? _("Patch update started.") : _("Patch update failed."),
+       success ? "success" : "error"
+     );
+   } catch (error) {
+@@ -6051,9 +6054,10 @@ async function handlePatchUpdate() {
+           actionMessage: getPatchUpdateMessage(status.data)
+         });
+         if (status.data.state === "running") {
+-          const success = await pollPatchUpdateStatus();
++          const status2 = await pollPatchUpdateStatus();
++          const success = status2.state === "success";
+           showToast(
+-            success ? _("Patch update started.") : _("Patch update failed."),
++            status2.message === "patch_update_noop" ? "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D." : success ? _("Patch update started.") : _("Patch update failed."),
+             success ? "success" : "error"
+           );
+         }
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index adbcabb..da1758f 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -2361,9 +2361,10 @@ subscription_patch_update_status_file() {
+ }
+ 
+ subscription_patch_update() {
+-    local status_file runner patch_update_start_stop_daemon_v1
++    local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1
+ 
+     patch_update_start_stop_daemon_v1=1
++    patch_update_noop_v1=1
+ 
+     status_file="$(subscription_patch_update_status_file)"
+     runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
+@@ -2462,7 +2463,11 @@ if [ "$download_ok" -ne 1 ] || [ ! -s "$tmp" ]; then
+ fi
+ 
+ if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp"; then
+-    write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    if grep -q "PODKOP_PATCH_NOOP=1" "$log_file" 2> /dev/null; then
++        write_status "success" "patch_update_noop" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    else
++        write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    fi
+ else
+     write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
+     exit 1

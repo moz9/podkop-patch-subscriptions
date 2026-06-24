@@ -1369,6 +1369,8 @@ index 009c1ae..b8804cf 100644
 +  switch (status.message) {
 +    case "patch_update_running":
 +      return _("Updating patch from GitHub.");
++    case "patch_update_noop":
++      return "Патч уже актуален.";
 +    case "patch_update_success":
 +      return _("Patch updated. Refresh the page in a minute.");
 +    case "download_failed":
@@ -1400,7 +1402,7 @@ index 009c1ae..b8804cf 100644
 +        actionStatus: status.data.state === "success" ? "success" : "error",
 +        actionMessage: getPatchUpdateMessage(status.data)
 +      });
-+      return status.data.state === "success";
++      return status.data;
 +    } catch (error) {
 +      logger.error("[SUBSCRIPTIONS]", "failed to poll patch update status");
 +      logger.error("[SUBSCRIPTIONS]", error);
@@ -1411,7 +1413,7 @@ index 009c1ae..b8804cf 100644
 +    actionStatus: "success",
 +    actionMessage: _("Patch update is still running. Refresh the page later.")
 +  });
-+  return true;
++  return { state: "success", message: "patch_update_running" };
 +}
 +async function handlePatchUpdate() {
 +  const widget = store.get().subscriptionItemsWidget;
@@ -1428,9 +1430,10 @@ index 009c1ae..b8804cf 100644
 +    if (!result.success || !result.data.success) {
 +      throw new Error(result.success ? result.data.error : result.error);
 +    }
-+    const success = await pollPatchUpdateStatus();
++    const status = await pollPatchUpdateStatus();
++    const success = status.state === "success";
 +    showToast(
-+      success ? _("Patch update started.") : _("Patch update failed."),
++      status.message === "patch_update_noop" ? "Патч уже актуален." : success ? _("Patch update started.") : _("Patch update failed."),
 +      success ? "success" : "error"
 +    );
 +  } catch (error) {
@@ -1445,9 +1448,10 @@ index 009c1ae..b8804cf 100644
 +          actionMessage: getPatchUpdateMessage(status.data)
 +        });
 +        if (status.data.state === "running") {
-+          const success = await pollPatchUpdateStatus();
++          const status = await pollPatchUpdateStatus();
++          const success = status.state === "success";
 +          showToast(
-+            success ? _("Patch update started.") : _("Patch update failed."),
++            status.message === "patch_update_noop" ? "Патч уже актуален." : success ? _("Patch update started.") : _("Patch update failed."),
 +            success ? "success" : "error"
 +          );
 +        }
@@ -3867,9 +3871,10 @@ index fda1c1e..d04347f 100755
 -        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
 -    fi
 +subscription_patch_update() {
-+    local status_file runner patch_update_start_stop_daemon_v1
++    local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1
 +
 +    patch_update_start_stop_daemon_v1=1
++    patch_update_noop_v1=1
 +
 +    status_file="$(subscription_patch_update_status_file)"
 +    runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
@@ -4030,7 +4035,11 @@ index fda1c1e..d04347f 100755
 +fi
 +
 +if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp"; then
-+    write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    if grep -q "PODKOP_PATCH_NOOP=1" "$log_file" 2> /dev/null; then
++        write_status "success" "patch_update_noop" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    else
++        write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
++    fi
 +else
 +    write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
 +    exit 1
