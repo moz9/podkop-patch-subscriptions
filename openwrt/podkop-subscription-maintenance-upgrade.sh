@@ -12,6 +12,78 @@ fi
 
 sed -i 's#PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload#PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload#g' "$target"
 
+if ! grep -q 'sing_box_cf_proxy_domain "$config" "$SB_TPROXY_INBOUND_TAG" "$FAKEIP_TEST_DOMAIN" "$first_outbound_tag"' "$target" 2>/dev/null; then
+	awk '
+	$0 == "    config=$(sing_box_cf_proxy_domain \"$config\" \"$SB_TPROXY_INBOUND_TAG\" \"$CHECK_PROXY_IP_DOMAIN\" \"$first_outbound_tag\")" {
+		print
+		print "    config=$(sing_box_cf_proxy_domain \"$config\" \"$SB_TPROXY_INBOUND_TAG\" \"$FAKEIP_TEST_DOMAIN\" \"$first_outbound_tag\")"
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
+if ! grep -q "fakeip_route_check_v1" "$target" 2>/dev/null; then
+	awk '
+	BEGIN { in_check_fakeip = 0 }
+
+	$0 == "check_fakeip() {" {
+		print "check_fakeip() {"
+		print "    local response_file curl_meta http_code remote_ip fakeip_address body fakeip_status proxy_ip fakeip_route_check_v1"
+		print ""
+		print "    fakeip_route_check_v1=1"
+		print "    response_file=\"$(mktemp)\""
+		print "    curl_meta=$(curl -m 3 -s -o \"$response_file\" -w \"%{http_code} %{remote_ip}\" \"https://$FAKEIP_TEST_DOMAIN/check\" 2> /dev/null)"
+		print "    body=\"$(cat \"$response_file\" 2> /dev/null)\""
+		print "    rm -f \"$response_file\""
+		print ""
+		print "    if [ -n \"$body\" ] && echo \"$body\" | jq -e . > /dev/null 2>&1; then"
+		print "        fakeip_status=\"$(echo \"$body\" | jq -r '\''.fakeip // false'\'')\""
+		print "        if [ \"$fakeip_status\" = \"true\" ]; then"
+		print "            echo \"$body\" | jq ."
+		print "            return"
+		print "        fi"
+		print ""
+		print "        http_code=\"${curl_meta%% *}\""
+		print "        remote_ip=\"${curl_meta#* }\""
+		print "        fakeip_address=\"$(dig +short @127.0.0.42 \"$FAKEIP_TEST_DOMAIN\" 2> /dev/null | head -n 1)\""
+		print "        if [ \"$http_code\" = \"200\" ] && echo \"$remote_ip\" | grep -q \"^198\\.18\\.\" && echo \"$fakeip_address\" | grep -q \"^198\\.18\\.\"; then"
+		print "            proxy_ip=\"$(echo \"$body\" | jq -r '\''.IP // empty'\'')\""
+		print "            printf '\''{\"fakeip\":true,\"IP\":\"%s\"}\\n'\'' \"$proxy_ip\" | jq ."
+		print "            return"
+		print "        fi"
+		print ""
+		print "        echo \"$body\" | jq ."
+		print "    fi"
+		print "}"
+		in_check_fakeip = 1
+		next
+	}
+
+	in_check_fakeip && $0 == "}" {
+		in_check_fakeip = 0
+		next
+	}
+
+	in_check_fakeip {
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
+fi
+
 if ! grep -q "PODKOP_SKIP_LIST_UPDATE" "$target" 2>/dev/null; then
 	awk '
 	$0 == "    list_update &" {
