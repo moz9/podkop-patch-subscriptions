@@ -750,7 +750,7 @@ PATCH_UPDATE_EOF
 	rm -f "$tmp" "$patch_update_function"
 fi
 
-if ! grep -Fq 'wget -T 30 -O "$filepath" "$url"' "$target" 2>/dev/null; then
+if ! grep -Fq 'Subscription download via service proxy failed; trying direct download' "$target" 2>/dev/null; then
 	subscription_download_function="$(mktemp)"
 	cat > "$subscription_download_function" <<'SUBSCRIPTION_DOWNLOAD_EOF'
 download_subscription_to_file() {
@@ -763,20 +763,22 @@ download_subscription_to_file() {
 
     for attempt in $(seq 1 "$retries"); do
         rm -f "$filepath"
-        if command -v curl > /dev/null 2>&1; then
-            if [ -n "$http_proxy_address" ]; then
+        if [ -n "$http_proxy_address" ]; then
+            if command -v curl > /dev/null 2>&1; then
                 curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
                     [ -s "$filepath" ] && return 0
-            else
-                curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
             fi
-        else
-            if [ -n "$http_proxy_address" ]; then
+            if command -v wget > /dev/null 2>&1; then
                 http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
                     wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
-            else
-                wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
             fi
+            rm -f "$filepath"
+            log "Subscription download via service proxy failed; trying direct download" "debug"
+        fi
+        if command -v curl > /dev/null 2>&1; then
+            curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
+        elif command -v wget > /dev/null 2>&1; then
+            wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
         fi
 
         log "Attempt $attempt/$retries to download subscription failed" "warn"
@@ -821,6 +823,72 @@ SUBSCRIPTION_DOWNLOAD_EOF
 	}
 	cat "$tmp" > "$target"
 	rm -f "$tmp" "$subscription_download_function"
+fi
+
+if ! grep -Fq 'subscription sources that could not be downloaded' "$target" 2>/dev/null; then
+	awk '
+	BEGIN {
+		in_download_fail = 0
+		skip_failed_block = 0
+		in_skipped_sources_block = 0
+	}
+
+	$0 == "        if ! download_subscription_to_file \"$subscription_url\" \"$tmpfile\" \"$http_proxy_address\"; then" {
+		in_download_fail = 1
+		print
+		next
+	}
+
+	in_download_fail && $0 == "            break" {
+		print "            source_index=$((source_index + 1))"
+		print "            continue"
+		next
+	}
+
+	in_download_fail && $0 == "        fi" {
+		in_download_fail = 0
+		print
+		next
+	}
+
+	$0 == "    if [ \"$failed_sources\" -gt 0 ]; then" {
+		skip_failed_block = 1
+		next
+	}
+
+	skip_failed_block && $0 == "" {
+		skip_failed_block = 0
+		print
+		next
+	}
+
+	skip_failed_block {
+		next
+	}
+
+	$0 == "    if [ \"$skipped_sources\" -gt 0 ]; then" {
+		in_skipped_sources_block = 1
+		print
+		next
+	}
+
+	in_skipped_sources_block && $0 == "    fi" {
+		in_skipped_sources_block = 0
+		print
+		print ""
+		print "    if [ \"$failed_sources\" -gt 0 ]; then"
+		print "        log \"Skipped $failed_sources subscription sources that could not be downloaded for section '\''$section'\''\" \"warn\""
+		print "    fi"
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp"
 fi
 
 if ! grep -Fq 'reduce .[] as $item' "$target" 2>/dev/null; then

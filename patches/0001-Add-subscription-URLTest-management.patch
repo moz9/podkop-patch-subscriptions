@@ -8025,7 +8025,7 @@ index fda1c1e..ee89ce2 100755
  list_update() {
      echolog "🔄 Starting lists update..."
  
-@@ -547,6 +616,882 @@ list_update() {
+@@ -547,6 +616,883 @@ list_update() {
      fi
  }
  
@@ -8391,20 +8391,23 @@ index fda1c1e..ee89ce2 100755
 +    local attempt
 +
 +    for attempt in $(seq 1 "$retries"); do
-+        if command -v curl > /dev/null 2>&1; then
-+            if [ -n "$http_proxy_address" ]; then
++        rm -f "$filepath"
++        if [ -n "$http_proxy_address" ]; then
++            if command -v curl > /dev/null 2>&1; then
 +                curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
 +                    [ -s "$filepath" ] && return 0
-+            else
-+                curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
 +            fi
-+        else
-+            if [ -n "$http_proxy_address" ]; then
-+                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" wget -O "$filepath" "$url" &&
-+                    [ -s "$filepath" ] && return 0
-+            else
-+                wget -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++            if command -v wget > /dev/null 2>&1; then
++                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
++                    wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
 +            fi
++            rm -f "$filepath"
++            log "Subscription download via service proxy failed; trying direct download" "debug"
++        fi
++        if command -v curl > /dev/null 2>&1; then
++            curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
++        elif command -v wget > /dev/null 2>&1; then
++            wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
 +        fi
 +
 +        log "Attempt $attempt/$retries to download subscription failed" "warn"
@@ -8475,7 +8478,8 @@ index fda1c1e..ee89ce2 100755
 +            failed_sources=$((failed_sources + 1))
 +            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
 +                "$items_file"
-+            break
++            source_index=$((source_index + 1))
++            continue
 +        fi
 +
 +        if ! normalize_subscription_file "$tmpfile" "$links_file"; then
@@ -8507,13 +8511,6 @@ index fda1c1e..ee89ce2 100755
 +            "$items_file"
 +        source_index=$((source_index + 1))
 +    done < "$urls_file"
-+
-+    if [ "$failed_sources" -gt 0 ]; then
-+        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
-+            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
-+            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
-+        return 1
-+    fi
 +
 +    awk '!seen[$0]++' "$merged_links_file" > "$deduped_links_file"
 +    awk '!seen[$0]++' "$merged_all_links_file" > "$deduped_all_links_file"
@@ -8593,6 +8590,10 @@ index fda1c1e..ee89ce2 100755
 +
 +    if [ "$skipped_sources" -gt 0 ]; then
 +        log "Skipped $skipped_sources subscription sources without podkop-compatible links for section '$section'" "warn"
++    fi
++
++    if [ "$failed_sources" -gt 0 ]; then
++        log "Skipped $failed_sources subscription sources that could not be downloaded for section '$section'" "warn"
 +    fi
 +
 +    rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
@@ -9048,4 +9049,3 @@ index 7641673..98c4ad7 100644
          ws_path=$(url_get_query_param "$url" "path")
 -- 
 2.54.0.windows.1
-
