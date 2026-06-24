@@ -1,22 +1,24 @@
 From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: Codex <codex@example.local>
-Date: Wed, 24 Jun 2026 18:23:39 +03:00
+Date: Wed, 24 Jun 2026 18:36:34 +03:00
 Subject: [PATCH] Skip current subscription patch update
 
 ---
- .../podkop/tabs/subscriptions/initController.ts    | 24 ++++++++++++++++------
- .../luci-static/resources/view/podkop/main.js      | 16 +++++++++------
- podkop/files/usr/bin/podkop                        |  9 ++++++--
- 3 files changed, 35 insertions(+), 14 deletions(-)
+ .../podkop/tabs/subscriptions/initController.ts    | 28 +++++++++++++++-------
+ .../luci-static/resources/view/podkop/main.js      | 20 +++++++++-------
+ podkop/files/usr/bin/podkop                        |  9 +++++--
+ 3 files changed, 39 insertions(+), 18 deletions(-)
 
 diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
-index 1e47f24..8909ea3 100644
+index 1e47f24..1e5104b 100644
 --- a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
 +++ b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
-@@ -694,6 +694,8 @@ function getPatchUpdateMessage(status: Podkop.SubscriptionPatchUpdateStatus) {
+@@ -693,7 +693,9 @@ function getSubscriptionActionErrorMessage(
+ function getPatchUpdateMessage(status: Podkop.SubscriptionPatchUpdateStatus) {
    switch (status.message) {
      case 'patch_update_running':
-       return _('Updating patch from GitHub.');
+-      return _('Updating patch from GitHub.');
++      return 'Проверяем обновление патча.';
 +    case 'patch_update_noop':
 +      return 'Патч уже актуален.';
      case 'patch_update_success':
@@ -40,6 +42,15 @@ index 1e47f24..8909ea3 100644
  }
  
  async function handlePatchUpdate() {
+@@ -762,7 +764,7 @@ async function handlePatchUpdate() {
+   setActionState({
+     action: 'patch',
+     actionStatus: 'running',
+-    actionMessage: _('Starting patch update from GitHub.'),
++    actionMessage: 'Проверяем обновление патча.',
+   });
+ 
+   try {
 @@ -772,9 +774,14 @@ async function handlePatchUpdate() {
        throw new Error(result.success ? result.data.error : result.error);
      }
@@ -75,13 +86,15 @@ index 1e47f24..8909ea3 100644
            );
          }
 diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
-index 271ab9a..6d9a041 100644
+index 271ab9a..3e88a06 100644
 --- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
 +++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
-@@ -5975,6 +5975,8 @@ function getPatchUpdateMessage(status) {
+@@ -5974,7 +5974,9 @@ function getSubscriptionActionErrorMessage(error, fallback) {
+ function getPatchUpdateMessage(status) {
    switch (status.message) {
      case "patch_update_running":
-       return _("Updating patch from GitHub.");
+-      return _("Updating patch from GitHub.");
++      return "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u043F\u0430\u0442\u0447\u0430.";
 +    case "patch_update_noop":
 +      return "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D.";
      case "patch_update_success":
@@ -105,7 +118,15 @@ index 271ab9a..6d9a041 100644
  }
  async function handlePatchUpdate() {
    const widget = store.get().subscriptionItemsWidget;
-@@ -6034,9 +6036,10 @@ async function handlePatchUpdate() {
+@@ -6027,16 +6029,17 @@ async function handlePatchUpdate() {
+   setActionState({
+     action: "patch",
+     actionStatus: "running",
+-    actionMessage: _("Starting patch update from GitHub.")
++    actionMessage: "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u043F\u0430\u0442\u0447\u0430."
+   });
+   try {
+     const result = await PodkopShellMethods.updateSubscriptionPatch();
      if (!result.success || !result.data.success) {
        throw new Error(result.success ? result.data.error : result.error);
      }

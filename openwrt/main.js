@@ -5974,7 +5974,7 @@ function getSubscriptionActionErrorMessage(error, fallback) {
 function getPatchUpdateMessage(status) {
   switch (status.message) {
     case "patch_update_running":
-      return _("Updating patch from GitHub.");
+      return "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u043F\u0430\u0442\u0447\u0430.";
     case "patch_update_noop":
       return "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D.";
     case "patch_update_success":
@@ -6029,7 +6029,7 @@ async function handlePatchUpdate() {
   setActionState({
     action: "patch",
     actionStatus: "running",
-    actionMessage: _("Starting patch update from GitHub.")
+    actionMessage: "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u043F\u0430\u0442\u0447\u0430."
   });
   try {
     const result = await PodkopShellMethods.updateSubscriptionPatch();

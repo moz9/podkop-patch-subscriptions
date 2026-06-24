@@ -1368,7 +1368,7 @@ index 009c1ae..b8804cf 100644
 +function getPatchUpdateMessage(status) {
 +  switch (status.message) {
 +    case "patch_update_running":
-+      return _("Updating patch from GitHub.");
++      return "Проверяем обновление патча.";
 +    case "patch_update_noop":
 +      return "Патч уже актуален.";
 +    case "patch_update_success":
@@ -1423,7 +1423,7 @@ index 009c1ae..b8804cf 100644
 +  setActionState({
 +    action: "patch",
 +    actionStatus: "running",
-+    actionMessage: _("Starting patch update from GitHub.")
++    actionMessage: "Проверяем обновление патча."
 +  });
 +  try {
 +    const result = await PodkopShellMethods.updateSubscriptionPatch();
