@@ -9,6 +9,7 @@ V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260625-noop-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -257,6 +258,8 @@ abort_with_restore() {
 }
 
 has_latest_subscription_backend() {
+	grep -Fq "$INSTALL_MARKER" /usr/bin/podkop 2>/dev/null && return 0
+
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
 	[ "${count:-0}" -ge 3 ] &&
 		grep -q '^case "\$1" in' /usr/bin/podkop 2>/dev/null &&
@@ -288,6 +291,11 @@ has_latest_subscription_backend() {
 		grep -q -- '--arg state "running" --arg message "speedtest_running"' /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/lib/podkop/helpers.sh 2>/dev/null
+}
+
+mark_latest_subscription_backend() {
+	grep -Fq "$INSTALL_MARKER" /usr/bin/podkop 2>/dev/null && return 0
+	printf '\n# %s\n' "$INSTALL_MARKER" >> /usr/bin/podkop
 }
 
 decode_lmo_asset() {
@@ -600,6 +608,7 @@ done
 if [ -f /usr/bin/podkop ]; then
 	sed -i 's#CLASH_URL="$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"#CLASH_URL="http://$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"#g' /usr/bin/podkop
 	ensure_podkop_dispatcher /usr/bin/podkop
+	mark_latest_subscription_backend
 fi
 
 if grep -q "get_subscription_benchmark_bytes" /usr/bin/podkop 2>/dev/null &&
