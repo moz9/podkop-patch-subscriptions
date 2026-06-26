@@ -4,6 +4,7 @@ set -eu
 PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 PODKOP_OFFICIAL_INSTALL_URL="${PODKOP_OFFICIAL_INSTALL_URL:-https://raw.githubusercontent.com/itdoginfo/podkop/main/install.sh}"
+PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-0.7.20}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
 V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
@@ -526,8 +527,38 @@ has_v0719_package_backend() {
 	/usr/bin/podkop show_version 2>/dev/null | grep -Eq "^v?0\\.7\\.19$"
 }
 
+normalize_version() {
+	printf '%s\n' "$1" | sed 's/^v//' | awk -F. '{ printf "%d %d %d\n", $1, $2, $3 }'
+}
+
+version_ge() {
+	current="$1"
+	required="$2"
+	[ -n "$current" ] && [ -n "$required" ] || return 1
+
+	set -- $(normalize_version "$current") $(normalize_version "$required")
+	cmaj="$1"; cmin="$2"; cpatch="$3"; rmaj="$4"; rmin="$5"; rpatch="$6"
+
+	[ "$cmaj" -gt "$rmaj" ] && return 0
+	[ "$cmaj" -lt "$rmaj" ] && return 1
+	[ "$cmin" -gt "$rmin" ] && return 0
+	[ "$cmin" -lt "$rmin" ] && return 1
+	[ "$cpatch" -ge "$rpatch" ]
+}
+
+current_podkop_version() {
+	/usr/bin/podkop show_version 2>/dev/null | sed 's/^v//' || true
+}
+
 update_official_podkop_if_requested() {
 	[ "${PODKOP_PATCH_UPDATE_PODKOP:-0}" = "1" ] || return 0
+
+	current_version="$(current_podkop_version)"
+	if [ "${PODKOP_PATCH_FORCE_PODKOP_UPDATE:-0}" != "1" ] &&
+		version_ge "$current_version" "$PODKOP_PATCH_TARGET_PODKOP_VERSION"; then
+		log "Official Podkop is already $current_version; target is $PODKOP_PATCH_TARGET_PODKOP_VERSION. Skipping official update."
+		return 0
+	fi
 
 	official_installer="$tmp_dir/podkop-official-install.sh"
 	download "$PODKOP_OFFICIAL_INSTALL_URL" "$official_installer"
@@ -541,6 +572,13 @@ update_official_podkop_if_requested() {
 		if [ -n "${backup_dir:-}" ]; then
 			restore_runtime
 		fi
+
+		current_version="$(current_podkop_version)"
+		if version_ge "$current_version" "$PODKOP_PATCH_TARGET_PODKOP_VERSION"; then
+			log "Official Podkop update failed, but installed version $current_version already meets target $PODKOP_PATCH_TARGET_PODKOP_VERSION. Continuing with Subscription URLTest patch."
+			return 0
+		fi
+
 		fail "official Podkop update failed"
 	fi
 
