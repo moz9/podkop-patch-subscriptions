@@ -1,5 +1,5 @@
 diff --git a/luci-static/resources/view/podkop/main.js b/luci-static/resources/view/podkop/main.js
-index 009c1ae..b8804cf 100644
+index 009c1ae..3e88a06 100644
 --- a/luci-static/resources/view/podkop/main.js
 +++ b/luci-static/resources/view/podkop/main.js
 @@ -576,11 +576,11 @@ async function getConfigSections() {
@@ -16,12 +16,15 @@ index 009c1ae..b8804cf 100644
    });
    if (response.stdout) {
      try {
-@@ -621,7 +621,17 @@ var Podkop;
+@@ -621,7 +621,20 @@ var Podkop;
      AvailableMethods2["GLOBAL_CHECK"] = "global_check";
      AvailableMethods2["SHOW_SING_BOX_CONFIG"] = "show_sing_box_config";
      AvailableMethods2["CHECK_LOGS"] = "check_logs";
 +    AvailableMethods2["SUBSCRIPTION_UPDATE_JSON"] = "subscription_update_json";
 +    AvailableMethods2["SUBSCRIPTION_SPEEDTEST"] = "subscription_speedtest";
++    AvailableMethods2["SUBSCRIPTION_SPEEDTEST_START"] = "subscription_speedtest_start";
++    AvailableMethods2["SUBSCRIPTION_SPEEDTEST_STOP"] = "subscription_speedtest_stop";
++    AvailableMethods2["GET_SUBSCRIPTION_SPEEDTEST_STATUS"] = "get_subscription_speedtest_status";
 +    AvailableMethods2["SUBSCRIPTION_PATCH_UPDATE"] = "subscription_patch_update";
 +    AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_STATUS"] = "get_subscription_patch_update_status";
      AvailableMethods2["GET_SYSTEM_INFO"] = "get_system_info";
@@ -34,7 +37,7 @@ index 009c1ae..b8804cf 100644
    })(AvailableMethods = Podkop2.AvailableMethods || (Podkop2.AvailableMethods = {}));
    let AvailableClashAPIMethods;
    ((AvailableClashAPIMethods2) => {
-@@ -694,12 +704,79 @@ var PodkopShellMethods = {
+@@ -694,12 +707,97 @@ var PodkopShellMethods = {
    globalCheck: async () => callBaseMethod(Podkop.AvailableMethods.GLOBAL_CHECK),
    showSingBoxConfig: async () => callBaseMethod(Podkop.AvailableMethods.SHOW_SING_BOX_CONFIG),
    checkLogs: async () => callBaseMethod(Podkop.AvailableMethods.CHECK_LOGS),
@@ -49,6 +52,24 @@ index 009c1ae..b8804cf 100644
 +    itemId ? [section, itemId] : [section],
 +    "/usr/bin/podkop",
 +    3e5
++  ),
++  startSubscriptionSpeedtest: async (section, itemId) => callBaseMethod(
++    Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST_START,
++    [section, itemId],
++    "/usr/bin/podkop",
++    15e3
++  ),
++  stopSubscriptionSpeedtest: async () => callBaseMethod(
++    Podkop.AvailableMethods.SUBSCRIPTION_SPEEDTEST_STOP,
++    [],
++    "/usr/bin/podkop",
++    15e3
++  ),
++  getSubscriptionSpeedtestStatus: async () => callBaseMethod(
++    Podkop.AvailableMethods.GET_SUBSCRIPTION_SPEEDTEST_STATUS,
++    [],
++    "/usr/bin/podkop",
++    15e3
 +  ),
 +  updateSubscriptionPatch: async () => callBaseMethod(
 +    Podkop.AvailableMethods.SUBSCRIPTION_PATCH_UPDATE,
@@ -102,7 +123,7 @@ index 009c1ae..b8804cf 100644
 +    case "unsupported_protocol":
 +      return _("Unsupported protocol");
 +    case "unsupported_transport":
-+      return _("Unsupported transport");
++      return _("Not supported");
 +    case "unsupported_security":
 +      return _("Unsupported security");
 +    case "invalid_config":
@@ -114,7 +135,7 @@ index 009c1ae..b8804cf 100644
  async function getDashboardSections() {
    const configSections = await getConfigSections();
    const clashProxies = await PodkopShellMethods.getClashApiProxies();
-@@ -715,6 +792,24 @@ async function getDashboardSections() {
+@@ -715,6 +813,24 @@ async function getDashboardSections() {
        value
      })
    );
@@ -139,7 +160,7 @@ index 009c1ae..b8804cf 100644
    const data = configSections.filter(
      (section) => section.connection_type !== "block" && section.connection_type !== "exclusion" && section[".type"] !== "settings"
    ).map((section) => {
-@@ -786,16 +881,17 @@ async function getDashboardSections() {
+@@ -786,16 +902,17 @@ async function getDashboardSections() {
            outbounds
          };
        }
@@ -159,7 +180,7 @@ index 009c1ae..b8804cf 100644
            latency: item?.value?.history?.[0]?.delay || 0,
            type: item?.value?.type || "",
            selected: selector?.value?.now === item?.code
-@@ -843,9 +939,31 @@ async function getDashboardSections() {
+@@ -843,9 +960,31 @@ async function getDashboardSections() {
        outbounds: []
      };
    });
@@ -192,7 +213,7 @@ index 009c1ae..b8804cf 100644
    };
  }
  
-@@ -1387,6 +1505,20 @@ var initialStore = {
+@@ -1387,6 +1526,20 @@ var initialStore = {
      latencyFetching: false,
      data: []
    },
@@ -213,7 +234,7 @@ index 009c1ae..b8804cf 100644
    ...initialDiagnosticStore
  };
  var store = new StoreService(initialStore);
-@@ -1746,6 +1878,9 @@ function renderDefaultState({
+@@ -1746,6 +1899,9 @@ function renderDefaultState({
    latencyFetching
  }) {
    function testLatency() {
@@ -223,7 +244,7 @@ index 009c1ae..b8804cf 100644
      if (section.withTagSelect) {
        return onTestLatency(section.code);
      }
-@@ -1783,7 +1918,7 @@ function renderDefaultState({
+@@ -1783,7 +1939,7 @@ function renderDefaultState({
            E(
              "div",
              { class: getLatencyClass() },
@@ -232,7 +253,7 @@ index 009c1ae..b8804cf 100644
            )
          ])
        ]
-@@ -1799,7 +1934,7 @@ function renderDefaultState({
+@@ -1799,7 +1955,7 @@ function renderDefaultState({
          },
          section.displayName
        ),
@@ -241,7 +262,7 @@ index 009c1ae..b8804cf 100644
          "button",
          {
            class: "btn dashboard-sections-grid-item-test-latency",
-@@ -2679,8 +2814,6 @@ async function runNftCheck() {
+@@ -2679,8 +2835,6 @@ async function runNftCheck() {
      state: "loading",
      items: []
    });
@@ -250,7 +271,7 @@ index 009c1ae..b8804cf 100644
    const nftablesChecks = await PodkopShellMethods.checkNftRules();
    if (!nftablesChecks.success) {
      updateCheckStore({
-@@ -2694,7 +2827,8 @@ async function runNftCheck() {
+@@ -2694,7 +2848,8 @@ async function runNftCheck() {
      throw new Error("Nftables checks failed");
    }
    const data = nftablesChecks.data;
@@ -260,7 +281,7 @@ index 009c1ae..b8804cf 100644
    const atLeastOneGood = Boolean(data.table_exist) || Boolean(data.rules_mangle_exist) || Boolean(data.rules_mangle_counters) || Boolean(data.rules_mangle_output_exist) || Boolean(data.rules_mangle_output_counters) || Boolean(data.rules_proxy_exist) || Boolean(data.rules_proxy_counters) || !data.rules_other_mark_exist;
    const { state, description } = getMeta({ atLeastOneGood, allGood });
    updateCheckStore({
-@@ -2715,7 +2849,7 @@ async function runNftCheck() {
+@@ -2715,7 +2870,7 @@ async function runNftCheck() {
          value: ""
        },
        {
@@ -269,7 +290,7 @@ index 009c1ae..b8804cf 100644
          key: _("Rules mangle counters"),
          value: ""
        },
-@@ -2823,6 +2957,18 @@ var styles2 = `
+@@ -2823,6 +2978,18 @@ var styles2 = `
      margin-right: 5px;
  }
  
@@ -288,7 +309,7 @@ index 009c1ae..b8804cf 100644
  .pdk-partial-button__icon {
      display: flex;
      align-items: center;
-@@ -3375,12 +3521,15 @@ function renderBookOpenTextIcon24() {
+@@ -3375,12 +3542,15 @@ function renderBookOpenTextIcon24() {
  
  // src/partials/button/renderButton.ts
  function renderButton({
@@ -305,7 +326,7 @@ index 009c1ae..b8804cf 100644
  }) {
    const hasIcon = !!loading || !!icon;
    function getWrappedIcon() {
-@@ -3404,6 +3553,7 @@ function renderButton({
+@@ -3404,6 +3574,7 @@ function renderButton({
        ...insertIf(Boolean(disabled), ["pdk-partial-button--disabled"]),
        ...insertIf(Boolean(loading), ["pdk-partial-button--loading"]),
        ...insertIf(Boolean(hasIcon), ["pdk-partial-button--with-icon"]),
@@ -313,7 +334,7 @@ index 009c1ae..b8804cf 100644
        ...classNames
      ].filter(Boolean).join(" ");
    }
-@@ -3415,8 +3565,17 @@ function renderButton({
+@@ -3415,8 +3586,17 @@ function renderButton({
    }
    return E(
      "button",
@@ -333,7 +354,7 @@ index 009c1ae..b8804cf 100644
    );
  }
  
-@@ -3854,8 +4013,11 @@ async function runSectionsCheck() {
+@@ -3854,8 +4034,11 @@ async function runSectionsCheck() {
      });
      throw new Error("Sections checks failed");
    }
@@ -346,7 +367,7 @@ index 009c1ae..b8804cf 100644
        async function getLatency() {
          if (section.withTagSelect) {
            const latencyGroup = await PodkopShellMethods.getClashApiGroupLatency(
-@@ -4631,10 +4793,1429 @@ var DiagnosticTab = {
+@@ -4631,10 +4814,1639 @@ var DiagnosticTab = {
    styles: styles4
  };
  
@@ -381,7 +402,7 @@ index 009c1ae..b8804cf 100644
 +  const labels = {
 +    user_excluded: _("Excluded"),
 +    unsupported_protocol: _("Unsupported protocol"),
-+    unsupported_transport: _("Unsupported transport"),
++    unsupported_transport: _("Not supported"),
 +    unsupported_security: _("Unsupported security"),
 +    invalid_config: _("Invalid config")
 +  };
@@ -529,6 +550,7 @@ index 009c1ae..b8804cf 100644
 +  onPatchUpdate
 +}) {
 +  const actionRunning = actionStatus === "running";
++  const speedRunning = action === "speed" && actionRunning;
 +  const canRunAction = !loading && !failed && !applying && !actionRunning;
 +  const canRunSubscriptionAction = canRunAction && pendingCount === 0;
 +  const canRunPatchAction = !loading && !applying && !actionRunning && pendingCount === 0;
@@ -578,14 +600,14 @@ index 009c1ae..b8804cf 100644
 +          disabled: !canRunSubscriptionAction
 +        }),
 +        renderButton({
-+          text: _("Speed"),
-+          title: _("Run speed benchmark"),
-+          ariaLabel: _("Run speed benchmark"),
-+          icon: renderSquareChartGanttIcon24,
++          text: speedRunning ? _("Stop") : _("Speed"),
++          title: speedRunning ? _("Stop speed test") : _("Run speed test"),
++          ariaLabel: speedRunning ? _("Stop speed test") : _("Run speed test"),
++          icon: speedRunning ? renderCircleStopIcon24 : renderSquareChartGanttIcon24,
 +          hideText: true,
 +          onClick: onSpeedtest,
-+          loading: action === "speed" && actionRunning,
-+          disabled: !canRunSubscriptionAction
++          loading: false,
++          disabled: speedRunning ? false : !canRunSubscriptionAction
 +        }),
 +        renderButton({
 +          text: _("Patch"),
@@ -637,16 +659,16 @@ index 009c1ae..b8804cf 100644
 +  const speed = speedByRow[rowId];
 +  function renderLatency() {
 +    if (!item.supported || !effectiveEnabled) {
-+      return "\u2014";
++      return "-";
 +    }
-+    return typeof latency === "number" && latency > 0 ? `${latency} ms` : "\u2014";
++    return typeof latency === "number" && latency > 0 ? `${latency} ms` : "-";
 +  }
 +  function renderSpeed() {
 +    if (!item.supported || !effectiveEnabled) {
-+      return "\u2014";
++      return "-";
 +    }
 +    if (!speed) {
-+      return "\u2014";
++      return "-";
 +    }
 +    if (!speed.success || !speed.bytesPerSecond) {
 +      return _("Error");
@@ -709,7 +731,7 @@ index 009c1ae..b8804cf 100644
 +    E("table", { class: "pdk_subscriptions-page__table" }, [
 +      E("thead", {}, [
 +        E("tr", {}, [
-+          E("th", {}, _("Use")),
++          E("th", {}, _("On")),
 +          E("th", {}, _("Config")),
 +          E("th", {}, _("Protocol")),
 +          E("th", {}, _("Transport")),
@@ -974,6 +996,7 @@ index 009c1ae..b8804cf 100644
 +}
 +
 +// src/podkop/tabs/subscriptions/initController.ts
++var speedtestRunToken = 0;
 +function getRowId2(sectionCode, itemId) {
 +  return `${sectionCode}:${itemId}`;
 +}
@@ -999,6 +1022,10 @@ index 009c1ae..b8804cf 100644
 +}
 +function isActionRunning() {
 +  return store.get().subscriptionItemsWidget.actionStatus === "running";
++}
++function isSpeedtestRunning() {
++  const widget = store.get().subscriptionItemsWidget;
++  return widget.action === "speed" && widget.actionStatus === "running";
 +}
 +function canRunServiceAction() {
 +  const widget = store.get().subscriptionItemsWidget;
@@ -1269,10 +1296,31 @@ index 009c1ae..b8804cf 100644
 +  }
 +}
 +async function handleSpeedtestSubscriptions() {
++  if (isSpeedtestRunning()) {
++    try {
++      await stopSpeedtestSubscriptions();
++    } catch (error) {
++      logger.error("[SUBSCRIPTIONS]", "failed to stop subscription speedtest");
++      logger.error("[SUBSCRIPTIONS]", error);
++      const message = getSubscriptionActionErrorMessage(
++        error,
++        _("Failed to stop speed test.")
++      );
++      setActionState({
++        action: "speed",
++        actionStatus: "error",
++        actionMessage: message
++      });
++      showToast(message, "error");
++    }
++    return;
++  }
 +  if (!canRunServiceAction()) {
 +    return;
 +  }
 +  const speedByRow = {};
++  const runToken = speedtestRunToken += 1;
++  let failedItems = 0;
 +  setActionState({
 +    action: "speed",
 +    actionStatus: "running",
@@ -1286,21 +1334,47 @@ index 009c1ae..b8804cf 100644
 +        continue;
 +      }
 +      for (const item of enabledItems) {
++        if (runToken !== speedtestRunToken) {
++          throw new Error("speedtest_cancelled");
++        }
 +        setActionState({
 +          action: "speed",
 +          actionStatus: "running",
-+          actionMessage: `${_("Running speed benchmark")}: ${section.displayName} / ${item.name}`
++          actionMessage: `${_("Starting speed test")}: ${section.displayName} / ${item.name}`
 +        });
-+        const result = await PodkopShellMethods.benchmarkSubscriptionSection(
-+          section.code,
-+          item.id
-+        );
-+        if (!result.success || !result.data.success) {
-+          throw new Error(result.success ? result.data.error : result.error);
++        try {
++          const started = await PodkopShellMethods.startSubscriptionSpeedtest(
++            section.code,
++            item.id
++          );
++          if (!started.success || !started.data.success) {
++            throw new Error(
++              started.success ? started.data.error : started.error
++            );
++          }
++          const result = await pollSpeedtestStatus(section, item, runToken);
++          if (!result.success) {
++            throw new Error(result.error);
++          }
++          if (!result.results?.length) {
++            throw new Error("speedtest_failed");
++          }
++          (result.results ?? []).forEach((speedItem) => {
++            speedByRow[getRowId2(section.code, speedItem.id)] = speedItem;
++          });
++        } catch (error) {
++          if (getErrorText(error) === "speedtest_cancelled") {
++            throw error;
++          }
++          failedItems += 1;
++          speedByRow[getRowId2(section.code, item.id)] = {
++            id: item.id,
++            tag: "",
++            name: item.name,
++            success: false,
++            error: getErrorText(error) || "speedtest_failed"
++          };
 +        }
-+        (result.data.results ?? []).forEach((speedItem) => {
-+          speedByRow[getRowId2(section.code, speedItem.id)] = speedItem;
-+        });
 +        store.set({
 +          subscriptionItemsWidget: {
 +            ...store.get().subscriptionItemsWidget,
@@ -1318,15 +1392,27 @@ index 009c1ae..b8804cf 100644
 +    setActionState({
 +      action: "speed",
 +      actionStatus: "success",
-+      actionMessage: _("Speed benchmark completed.")
++      actionMessage: failedItems > 0 ? _("Speed test completed. Some configs failed.") : _("Speed test completed.")
 +    });
-+    showToast(_("Speed benchmark completed."), "success");
++    showToast(
++      failedItems > 0 ? _("Speed test completed. Some configs failed.") : _("Speed test completed."),
++      "success"
++    );
 +  } catch (error) {
++    if (getErrorText(error) === "speedtest_cancelled") {
++      setActionState({
++        action: "speed",
++        actionStatus: "success",
++        actionMessage: _("Speed test stopped.")
++      });
++      showToast(_("Speed test stopped."), "success");
++      return;
++    }
 +    logger.error("[SUBSCRIPTIONS]", "failed to run subscription speedtest");
 +    logger.error("[SUBSCRIPTIONS]", error);
 +    const message = getSubscriptionActionErrorMessage(
 +      error,
-+      _("Failed to run speed benchmark.")
++      _("Failed to run speed test.")
 +    );
 +    setActionState({
 +      action: "speed",
@@ -1335,6 +1421,71 @@ index 009c1ae..b8804cf 100644
 +    });
 +    showToast(message, "error");
 +  }
++}
++async function stopSpeedtestSubscriptions() {
++  speedtestRunToken += 1;
++  setActionState({
++    action: "speed",
++    actionStatus: "running",
++    actionMessage: _("Stopping speed test")
++  });
++  const stopped = await PodkopShellMethods.stopSubscriptionSpeedtest();
++  if (!stopped.success || !stopped.data.success) {
++    throw new Error(stopped.success ? stopped.data.error : stopped.error);
++  }
++  setActionState({
++    action: "speed",
++    actionStatus: "success",
++    actionMessage: _("Speed test stopped.")
++  });
++  showToast(_("Speed test stopped."), "success");
++}
++function getSpeedtestStatusMessage(status, section, item) {
++  switch (status.message) {
++    case "speedtest_running":
++      return `${_("Running speed test")}: ${section.displayName} / ${item.name}`;
++    case "speedtest_success":
++      return `${_("Speed test completed")}: ${section.displayName} / ${item.name}`;
++    case "service_busy":
++      return _("Podkop is restarting now. Try again in a minute.");
++    case "download_failed":
++      return `${_("Download failed")}: ${item.name}`;
++    case "select_failed":
++      return `${_("Failed to select config")}: ${item.name}`;
++    default:
++      return status.message || `${_("Running speed test")}: ${section.displayName} / ${item.name}`;
++  }
++}
++async function pollSpeedtestStatus(section, item, runToken) {
++  for (let attempt = 0; attempt < 180; attempt += 1) {
++    if (runToken !== speedtestRunToken) {
++      throw new Error("speedtest_cancelled");
++    }
++    await sleep(1e3);
++    const status = await PodkopShellMethods.getSubscriptionSpeedtestStatus();
++    if (!status.success) {
++      continue;
++    }
++    if (status.data.section !== section.code || status.data.itemId !== item.id) {
++      continue;
++    }
++    setActionState({
++      action: "speed",
++      actionStatus: "running",
++      actionMessage: getSpeedtestStatusMessage(status.data, section, item)
++    });
++    if (status.data.state === "running" || status.data.state === "idle") {
++      continue;
++    }
++    if (status.data.state === "cancelled") {
++      throw new Error("speedtest_cancelled");
++    }
++    if (status.data.state === "success" && status.data.result) {
++      return status.data.result;
++    }
++    throw new Error(status.data.message || "speedtest_failed");
++  }
++  throw new Error("speedtest_timeout");
 +}
 +function getErrorText(error) {
 +  if (error instanceof Error) {
@@ -1361,6 +1512,18 @@ index 009c1ae..b8804cf 100644
 +      return _("No enabled supported configs to test.");
 +    case "mixed_proxy_address_missing":
 +      return _("Mixed proxy address is not configured.");
++    case "speedtest_timeout":
++      return _("Speed test timed out. Try again or test fewer configs.");
++    case "speedtest_failed":
++      return _("Speed test failed.");
++    case "speedtest_cancelled":
++      return _("Speed test stopped.");
++    case "section_and_item_required":
++      return _("Speed test target is missing.");
++    case "download_failed":
++      return _("Download failed");
++    case "select_failed":
++      return _("Failed to select config");
 +    default:
 +      return fallback;
 +  }
@@ -1368,9 +1531,9 @@ index 009c1ae..b8804cf 100644
 +function getPatchUpdateMessage(status) {
 +  switch (status.message) {
 +    case "patch_update_running":
-+      return "Проверяем обновление патча.";
++      return "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u043F\u0430\u0442\u0447\u0430.";
 +    case "patch_update_noop":
-+      return "Патч уже актуален.";
++      return "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D.";
 +    case "patch_update_success":
 +      return _("Patch updated. Refresh the page in a minute.");
 +    case "download_failed":
@@ -1423,7 +1586,7 @@ index 009c1ae..b8804cf 100644
 +  setActionState({
 +    action: "patch",
 +    actionStatus: "running",
-+    actionMessage: "Проверяем обновление патча."
++    actionMessage: "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u043F\u0430\u0442\u0447\u0430."
 +  });
 +  try {
 +    const result = await PodkopShellMethods.updateSubscriptionPatch();
@@ -1433,7 +1596,7 @@ index 009c1ae..b8804cf 100644
 +    const status = await pollPatchUpdateStatus();
 +    const success = status.state === "success";
 +    showToast(
-+      status.message === "patch_update_noop" ? "Патч уже актуален." : success ? _("Patch update started.") : _("Patch update failed."),
++      status.message === "patch_update_noop" ? "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D." : success ? _("Patch update started.") : _("Patch update failed."),
 +      success ? "success" : "error"
 +    );
 +  } catch (error) {
@@ -1448,10 +1611,10 @@ index 009c1ae..b8804cf 100644
 +          actionMessage: getPatchUpdateMessage(status.data)
 +        });
 +        if (status.data.state === "running") {
-+          const status = await pollPatchUpdateStatus();
-+          const success = status.state === "success";
++          const status2 = await pollPatchUpdateStatus();
++          const success = status2.state === "success";
 +          showToast(
-+            status.message === "patch_update_noop" ? "Патч уже актуален." : success ? _("Patch update started.") : _("Patch update failed."),
++            status2.message === "patch_update_noop" ? "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D." : success ? _("Patch update started.") : _("Patch update failed."),
 +            success ? "success" : "error"
 +          );
 +        }
@@ -1539,8 +1702,11 @@ index 009c1ae..b8804cf 100644
 +
 +// src/podkop/tabs/subscriptions/styles.ts
 +var styles5 = `
++#cbi-podkop-subscriptions,
++#cbi-podkop-subscriptions-_mount_node,
 +#cbi-podkop-subscriptions-_mount_node > div {
 +    width: 100%;
++    box-sizing: border-box;
 +}
 +
 +#cbi-podkop-subscriptions > h3 {
@@ -1549,13 +1715,19 @@ index 009c1ae..b8804cf 100644
 +
 +.pdk_subscriptions-page {
 +    width: 100%;
++    min-width: 0;
 +}
 +
 +.pdk_subscriptions-page__content {
 +    width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
 +}
 +
 +.pdk_subscriptions-page__toolbar {
++    width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
 +    display: flex;
 +    align-items: center;
 +    justify-content: space-between;
@@ -1567,8 +1739,13 @@ index 009c1ae..b8804cf 100644
 +}
 +
 +.pdk_subscriptions-page__toolbar-message {
++    flex: 1 1 auto;
++    min-width: 0;
 +    color: var(--text-color-medium);
 +    line-height: 1.35;
++    overflow: hidden;
++    text-overflow: ellipsis;
++    white-space: nowrap;
 +}
 +
 +.pdk_subscriptions-page__toolbar-actions {
@@ -1602,6 +1779,8 @@ index 009c1ae..b8804cf 100644
 +}
 +
 +.pdk_subscriptions-page__sections {
++    width: 100%;
++    min-width: 0;
 +    display: grid;
 +    grid-template-columns: 1fr;
 +    grid-row-gap: 10px;
@@ -1609,6 +1788,9 @@ index 009c1ae..b8804cf 100644
 +}
 +
 +.pdk_subscriptions-page__section {
++    width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
 +    border: 2px var(--background-color-low, lightgray) solid;
 +    border-radius: 4px;
 +    padding: 10px;
@@ -1627,6 +1809,9 @@ index 009c1ae..b8804cf 100644
 +}
 +
 +.pdk_subscriptions-page__source-group {
++    width: 100%;
++    min-width: 0;
++    box-sizing: border-box;
 +    border: 1px var(--background-color-low, lightgray) solid;
 +    border-radius: 4px;
 +    overflow: hidden;
@@ -1680,11 +1865,15 @@ index 009c1ae..b8804cf 100644
 +}
 +
 +.pdk_subscriptions-page__table-wrap {
++    width: 100%;
++    min-width: 0;
 +    overflow-x: auto;
 +}
 +
 +.pdk_subscriptions-page__table {
 +    width: 100%;
++    min-width: 820px;
++    table-layout: fixed;
 +    border-collapse: collapse;
 +}
 +
@@ -1694,6 +1883,8 @@ index 009c1ae..b8804cf 100644
 +    border-bottom: 1px var(--background-color-low, lightgray) solid;
 +    text-align: left;
 +    white-space: nowrap;
++    overflow: hidden;
++    text-overflow: ellipsis;
 +}
 +
 +.pdk_subscriptions-page__table th {
@@ -1701,7 +1892,39 @@ index 009c1ae..b8804cf 100644
 +}
 +
 +.pdk_subscriptions-page__toggle-cell {
-+    width: 48px;
++    width: 58px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(1),
++.pdk_subscriptions-page__table td:nth-child(1) {
++    width: 58px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(2),
++.pdk_subscriptions-page__table td:nth-child(2) {
++    width: 22%;
++}
++
++.pdk_subscriptions-page__table th:nth-child(3),
++.pdk_subscriptions-page__table td:nth-child(3) {
++    width: 105px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(4),
++.pdk_subscriptions-page__table td:nth-child(4) {
++    width: 115px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(5),
++.pdk_subscriptions-page__table td:nth-child(5),
++.pdk_subscriptions-page__table th:nth-child(6),
++.pdk_subscriptions-page__table td:nth-child(6) {
++    width: 110px;
++}
++
++.pdk_subscriptions-page__table th:nth-child(7),
++.pdk_subscriptions-page__table td:nth-child(7) {
++    width: 150px;
 +}
 +
 +.pdk_subscriptions-page__row--unsupported {
@@ -1749,6 +1972,10 @@ index 009c1ae..b8804cf 100644
 +        flex-direction: column;
 +    }
 +
++    .pdk_subscriptions-page__toolbar-message {
++        white-space: normal;
++    }
++
 +    .pdk_subscriptions-page__toolbar-actions {
 +        width: 100%;
 +    }
@@ -1780,7 +2007,7 @@ index 009c1ae..b8804cf 100644
  ${PartialStyles}
  
  
-@@ -4904,6 +6485,7 @@ return baseclass.extend({
+@@ -4904,6 +6716,7 @@ return baseclass.extend({
    REGIONAL_OPTIONS,
    RemoteFakeIPMethods,
    STATUS_COLORS,
@@ -1934,7 +2161,7 @@ index 0000000..52716a5
 +
 +return baseclass.extend(EntryPoint);
 diff --git a/usr/bin/podkop b/usr/bin/podkop
-index fda1c1e..d04347f 100755
+index fda1c1e..da1758f 100755
 --- a/usr/bin/podkop
 +++ b/usr/bin/podkop
 @@ -33,6 +33,9 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
@@ -2137,7 +2364,7 @@ index fda1c1e..d04347f 100755
  # Main funcs
  
  route_table_rule_mark() {
-@@ -336,215 +465,1911 @@ create_nft_rules() {
+@@ -336,215 +465,2090 @@ create_nft_rules() {
      fi
  }
  
@@ -2355,7 +2582,7 @@ index fda1c1e..d04347f 100755
 +}
 +
 +list_update() {
-+    echolog "рџ”„ Starting lists update..."
++    echolog "🔄 Starting lists update..."
 +
 +    local nslookup_timeout=3
 +    local nslookup_attempts=10
@@ -2368,7 +2595,7 @@ index fda1c1e..d04347f 100755
 +    # DNS Check
 +    for i in $(seq 1 $nslookup_attempts); do
 +        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
-+            echolog "вњ… DNS check passed"
++            echolog "✅ DNS check passed"
 +            break
 +        fi
 +        echolog "DNS is unavailable [$i/$nslookup_attempts]"
@@ -2376,7 +2603,7 @@ index fda1c1e..d04347f 100755
 +    done
 +
 +    if [ "$i" -eq $nslookup_attempts ]; then
-+        echolog "вќЊ DNS check failed after $nslookup_attempts attempts"
++        echolog "❌ DNS check failed after $nslookup_attempts attempts"
 +        return 1
 +    fi
 +
@@ -2387,12 +2614,12 @@ index fda1c1e..d04347f 100755
 +
 +        if [ -n "$service_proxy_address" ]; then
 +            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
-+                echolog "вњ… GitHub connection check passed (via proxy)"
++                echolog "✅ GitHub connection check passed (via proxy)"
 +                break
 +            fi
 +        else
 +            if curl -s -m $curl_timeout https://github.com > /dev/null; then
-+                echolog "вњ… GitHub connection check passed"
++                echolog "✅ GitHub connection check passed"
 +                break
 +            fi
 +        fi
@@ -2405,20 +2632,20 @@ index fda1c1e..d04347f 100755
 +    done
 +
 +    if [ "$i" -eq $curl_attempts ]; then
-+        echolog "вќЊ GitHub connection check failed after $curl_attempts attempts"
++        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
 +        return 1
 +    fi
 +
-+    echolog "рџ“Ґ Downloading and processing lists..."
++    echolog "📥 Downloading and processing lists..."
 +
 +    config_foreach import_community_subnet_lists "section"
 +    config_foreach import_domains_from_remote_domain_lists "section"
 +    config_foreach import_subnets_from_remote_subnet_lists "section"
 +
 +    if [ $? -eq 0 ]; then
-+        echolog "вњ… Lists update completed successfully"
++        echolog "✅ Lists update completed successfully"
 +    else
-+        echolog "вќЊ Lists update failed"
++        echolog "❌ Lists update failed"
 +    fi
 +}
 +
@@ -2785,22 +3012,20 @@ index fda1c1e..d04347f 100755
 +
 +    for attempt in $(seq 1 "$retries"); do
 +        rm -f "$filepath"
-+        if [ -n "$http_proxy_address" ]; then
-+            if command -v curl > /dev/null 2>&1; then
++        if command -v curl > /dev/null 2>&1; then
++            if [ -n "$http_proxy_address" ]; then
 +                curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
 +                    [ -s "$filepath" ] && return 0
++            else
++                curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
 +            fi
-+            if command -v wget > /dev/null 2>&1; then
++        else
++            if [ -n "$http_proxy_address" ]; then
 +                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
 +                    wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
++            else
++                wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
 +            fi
-+            rm -f "$filepath"
-+            log "Subscription download via service proxy failed; trying direct download" "debug"
-+        fi
-+        if command -v curl > /dev/null 2>&1; then
-+            curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
-+        elif command -v wget > /dev/null 2>&1; then
-+            wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
 +        fi
 +
 +        log "Attempt $attempt/$retries to download subscription failed" "warn"
@@ -2871,8 +3096,7 @@ index fda1c1e..d04347f 100755
 +            failed_sources=$((failed_sources + 1))
 +            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
 +                "$items_file"
-+            source_index=$((source_index + 1))
-+            continue
++            break
 +        fi
 +
 +        if ! normalize_subscription_file "$tmpfile" "$links_file"; then
@@ -2904,6 +3128,13 @@ index fda1c1e..d04347f 100755
 +            "$items_file"
 +        source_index=$((source_index + 1))
 +    done < "$urls_file"
++
++    if [ "$failed_sources" -gt 0 ]; then
++        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
++            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
++            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
++        return 1
++    fi
 +
 +    awk '!seen[$0]++' "$merged_links_file" > "$deduped_links_file"
 +    awk '!seen[$0]++' "$merged_all_links_file" > "$deduped_all_links_file"
@@ -2985,10 +3216,6 @@ index fda1c1e..d04347f 100755
 +
 +    if [ "$skipped_sources" -gt 0 ]; then
 +        log "Skipped $skipped_sources subscription sources without podkop-compatible links for section '$section'" "warn"
-+    fi
-+
-+    if [ "$failed_sources" -gt 0 ]; then
-+        log "Skipped $failed_sources subscription sources that could not be downloaded for section '$section'" "warn"
 +    fi
 +
 +    rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
@@ -3863,6 +4090,180 @@ index fda1c1e..d04347f 100755
 +        '{success:true, section:$section, results:$results}'
 +}
 +
++subscription_speedtest_status_file() {
++    echo "/tmp/podkop-subscriptions-speedtest.json"
++}
++
++subscription_speedtest_restore_state_file() {
++    echo "/tmp/podkop-subscriptions-speedtest-restore.json"
++}
++
++subscription_speedtest_write_status() {
++    local state="$1"
++    local message="$2"
++    local section="$3"
++    local item_id="$4"
++    local pid="$5"
++    local status_file updated_at
++
++    status_file="$(subscription_speedtest_status_file)"
++    updated_at="$(date -Iseconds 2> /dev/null || date)"
++    jq -cn --arg state "$state" --arg message "$message" \
++        --arg section "$section" --arg itemId "$item_id" \
++        --arg updatedAt "$updated_at" --argjson pid "${pid:-0}" \
++        --arg logTail "" \
++        '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
++        > "$status_file"
++}
++
++subscription_speedtest_start() {
++    local section="$1"
++    local item_id="$2"
++    local status_file restore_file runner state pid original_mixed_enabled original_mixed_port
++
++    if [ -z "$section" ] || [ -z "$item_id" ]; then
++        echo '{"success":false,"error":"section_and_item_required"}'
++        return 1
++    fi
++
++    status_file="$(subscription_speedtest_status_file)"
++    if [ -s "$status_file" ]; then
++        state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
++        pid="$(jq -r '.pid // ""' "$status_file" 2> /dev/null)"
++        if [ "$state" = "running" ] && subscription_action_lock_pid_alive "$pid"; then
++            echo '{"success":false,"error":"service_busy"}'
++            return 1
++        fi
++    fi
++
++    subscription_speedtest_write_status "running" "speedtest_running" "$section" "$item_id" "$$"
++
++    restore_file="$(subscription_speedtest_restore_state_file)"
++    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
++    config_get original_mixed_port "$section" "mixed_proxy_port"
++    jq -cn --arg section "$section" \
++        --arg originalMixedEnabled "$original_mixed_enabled" \
++        --arg originalMixedPort "$original_mixed_port" \
++        '{section:$section, originalMixedEnabled:$originalMixedEnabled, originalMixedPort:$originalMixedPort}' \
++        > "$restore_file"
++
++    runner="/tmp/podkop-subscriptions-speedtest-runner.sh"
++    cat > "$runner" << 'EOF'
++#!/bin/ash
++status_file="/tmp/podkop-subscriptions-speedtest.json"
++restore_file="/tmp/podkop-subscriptions-speedtest-restore.json"
++section="$1"
++item_id="$2"
++
++write_status() {
++    local state="$1"
++    local message="$2"
++    local result_file="$3"
++    local log_tail="$4"
++    local updated_at
++
++    updated_at="$(date -Iseconds 2> /dev/null || date)"
++
++    if [ -n "$result_file" ] && [ -s "$result_file" ]; then
++        jq -cn --arg state "$state" --arg message "$message" \
++            --arg section "$section" --arg itemId "$item_id" \
++            --arg updatedAt "$updated_at" --argjson pid "$$" \
++            --arg logTail "$log_tail" --slurpfile result "$result_file" \
++            '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail, result:($result[0] // null)}' \
++            > "$status_file"
++    else
++        jq -cn --arg state "$state" --arg message "$message" \
++            --arg section "$section" --arg itemId "$item_id" \
++            --arg updatedAt "$updated_at" --argjson pid "$$" \
++            --arg logTail "$log_tail" \
++            '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
++            > "$status_file"
++    fi
++}
++
++result_file="$(mktemp)"
++output_file="$(mktemp)"
++
++write_status "running" "speedtest_running" "" ""
++
++/usr/bin/podkop subscription_speedtest "$section" "$item_id" > "$output_file" 2>&1
++rc="$?"
++
++if [ "$rc" -eq 0 ] && jq -e '.success == true' "$output_file" > /dev/null 2>&1; then
++    cp "$output_file" "$result_file"
++    write_status "success" "speedtest_success" "$result_file" ""
++else
++    message="speedtest_failed"
++    if jq -e '.error' "$output_file" > /dev/null 2>&1; then
++        message="$(jq -r '.error // "speedtest_failed"' "$output_file" 2> /dev/null)"
++    fi
++    write_status "error" "$message" "" "$(tail -n 20 "$output_file" 2> /dev/null)"
++    rm -f "$result_file" "$output_file" "$restore_file"
++    exit 1
++fi
++
++rm -f "$result_file" "$output_file" "$restore_file"
++EOF
++
++    chmod +x "$runner"
++    if command -v start-stop-daemon > /dev/null 2>&1; then
++        start-stop-daemon -S -b -x "$runner" -- "$section" "$item_id" > /dev/null 2>&1
++    elif command -v setsid > /dev/null 2>&1; then
++        setsid "$runner" "$section" "$item_id" < /dev/null > /dev/null 2>&1 &
++    else
++        "$runner" "$section" "$item_id" < /dev/null > /dev/null 2>&1 &
++    fi
++
++    echo '{"success":true,"started":true}'
++}
++
++subscription_speedtest_stop() {
++    local status_file restore_file state pid section item_id restore_section original_mixed_enabled original_mixed_port
++
++    status_file="$(subscription_speedtest_status_file)"
++    restore_file="$(subscription_speedtest_restore_state_file)"
++    if [ ! -s "$status_file" ]; then
++        echo '{"success":true,"stopped":false}'
++        return 0
++    fi
++
++    state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
++    pid="$(jq -r '.pid // ""' "$status_file" 2> /dev/null)"
++    section="$(jq -r '.section // ""' "$status_file" 2> /dev/null)"
++    item_id="$(jq -r '.itemId // ""' "$status_file" 2> /dev/null)"
++
++    if [ "$state" = "running" ] && subscription_action_lock_pid_alive "$pid"; then
++        kill_process_tree "$pid" > /dev/null 2>&1 || true
++        sleep 1
++    fi
++
++    if [ -s "$restore_file" ]; then
++        restore_section="$(jq -r '.section // ""' "$restore_file" 2> /dev/null)"
++        original_mixed_enabled="$(jq -r '.originalMixedEnabled // ""' "$restore_file" 2> /dev/null)"
++        original_mixed_port="$(jq -r '.originalMixedPort // ""' "$restore_file" 2> /dev/null)"
++        if [ -n "$restore_section" ]; then
++            subscription_speedtest_restore_mixed_proxy "$restore_section" "$original_mixed_enabled" "$original_mixed_port" 1 > /dev/null 2>&1 || true
++        fi
++        rm -f "$restore_file"
++    elif [ -n "$section" ]; then
++        subscription_speedtest_restore_mixed_proxy "$section" "" "" 1 > /dev/null 2>&1 || true
++    fi
++
++    subscription_speedtest_write_status "cancelled" "speedtest_cancelled" "$section" "$item_id" "0"
++    echo '{"success":true,"stopped":true}'
++}
++
++get_subscription_speedtest_status() {
++    local status_file
++
++    status_file="$(subscription_speedtest_status_file)"
++    if [ -s "$status_file" ]; then
++        cat "$status_file"
++    else
++        echo '{"state":"idle","message":"","section":"","itemId":"","updatedAt":"","logTail":""}'
++    fi
++}
++
 +subscription_patch_update_status_file() {
 +    echo "/tmp/podkop-subscriptions-patch-update.json"
 +}
@@ -4037,27 +4438,26 @@ index fda1c1e..d04347f 100755
 +if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp"; then
 +    if grep -q "PODKOP_PATCH_NOOP=1" "$log_file" 2> /dev/null; then
 +        write_status "success" "patch_update_noop" "$(tail -n 20 "$log_file" 2> /dev/null)"
-+    else
+     else
+-        log "Backup DNS servers and default resolvfile not found, possible resolving issues" "warn"
 +        write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
-+    fi
+     fi
 +else
 +    write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
 +    exit 1
 +fi
 +EOF
-+
+ 
+-    uci_commit "dhcp"
 +    chmod +x "$runner"
 +    if command -v start-stop-daemon > /dev/null 2>&1; then
 +        start-stop-daemon -S -b -x "$runner" > /dev/null 2>&1
 +    elif command -v setsid > /dev/null 2>&1; then
 +        setsid "$runner" < /dev/null > /dev/null 2>&1 &
-     else
--        log "Backup DNS servers and default resolvfile not found, possible resolving issues" "warn"
++    else
 +        "$runner" < /dev/null > /dev/null 2>&1 &
-     fi
++    fi
  
--    uci_commit "dhcp"
--
 -    /etc/init.d/dnsmasq restart
 +    echo '{"success":true,"started":true}'
  }
@@ -4119,7 +4519,7 @@ index fda1c1e..d04347f 100755
  }
  
 -list_update() {
--    echolog "рџ”„ Starting lists update..."
+-    echolog "🔄 Starting lists update..."
 +subscription_action_lock_pid_alive() {
 +    local pid="$1"
  
@@ -4140,7 +4540,7 @@ index fda1c1e..d04347f 100755
 -    # DNS Check
 -    for i in $(seq 1 $nslookup_attempts); do
 -        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
--            echolog "вњ… DNS check passed"
+-            echolog "✅ DNS check passed"
 -            break
 -        fi
 -        echolog "DNS is unavailable [$i/$nslookup_attempts]"
@@ -4150,7 +4550,7 @@ index fda1c1e..d04347f 100755
 +}
  
 -    if [ "$i" -eq $nslookup_attempts ]; then
--        echolog "вќЊ DNS check failed after $nslookup_attempts attempts"
+-        echolog "❌ DNS check failed after $nslookup_attempts attempts"
 -        return 1
 -    fi
 +subscription_action_lock_busy() {
@@ -4165,12 +4565,12 @@ index fda1c1e..d04347f 100755
  
 -        if [ -n "$service_proxy_address" ]; then
 -            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
--                echolog "вњ… GitHub connection check passed (via proxy)"
+-                echolog "✅ GitHub connection check passed (via proxy)"
 -                break
 -            fi
 -        else
 -            if curl -s -m $curl_timeout https://github.com > /dev/null; then
--                echolog "вњ… GitHub connection check passed"
+-                echolog "✅ GitHub connection check passed"
 -                break
 -            fi
 -        fi
@@ -4190,7 +4590,7 @@ index fda1c1e..d04347f 100755
 +}
  
 -    if [ "$i" -eq $curl_attempts ]; then
--        echolog "вќЊ GitHub connection check failed after $curl_attempts attempts"
+-        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
 +subscription_action_lock_acquire() {
 +    local action="$1"
 +    local lock_file
@@ -4200,7 +4600,7 @@ index fda1c1e..d04347f 100755
          return 1
      fi
  
--    echolog "рџ“Ґ Downloading and processing lists..."
+-    echolog "📥 Downloading and processing lists..."
 +    printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$lock_file"
 +}
  
@@ -4211,9 +4611,9 @@ index fda1c1e..d04347f 100755
 +    local lock_file pid
  
 -    if [ $? -eq 0 ]; then
--        echolog "вњ… Lists update completed successfully"
+-        echolog "✅ Lists update completed successfully"
 -    else
--        echolog "вќЊ Lists update failed"
+-        echolog "❌ Lists update failed"
 -    fi
 +    lock_file="$(subscription_action_lock_file)"
 +    [ -s "$lock_file" ] || return 0
@@ -4223,7 +4623,7 @@ index fda1c1e..d04347f 100755
  }
  
  # sing-box funcs
-@@ -678,6 +2503,63 @@ configure_outbound_handler() {
+@@ -678,6 +2682,63 @@ configure_outbound_handler() {
              config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
                  "$default_outbound")"
              ;;
@@ -4287,7 +4687,7 @@ index fda1c1e..d04347f 100755
          urltest)
              log "Detected proxy configuration type: urltest" "debug"
              local urltest_proxy_links udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
-@@ -1329,11 +3211,18 @@ import_community_service_subnet_list_handler() {
+@@ -1329,11 +3390,18 @@ import_community_service_subnet_list_handler() {
      tmpfile=$(mktemp)
      http_proxy_address="$(get_service_proxy_address)"
  
@@ -4311,7 +4711,7 @@ index fda1c1e..d04347f 100755
      fi
  
      if [ "$service" = "discord" ]; then
-@@ -1842,6 +3731,8 @@ show_config() {
+@@ -1842,6 +3910,8 @@ show_config() {
          -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
          -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
          -e 's/\(list selector_proxy_links\).*/\1 '\''MASKED'\''/g' \
@@ -4320,7 +4720,7 @@ index fda1c1e..d04347f 100755
          -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e "s@\\(option domain_resolver_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
-@@ -2669,6 +4560,14 @@ Available commands:
+@@ -2669,6 +4739,20 @@ Available commands:
      restart                 Restart podkop service
      main                    Run main podkop process
      list_update             Update domain lists
@@ -4328,6 +4728,12 @@ index fda1c1e..d04347f 100755
 +    subscription_update_json
 +                            Update subscription URLTest caches and print JSON status
 +    subscription_speedtest   Benchmark enabled subscription proxy items for a section
++    subscription_speedtest_start
++                            Start background benchmark for one subscription proxy item
++    subscription_speedtest_stop
++                            Stop background subscription benchmark
++    get_subscription_speedtest_status
++                            Show background subscription benchmark status
 +    subscription_patch_update
 +                            Update the Podkop subscriptions patch from GitHub
 +    get_subscription_patch_update_status
@@ -4335,7 +4741,7 @@ index fda1c1e..d04347f 100755
      check_proxy             Check proxy connectivity
      check_nft               Check NFT rules
      check_nft_rules         Check NFT rules status
-@@ -2677,6 +4576,18 @@ Available commands:
+@@ -2677,6 +4761,18 @@ Available commands:
      check_sing_box_logs     Show sing-box logs
      check_fakeip            Test FakeIP on router
      clash_api               Clash API interface for managing proxies and groups
@@ -4354,7 +4760,7 @@ index fda1c1e..d04347f 100755
      show_config             Display current podkop configuration
      show_version            Show podkop version
      show_sing_box_config    Show sing-box configuration
-@@ -2709,6 +4620,21 @@ main)
+@@ -2709,6 +4805,30 @@ main)
  list_update)
      list_update
      ;;
@@ -4367,6 +4773,15 @@ index fda1c1e..d04347f 100755
 +subscription_speedtest)
 +    subscription_speedtest "$2" "$3"
 +    ;;
++subscription_speedtest_start)
++    subscription_speedtest_start "$2" "$3"
++    ;;
++subscription_speedtest_stop)
++    subscription_speedtest_stop
++    ;;
++get_subscription_speedtest_status)
++    get_subscription_speedtest_status
++    ;;
 +subscription_patch_update)
 +    subscription_patch_update
 +    ;;
@@ -4376,7 +4791,7 @@ index fda1c1e..d04347f 100755
  check_proxy)
      check_proxy
      ;;
-@@ -2733,6 +4659,25 @@ check_fakeip)
+@@ -2733,6 +4853,25 @@ check_fakeip)
  clash_api)
      clash_api "$2" "$3" "$4"
      ;;
