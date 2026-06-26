@@ -3,6 +3,7 @@ set -eu
 
 PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
+PODKOP_OFFICIAL_INSTALL_URL="${PODKOP_OFFICIAL_INSTALL_URL:-https://raw.githubusercontent.com/itdoginfo/podkop/main/install.sh}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
 V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
@@ -220,6 +221,11 @@ cleanup_old_backups() {
 }
 
 backup_runtime() {
+	if [ -n "${backup_dir:-}" ] && [ -d "$backup_dir" ]; then
+		log "Backup already exists: $backup_dir"
+		return 0
+	fi
+
 	backup_dir="/root/podkop-patch-subscriptions-backup-$(date +%Y%m%d-%H%M%S)"
 	mkdir -p "$backup_dir"
 
@@ -520,13 +526,37 @@ has_v0719_package_backend() {
 	/usr/bin/podkop show_version 2>/dev/null | grep -Eq "^v?0\\.7\\.19$"
 }
 
+update_official_podkop_if_requested() {
+	[ "${PODKOP_PATCH_UPDATE_PODKOP:-0}" = "1" ] || return 0
+
+	official_installer="$tmp_dir/podkop-official-install.sh"
+	download "$PODKOP_OFFICIAL_INSTALL_URL" "$official_installer"
+
+	if [ -x /usr/bin/podkop ]; then
+		backup_runtime
+	fi
+
+	log "Updating official Podkop before applying Subscription URLTest patch."
+	if ! sh "$official_installer"; then
+		if [ -n "${backup_dir:-}" ]; then
+			restore_runtime
+		fi
+		fail "official Podkop update failed"
+	fi
+
+	[ -x /usr/bin/podkop ] || fail "Official Podkop installer finished, but /usr/bin/podkop is missing"
+}
+
 tmp_dir="$(mktemp -d)"
 backup_dir=""
 light_reload=0
 trap 'rm -rf "$tmp_dir"' EXIT
 
-[ -x /usr/bin/podkop ] || fail "Podkop is not installed at /usr/bin/podkop"
 command -v base64 >/dev/null 2>&1 || fail "base64 utility is required"
+
+update_official_podkop_if_requested
+
+[ -x /usr/bin/podkop ] || fail "Podkop is not installed at /usr/bin/podkop"
 
 download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
