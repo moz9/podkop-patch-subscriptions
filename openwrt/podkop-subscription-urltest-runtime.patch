@@ -1,10 +1,10 @@
 diff --git a/www/luci-static/resources/view/podkop/main.js b/www/luci-static/resources/view/podkop/main.js
-index 009c1ae..3e88a06 100644
+index 009c1ae..11d6c3c 100644
 --- a/www/luci-static/resources/view/podkop/main.js
 +++ b/www/luci-static/resources/view/podkop/main.js
 @@ -576,11 +576,11 @@ async function getConfigSections() {
  }
- 
+
  // src/podkop/methods/shell/callBaseMethod.ts
 -async function callBaseMethod(method, args = [], command = "/usr/bin/podkop") {
 +async function callBaseMethod(method, args = [], command = "/usr/bin/podkop", timeout = 15e3) {
@@ -37,7 +37,7 @@ index 009c1ae..3e88a06 100644
    })(AvailableMethods = Podkop2.AvailableMethods || (Podkop2.AvailableMethods = {}));
    let AvailableClashAPIMethods;
    ((AvailableClashAPIMethods2) => {
-@@ -694,12 +707,97 @@ var PodkopShellMethods = {
+@@ -694,12 +707,106 @@ var PodkopShellMethods = {
    globalCheck: async () => callBaseMethod(Podkop.AvailableMethods.GLOBAL_CHECK),
    showSingBoxConfig: async () => callBaseMethod(Podkop.AvailableMethods.SHOW_SING_BOX_CONFIG),
    checkLogs: async () => callBaseMethod(Podkop.AvailableMethods.CHECK_LOGS),
@@ -116,7 +116,7 @@ index 009c1ae..3e88a06 100644
 +    6e4
    )
  };
- 
+
  // src/podkop/methods/custom/getDashboardSections.ts
 +function getSubscriptionSkippedReasonLabel(reason) {
 +  switch (reason) {
@@ -132,10 +132,19 @@ index 009c1ae..3e88a06 100644
 +      return _("Unsupported config");
 +  }
 +}
++function normalizeProxyLinks(value) {
++  if (Array.isArray(value)) {
++    return value;
++  }
++  if (typeof value === "string") {
++    return splitProxyString(value);
++  }
++  return [];
++}
  async function getDashboardSections() {
    const configSections = await getConfigSections();
    const clashProxies = await PodkopShellMethods.getClashApiProxies();
-@@ -715,6 +813,24 @@ async function getDashboardSections() {
+@@ -715,6 +822,24 @@ async function getDashboardSections() {
        value
      })
    );
@@ -160,7 +169,7 @@ index 009c1ae..3e88a06 100644
    const data = configSections.filter(
      (section) => section.connection_type !== "block" && section.connection_type !== "exclusion" && section[".type"] !== "settings"
    ).map((section) => {
-@@ -786,16 +902,17 @@ async function getDashboardSections() {
+@@ -786,16 +911,20 @@ async function getDashboardSections() {
            outbounds
          };
        }
@@ -172,7 +181,10 @@ index 009c1ae..3e88a06 100644
          const outbound = proxies.find(
            (proxy) => proxy.code === `${section[".name"]}-urltest-out`
          );
-+        const activeLinks = section.proxy_config_type === "subscription_urltest" ? subscriptionCachedLinks.get(section[".name"]) ?? [] : section.urltest_proxy_links ?? [];
++        const activeLinks = section.proxy_config_type === "subscription_urltest" ? [
++          ...normalizeProxyLinks(section.urltest_proxy_links),
++          ...subscriptionCachedLinks.get(section[".name"]) ?? []
++        ] : section.urltest_proxy_links ?? [];
          const outbounds = (outbound?.value?.all ?? []).map((code) => proxies.find((item) => item.code === code)).map((item, index) => ({
            code: item?.code || "",
 -          displayName: getProxyUrlName(section.urltest_proxy_links?.[index]) || item?.value?.name || "",
@@ -180,7 +192,7 @@ index 009c1ae..3e88a06 100644
            latency: item?.value?.history?.[0]?.delay || 0,
            type: item?.value?.type || "",
            selected: selector?.value?.now === item?.code
-@@ -843,9 +960,31 @@ async function getDashboardSections() {
+@@ -843,9 +972,31 @@ async function getDashboardSections() {
        outbounds: []
      };
    });
@@ -212,8 +224,8 @@ index 009c1ae..3e88a06 100644
 +    data: [...data, ...skippedSubscriptionData]
    };
  }
- 
-@@ -1387,6 +1526,20 @@ var initialStore = {
+
+@@ -1387,6 +1538,20 @@ var initialStore = {
      latencyFetching: false,
      data: []
    },
@@ -234,7 +246,7 @@ index 009c1ae..3e88a06 100644
    ...initialDiagnosticStore
  };
  var store = new StoreService(initialStore);
-@@ -1746,6 +1899,9 @@ function renderDefaultState({
+@@ -1746,6 +1911,9 @@ function renderDefaultState({
    latencyFetching
  }) {
    function testLatency() {
@@ -244,7 +256,7 @@ index 009c1ae..3e88a06 100644
      if (section.withTagSelect) {
        return onTestLatency(section.code);
      }
-@@ -1783,7 +1939,7 @@ function renderDefaultState({
+@@ -1783,7 +1951,7 @@ function renderDefaultState({
            E(
              "div",
              { class: getLatencyClass() },
@@ -253,7 +265,7 @@ index 009c1ae..3e88a06 100644
            )
          ])
        ]
-@@ -1799,7 +1955,7 @@ function renderDefaultState({
+@@ -1799,7 +1967,7 @@ function renderDefaultState({
          },
          section.displayName
        ),
@@ -262,7 +274,7 @@ index 009c1ae..3e88a06 100644
          "button",
          {
            class: "btn dashboard-sections-grid-item-test-latency",
-@@ -2679,8 +2835,6 @@ async function runNftCheck() {
+@@ -2679,8 +2847,6 @@ async function runNftCheck() {
      state: "loading",
      items: []
    });
@@ -271,7 +283,7 @@ index 009c1ae..3e88a06 100644
    const nftablesChecks = await PodkopShellMethods.checkNftRules();
    if (!nftablesChecks.success) {
      updateCheckStore({
-@@ -2694,7 +2848,8 @@ async function runNftCheck() {
+@@ -2694,7 +2860,8 @@ async function runNftCheck() {
      throw new Error("Nftables checks failed");
    }
    const data = nftablesChecks.data;
@@ -281,7 +293,7 @@ index 009c1ae..3e88a06 100644
    const atLeastOneGood = Boolean(data.table_exist) || Boolean(data.rules_mangle_exist) || Boolean(data.rules_mangle_counters) || Boolean(data.rules_mangle_output_exist) || Boolean(data.rules_mangle_output_counters) || Boolean(data.rules_proxy_exist) || Boolean(data.rules_proxy_counters) || !data.rules_other_mark_exist;
    const { state, description } = getMeta({ atLeastOneGood, allGood });
    updateCheckStore({
-@@ -2715,7 +2870,7 @@ async function runNftCheck() {
+@@ -2715,7 +2882,7 @@ async function runNftCheck() {
          value: ""
        },
        {
@@ -290,10 +302,10 @@ index 009c1ae..3e88a06 100644
          key: _("Rules mangle counters"),
          value: ""
        },
-@@ -2823,6 +2978,18 @@ var styles2 = `
+@@ -2823,6 +2990,18 @@ var styles2 = `
      margin-right: 5px;
  }
- 
+
 +.pdk-partial-button--icon-only {
 +    min-width: 30px;
 +    width: 30px;
@@ -309,8 +321,8 @@ index 009c1ae..3e88a06 100644
  .pdk-partial-button__icon {
      display: flex;
      align-items: center;
-@@ -3375,12 +3542,15 @@ function renderBookOpenTextIcon24() {
- 
+@@ -3375,12 +3554,15 @@ function renderBookOpenTextIcon24() {
+
  // src/partials/button/renderButton.ts
  function renderButton({
 +  ariaLabel,
@@ -326,7 +338,7 @@ index 009c1ae..3e88a06 100644
  }) {
    const hasIcon = !!loading || !!icon;
    function getWrappedIcon() {
-@@ -3404,6 +3574,7 @@ function renderButton({
+@@ -3404,6 +3586,7 @@ function renderButton({
        ...insertIf(Boolean(disabled), ["pdk-partial-button--disabled"]),
        ...insertIf(Boolean(loading), ["pdk-partial-button--loading"]),
        ...insertIf(Boolean(hasIcon), ["pdk-partial-button--with-icon"]),
@@ -334,7 +346,7 @@ index 009c1ae..3e88a06 100644
        ...classNames
      ].filter(Boolean).join(" ");
    }
-@@ -3415,8 +3586,17 @@ function renderButton({
+@@ -3415,8 +3598,17 @@ function renderButton({
    }
    return E(
      "button",
@@ -353,8 +365,8 @@ index 009c1ae..3e88a06 100644
 +    ]
    );
  }
- 
-@@ -3854,8 +4034,11 @@ async function runSectionsCheck() {
+
+@@ -3854,8 +4046,11 @@ async function runSectionsCheck() {
      });
      throw new Error("Sections checks failed");
    }
@@ -367,10 +379,10 @@ index 009c1ae..3e88a06 100644
        async function getLatency() {
          if (section.withTagSelect) {
            const latencyGroup = await PodkopShellMethods.getClashApiGroupLatency(
-@@ -4631,10 +4814,1639 @@ var DiagnosticTab = {
+@@ -4631,10 +4826,1639 @@ var DiagnosticTab = {
    styles: styles4
  };
- 
+
 +// src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
 +function getRowId(sectionCode, itemId) {
 +  return `${sectionCode}:${itemId}`;
@@ -876,7 +888,7 @@ index 009c1ae..3e88a06 100644
 +  onToggleSource
 +}) {
 +  if (sections.length === 0) {
-+    return renderEmptyState(_("No Subscription URLTest sections"));
++    return renderEmptyState("\u041D\u0435\u0442 \u0441\u0435\u043A\u0446\u0438\u0439 \u041C\u0438\u043A\u0441");
 +  }
 +  return E(
 +    "div",
@@ -1531,7 +1543,7 @@ index 009c1ae..3e88a06 100644
 +function getPatchUpdateMessage(status) {
 +  switch (status.message) {
 +    case "patch_update_running":
-+      return "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u043F\u0430\u0442\u0447\u0430.";
++      return "\u041E\u0431\u043D\u043E\u0432\u043B\u044F\u0435\u043C Podkop \u0438 \u043F\u0430\u0442\u0447 \u043F\u043E\u0434\u043F\u0438\u0441\u043E\u043A.";
 +    case "patch_update_noop":
 +      return "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D.";
 +    case "patch_update_success":
@@ -1586,7 +1598,7 @@ index 009c1ae..3e88a06 100644
 +  setActionState({
 +    action: "patch",
 +    actionStatus: "running",
-+    actionMessage: "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u043F\u0430\u0442\u0447\u0430."
++    actionMessage: "\u041E\u0431\u043D\u043E\u0432\u043B\u044F\u0435\u043C Podkop \u0438 \u043F\u0430\u0442\u0447 \u043F\u043E\u0434\u043F\u0438\u0441\u043E\u043A."
 +  });
 +  try {
 +    const result = await PodkopShellMethods.updateSubscriptionPatch();
@@ -2005,9 +2017,9 @@ index 009c1ae..3e88a06 100644
  ${DiagnosticTab.styles}
 +${SubscriptionsTab.styles}
  ${PartialStyles}
- 
- 
-@@ -4904,6 +6716,7 @@ return baseclass.extend({
+
+
+@@ -4904,6 +6728,7 @@ return baseclass.extend({
    REGIONAL_OPTIONS,
    RemoteFakeIPMethods,
    STATUS_COLORS,
@@ -2022,7 +2034,7 @@ index f699e17..f0d1f5f 100644
 @@ -17,6 +17,9 @@
  // Diagnostic content
  "require view.podkop.diagnostic as diagnostic";
- 
+
 +// Subscriptions content
 +"require view.podkop.subscriptions as subscriptions";
 +
@@ -2032,7 +2044,7 @@ index f699e17..f0d1f5f 100644
 @@ -73,6 +76,21 @@ const EntryPoint = {
      // Render diagnostic content
      diagnostic.createDiagnosticContent(diagnosticSection);
- 
+
 +    // Subscriptions tab
 +    const subscriptionsSection = podkopMap.section(
 +      form.TypedSection,
@@ -2052,21 +2064,21 @@ index f699e17..f0d1f5f 100644
      const dashboardSection = podkopMap.section(
        form.TypedSection,
 diff --git a/www/luci-static/resources/view/podkop/section.js b/www/luci-static/resources/view/podkop/section.js
-index 7dc8ccb..c9f89e6 100644
+index 7dc8ccb..806eb74 100644
 --- a/www/luci-static/resources/view/podkop/section.js
 +++ b/www/luci-static/resources/view/podkop/section.js
 @@ -26,6 +26,7 @@ function createSectionContent(section) {
    o.value("url", _("Connection URL"));
    o.value("selector", _("Selector"));
    o.value("urltest", _("URLTest"));
-+  o.value("subscription_urltest", _("Subscription URLTest"));
++  o.value("subscription_urltest", "\u041c\u0438\u043a\u0441");
    o.value("outbound", _("Outbound Config"));
    o.default = "url";
    o.depends("connection_type", "proxy");
 @@ -59,6 +60,44 @@ function createSectionContent(section) {
      return validation.message;
    };
- 
+
 +  o = section.option(
 +    form.DynamicList,
 +    "subscription_url",
@@ -2108,15 +2120,28 @@ index 7dc8ccb..c9f89e6 100644
    o = section.option(
      form.TextValue,
      "outbound_json",
-@@ -140,6 +179,7 @@ function createSectionContent(section) {
+@@ -108,10 +147,11 @@ function createSectionContent(section) {
+   o = section.option(
+     form.DynamicList,
+     "urltest_proxy_links",
+-    _("URLTest Proxy Links"),
++    "\u041f\u0440\u043e\u043a\u0441\u0438-\u0441\u0441\u044b\u043b\u043a\u0438",
+     _("vless://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links")
+   );
+   o.depends("proxy_config_type", "urltest");
++  o.depends("proxy_config_type", "subscription_urltest");
+   o.rmempty = false;
+   o.validate = function (section_id, value) {
+     // Optional
+@@ -140,6 +180,7 @@ function createSectionContent(section) {
    o.value("5m", _("Every 5 minutes"));
    o.default = "3m";
    o.depends("proxy_config_type", "urltest");
 +  o.depends("proxy_config_type", "subscription_urltest");
- 
+
    o = section.option(
      form.Value,
-@@ -150,6 +190,7 @@ function createSectionContent(section) {
+@@ -150,6 +191,7 @@ function createSectionContent(section) {
    o.default = "50";
    o.rmempty = false;
    o.depends("proxy_config_type", "urltest");
@@ -2124,56 +2149,28 @@ index 7dc8ccb..c9f89e6 100644
    o.validate = function (section_id, value) {
      if (!value || value.length === 0) {
        return true;
-@@ -177,6 +218,7 @@ function createSectionContent(section) {
+@@ -177,6 +219,7 @@ function createSectionContent(section) {
    o.default = "https://www.gstatic.com/generate_204";
    o.rmempty = false;
    o.depends("proxy_config_type", "urltest");
 +  o.depends("proxy_config_type", "subscription_urltest");
- 
+
    o.validate = function (section_id, value) {
      if (!value || value.length === 0) {
-diff --git a/www/luci-static/resources/view/podkop/subscriptions.js b/www/luci-static/resources/view/podkop/subscriptions.js
-new file mode 100644
-index 0000000..52716a5
---- /dev/null
-+++ b/www/luci-static/resources/view/podkop/subscriptions.js
-@@ -0,0 +1,22 @@
-+"use strict";
-+"require baseclass";
-+"require form";
-+"require ui";
-+"require uci";
-+"require fs";
-+"require view.podkop.main as main";
-+
-+function createSubscriptionsContent(section) {
-+  const o = section.option(form.DummyValue, "_mount_node");
-+  o.rawhtml = true;
-+  o.cfgvalue = () => {
-+    main.SubscriptionsTab.initController();
-+    return main.SubscriptionsTab.render();
-+  };
-+}
-+
-+const EntryPoint = {
-+  createSubscriptionsContent,
-+};
-+
-+return baseclass.extend(EntryPoint);
 diff --git a/usr/bin/podkop b/usr/bin/podkop
-index fda1c1e..da1758f 100755
+index fda1c1e..1e4382e 100755
 --- a/usr/bin/podkop
 +++ b/usr/bin/podkop
 @@ -33,6 +33,9 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
- 
+
  config_load "$PODKOP_CONFIG"
- 
+
 +SUBSCRIPTION_CACHE_DIR="/etc/podkop/subscriptions"
 +COMMUNITY_SUBNET_CACHE_DIR="/etc/podkop/community-subnets"
 +
  check_requirements() {
      log "Check Requirements"
- 
+
 @@ -78,7 +81,7 @@ check_requirements() {
      if has_outbound_section; then
          log "Outbound section found" "debug"
@@ -2185,7 +2182,7 @@ index fda1c1e..da1758f 100755
  }
 @@ -94,7 +97,7 @@ _check_outbound_section() {
      config_get interface "$section" "interface"
- 
+
      if [ -n "$proxy_string" ] || [ -n "$selector_proxy_links" ] || [ -n "$urltest_proxy_links" ] ||
 -        [ -n "$outbound_json" ] || [ -n "$interface" ]; then
 +        section_has_subscription_urls "$section" || [ -n "$outbound_json" ] || [ -n "$interface" ]; then
@@ -2194,12 +2191,12 @@ index fda1c1e..da1758f 100755
  }
 @@ -108,6 +111,8 @@ has_outbound_section() {
  }
- 
+
  start_main() {
 +    local skip_list_update_started=0
 +
      log "Starting podkop"
- 
+
      check_requirements
 @@ -129,16 +134,60 @@ start_main() {
      # base
@@ -2215,14 +2212,14 @@ index fda1c1e..da1758f 100755
 +        fi
 +    fi
      sing_box_configure_service
- 
+
      # sing-box
      sing_box_init_config
 +    remove_cron_job
      config_foreach add_cron_job "section"
 +    config_foreach add_subscription_cron_job "section"
      /etc/init.d/sing-box start
- 
+
      log "Nice"
 -    list_update &
 -    echo $! > /var/run/podkop_list_update.pid
@@ -2262,7 +2259,7 @@ index fda1c1e..da1758f 100755
 +        [ -n "$pid" ] && kill "$pid" 2> /dev/null || true
 +    done
  }
- 
+
  stop_main() {
 @@ -147,11 +196,12 @@ stop_main() {
      if [ -f /var/run/podkop_list_update.pid ]; then
@@ -2275,13 +2272,13 @@ index fda1c1e..da1758f 100755
          rm -f /var/run/podkop_list_update.pid
      fi
 +    stop_stale_list_update_downloads
- 
+
      remove_cron_job
- 
+
 @@ -248,6 +298,85 @@ br_netfilter_disable() {
      fi
  }
- 
+
 +get_community_subnet_cache_path() {
 +    local service="$1"
 +
@@ -2362,12 +2359,12 @@ index fda1c1e..da1758f 100755
 +}
 +
  # Main funcs
- 
+
  route_table_rule_mark() {
-@@ -336,215 +465,2090 @@ create_nft_rules() {
+@@ -336,215 +465,2128 @@ create_nft_rules() {
      fi
  }
- 
+
 -backup_dnsmasq_config_option() {
 -    local key="$1"
 -    local backup_key="$2"
@@ -2756,6 +2753,43 @@ index fda1c1e..da1758f 100755
 +            append_subscription_excluded_id_to_file "$link_id"
 +        done
 +        set +f
++    fi
++
++    deduped_file="$(mktemp)"
++    awk '!seen[$0]++' "$output_file" > "$deduped_file"
++    mv "$deduped_file" "$output_file"
++}
++
++append_urltest_proxy_link_to_file() {
++    local proxy_link="$1"
++
++    if [ -n "$proxy_link" ]; then
++        printf '%s\n' "$proxy_link" >> "$URLTEST_PROXY_LINKS_FILE"
++        URLTEST_PROXY_LINKS_COUNT=$((URLTEST_PROXY_LINKS_COUNT + 1))
++    fi
++}
++
++collect_urltest_proxy_links() {
++    local section="$1"
++    local output_file="$2"
++    local proxy_link deduped_file
++
++    : > "$output_file"
++    URLTEST_PROXY_LINKS_FILE="$output_file"
++    URLTEST_PROXY_LINKS_COUNT=0
++    config_list_foreach "$section" "urltest_proxy_links" append_urltest_proxy_link_to_file
++
++    if [ "$URLTEST_PROXY_LINKS_COUNT" -eq 0 ]; then
++        config_get proxy_link "$section" "urltest_proxy_links"
++        set -f
++        for proxy_link in $proxy_link; do
++            append_urltest_proxy_link_to_file "$proxy_link"
++        done
++        set +f
++    fi
++
++    if [ ! -s "$output_file" ]; then
++        return 1
 +    fi
 +
 +    deduped_file="$(mktemp)"
@@ -4267,19 +4301,20 @@ index fda1c1e..da1758f 100755
 +subscription_patch_update_status_file() {
 +    echo "/tmp/podkop-subscriptions-patch-update.json"
 +}
- 
--    if [ -n "$value" ]; then
--        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
--    fi
++
 +subscription_patch_update() {
-+    local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1
++    local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1 patch_update_podkop_update_v1
 +
 +    patch_update_start_stop_daemon_v1=1
 +    patch_update_noop_v1=1
++    patch_update_podkop_update_v1=1
 +
 +    status_file="$(subscription_patch_update_status_file)"
 +    runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
-+
+
+-    if [ -n "$value" ]; then
+-        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
+-    fi
 +    cat > "$runner" << 'EOF'
 +#!/bin/ash
 +status_file="/tmp/podkop-subscriptions-patch-update.json"
@@ -4295,7 +4330,7 @@ index fda1c1e..da1758f 100755
 +        --arg logTail "$log_tail" \
 +        '{state:$state, message:$message, updatedAt:$updatedAt, logTail:$logTail}' > "$status_file"
  }
- 
+
 -dnsmasq_configure() {
 -    local shutdown_correctly
 -    config_get shutdown_correctly "settings" "shutdown_correctly"
@@ -4306,7 +4341,7 @@ index fda1c1e..da1758f 100755
 +kill_process_tree() {
 +    local pid="$1"
 +    local child
- 
+
 -    log "Backup dnsmasq configuration"
 -    current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
 -    if [ -n "$current_servers" ]; then
@@ -4323,12 +4358,12 @@ index fda1c1e..da1758f 100755
          done
 -        uci_remove "dhcp" "@dnsmasq[0]" "server"
      fi
- 
+
 -    backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
 -    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
 +    kill "$pid" 2> /dev/null || true
 +}
- 
+
 -    log "Configure dnsmasq for sing-box"
 -    uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
 -    uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
@@ -4337,7 +4372,7 @@ index fda1c1e..da1758f 100755
 +run_with_timeout() {
 +    local limit="$1"
 +    local pid watchdog rc
- 
+
 -    /etc/init.d/dnsmasq restart
 +    shift
 +    "$@" >> "$log_file" 2>&1 &
@@ -4356,7 +4391,7 @@ index fda1c1e..da1758f 100755
 +
 +    return "$rc"
  }
- 
+
 -dnsmasq_restore() {
 -    log "Restoring the dnsmasq configuration"
 -    local shutdown_correctly
@@ -4366,7 +4401,7 @@ index fda1c1e..da1758f 100755
 -        return 0
 -    fi
 +write_status "running" "patch_update_running" ""
- 
+
 -    local cachesize noresolv backup_servers resolvfile
 -    log "Restoring cachesize" "debug"
 -    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_cachesize")"
@@ -4413,7 +4448,7 @@ index fda1c1e..da1758f 100755
 +        done
      fi
 +fi
- 
+
 -    log "Restoring DNS servers" "debug"
 -    uci_remove "dhcp" "@dnsmasq[0]" "server"
 -    resolvfile="/tmp/resolv.conf.d/resolv.conf.auto"
@@ -4435,7 +4470,7 @@ index fda1c1e..da1758f 100755
 +    exit 1
 +fi
 +
-+if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp"; then
++if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}" sh "$tmp"; then
 +    if grep -q "PODKOP_PATCH_NOOP=1" "$log_file" 2> /dev/null; then
 +        write_status "success" "patch_update_noop" "$(tail -n 20 "$log_file" 2> /dev/null)"
      else
@@ -4447,7 +4482,7 @@ index fda1c1e..da1758f 100755
 +    exit 1
 +fi
 +EOF
- 
+
 -    uci_commit "dhcp"
 +    chmod +x "$runner"
 +    if command -v start-stop-daemon > /dev/null 2>&1; then
@@ -4457,11 +4492,11 @@ index fda1c1e..da1758f 100755
 +    else
 +        "$runner" < /dev/null > /dev/null 2>&1 &
 +    fi
- 
+
 -    /etc/init.d/dnsmasq restart
 +    echo '{"success":true,"started":true}'
  }
- 
+
 -add_cron_job() {
 -    ## Future: make a check so that it doesn't recreate many times
 -    local community_lists remote_domain_lists remote_subnet_lists update_interval
@@ -4493,7 +4528,7 @@ index fda1c1e..da1758f 100755
 -    esac
 +get_subscription_patch_update_status() {
 +    local status_file
- 
+
 -    if [ -n "$community_lists" ] ||
 -        [ -n "$remote_domain_lists" ] ||
 -        [ -n "$remote_subnet_lists" ]; then
@@ -4510,19 +4545,19 @@ index fda1c1e..da1758f 100755
 +        echo '{"state":"idle","message":"","updatedAt":"","logTail":""}'
      fi
  }
- 
+
 -remove_cron_job() {
 -    (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
 -    log "The cron job removed"
 +subscription_action_lock_file() {
 +    echo "/tmp/podkop-subscription-action.lock"
  }
- 
+
 -list_update() {
 -    echolog "🔄 Starting lists update..."
 +subscription_action_lock_pid_alive() {
 +    local pid="$1"
- 
+
 -    local nslookup_timeout=3
 -    local nslookup_attempts=10
 -    local curl_timeout=5
@@ -4536,7 +4571,7 @@ index fda1c1e..da1758f 100755
 +        return 1
 +        ;;
 +    esac
- 
+
 -    # DNS Check
 -    for i in $(seq 1 $nslookup_attempts); do
 -        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
@@ -4548,21 +4583,21 @@ index fda1c1e..da1758f 100755
 -    done
 +    [ -d "/proc/$pid" ]
 +}
- 
+
 -    if [ "$i" -eq $nslookup_attempts ]; then
 -        echolog "❌ DNS check failed after $nslookup_attempts attempts"
 -        return 1
 -    fi
 +subscription_action_lock_busy() {
 +    local lock_file pid
- 
+
 -    # Github Check
 -    for i in $(seq 1 $curl_attempts); do
 -        local service_proxy_address
 -        service_proxy_address="$(get_service_proxy_address)"
 +    lock_file="$(subscription_action_lock_file)"
 +    [ -s "$lock_file" ] || return 1
- 
+
 -        if [ -n "$service_proxy_address" ]; then
 -            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
 -                echolog "✅ GitHub connection check passed (via proxy)"
@@ -4578,7 +4613,7 @@ index fda1c1e..da1758f 100755
 +    if subscription_action_lock_pid_alive "$pid"; then
 +        return 0
 +    fi
- 
+
 -        echolog "GitHub is unavailable [$i/$curl_attempts] (max-timeout=$curl_timeout)"
 -        if [ "$curl_timeout" -lt $curl_max_timeout ]; then
 -            curl_timeout=$((curl_timeout + 1))
@@ -4588,7 +4623,7 @@ index fda1c1e..da1758f 100755
 +    rm -f "$lock_file"
 +    return 1
 +}
- 
+
 -    if [ "$i" -eq $curl_attempts ]; then
 -        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
 +subscription_action_lock_acquire() {
@@ -4599,17 +4634,17 @@ index fda1c1e..da1758f 100755
 +    if subscription_action_lock_busy; then
          return 1
      fi
- 
+
 -    echolog "📥 Downloading and processing lists..."
 +    printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$lock_file"
 +}
- 
+
 -    config_foreach import_community_subnet_lists "section"
 -    config_foreach import_domains_from_remote_domain_lists "section"
 -    config_foreach import_subnets_from_remote_subnet_lists "section"
 +subscription_action_lock_release() {
 +    local lock_file pid
- 
+
 -    if [ $? -eq 0 ]; then
 -        echolog "✅ Lists update completed successfully"
 -    else
@@ -4621,9 +4656,9 @@ index fda1c1e..da1758f 100755
 +    pid="$(awk 'NR == 1 {print $1}' "$lock_file" 2> /dev/null)"
 +    [ "$pid" = "$$" ] && rm -f "$lock_file"
  }
- 
+
  # sing-box funcs
-@@ -678,6 +2682,63 @@ configure_outbound_handler() {
+@@ -678,6 +2720,89 @@ configure_outbound_handler() {
              config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
                  "$default_outbound")"
              ;;
@@ -4631,23 +4666,49 @@ index fda1c1e..da1758f 100755
 +            log "Detected proxy configuration type: subscription_urltest" "debug"
 +            local udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
 +                urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance urltest_testing_url \
-+                links_file candidate_config link
++                links_file manual_links_file subscription_links_file deduped_links_file candidate_config link \
++                has_manual_links has_subscription_links subscription_mix_manual_links_v1
++            subscription_mix_manual_links_v1=1
 +            config_get udp_over_tcp "$section" "enable_udp_over_tcp"
 +            config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
 +            config_get urltest_tolerance "$section" "urltest_tolerance" 50
 +            config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
 +
-+            if ! section_has_subscription_urls "$section"; then
-+                log "Subscription URL is not set. Aborted." "fatal"
++            links_file="$(mktemp)"
++            manual_links_file="$(mktemp)"
++            subscription_links_file="$(mktemp)"
++            deduped_links_file="$(mktemp)"
++            : > "$links_file"
++            has_manual_links=0
++            has_subscription_links=0
++
++            if collect_urltest_proxy_links "$section" "$manual_links_file"; then
++                cat "$manual_links_file" >> "$links_file"
++                has_manual_links=1
++            fi
++
++            if section_has_subscription_urls "$section"; then
++                if load_subscription_proxy_links_for_section "$section" "$subscription_links_file"; then
++                    cat "$subscription_links_file" >> "$links_file"
++                    has_subscription_links=1
++                elif [ "$has_manual_links" -eq 1 ]; then
++                    log "Unable to load subscription links for section '$section', continuing with manual proxy links" "warn"
++                else
++                    rm -f "$links_file" "$manual_links_file" "$subscription_links_file" "$deduped_links_file"
++                    log "Unable to load subscription links. Aborted." "fatal"
++                    exit 1
++                fi
++            fi
++
++            if [ ! -s "$links_file" ]; then
++                rm -f "$links_file" "$manual_links_file" "$subscription_links_file" "$deduped_links_file"
++                log "Mix proxy links or subscription URLs are not set. Aborted." "fatal"
 +                exit 1
 +            fi
 +
-+            links_file="$(mktemp)"
-+            if ! load_subscription_proxy_links_for_section "$section" "$links_file"; then
-+                rm -f "$links_file"
-+                log "Unable to load subscription links. Aborted." "fatal"
-+                exit 1
-+            fi
++            awk '!seen[$0]++' "$links_file" > "$deduped_links_file"
++            mv "$deduped_links_file" "$links_file"
++            rm -f "$manual_links_file" "$subscription_links_file"
 +
 +            i=1
 +            while IFS= read -r link || [ -n "$link" ]; do
@@ -4669,10 +4730,10 @@ index fda1c1e..da1758f 100755
 +                fi
 +                i=$((i + 1))
 +            done < "$links_file"
-+            rm -f "$links_file"
++            rm -f "$links_file" "$deduped_links_file"
 +
 +            if [ -z "$outbound_tags" ]; then
-+                log "Subscription does not contain supported proxy links. Aborted." "fatal"
++                log "Mix does not contain supported proxy links. Aborted." "fatal"
 +                exit 1
 +            fi
 +
@@ -4687,10 +4748,10 @@ index fda1c1e..da1758f 100755
          urltest)
              log "Detected proxy configuration type: urltest" "debug"
              local urltest_proxy_links udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
-@@ -1329,11 +3390,18 @@ import_community_service_subnet_list_handler() {
+@@ -1329,11 +3454,18 @@ import_community_service_subnet_list_handler() {
      tmpfile=$(mktemp)
      http_proxy_address="$(get_service_proxy_address)"
- 
+
 -    download_to_file "$URL" "$tmpfile" "$http_proxy_address"
 -
 -    if [ $? -ne 0 ] || [ ! -s "$tmpfile" ]; then
@@ -4709,9 +4770,9 @@ index fda1c1e..da1758f 100755
 +    else
 +        cache_community_subnet_list "$service" "$tmpfile"
      fi
- 
+
      if [ "$service" = "discord" ]; then
-@@ -1842,6 +3910,8 @@ show_config() {
+@@ -1842,6 +3974,8 @@ show_config() {
          -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
          -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
          -e 's/\(list selector_proxy_links\).*/\1 '\''MASKED'\''/g' \
@@ -4720,7 +4781,7 @@ index fda1c1e..da1758f 100755
          -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e "s@\\(option domain_resolver_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
          -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
-@@ -2669,6 +4739,20 @@ Available commands:
+@@ -2669,6 +4803,20 @@ Available commands:
      restart                 Restart podkop service
      main                    Run main podkop process
      list_update             Update domain lists
@@ -4741,7 +4802,7 @@ index fda1c1e..da1758f 100755
      check_proxy             Check proxy connectivity
      check_nft               Check NFT rules
      check_nft_rules         Check NFT rules status
-@@ -2677,6 +4761,18 @@ Available commands:
+@@ -2677,6 +4825,18 @@ Available commands:
      check_sing_box_logs     Show sing-box logs
      check_fakeip            Test FakeIP on router
      clash_api               Clash API interface for managing proxies and groups
@@ -4760,7 +4821,7 @@ index fda1c1e..da1758f 100755
      show_config             Display current podkop configuration
      show_version            Show podkop version
      show_sing_box_config    Show sing-box configuration
-@@ -2709,6 +4805,30 @@ main)
+@@ -2709,6 +4869,30 @@ main)
  list_update)
      list_update
      ;;
@@ -4791,7 +4852,7 @@ index fda1c1e..da1758f 100755
  check_proxy)
      check_proxy
      ;;
-@@ -2733,6 +4853,25 @@ check_fakeip)
+@@ -2733,6 +4917,25 @@ check_fakeip)
  clash_api)
      clash_api "$2" "$3" "$4"
      ;;

@@ -12,11 +12,12 @@ V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260627-podkop-update-v1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260627-mix-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
 MAIN_JS_FILE="main.js"
+SECTION_JS_FILE="section.js"
 LMO_FILE="podkop.ru.lmo.base64"
 SUBSCRIPTIONS_FILE="subscriptions.js"
 LMO_DECODED_FILE="podkop.ru.lmo"
@@ -345,6 +346,8 @@ has_latest_subscription_backend() {
 		grep -q "subscription_speedtest_stop" /usr/bin/podkop 2>/dev/null &&
 		grep -q "get_subscription_speedtest_status" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_speedtest_restore_state_file" /usr/bin/podkop 2>/dev/null &&
+		grep -q "subscription_mix_manual_links_v1" /usr/bin/podkop 2>/dev/null &&
+		grep -q "collect_urltest_proxy_links" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_podkop_update_v1" /usr/bin/podkop 2>/dev/null &&
 		grep -q "Subscription download via service proxy failed; trying direct download" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription sources that could not be downloaded" /usr/bin/podkop 2>/dev/null &&
@@ -374,6 +377,8 @@ luci_assets_current() {
 
 	[ -f /www/luci-static/resources/view/podkop/main.js ] &&
 		cmp -s /www/luci-static/resources/view/podkop/main.js "$tmp_dir/$MAIN_JS_FILE" &&
+		[ -f /www/luci-static/resources/view/podkop/section.js ] &&
+		cmp -s /www/luci-static/resources/view/podkop/section.js "$tmp_dir/$SECTION_JS_FILE" &&
 		[ -f /www/luci-static/resources/view/podkop/subscriptions.js ] &&
 		cmp -s /www/luci-static/resources/view/podkop/subscriptions.js "$tmp_dir/$SUBSCRIPTIONS_FILE" &&
 		[ -f /usr/lib/lua/luci/i18n/podkop.ru.lmo ] &&
@@ -660,6 +665,7 @@ update_official_podkop_if_requested
 download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
+download "$RAW_BASE/$SECTION_JS_FILE" "$tmp_dir/$SECTION_JS_FILE"
 
 if [ "${PODKOP_PATCH_FORCE:-0}" != "1" ] && has_latest_subscription_backend && luci_assets_current; then
 	log "Subscription URLTest patch is already up to date; nothing to do."
@@ -810,6 +816,7 @@ fi
 
 mkdir -p /www/luci-static/resources/view/podkop
 cp "$tmp_dir/$MAIN_JS_FILE" /www/luci-static/resources/view/podkop/main.js
+cp "$tmp_dir/$SECTION_JS_FILE" /www/luci-static/resources/view/podkop/section.js
 cp "$tmp_dir/$SUBSCRIPTIONS_FILE" /www/luci-static/resources/view/podkop/subscriptions.js
 
 mkdir -p /usr/lib/lua/luci/i18n

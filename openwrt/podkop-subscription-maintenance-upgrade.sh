@@ -2170,6 +2170,179 @@ if [ -f "$helper_target" ] && { ! grep -q "raw.githubusercontent.com:443" "$help
 	rm -f "$helper_tmp"
 fi
 
+if ! grep -q "subscription_mix_manual_links_v1" "$target" 2>/dev/null; then
+	mix_functions="$(mktemp)"
+	cat > "$mix_functions" <<'MIX_FUNCTIONS_EOF'
+append_urltest_proxy_link_to_file() {
+    local proxy_link="$1"
+
+    if [ -n "$proxy_link" ]; then
+        printf '%s\n' "$proxy_link" >> "$URLTEST_PROXY_LINKS_FILE"
+        URLTEST_PROXY_LINKS_COUNT=$((URLTEST_PROXY_LINKS_COUNT + 1))
+    fi
+}
+
+collect_urltest_proxy_links() {
+    local section="$1"
+    local output_file="$2"
+    local proxy_link deduped_file
+
+    : > "$output_file"
+    URLTEST_PROXY_LINKS_FILE="$output_file"
+    URLTEST_PROXY_LINKS_COUNT=0
+    config_list_foreach "$section" "urltest_proxy_links" append_urltest_proxy_link_to_file
+
+    if [ "$URLTEST_PROXY_LINKS_COUNT" -eq 0 ]; then
+        config_get proxy_link "$section" "urltest_proxy_links"
+        set -f
+        for proxy_link in $proxy_link; do
+            append_urltest_proxy_link_to_file "$proxy_link"
+        done
+        set +f
+    fi
+
+    if [ ! -s "$output_file" ]; then
+        return 1
+    fi
+
+    deduped_file="$(mktemp)"
+    awk '!seen[$0]++' "$output_file" > "$deduped_file"
+    mv "$deduped_file" "$output_file"
+}
+MIX_FUNCTIONS_EOF
+
+	mix_case="$(mktemp)"
+	cat > "$mix_case" <<'MIX_CASE_EOF'
+        subscription_urltest)
+            log "Detected proxy configuration type: subscription_urltest" "debug"
+            local udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
+                urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance urltest_testing_url \
+                links_file manual_links_file subscription_links_file deduped_links_file candidate_config link \
+                has_manual_links has_subscription_links subscription_mix_manual_links_v1
+            subscription_mix_manual_links_v1=1
+            config_get udp_over_tcp "$section" "enable_udp_over_tcp"
+            config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
+            config_get urltest_tolerance "$section" "urltest_tolerance" 50
+            config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
+
+            links_file="$(mktemp)"
+            manual_links_file="$(mktemp)"
+            subscription_links_file="$(mktemp)"
+            deduped_links_file="$(mktemp)"
+            : > "$links_file"
+            has_manual_links=0
+            has_subscription_links=0
+
+            if collect_urltest_proxy_links "$section" "$manual_links_file"; then
+                cat "$manual_links_file" >> "$links_file"
+                has_manual_links=1
+            fi
+
+            if section_has_subscription_urls "$section"; then
+                if load_subscription_proxy_links_for_section "$section" "$subscription_links_file"; then
+                    cat "$subscription_links_file" >> "$links_file"
+                    has_subscription_links=1
+                elif [ "$has_manual_links" -eq 1 ]; then
+                    log "Unable to load subscription links for section '$section', continuing with manual proxy links" "warn"
+                else
+                    rm -f "$links_file" "$manual_links_file" "$subscription_links_file" "$deduped_links_file"
+                    log "Unable to load subscription links. Aborted." "fatal"
+                    exit 1
+                fi
+            fi
+
+            if [ ! -s "$links_file" ]; then
+                rm -f "$links_file" "$manual_links_file" "$subscription_links_file" "$deduped_links_file"
+                log "Mix proxy links or subscription URLs are not set. Aborted." "fatal"
+                exit 1
+            fi
+
+            awk '!seen[$0]++' "$links_file" > "$deduped_links_file"
+            mv "$deduped_links_file" "$links_file"
+            rm -f "$manual_links_file" "$subscription_links_file"
+
+            i=1
+            while IFS= read -r link || [ -n "$link" ]; do
+                [ -n "$link" ] || continue
+
+                if ! candidate_config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")" ||
+                    [ -z "$candidate_config" ]; then
+                    log "Skipping unsupported subscription proxy link in section '$section'" "warn"
+                    i=$((i + 1))
+                    continue
+                fi
+
+                config="$candidate_config"
+                outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
+                if [ -z "$outbound_tags" ]; then
+                    outbound_tags="$outbound_tag"
+                else
+                    outbound_tags="$outbound_tags,$outbound_tag"
+                fi
+                i=$((i + 1))
+            done < "$links_file"
+            rm -f "$links_file" "$deduped_links_file"
+
+            if [ -z "$outbound_tags" ]; then
+                log "Mix does not contain supported proxy links. Aborted." "fatal"
+                exit 1
+            fi
+
+            urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
+            selector_tag="$(get_outbound_tag_by_section "$section")"
+            urltest_outbounds="$(comma_string_to_json_array "$outbound_tags")"
+            selector_outbounds="$(comma_string_to_json_array "$outbound_tags,$urltest_tag")"
+            config="$(sing_box_cm_add_urltest_outbound "$config" "$urltest_tag" "$urltest_outbounds" \
+                "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
+            config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" "$urltest_tag")"
+            ;;
+MIX_CASE_EOF
+
+	awk -v funcs="$mix_functions" -v mix_case="$mix_case" '
+	BEGIN {
+		inserted_funcs = 0
+		replacement = ""
+		while ((getline line < mix_case) > 0) {
+			replacement = replacement line "\n"
+		}
+		close(mix_case)
+		in_subscription_case = 0
+	}
+
+	!inserted_funcs && $0 == "is_subscription_link_id_excluded() {" {
+		while ((getline line < funcs) > 0) {
+			print line
+		}
+		close(funcs)
+		print ""
+		inserted_funcs = 1
+	}
+
+	$0 == "        subscription_urltest)" {
+		printf "%s", replacement
+		in_subscription_case = 1
+		next
+	}
+
+	in_subscription_case && $0 == "        urltest)" {
+		in_subscription_case = 0
+		print
+		next
+	}
+
+	in_subscription_case {
+		next
+	}
+
+	{ print }
+	' "$target" > "$tmp" || {
+		rm -f "$tmp" "$mix_functions" "$mix_case"
+		exit 1
+	}
+	cat "$tmp" > "$target"
+	rm -f "$tmp" "$mix_functions" "$mix_case"
+fi
+
 chmod 755 "$target"
 if [ -f "$helper_target" ]; then
 	chmod 644 "$helper_target"

@@ -798,6 +798,15 @@ function getSubscriptionSkippedReasonLabel(reason) {
       return _("Unsupported config");
   }
 }
+function normalizeProxyLinks(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (typeof value === "string") {
+    return splitProxyString(value);
+  }
+  return [];
+}
 async function getDashboardSections() {
   const configSections = await getConfigSections();
   const clashProxies = await PodkopShellMethods.getClashApiProxies();
@@ -909,7 +918,10 @@ async function getDashboardSections() {
         const outbound = proxies.find(
           (proxy) => proxy.code === `${section[".name"]}-urltest-out`
         );
-        const activeLinks = section.proxy_config_type === "subscription_urltest" ? subscriptionCachedLinks.get(section[".name"]) ?? [] : section.urltest_proxy_links ?? [];
+        const activeLinks = section.proxy_config_type === "subscription_urltest" ? [
+          ...normalizeProxyLinks(section.urltest_proxy_links),
+          ...subscriptionCachedLinks.get(section[".name"]) ?? []
+        ] : section.urltest_proxy_links ?? [];
         const outbounds = (outbound?.value?.all ?? []).map((code) => proxies.find((item) => item.code === code)).map((item, index) => ({
           code: item?.code || "",
           displayName: getProxyUrlName(activeLinks[index]) || item?.value?.name || `Server ${index + 1}`,
@@ -5319,7 +5331,7 @@ function renderSections2({
   onToggleSource
 }) {
   if (sections.length === 0) {
-    return renderEmptyState(_("No Subscription URLTest sections"));
+    return renderEmptyState("\u041D\u0435\u0442 \u0441\u0435\u043A\u0446\u0438\u0439 \u041C\u0438\u043A\u0441");
   }
   return E(
     "div",
