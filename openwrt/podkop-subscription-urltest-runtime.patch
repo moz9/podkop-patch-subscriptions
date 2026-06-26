@@ -1,7 +1,7 @@
-diff --git a/luci-static/resources/view/podkop/main.js b/luci-static/resources/view/podkop/main.js
+diff --git a/www/luci-static/resources/view/podkop/main.js b/www/luci-static/resources/view/podkop/main.js
 index 009c1ae..3e88a06 100644
---- a/luci-static/resources/view/podkop/main.js
-+++ b/luci-static/resources/view/podkop/main.js
+--- a/www/luci-static/resources/view/podkop/main.js
++++ b/www/luci-static/resources/view/podkop/main.js
 @@ -576,11 +576,11 @@ async function getConfigSections() {
  }
  
@@ -2015,10 +2015,10 @@ index 009c1ae..3e88a06 100644
    TabService,
    TabServiceInstance,
    UPDATE_INTERVAL_OPTIONS,
-diff --git a/luci-static/resources/view/podkop/podkop.js b/luci-static/resources/view/podkop/podkop.js
+diff --git a/www/luci-static/resources/view/podkop/podkop.js b/www/luci-static/resources/view/podkop/podkop.js
 index f699e17..f0d1f5f 100644
---- a/luci-static/resources/view/podkop/podkop.js
-+++ b/luci-static/resources/view/podkop/podkop.js
+--- a/www/luci-static/resources/view/podkop/podkop.js
++++ b/www/luci-static/resources/view/podkop/podkop.js
 @@ -17,6 +17,9 @@
  // Diagnostic content
  "require view.podkop.diagnostic as diagnostic";
@@ -2051,10 +2051,10 @@ index f699e17..f0d1f5f 100644
      // Dashboard tab
      const dashboardSection = podkopMap.section(
        form.TypedSection,
-diff --git a/luci-static/resources/view/podkop/section.js b/luci-static/resources/view/podkop/section.js
+diff --git a/www/luci-static/resources/view/podkop/section.js b/www/luci-static/resources/view/podkop/section.js
 index 7dc8ccb..c9f89e6 100644
---- a/luci-static/resources/view/podkop/section.js
-+++ b/luci-static/resources/view/podkop/section.js
+--- a/www/luci-static/resources/view/podkop/section.js
++++ b/www/luci-static/resources/view/podkop/section.js
 @@ -26,6 +26,7 @@ function createSectionContent(section) {
    o.value("url", _("Connection URL"));
    o.value("selector", _("Selector"));
@@ -2132,11 +2132,11 @@ index 7dc8ccb..c9f89e6 100644
  
    o.validate = function (section_id, value) {
      if (!value || value.length === 0) {
-diff --git a/luci-static/resources/view/podkop/subscriptions.js b/luci-static/resources/view/podkop/subscriptions.js
+diff --git a/www/luci-static/resources/view/podkop/subscriptions.js b/www/luci-static/resources/view/podkop/subscriptions.js
 new file mode 100644
 index 0000000..52716a5
 --- /dev/null
-+++ b/luci-static/resources/view/podkop/subscriptions.js
++++ b/www/luci-static/resources/view/podkop/subscriptions.js
 @@ -0,0 +1,22 @@
 +"use strict";
 +"require baseclass";
