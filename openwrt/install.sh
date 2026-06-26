@@ -130,7 +130,7 @@ require_patch() {
 apply_runtime_patch() {
 	patch_file="$1"
 
-	patch -l -d / -p1 < "$patch_file"
+	patch -l --batch -d / -p1 < "$patch_file"
 }
 
 stop_stale_list_update_downloads() {
@@ -615,6 +615,7 @@ else
 	require_patch
 	download "$RAW_BASE/$PATCH_FILE" "$tmp_dir/$PATCH_FILE"
 	backup_runtime
+	rm -f /www/luci-static/resources/view/podkop/subscriptions.js
 
 	if ! apply_runtime_patch "$tmp_dir/$PATCH_FILE"; then
 		abort_with_restore "runtime patch failed"
