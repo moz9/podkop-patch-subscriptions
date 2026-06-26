@@ -2064,10 +2064,25 @@ index f699e17..f0d1f5f 100644
      const dashboardSection = podkopMap.section(
        form.TypedSection,
 diff --git a/www/luci-static/resources/view/podkop/section.js b/www/luci-static/resources/view/podkop/section.js
-index 7dc8ccb..806eb74 100644
+index 7dc8ccb..34a9ac4 100644
 --- a/www/luci-static/resources/view/podkop/section.js
 +++ b/www/luci-static/resources/view/podkop/section.js
-@@ -26,6 +26,7 @@ function createSectionContent(section) {
+@@ -6,6 +6,14 @@
+ "require view.podkop.main as main";
+
+ function createSectionContent(section) {
++  function hasListValue(value) {
++    if (Array.isArray(value)) {
++      return value.some((item) => item != null && String(item).trim() !== "");
++    }
++
++    return value != null && String(value).trim() !== "";
++  }
++
+   let o = section.option(
+     form.ListValue,
+     "connection_type",
+@@ -26,9 +34,11 @@ function createSectionContent(section) {
    o.value("url", _("Connection URL"));
    o.value("selector", _("Selector"));
    o.value("urltest", _("URLTest"));
@@ -2075,7 +2090,11 @@ index 7dc8ccb..806eb74 100644
    o.value("outbound", _("Outbound Config"));
    o.default = "url";
    o.depends("connection_type", "proxy");
-@@ -59,6 +60,44 @@ function createSectionContent(section) {
++  const proxyConfigTypeOption = o;
+
+   o = section.option(
+     form.TextValue,
+@@ -59,6 +69,45 @@ function createSectionContent(section) {
      return validation.message;
    };
 
@@ -2086,7 +2105,8 @@ index 7dc8ccb..806eb74 100644
 +    _("HTTP/HTTPS subscription links with proxy URLs")
 +  );
 +  o.depends("proxy_config_type", "subscription_urltest");
-+  o.rmempty = false;
++  o.rmempty = true;
++  const subscriptionUrlOption = o;
 +  o.validate = function (section_id, value) {
 +    if (!value || value.length === 0) {
 +      return true;
@@ -2120,7 +2140,7 @@ index 7dc8ccb..806eb74 100644
    o = section.option(
      form.TextValue,
      "outbound_json",
-@@ -108,10 +147,11 @@ function createSectionContent(section) {
+@@ -108,11 +157,44 @@ function createSectionContent(section) {
    o = section.option(
      form.DynamicList,
      "urltest_proxy_links",
@@ -2129,11 +2149,45 @@ index 7dc8ccb..806eb74 100644
      _("vless://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links")
    );
    o.depends("proxy_config_type", "urltest");
+-  o.rmempty = false;
 +  o.depends("proxy_config_type", "subscription_urltest");
-   o.rmempty = false;
++  o.rmempty = true;
++  const baseUrltestProxyLinksParse = o.parse;
++  o.parse = function (section_id) {
++    const proxyConfigType =
++      proxyConfigTypeOption.formvalue(section_id) ||
++      proxyConfigTypeOption.cfgvalue(section_id);
++    const proxyLinks = this.formvalue(section_id);
++    const subscriptionUrls = subscriptionUrlOption.formvalue(section_id);
++
++    if (this.isActive(section_id) && !hasListValue(proxyLinks)) {
++      if (proxyConfigType === "urltest") {
++        const title = this.stripTags(this.title).trim();
++        return Promise.reject(
++          new TypeError(
++            _('Option "%s" must not be empty.').format(title || this.option)
++          )
++        );
++      }
++
++      if (
++        proxyConfigType === "subscription_urltest" &&
++        !hasListValue(subscriptionUrls)
++      ) {
++        return Promise.reject(
++          new TypeError(
++            "\u0417\u0430\u043f\u043e\u043b\u043d\u0438\u0442\u0435 URL \u043f\u043e\u0434\u043f\u0438\u0441\u043e\u043a \u0438\u043b\u0438 \u041f\u0440\u043e\u043a\u0441\u0438-\u0441\u0441\u044b\u043b\u043a\u0438 \u0434\u043b\u044f \u0440\u0435\u0436\u0438\u043c\u0430 \u041c\u0438\u043a\u0441."
++          )
++        );
++      }
++    }
++
++    return baseUrltestProxyLinksParse.call(this, section_id);
++  };
    o.validate = function (section_id, value) {
      // Optional
-@@ -140,6 +180,7 @@ function createSectionContent(section) {
+     if (!value || value.length === 0) {
+@@ -140,6 +222,7 @@ function createSectionContent(section) {
    o.value("5m", _("Every 5 minutes"));
    o.default = "3m";
    o.depends("proxy_config_type", "urltest");
@@ -2141,7 +2195,7 @@ index 7dc8ccb..806eb74 100644
 
    o = section.option(
      form.Value,
-@@ -150,6 +191,7 @@ function createSectionContent(section) {
+@@ -150,6 +233,7 @@ function createSectionContent(section) {
    o.default = "50";
    o.rmempty = false;
    o.depends("proxy_config_type", "urltest");
@@ -2149,7 +2203,7 @@ index 7dc8ccb..806eb74 100644
    o.validate = function (section_id, value) {
      if (!value || value.length === 0) {
        return true;
-@@ -177,6 +219,7 @@ function createSectionContent(section) {
+@@ -177,6 +261,7 @@ function createSectionContent(section) {
    o.default = "https://www.gstatic.com/generate_204";
    o.rmempty = false;
    o.depends("proxy_config_type", "urltest");
