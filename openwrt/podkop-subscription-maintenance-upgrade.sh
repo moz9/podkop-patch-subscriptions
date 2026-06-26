@@ -1859,14 +1859,15 @@ SUBNET_CACHE_FUNCS_EOF
 	fi
 fi
 
-if ! grep -q "patch_update_noop_v1" "$target" 2>/dev/null; then
+if ! grep -q "patch_update_podkop_update_v1" "$target" 2>/dev/null; then
 	patch_update_function="$(mktemp)"
 	cat > "$patch_update_function" <<'PATCH_UPDATE_EOF'
 subscription_patch_update() {
-    local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1
+    local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1 patch_update_podkop_update_v1
 
     patch_update_start_stop_daemon_v1=1
     patch_update_noop_v1=1
+    patch_update_podkop_update_v1=1
 
     status_file="$(subscription_patch_update_status_file)"
     runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
@@ -1964,7 +1965,7 @@ if [ "$download_ok" -ne 1 ] || [ ! -s "$tmp" ]; then
     exit 1
 fi
 
-if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" sh "$tmp"; then
+if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}" sh "$tmp"; then
     if grep -q "PODKOP_PATCH_NOOP=1" "$log_file" 2> /dev/null; then
         write_status "success" "patch_update_noop" "$(tail -n 20 "$log_file" 2> /dev/null)"
     else

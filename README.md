@@ -11,17 +11,19 @@
 Выполнять уже внутри SSH-сессии на роутере:
 
 ```sh
-u=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i;f=/tmp/podkop-i;rm -f $f;echo Downloading installer...;(curl -fsSL --connect-timeout 10 -m 30 -o $f $u||wget --no-check-certificate -T 30 -O $f $u)&&sh $f
+f=/tmp/podkop-i;rm -f $f;(wget --no-check-certificate -T 30 -O $f https://cdn.jsdelivr.net/gh/moz9/podkop-patch-subscriptions@main/i||wget --no-check-certificate -T 30 -O $f https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i||curl -fsSL --connect-timeout 10 -m 30 -o $f https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i)&&sh $f
 ```
 
-Это одна и та же команда для первой установки и последующих обновлений.
+Это одна и та же команда для первой установки и последующих обновлений. Она обновляет официальный Podkop при необходимости, затем применяет патч подписок.
 
 Установщик:
 
+- перед обновлением сохраняет `/etc/config/podkop` и `/etc/podkop`, чтобы не потерять настройки Podkop, кеш подписок и исключённые конфиги;
+- безопасно пропускает обновление официального Podkop, если установленная версия уже не ниже целевой;
 - скачивает runtime-патч, LuCI-файлы и русскую локализацию;
 - делает резервную копию изменяемых файлов в `/root/podkop-patch-subscriptions-backup-*`;
 - по умолчанию хранит только 2 последние резервные копии;
-- применяет патч поверх уже установленного Podkop;
+- применяет патч поверх актуального Podkop;
 - проверяет shell-синтаксис;
 - перезагружает Podkop и LuCI;
 - при ошибке возвращает файлы из резервной копии.

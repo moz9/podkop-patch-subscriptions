@@ -5,13 +5,14 @@ PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 PODKOP_OFFICIAL_INSTALL_URL="${PODKOP_OFFICIAL_INSTALL_URL:-https://raw.githubusercontent.com/itdoginfo/podkop/main/install.sh}"
 PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-0.7.20}"
+PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
 V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260625-noop-v1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260627-podkop-update-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -31,12 +32,20 @@ www/luci-static/resources/view/podkop/subscriptions.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
+PERSISTENT_PATHS="
+etc/config/podkop
+etc/podkop
+"
+
 log() {
 	printf '%s\n' "$*"
 }
 
 fail() {
 	log "ERROR: $*"
+	if command -v restore_if_needed >/dev/null 2>&1; then
+		restore_if_needed
+	fi
 	exit 1
 }
 
@@ -222,6 +231,8 @@ cleanup_old_backups() {
 }
 
 backup_runtime() {
+	restore_on_fail=1
+
 	if [ -n "${backup_dir:-}" ] && [ -d "$backup_dir" ]; then
 		log "Backup already exists: $backup_dir"
 		return 0
@@ -238,11 +249,44 @@ backup_runtime() {
 		fi
 	done
 
+	for rel in $PERSISTENT_PATHS; do
+		src="/$rel"
+		if [ -e "$src" ]; then
+			mkdir -p "$backup_dir/$(dirname "$rel")"
+			cp -a "$src" "$backup_dir/$rel"
+		fi
+	done
+
 	log "Backup: $backup_dir"
 	log "Backup size: $(get_path_size "$backup_dir")"
 }
 
+restore_persistent_paths() {
+	for rel in $PERSISTENT_PATHS; do
+		dst="/$rel"
+		src="$backup_dir/$rel"
+		if [ -e "$src" ]; then
+			mkdir -p "$(dirname "$dst")"
+			rm -rf "$dst"
+			cp -a "$src" "$dst"
+		fi
+	done
+}
+
+restore_missing_persistent_paths() {
+	for rel in $PERSISTENT_PATHS; do
+		dst="/$rel"
+		src="$backup_dir/$rel"
+		if [ -e "$src" ] && [ ! -e "$dst" ]; then
+			mkdir -p "$(dirname "$dst")"
+			cp -a "$src" "$dst"
+			log "Restored missing persistent path: /$rel"
+		fi
+	done
+}
+
 restore_runtime() {
+	restore_done=1
 	log "Restoring backup..."
 	for rel in $RUNTIME_FILES; do
 		dst="/$rel"
@@ -254,13 +298,24 @@ restore_runtime() {
 			rm -f "$dst"
 		fi
 	done
+	restore_persistent_paths
 	rm -f /tmp/luci-indexcache
 	rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 }
 
+restore_if_needed() {
+	if [ "${restore_on_fail:-0}" = "1" ] &&
+		[ "${restore_done:-0}" != "1" ] &&
+		[ -n "${backup_dir:-}" ] &&
+		[ -d "$backup_dir" ]; then
+		restore_runtime
+	fi
+}
+
 abort_with_restore() {
-	restore_runtime
+	restore_on_fail=1
+	restore_if_needed
 	fail "$1"
 }
 
@@ -290,6 +345,7 @@ has_latest_subscription_backend() {
 		grep -q "subscription_speedtest_stop" /usr/bin/podkop 2>/dev/null &&
 		grep -q "get_subscription_speedtest_status" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_speedtest_restore_state_file" /usr/bin/podkop 2>/dev/null &&
+		grep -q "patch_update_podkop_update_v1" /usr/bin/podkop 2>/dev/null &&
 		grep -q "Subscription download via service proxy failed; trying direct download" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription sources that could not be downloaded" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_noop_v1" /usr/bin/podkop 2>/dev/null &&
@@ -310,7 +366,7 @@ decode_lmo_asset() {
 		return 0
 	fi
 
-	base64 -d < "$tmp_dir/$LMO_FILE" > "$tmp_dir/$LMO_DECODED_FILE"
+	tr -d '\r\n\t ' < "$tmp_dir/$LMO_FILE" | base64 -d > "$tmp_dir/$LMO_DECODED_FILE"
 }
 
 luci_assets_current() {
@@ -551,7 +607,7 @@ current_podkop_version() {
 }
 
 update_official_podkop_if_requested() {
-	[ "${PODKOP_PATCH_UPDATE_PODKOP:-0}" = "1" ] || return 0
+	[ "${PODKOP_PATCH_UPDATE_PODKOP:-1}" = "1" ] || return 0
 
 	current_version="$(current_podkop_version)"
 	if [ "${PODKOP_PATCH_FORCE_PODKOP_UPDATE:-0}" != "1" ] &&
@@ -563,7 +619,7 @@ update_official_podkop_if_requested() {
 	official_installer="$tmp_dir/podkop-official-install.sh"
 	download "$PODKOP_OFFICIAL_INSTALL_URL" "$official_installer"
 
-	if [ -x /usr/bin/podkop ]; then
+	if [ -x /usr/bin/podkop ] || [ -e /etc/config/podkop ] || [ -e /etc/podkop ]; then
 		backup_runtime
 	fi
 
@@ -583,10 +639,15 @@ update_official_podkop_if_requested() {
 	fi
 
 	[ -x /usr/bin/podkop ] || fail "Official Podkop installer finished, but /usr/bin/podkop is missing"
+	if [ -n "${backup_dir:-}" ]; then
+		restore_missing_persistent_paths
+	fi
 }
 
 tmp_dir="$(mktemp -d)"
 backup_dir=""
+restore_on_fail=0
+restore_done=0
 light_reload=0
 trap 'rm -rf "$tmp_dir"' EXIT
 
