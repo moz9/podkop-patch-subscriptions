@@ -11,7 +11,7 @@
 Выполнять уже внутри SSH-сессии на роутере:
 
 ```sh
-f=/tmp/podkop-i;t=$(date +%s);rm -f $f;(wget --no-check-certificate -T 30 -O $f "https://cdn.jsdelivr.net/gh/moz9/podkop-patch-subscriptions@main/i?t=$t"||wget --no-check-certificate -T 30 -O $f "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i?t=$t"||curl -fsSL --connect-timeout 10 -m 30 -o $f "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i?t=$t")&&sh $f
+f=/tmp/podkop-i;t=$(date +%s);rm -f $f;(wget --no-check-certificate -T 30 -O $f "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i?t=$t"||curl -fsSL --connect-timeout 10 -m 30 -o $f "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i?t=$t"||wget --no-check-certificate -T 30 -O $f "https://cdn.jsdelivr.net/gh/moz9/podkop-patch-subscriptions@main/i?t=$t")&&sh $f
 ```
 
 Это одна и та же команда для первой установки и последующих обновлений. Она обновляет официальный Podkop при необходимости, затем применяет патч подписок.
