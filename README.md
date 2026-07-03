@@ -11,10 +11,24 @@
 Выполнять уже внутри SSH-сессии на роутере:
 
 ```sh
-f=/tmp/podkop-i;t=$(date +%s);rm -f $f;(wget --no-check-certificate -T 30 -O $f "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i?t=$t"||curl -fsSL --connect-timeout 10 -m 30 -o $f "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i?t=$t"||wget --no-check-certificate -T 30 -O $f "https://cdn.jsdelivr.net/gh/moz9/podkop-patch-subscriptions@main/i?t=$t")&&sh $f
+wget --no-check-certificate -qO- https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i | sh
 ```
 
-Это одна и та же команда для первой установки и последующих обновлений. Она обновляет официальный Podkop при необходимости, затем применяет патч подписок.
+Это одна универсальная команда для первой установки и последующих обновлений.
+
+Что делает установщик:
+
+- если Podkop не установлен, ставит официальный Podkop, затем применяет патч подписок;
+- если Podkop установлен старой версии, обновляет официальный Podkop до последнего GitHub release, затем заново применяет патч;
+- если официальный Podkop уже последней версии, не переустанавливает его;
+- если патч `Микс` уже актуален, завершает работу с `PODKOP_PATCH_NOOP=1`;
+- сохраняет настройки Podkop, подписки, кеш подписок и исключённые конфиги.
+
+Если `raw.githubusercontent.com` недоступен, запасной вариант:
+
+```sh
+wget --no-check-certificate -qO- https://cdn.jsdelivr.net/gh/moz9/podkop-patch-subscriptions@main/i | sh
+```
 
 Установщик:
 

@@ -5,6 +5,7 @@ PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 PODKOP_OFFICIAL_INSTALL_URL="${PODKOP_OFFICIAL_INSTALL_URL:-https://raw.githubusercontent.com/itdoginfo/podkop/main/install.sh}"
 PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-0.7.20}"
+PODKOP_PATCH_LATEST_RELEASE_URL="${PODKOP_PATCH_LATEST_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/latest}"
 PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -611,13 +612,63 @@ current_podkop_version() {
 	/usr/bin/podkop show_version 2>/dev/null | sed 's/^v//' || true
 }
 
+download_optional() {
+	url="$1"
+	out="$2"
+
+	if command -v curl >/dev/null 2>&1 &&
+		curl -fsSL --connect-timeout 10 -m 30 "$url" -o "$out" >/dev/null 2>&1; then
+		[ -s "$out" ] && return 0
+	fi
+
+	if command -v wget >/dev/null 2>&1 &&
+		wget --no-check-certificate -T 30 -q -O "$out" "$url" >/dev/null 2>&1; then
+		[ -s "$out" ] && return 0
+	fi
+
+	return 1
+}
+
+latest_official_podkop_version() {
+	release_json="$tmp_dir/podkop-latest-release.json"
+	version=""
+
+	if ! download_optional "$PODKOP_PATCH_LATEST_RELEASE_URL" "$release_json"; then
+		return 1
+	fi
+
+	version="$(
+		sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"v\{0,1\}\([^"]*\)".*/\1/p' "$release_json" |
+			head -n 1
+	)"
+
+	case "$version" in
+	[0-9]*.[0-9]*.[0-9]*)
+		printf '%s\n' "$version"
+		return 0
+		;;
+	esac
+
+	return 1
+}
+
 update_official_podkop_if_requested() {
 	[ "${PODKOP_PATCH_UPDATE_PODKOP:-1}" = "1" ] || return 0
 
 	current_version="$(current_podkop_version)"
+	target_version="$PODKOP_PATCH_TARGET_PODKOP_VERSION"
+	latest_version="$(latest_official_podkop_version || true)"
+
+	if [ -n "$latest_version" ] && version_ge "$latest_version" "$target_version"; then
+		target_version="$latest_version"
+		log "Latest official Podkop version: $target_version"
+	else
+		log "Could not detect a newer official Podkop release; target is $target_version."
+	fi
+
 	if [ "${PODKOP_PATCH_FORCE_PODKOP_UPDATE:-0}" != "1" ] &&
-		version_ge "$current_version" "$PODKOP_PATCH_TARGET_PODKOP_VERSION"; then
-		log "Official Podkop is already $current_version; target is $PODKOP_PATCH_TARGET_PODKOP_VERSION. Skipping official update."
+		version_ge "$current_version" "$target_version"; then
+		log "Official Podkop is already $current_version; target is $target_version. Skipping official update."
 		return 0
 	fi
 
@@ -635,8 +686,8 @@ update_official_podkop_if_requested() {
 		fi
 
 		current_version="$(current_podkop_version)"
-		if version_ge "$current_version" "$PODKOP_PATCH_TARGET_PODKOP_VERSION"; then
-			log "Official Podkop update failed, but installed version $current_version already meets target $PODKOP_PATCH_TARGET_PODKOP_VERSION. Continuing with Subscription URLTest patch."
+		if version_ge "$current_version" "$target_version"; then
+			log "Official Podkop update failed, but installed version $current_version already meets target $target_version. Continuing with Subscription URLTest patch."
 			return 0
 		fi
 
