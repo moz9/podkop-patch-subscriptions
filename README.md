@@ -11,7 +11,7 @@
 Выполнять уже внутри SSH-сессии на роутере:
 
 ```sh
-wget --no-check-certificate -qO- https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i | sh
+u=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i;f=/tmp/podkop-i;wget --no-check-certificate -O $f $u&&sh $f
 ```
 
 Это одна универсальная команда для первой установки и последующих обновлений.
@@ -19,16 +19,25 @@ wget --no-check-certificate -qO- https://raw.githubusercontent.com/moz9/podkop-p
 Что делает установщик:
 
 - если Podkop не установлен, ставит официальный Podkop, затем применяет патч подписок;
-- если Podkop установлен старой версии, обновляет официальный Podkop до последнего GitHub release, затем заново применяет патч;
+- если Podkop установлен старой версии `0.7.x`, обновляет официальный Podkop до последнего GitHub release, затем заново применяет патч;
 - если официальный Podkop уже последней версии, не переустанавливает его;
+- если Podkop старее `0.7.0`, останавливается с понятной ошибкой: такие версии требуют ручной миграции официального Podkop;
 - если патч `Микс` уже актуален, завершает работу с `PODKOP_PATCH_NOOP=1`;
 - сохраняет настройки Podkop, подписки, кеш подписок и исключённые конфиги.
 
 Если `raw.githubusercontent.com` недоступен, запасной вариант:
 
 ```sh
-wget --no-check-certificate -qO- https://cdn.jsdelivr.net/gh/moz9/podkop-patch-subscriptions@main/i | sh
+u=https://cdn.jsdelivr.net/gh/moz9/podkop-patch-subscriptions@main/i;f=/tmp/podkop-i;wget --no-check-certificate -O $f $u&&sh $f
 ```
+
+Если на роутере сломан DNS, но прямой HTTPS до GitHub доступен:
+
+```sh
+f=/tmp/podkop-i;wget --no-check-certificate --header='Host: raw.githubusercontent.com' -O $f https://185.199.108.133/moz9/podkop-patch-subscriptions/main/i&&sh $f
+```
+
+Этот вариант помогает скачать наш установщик без DNS. Для первой установки официального Podkop всё равно нужен рабочий доступ к GitHub/OpenWrt downloads.
 
 Установщик:
 

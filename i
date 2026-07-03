@@ -593,6 +593,16 @@ normalize_version() {
 	printf '%s\n' "$1" | sed 's/^v//' | awk -F. '{ printf "%d %d %d\n", $1, $2, $3 }'
 }
 
+is_semver() {
+	case "$1" in
+	[0-9]*.[0-9]*.[0-9]*)
+		return 0
+		;;
+	esac
+
+	return 1
+}
+
 version_ge() {
 	current="$1"
 	required="$2"
@@ -642,12 +652,10 @@ latest_official_podkop_version() {
 			head -n 1
 	)"
 
-	case "$version" in
-	[0-9]*.[0-9]*.[0-9]*)
+	if is_semver "$version"; then
 		printf '%s\n' "$version"
 		return 0
-		;;
-	esac
+	fi
 
 	return 1
 }
@@ -656,6 +664,14 @@ update_official_podkop_if_requested() {
 	[ "${PODKOP_PATCH_UPDATE_PODKOP:-1}" = "1" ] || return 0
 
 	current_version="$(current_podkop_version)"
+	if [ -x /usr/bin/podkop ] && ! is_semver "$current_version"; then
+		fail "installed Podkop version is unknown ('$current_version'); automatic update is not supported because official Podkop may require interactive config migration"
+	fi
+
+	if [ -n "$current_version" ] && ! version_ge "$current_version" "0.7.0"; then
+		fail "installed Podkop $current_version is older than 0.7.0; automatic update is not supported because official Podkop may require interactive config migration"
+	fi
+
 	target_version="$PODKOP_PATCH_TARGET_PODKOP_VERSION"
 	latest_version="$(latest_official_podkop_version || true)"
 
