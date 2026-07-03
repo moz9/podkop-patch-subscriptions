@@ -76,7 +76,6 @@ download() {
 
 	case "$url" in
 		*raw.githubusercontent.com*)
-			url="$url?podkop_patch=$(date +%s)"
 			raw_host="raw.githubusercontent.com"
 			;;
 	esac
