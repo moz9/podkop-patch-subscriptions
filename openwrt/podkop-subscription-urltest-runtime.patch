@@ -4463,8 +4463,7 @@ index fda1c1e..1e4382e 100755
 -        uci_remove "dhcp" "@dnsmasq[0]" "cachesize"
 -        uci_set "dhcp" "@dnsmasq[0]" "cachesize" 150
 +tmp="/tmp/podkop-subscriptions-install.sh"
-+cache_buster="$(date +%s 2> /dev/null || echo $$)"
-+install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"
++install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i"
 +download_ok=0
 +
 +if command -v curl > /dev/null 2>&1; then
@@ -4495,7 +4494,7 @@ index fda1c1e..1e4382e 100755
 -        uci_remove "dhcp" "@dnsmasq[0]" "podkop_noresolv"
 +        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
 +            if run_with_timeout 45 wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
-+                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"; then
++                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/i"; then
 +                download_ok=1
 +                break
 +            fi

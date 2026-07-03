@@ -1801,7 +1801,7 @@ index e3af7c0..99edd79 100644
 +write_status "running" "patch_update_running" ""
 +
 +tmp="/tmp/podkop-subscriptions-install.sh"
-+if ! wget -O "$tmp" "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh" > "$log_file" 2>&1; then
++if ! wget -O "$tmp" "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i" > "$log_file" 2>&1; then
 +    write_status "error" "download_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
 +    exit 1
 +fi

@@ -734,8 +734,7 @@ write_status() {
 write_status "running" "patch_update_running" ""
 
 tmp="/tmp/podkop-subscriptions-install.sh"
-cache_buster="$(date +%s 2> /dev/null || echo $$)"
-install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"
+install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i"
 download_ok=0
 patch_update_download_v2=1
 
@@ -760,7 +759,7 @@ if [ "$download_ok" -ne 1 ] && command -v wget > /dev/null 2>&1; then
     else
         for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
             if wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
-                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster" >> "$log_file" 2>&1; then
+                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/i" >> "$log_file" 2>&1; then
                 download_ok=1
                 break
             fi
@@ -1929,8 +1928,7 @@ run_with_timeout() {
 write_status "running" "patch_update_running" ""
 
 tmp="/tmp/podkop-subscriptions-install.sh"
-cache_buster="$(date +%s 2> /dev/null || echo $$)"
-install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"
+install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i"
 download_ok=0
 
 if command -v curl > /dev/null 2>&1; then
@@ -1952,7 +1950,7 @@ else
     else
         for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
             if run_with_timeout 45 wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
-                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/openwrt/install.sh?t=$cache_buster"; then
+                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/i"; then
                 download_ok=1
                 break
             fi
