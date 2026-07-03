@@ -11,7 +11,7 @@ index 0000000..0000000 100755
  download_ok=0
  
  if command -v curl > /dev/null 2>&1; then
-@@ -2487,6 +2486,6 @@ else
+@@ -2487,7 +2486,7 @@ else
      else
          for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
              if run_with_timeout 45 wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
