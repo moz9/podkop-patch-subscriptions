@@ -12,11 +12,9 @@ fi
 
 sed -i 's#PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /etc/init.d/podkop reload#PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload#g' "$target"
 
-if ! grep -q 'sing_box_cf_proxy_domain "$config" "$SB_TPROXY_INBOUND_TAG" "$FAKEIP_TEST_DOMAIN" "$first_outbound_tag"' "$target" 2>/dev/null; then
+if grep -q 'sing_box_cf_proxy_domain "$config" "$SB_TPROXY_INBOUND_TAG" "$FAKEIP_TEST_DOMAIN" "$first_outbound_tag"' "$target" 2>/dev/null; then
 	awk '
-	$0 == "    config=$(sing_box_cf_proxy_domain \"$config\" \"$SB_TPROXY_INBOUND_TAG\" \"$CHECK_PROXY_IP_DOMAIN\" \"$first_outbound_tag\")" {
-		print
-		print "    config=$(sing_box_cf_proxy_domain \"$config\" \"$SB_TPROXY_INBOUND_TAG\" \"$FAKEIP_TEST_DOMAIN\" \"$first_outbound_tag\")"
+	$0 == "    config=$(sing_box_cf_proxy_domain \"$config\" \"$SB_TPROXY_INBOUND_TAG\" \"$FAKEIP_TEST_DOMAIN\" \"$first_outbound_tag\")" {
 		next
 	}
 
