@@ -359,6 +359,10 @@ has_latest_subscription_backend() {
 		! grep -q "wget -T 30 -t" /usr/lib/podkop/helpers.sh 2>/dev/null
 }
 
+has_install_marker() {
+	grep -Fq "$INSTALL_MARKER" /usr/bin/podkop 2>/dev/null
+}
+
 mark_latest_subscription_backend() {
 	grep -Fq "$INSTALL_MARKER" /usr/bin/podkop 2>/dev/null && return 0
 	printf '\n# %s\n' "$INSTALL_MARKER" >> /usr/bin/podkop
@@ -733,7 +737,7 @@ download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
 download "$RAW_BASE/$SECTION_JS_FILE" "$tmp_dir/$SECTION_JS_FILE"
 
-if [ "${PODKOP_PATCH_FORCE:-0}" != "1" ] && has_latest_subscription_backend && luci_assets_current; then
+if [ "${PODKOP_PATCH_FORCE:-0}" != "1" ] && has_install_marker && has_latest_subscription_backend && luci_assets_current; then
 	log "Subscription URLTest patch is already up to date; nothing to do."
 	log "PODKOP_PATCH_NOOP=1"
 	exit 0
@@ -793,7 +797,7 @@ else
 	fi
 fi
 
-if ! has_latest_subscription_backend && has_subscription_backend; then
+if { ! has_latest_subscription_backend || ! has_install_marker; } && has_subscription_backend; then
 	download "$RAW_BASE/$MAINTENANCE_UPGRADE_FILE" "$tmp_dir/$MAINTENANCE_UPGRADE_FILE"
 
 	if ! sh "$tmp_dir/$MAINTENANCE_UPGRADE_FILE"; then
