@@ -321,7 +321,7 @@ abort_with_restore() {
 }
 
 has_latest_subscription_backend() {
-	grep -Fq "$INSTALL_MARKER" /usr/bin/podkop 2>/dev/null && return 0
+	grep -Fxq "# $INSTALL_MARKER" /usr/bin/podkop 2>/dev/null && return 0
 
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
 	[ "${count:-0}" -ge 3 ] &&
@@ -360,11 +360,11 @@ has_latest_subscription_backend() {
 }
 
 has_install_marker() {
-	grep -Fq "$INSTALL_MARKER" /usr/bin/podkop 2>/dev/null
+	grep -Fxq "# $INSTALL_MARKER" /usr/bin/podkop 2>/dev/null
 }
 
 mark_latest_subscription_backend() {
-	grep -Fq "$INSTALL_MARKER" /usr/bin/podkop 2>/dev/null && return 0
+	grep -Fxq "# $INSTALL_MARKER" /usr/bin/podkop 2>/dev/null && return 0
 	printf '\n# %s\n' "$INSTALL_MARKER" >> /usr/bin/podkop
 }
 
