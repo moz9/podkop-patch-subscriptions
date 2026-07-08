@@ -13,7 +13,7 @@ V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260704-fakeip-route-fix1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260708-runtime-0720-fix1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -22,6 +22,8 @@ SECTION_JS_FILE="section.js"
 LMO_FILE="podkop.ru.lmo.base64"
 SUBSCRIPTIONS_FILE="subscriptions.js"
 LMO_DECODED_FILE="podkop.ru.lmo"
+RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
+RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 
 RUNTIME_FILES="
 usr/bin/podkop
@@ -142,6 +144,15 @@ apply_runtime_patch() {
 	patch_file="$1"
 
 	patch -l --batch -d / -p1 < "$patch_file"
+}
+
+install_prebuilt_0720_runtime() {
+	download "$RAW_BASE/$RUNTIME_0720_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.20"
+	download "$RAW_BASE/$RUNTIME_0720_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.20"
+
+	mkdir -p /usr/bin /www/luci-static/resources/view/podkop
+	cp "$tmp_dir/podkop.runtime-0.7.20" /usr/bin/podkop
+	cp "$tmp_dir/podkop.js.runtime-0.7.20" /www/luci-static/resources/view/podkop/podkop.js
 }
 
 stop_stale_list_update_downloads() {
@@ -592,6 +603,18 @@ has_v0719_package_backend() {
 	/usr/bin/podkop show_version 2>/dev/null | grep -Eq "^v?0\\.7\\.19$"
 }
 
+needs_prebuilt_0720_runtime() {
+	/usr/bin/podkop show_version 2>/dev/null | grep -Eq "^v?0\\.7\\.20$" || return 1
+
+	grep -q "subscription_mix_manual_links_v1" /usr/bin/podkop 2>/dev/null &&
+		grep -q "subscription_urltest)" /usr/bin/podkop 2>/dev/null &&
+		grep -q "collect_urltest_proxy_links" /usr/bin/podkop 2>/dev/null &&
+		grep -q "patch_update_noop_v1" /usr/bin/podkop 2>/dev/null &&
+		return 1
+
+	return 0
+}
+
 normalize_version() {
 	printf '%s\n' "$1" | sed 's/^v//' | awk -F. '{ printf "%d %d %d\n", $1, $2, $3 }'
 }
@@ -747,6 +770,14 @@ if has_latest_subscription_backend; then
 	log "Subscription URLTest backend is already up to date; refreshing LuCI files."
 	backup_runtime
 	light_reload=1
+elif needs_prebuilt_0720_runtime; then
+	log "Installing Subscription URLTest runtime for Podkop 0.7.20."
+	backup_runtime
+	rm -f /www/luci-static/resources/view/podkop/subscriptions.js
+
+	if ! install_prebuilt_0720_runtime; then
+		abort_with_restore "runtime install failed"
+	fi
 elif has_cache_only_subscription_backend; then
 	log "Subscription URLTest backend is installed; applying speedtest maintenance upgrade."
 	backup_runtime
@@ -787,13 +818,11 @@ elif has_v0719_package_backend; then
 		abort_with_restore "runtime v0.7.19 patch failed"
 	fi
 else
-	require_patch
-	download "$RAW_BASE/$PATCH_FILE" "$tmp_dir/$PATCH_FILE"
 	backup_runtime
 	rm -f /www/luci-static/resources/view/podkop/subscriptions.js
 
-	if ! apply_runtime_patch "$tmp_dir/$PATCH_FILE"; then
-		abort_with_restore "runtime patch failed"
+	if ! install_prebuilt_0720_runtime; then
+		abort_with_restore "runtime install failed"
 	fi
 fi
 

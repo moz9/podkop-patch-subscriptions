@@ -1,0 +1,5010 @@
+#!/bin/ash
+
+check_required_file() {
+    local file="$1"
+
+    if [ ! -r "$file" ]; then
+        echo "Error: required file '$file' is missing or not readable" >&2
+        exit 1
+    fi
+}
+
+PODKOP_LIB="/usr/lib/podkop"
+check_required_file /lib/functions.sh
+check_required_file /lib/config/uci.sh
+check_required_file /lib/functions/network.sh
+check_required_file "$PODKOP_LIB/constants.sh"
+check_required_file "$PODKOP_LIB/nft.sh"
+check_required_file "$PODKOP_LIB/helpers.sh"
+check_required_file "$PODKOP_LIB/sing_box_config_manager.sh"
+check_required_file "$PODKOP_LIB/sing_box_config_facade.sh"
+check_required_file "$PODKOP_LIB/logging.sh"
+check_required_file "$PODKOP_LIB/rulesets.sh"
+. /lib/functions.sh
+. /lib/config/uci.sh
+. /lib/functions/network.sh
+. "$PODKOP_LIB/constants.sh"
+. "$PODKOP_LIB/nft.sh"
+. "$PODKOP_LIB/helpers.sh"
+. "$PODKOP_LIB/sing_box_config_manager.sh"
+. "$PODKOP_LIB/sing_box_config_facade.sh"
+. "$PODKOP_LIB/logging.sh"
+. "$PODKOP_LIB/rulesets.sh"
+
+config_load "$PODKOP_CONFIG"
+
+SUBSCRIPTION_CACHE_DIR="/etc/podkop/subscriptions"
+COMMUNITY_SUBNET_CACHE_DIR="/etc/podkop/community-subnets"
+
+check_requirements() {
+    log "Check Requirements"
+
+    local sing_box_version jq_version coreutils_base64_version
+    sing_box_version="$(sing-box version | head -n1 | awk '{print $3}')"
+    jq_version="$(jq --version | awk -F- '{print $2}')"
+    coreutils_base64_version="$(base64 --version | head -n1 | awk '{print $4}')"
+
+    if [ -z "$sing_box_version" ]; then
+        log "Package 'sing-box' is not installed. Aborted." "error"
+        exit 1
+    else
+        if ! is_min_package_version "$sing_box_version" "$SB_REQUIRED_VERSION"; then
+            log "Package 'sing-box' version ($sing_box_version) is lower than the required minimum ($SB_REQUIRED_VERSION). Update sing-box: opkg update && opkg remove sing-box && opkg install sing-box. Aborted." "error"
+            exit 1
+        fi
+
+        if ! service_exists "sing-box"; then
+            log "Service 'sing-box' is missing. Please install the official package to ensure the service is available. Aborted." "error"
+            exit 1
+        fi
+    fi
+
+    if [ -z "$jq_version" ]; then
+        log "Package 'jq' is not installed. Aborted." "error"
+        exit 1
+    elif ! is_min_package_version "$jq_version" "$JQ_REQUIRED_VERSION"; then
+        log "Package 'jq' version ($jq_version) is lower than the required minimum ($JQ_REQUIRED_VERSION). Aborted." "error"
+        exit 1
+    fi
+
+    if [ -z "$coreutils_base64_version" ]; then
+        log "Package 'coreutils-base64' is not installed. Aborted." "error"
+        exit 1
+    elif ! is_min_package_version "$coreutils_base64_version" "$COREUTILS_BASE64_REQUIRED_VERSION"; then
+        log "Package 'coreutils-base64' version ($coreutils_base64_version) is lower than the required minimum ($COREUTILS_BASE64_REQUIRED_VERSION). This may cause issues when decoding base64 streams with missing padding, as automatic padding support is not available in older versions." "warn"
+    fi
+
+    if grep -qE 'doh_backup_noresolv|doh_backup_server|doh_server' /etc/config/dhcp; then
+        log "Detected https-dns-proxy in DHCP config. Edit /etc/config/dhcp" "error"
+    fi
+
+    if has_outbound_section; then
+        log "Outbound section found" "debug"
+    else
+        log "Outbound section not found. Please check your configuration file (missing proxy_string, selector_proxy_links, urltest_proxy_links, subscription_url, outbound_json, or interface). Aborted." "error"
+        exit 1
+    fi
+}
+
+_check_outbound_section() {
+    local section="$1"
+    local proxy_string interface outbound_json urltest_proxy_links
+
+    config_get proxy_string "$section" "proxy_string"
+    config_get selector_proxy_links "$section" "selector_proxy_links"
+    config_get urltest_proxy_links "$section" "urltest_proxy_links"
+    config_get outbound_json "$section" "outbound_json"
+    config_get interface "$section" "interface"
+
+    if [ -n "$proxy_string" ] || [ -n "$selector_proxy_links" ] || [ -n "$urltest_proxy_links" ] ||
+        section_has_subscription_urls "$section" || [ -n "$outbound_json" ] || [ -n "$interface" ]; then
+        section_exists=0
+    fi
+}
+
+has_outbound_section() {
+    local section_exists=1
+
+    config_foreach _check_outbound_section "section"
+
+    return $section_exists
+}
+
+start_main() {
+    local skip_list_update_started=0
+
+    log "Starting podkop"
+
+    check_requirements
+
+    migration
+
+    config_foreach process_validate_service "section"
+
+    br_netfilter_disable
+
+    # Sync time for DoH/DoT
+    /usr/sbin/ntpd -q -p 194.190.168.1 -p 216.239.35.0 -p 216.239.35.4 -p 162.159.200.1 -p 162.159.200.123
+
+    sleep 1
+
+    mkdir -p "$TMP_SING_BOX_FOLDER"
+    mkdir -p "$TMP_RULESET_FOLDER"
+
+    # base
+    route_table_rule_mark
+    create_nft_rules
+    if [ "$PODKOP_SKIP_LIST_UPDATE" = "1" ]; then
+        config_foreach restore_cached_community_subnet_lists "section"
+        if community_subnet_lists_enabled && ! nft_subnet_sets_have_elements; then
+            log "Cached community subnet lists are unavailable or empty, starting lists update in background" "warn"
+            list_update &
+            echo $! > /var/run/podkop_list_update.pid
+            skip_list_update_started=1
+        fi
+    fi
+    sing_box_configure_service
+
+    # sing-box
+    sing_box_init_config
+    remove_cron_job
+    config_foreach add_cron_job "section"
+    config_foreach add_subscription_cron_job "section"
+    /etc/init.d/sing-box start
+
+    log "Nice"
+    if [ "$PODKOP_SKIP_LIST_UPDATE" = "1" ]; then
+        if [ "$skip_list_update_started" -eq 1 ]; then
+            log "Started lists update because cached subnet lists are missing" "debug"
+        else
+            log "Skipping lists update for this reload" "debug"
+        fi
+    else
+        list_update &
+        echo $! > /var/run/podkop_list_update.pid
+    fi
+}
+
+kill_process_tree() {
+    local pid="$1"
+    local child
+
+    [ -n "$pid" ] || return 0
+    [ -d "/proc/$pid" ] || return 0
+
+    if [ -r "/proc/$pid/task/$pid/children" ]; then
+        for child in $(cat "/proc/$pid/task/$pid/children" 2> /dev/null); do
+            kill_process_tree "$child"
+        done
+    fi
+
+    kill "$pid" 2> /dev/null || true
+}
+
+stop_stale_list_update_downloads() {
+    ps w 2> /dev/null | awk '
+        /wget .*raw\.githubusercontent\.com\/itdoginfo\/allow-domains/ { print $1 }
+        /curl .*raw\.githubusercontent\.com\/itdoginfo\/allow-domains/ { print $1 }
+    ' | while read -r pid; do
+        [ -n "$pid" ] && kill "$pid" 2> /dev/null || true
+    done
+}
+
+stop_main() {
+    log "Stopping the podkop"
+
+    if [ -f /var/run/podkop_list_update.pid ]; then
+        pid=$(cat /var/run/podkop_list_update.pid)
+        if kill -0 "$pid" 2> /dev/null; then
+            kill_process_tree "$pid"
+            log "Stopped list_update"
+        fi
+        rm -f /var/run/podkop_list_update.pid
+    fi
+    stop_stale_list_update_downloads
+
+    remove_cron_job
+
+    rm -f "$TMP_RULESET_FOLDER"/*
+
+    log "Flush nft"
+    if nft list table inet "$NFT_TABLE_NAME" > /dev/null 2>&1; then
+        nft delete table inet "$NFT_TABLE_NAME"
+    fi
+
+    log "Flush ip rule"
+    if ip rule list | grep -q "podkop"; then
+        ip rule del fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
+    fi
+
+    log "Flush ip route"
+    if ip route list table "$RT_TABLE_NAME" > /dev/null 2>&1; then
+        ip route flush table "$RT_TABLE_NAME"
+    fi
+
+    log "Stop sing-box"
+    /etc/init.d/sing-box stop
+}
+
+start() {
+    start_main
+
+    config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
+    if [ "$dont_touch_dhcp" -eq 0 ]; then
+        dnsmasq_configure
+    fi
+
+    uci_set "podkop" "settings" "shutdown_correctly" 0
+    uci commit "podkop" && config_load "$PODKOP_CONFIG"
+}
+
+stop() {
+    local dont_touch_dhcp
+    config_get_bool dont_touch_dhcp "settings" "dont_touch_dhcp" 0
+    if [ "$dont_touch_dhcp" -eq 0 ]; then
+        dnsmasq_restore
+    fi
+
+    stop_main
+
+    uci_set "podkop" "settings" "shutdown_correctly" 1
+    uci commit "podkop" && config_load "$PODKOP_CONFIG"
+}
+
+reload() {
+    log "Podkop reload"
+    stop_main
+    start_main
+}
+
+restart() {
+    log "Podkop restart"
+    stop
+    start
+}
+
+# Migrations and validation funcs
+migration() {
+    :
+}
+
+validate_service() {
+    local service="$1"
+
+    for community_service in $COMMUNITY_SERVICES; do
+        if [ "$service" = "$community_service" ]; then
+            return 0
+        fi
+    done
+
+    log "Invalid service in community lists: $service. Check config and LuCI cache. Aborted." "fatal"
+    exit 1
+}
+
+process_validate_service() {
+    local section="$1"
+    local community_lists
+    config_get community_lists "$section" "community_lists"
+    if [ -n "$community_lists" ]; then
+        config_list_foreach "$section" "community_lists" validate_service
+    fi
+}
+
+br_netfilter_disable() {
+    if lsmod | grep -q br_netfilter && [ "$(sysctl -n net.bridge.bridge-nf-call-iptables 2> /dev/null)" = "1" ]; then
+        log "br_netfilter enabled detected. Disabling"
+        sysctl -w net.bridge.bridge-nf-call-iptables=0
+        sysctl -w net.bridge.bridge-nf-call-ip6tables=0
+    fi
+}
+
+get_community_subnet_cache_path() {
+    local service="$1"
+
+    echo "$COMMUNITY_SUBNET_CACHE_DIR/$service.lst"
+}
+
+cache_community_subnet_list() {
+    local service="$1"
+    local filepath="$2"
+    local cache_path
+
+    [ -s "$filepath" ] || return 0
+    mkdir -p "$COMMUNITY_SUBNET_CACHE_DIR" || return 0
+    cache_path="$(get_community_subnet_cache_path "$service")"
+    cp "$filepath" "$cache_path" 2> /dev/null && chmod 600 "$cache_path" 2> /dev/null
+}
+
+restore_cached_community_subnet_list_handler() {
+    local service="$1"
+    local cache_path restore_community_subnet_cache_v2
+
+    restore_community_subnet_cache_v2=1
+    cache_path="$(get_community_subnet_cache_path "$service")"
+    [ -s "$cache_path" ] || return 0
+
+    if [ "$service" = "discord" ]; then
+        if ! nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME" > /dev/null 2>&1; then
+            nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
+        fi
+        if ! nft list chain inet "$NFT_TABLE_NAME" mangle 2> /dev/null | grep -q "@$NFT_DISCORD_SET_NAME"; then
+            nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr \
+                "@$NFT_DISCORD_SET_NAME" udp dport '{ 19000-20000, 50000-65535 }' meta mark set "$NFT_FAKEIP_MARK" counter
+        fi
+        nft_add_set_elements_from_file_chunked "$cache_path" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
+    else
+        nft_add_set_elements_from_file_chunked "$cache_path" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    fi
+}
+
+restore_cached_community_subnet_lists() {
+    local section="$1"
+    local community_lists
+
+    config_get community_lists "$section" "community_lists"
+    [ -n "$community_lists" ] || return 0
+
+    config_list_foreach "$section" "community_lists" restore_cached_community_subnet_list_handler
+}
+
+community_subnet_lists_enabled_handler() {
+    local section="$1"
+    local community_lists service
+
+    config_get community_lists "$section" "community_lists"
+    for service in $community_lists; do
+        case "$service" in
+        twitter | meta | telegram | cloudflare | hetzner | ovh | digitalocean | cloudfront | discord | roblox)
+            community_subnet_lists_found=1
+            return 0
+            ;;
+        esac
+    done
+}
+
+community_subnet_lists_enabled() {
+    community_subnet_lists_found=0
+    config_foreach community_subnet_lists_enabled_handler "section"
+    [ "$community_subnet_lists_found" -eq 1 ]
+}
+
+nft_subnet_sets_have_elements() {
+    nft list set inet "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME" 2> /dev/null |
+        grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}' &&
+        return 0
+
+    nft list set inet "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME" 2> /dev/null |
+        grep -Eq '([0-9]{1,3}\.){3}[0-9]{1,3}'
+}
+
+# Main funcs
+
+route_table_rule_mark() {
+    grep -q "105 $RT_TABLE_NAME" /etc/iproute2/rt_tables || echo "105 $RT_TABLE_NAME" >> /etc/iproute2/rt_tables
+
+    if ! ip route list table "$RT_TABLE_NAME" 2> /dev/null | grep -q "local default dev lo scope host"; then
+        log "Added route for tproxy" "debug"
+        ip route add local 0.0.0.0/0 dev lo table "$RT_TABLE_NAME"
+    else
+        log "Route for tproxy exists" "debug"
+    fi
+
+    if ! ip rule list | grep -q "from all fwmark $NFT_FAKEIP_MARK/$NFT_FAKEIP_MARK lookup $RT_TABLE_NAME"; then
+        log "Create marking rule" "debug"
+        ip -4 rule add fwmark "$NFT_FAKEIP_MARK"/"$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105
+    else
+        log "Marking rule exist" "debug"
+    fi
+}
+
+nft_init_interfaces_set() {
+    nft_create_ifname_set "$NFT_TABLE_NAME" "$NFT_INTERFACE_SET_NAME"
+
+    local source_network_interfaces
+    config_get source_network_interfaces "settings" "source_network_interfaces" "br-lan"
+
+    for interface in $source_network_interfaces; do
+        nft add element inet "$NFT_TABLE_NAME" "$NFT_INTERFACE_SET_NAME" "{ $interface }"
+    done
+}
+
+create_nft_rules() {
+    log "Create nft table"
+    nft_create_table "$NFT_TABLE_NAME"
+
+    log "Create localv4 set"
+    nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_LOCALV4_SET_NAME"
+    nft add element inet "$NFT_TABLE_NAME" localv4 '{
+        0.0.0.0/8,
+        10.0.0.0/8,
+        127.0.0.0/8,
+        169.254.0.0/16,
+        172.16.0.0/12,
+        192.0.0.0/24,
+        192.0.2.0/24,
+        192.88.99.0/24,
+        192.168.0.0/16,
+        198.51.100.0/24,
+        203.0.113.0/24,
+        224.0.0.0/4,
+        240.0.0.0-255.255.255.255
+    }'
+
+    log "Create common set"
+    nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+
+    log "Create interface set"
+    nft_init_interfaces_set
+
+    log "Create nft rules"
+    nft add chain inet "$NFT_TABLE_NAME" mangle '{ type filter hook prerouting priority -150; policy accept; }'
+    nft add chain inet "$NFT_TABLE_NAME" mangle_output '{ type route hook output priority -150; policy accept; }'
+    nft add chain inet "$NFT_TABLE_NAME" proxy '{ type filter hook prerouting priority -100; policy accept; }'
+
+    nft add rule inet "$NFT_TABLE_NAME" mangle ct status dnat return
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+
+    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto tcp tproxy ip to 127.0.0.1:1602 counter
+    nft add rule inet "$NFT_TABLE_NAME" proxy meta mark \& "$NFT_FAKEIP_MARK" == "$NFT_FAKEIP_MARK" meta l4proto udp tproxy ip to 127.0.0.1:1602 counter
+
+    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_LOCALV4_SET_NAME" return
+    nft add rule inet "$NFT_TABLE_NAME" mangle_output meta mark "$NFT_OUTBOUND_MARK" counter return
+    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "@$NFT_COMMON_SET_NAME" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+    nft add rule inet "$NFT_TABLE_NAME" mangle_output ip daddr "$SB_FAKEIP_INET4_RANGE" meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+
+    local exclude_ntp
+    config_get_bool exclude_ntp "settings" "exclude_ntp" "0"
+    if [ "$exclude_ntp" -eq 1 ]; then
+        log "NTP traffic exclude for proxy"
+        nft insert rule inet "$NFT_TABLE_NAME" mangle udp dport 123 return
+    fi
+}
+
+backup_dnsmasq_config_option() {
+    local key="$1"
+    local backup_key="$2"
+    local value
+    value="$(uci_get "dhcp" "@dnsmasq[0]" "$key")"
+
+    if [ -n "$value" ]; then
+        uci_set "dhcp" "@dnsmasq[0]" "$backup_key" "$value"
+    fi
+}
+
+dnsmasq_configure() {
+    local shutdown_correctly
+    config_get shutdown_correctly "settings" "shutdown_correctly"
+    if [ "$shutdown_correctly" -eq 0 ]; then
+        log "Previous shutdown of podkop was not correct, reconfiguration of dnsmasq is not required"
+        return 0
+    fi
+
+    log "Backup dnsmasq configuration"
+    current_servers="$(uci_get "dhcp" "@dnsmasq[0]" "server")"
+    if [ -n "$current_servers" ]; then
+        for server in $(uci_get "dhcp" "@dnsmasq[0]" "server"); do
+            if ! [ "$server" == "$SB_DNS_INBOUND_ADDRESS" ]; then
+                uci_add_list "dhcp" "@dnsmasq[0]" "podkop_server" "$server"
+            fi
+        done
+        uci_remove "dhcp" "@dnsmasq[0]" "server"
+    fi
+
+    backup_dnsmasq_config_option "noresolv" "podkop_noresolv"
+    backup_dnsmasq_config_option "cachesize" "podkop_cachesize"
+
+    log "Configure dnsmasq for sing-box"
+    uci_add_list "dhcp" "@dnsmasq[0]" "server" "$SB_DNS_INBOUND_ADDRESS"
+    uci_set "dhcp" "@dnsmasq[0]" "noresolv" 1
+    uci_set "dhcp" "@dnsmasq[0]" "cachesize" 0
+    uci_commit "dhcp"
+
+    /etc/init.d/dnsmasq restart
+}
+
+dnsmasq_restore() {
+    log "Restoring the dnsmasq configuration"
+    local shutdown_correctly
+    config_get shutdown_correctly "settings" "shutdown_correctly"
+    if [ "$shutdown_correctly" -eq 1 ]; then
+        log "Previous shutdown of podkop was correct, reconfiguration of dnsmasq is not required"
+        return 0
+    fi
+
+    local cachesize noresolv backup_servers resolvfile
+    log "Restoring cachesize" "debug"
+    cachesize="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_cachesize")"
+    if [ -z "$cachesize" ]; then
+        uci_remove "dhcp" "@dnsmasq[0]" "cachesize"
+        uci_set "dhcp" "@dnsmasq[0]" "cachesize" 150
+    else
+        uci_set "dhcp" "@dnsmasq[0]" "cachesize" "$cachesize"
+        uci_remove "dhcp" "@dnsmasq[0]" "podkop_cachesize"
+    fi
+
+    log "Restoring noresolv" "debug"
+    noresolv="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_noresolv")"
+    if [ -z "$noresolv" ]; then
+        uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
+    else
+        uci_set "dhcp" "@dnsmasq[0]" "noresolv" "$noresolv"
+        uci_remove "dhcp" "@dnsmasq[0]" "podkop_noresolv"
+    fi
+
+    log "Restoring DNS servers" "debug"
+    uci_remove "dhcp" "@dnsmasq[0]" "server"
+    resolvfile="/tmp/resolv.conf.d/resolv.conf.auto"
+    backup_servers="$(uci_get "dhcp" "@dnsmasq[0]" "podkop_server")"
+    if [ -n "$backup_servers" ]; then
+        for server in $backup_servers; do
+            uci_add_list "dhcp" "@dnsmasq[0]" "server" "$server"
+        done
+        uci_remove "dhcp" "@dnsmasq[0]" "podkop_server"
+    elif file_exists "$resolvfile"; then
+        log "Backup DNS servers not found, using default resolvfile" "debug"
+        uci_set "dhcp" "@dnsmasq[0]" "resolvfile" "$resolvfile"
+        if [ -n "$noresolv" ] && [ "$noresolv" -eq 1 ]; then
+            log "Disabling noresolv option to use system resolvfile" "debug"
+            uci_set "dhcp" "@dnsmasq[0]" "noresolv" 0
+        fi
+    else
+        log "Backup DNS servers and default resolvfile not found, possible resolving issues" "warn"
+    fi
+
+    uci_commit "dhcp"
+
+    /etc/init.d/dnsmasq restart
+}
+
+add_cron_job() {
+    ## Future: make a check so that it doesn't recreate many times
+    local community_lists remote_domain_lists remote_subnet_lists update_interval
+    config_get community_lists "$section" "community_lists"
+    config_get remote_domain_lists "$section" "remote_domain_lists"
+    config_get remote_subnet_lists "$section" "remote_subnet_lists"
+    config_get update_interval "settings" "update_interval"
+
+    case "$update_interval" in
+    "1h")
+        cron_job="13 * * * * /usr/bin/podkop list_update"
+        ;;
+    "3h")
+        cron_job="13 */3 * * * /usr/bin/podkop list_update"
+        ;;
+    "12h")
+        cron_job="13 */12 * * * /usr/bin/podkop list_update"
+        ;;
+    "1d")
+        cron_job="13 9 * * * /usr/bin/podkop list_update"
+        ;;
+    "3d")
+        cron_job="13 9 */3 * * /usr/bin/podkop list_update"
+        ;;
+    *)
+        log "Invalid update_interval value: $update_interval"
+        return
+        ;;
+    esac
+
+    if [ -n "$community_lists" ] ||
+        [ -n "$remote_domain_lists" ] ||
+        [ -n "$remote_subnet_lists" ]; then
+        remove_cron_job
+        crontab -l | {
+            cat
+            echo "$cron_job"
+        } | crontab -
+        log "The cron job has been created: $cron_job"
+    fi
+}
+
+remove_cron_job() {
+    (crontab -l 2> /dev/null | grep -v "/usr/bin/podkop list_update" | grep -v "/usr/bin/podkop subscription_update") | crontab -
+    log "The cron job removed"
+}
+
+get_subscription_cron_schedule() {
+    local interval="$1"
+
+    case "$interval" in
+    "10m")
+        echo "*/10 * * * *"
+        ;;
+    "30m")
+        echo "17,47 * * * *"
+        ;;
+    "1h")
+        echo "17 * * * *"
+        ;;
+    "3h")
+        echo "17 */3 * * *"
+        ;;
+    "6h")
+        echo "17 */6 * * *"
+        ;;
+    "12h")
+        echo "17 */12 * * *"
+        ;;
+    "1d")
+        echo "17 9 * * *"
+        ;;
+    *)
+        return 1
+        ;;
+    esac
+}
+
+add_subscription_cron_job() {
+    local section="$1"
+    local connection_type proxy_config_type subscription_update_interval cron_schedule cron_job
+
+    config_get connection_type "$section" "connection_type"
+    config_get proxy_config_type "$section" "proxy_config_type"
+
+    if [ "$connection_type" != "proxy" ] || [ "$proxy_config_type" != "subscription_urltest" ] ||
+        ! section_has_subscription_urls "$section"; then
+        return 0
+    fi
+
+    config_get subscription_update_interval "$section" "subscription_update_interval" "1h"
+    cron_schedule="$(get_subscription_cron_schedule "$subscription_update_interval")"
+    if [ -z "$cron_schedule" ]; then
+        log "Invalid subscription_update_interval value for section '$section': $subscription_update_interval" "warn"
+        cron_schedule="$(get_subscription_cron_schedule "1h")"
+    fi
+
+    case "$section" in
+    "" | *[!A-Za-z0-9_]*)
+        log "Skipping subscription cron job for section with unsupported name '$section'" "warn"
+        return 1
+        ;;
+    esac
+
+    cron_job="$cron_schedule /usr/bin/podkop subscription_update $section"
+    crontab -l 2> /dev/null | {
+        cat
+        echo "$cron_job"
+    } | crontab -
+    log "The subscription cron job has been created for section '$section'"
+}
+
+list_update() {
+    echolog "🔄 Starting lists update..."
+
+    local nslookup_timeout=3
+    local nslookup_attempts=10
+    local curl_timeout=5
+    local curl_attempts=10
+    local curl_max_timeout=10
+    local delay=3
+    local i
+
+    # DNS Check
+    for i in $(seq 1 $nslookup_attempts); do
+        if nslookup -timeout=$nslookup_timeout openwrt.org > /dev/null 2>&1; then
+            echolog "✅ DNS check passed"
+            break
+        fi
+        echolog "DNS is unavailable [$i/$nslookup_attempts]"
+        sleep $delay
+    done
+
+    if [ "$i" -eq $nslookup_attempts ]; then
+        echolog "❌ DNS check failed after $nslookup_attempts attempts"
+        return 1
+    fi
+
+    # Github Check
+    for i in $(seq 1 $curl_attempts); do
+        local service_proxy_address
+        service_proxy_address="$(get_service_proxy_address)"
+
+        if [ -n "$service_proxy_address" ]; then
+            if curl -s -x "http://$service_proxy_address" -m $curl_timeout https://github.com > /dev/null; then
+                echolog "✅ GitHub connection check passed (via proxy)"
+                break
+            fi
+        else
+            if curl -s -m $curl_timeout https://github.com > /dev/null; then
+                echolog "✅ GitHub connection check passed"
+                break
+            fi
+        fi
+
+        echolog "GitHub is unavailable [$i/$curl_attempts] (max-timeout=$curl_timeout)"
+        if [ "$curl_timeout" -lt $curl_max_timeout ]; then
+            curl_timeout=$((curl_timeout + 1))
+        fi
+        sleep $delay
+    done
+
+    if [ "$i" -eq $curl_attempts ]; then
+        echolog "❌ GitHub connection check failed after $curl_attempts attempts"
+        return 1
+    fi
+
+    echolog "📥 Downloading and processing lists..."
+
+    config_foreach import_community_subnet_lists "section"
+    config_foreach import_domains_from_remote_domain_lists "section"
+    config_foreach import_subnets_from_remote_subnet_lists "section"
+
+    if [ $? -eq 0 ]; then
+        echolog "✅ Lists update completed successfully"
+    else
+        echolog "❌ Lists update failed"
+    fi
+}
+
+get_subscription_cache_path() {
+    local section="$1"
+    local section_hash
+
+    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
+    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.links"
+}
+
+get_subscription_skipped_cache_path() {
+    local section="$1"
+    local section_hash
+
+    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
+    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.skipped.json"
+}
+
+get_subscription_all_cache_path() {
+    local section="$1"
+    local section_hash
+
+    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
+    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.all.links"
+}
+
+get_subscription_items_cache_path() {
+    local section="$1"
+    local section_hash
+
+    section_hash="$(printf '%s' "$section" | md5sum | awk '{print $1}')"
+    echo "$SUBSCRIPTION_CACHE_DIR/$section_hash.items.json"
+}
+
+get_subscription_link_id() {
+    local link="$1"
+
+    printf '%s' "$link" | md5sum | awk '{print $1}'
+}
+
+append_subscription_url_to_file() {
+    local subscription_url="$1"
+
+    if [ -n "$subscription_url" ]; then
+        printf '%s\n' "$subscription_url" >> "$SUBSCRIPTION_URLS_FILE"
+        SUBSCRIPTION_URLS_COUNT=$((SUBSCRIPTION_URLS_COUNT + 1))
+    fi
+}
+
+collect_subscription_urls() {
+    local section="$1"
+    local output_file="$2"
+    local subscription_url deduped_file
+
+    : > "$output_file"
+    SUBSCRIPTION_URLS_FILE="$output_file"
+    SUBSCRIPTION_URLS_COUNT=0
+    config_list_foreach "$section" "subscription_url" append_subscription_url_to_file
+
+    if [ "$SUBSCRIPTION_URLS_COUNT" -eq 0 ]; then
+        config_get subscription_url "$section" "subscription_url"
+        set -f
+        for subscription_url in $subscription_url; do
+            append_subscription_url_to_file "$subscription_url"
+        done
+        set +f
+    fi
+
+    if [ ! -s "$output_file" ]; then
+        return 1
+    fi
+
+    deduped_file="$(mktemp)"
+    awk '!seen[$0]++' "$output_file" > "$deduped_file"
+    mv "$deduped_file" "$output_file"
+}
+
+append_subscription_excluded_id_to_file() {
+    local link_id="$1"
+
+    if [ "${#link_id}" -ne 32 ]; then
+        return 0
+    fi
+
+    case "$link_id" in
+    *[!A-Fa-f0-9]*) return 0 ;;
+    esac
+
+    printf '%s\n' "$link_id" >> "$SUBSCRIPTION_EXCLUDED_IDS_FILE"
+    SUBSCRIPTION_EXCLUDED_IDS_COUNT=$((SUBSCRIPTION_EXCLUDED_IDS_COUNT + 1))
+}
+
+collect_subscription_excluded_ids() {
+    local section="$1"
+    local output_file="$2"
+    local link_id deduped_file
+
+    : > "$output_file"
+    SUBSCRIPTION_EXCLUDED_IDS_FILE="$output_file"
+    SUBSCRIPTION_EXCLUDED_IDS_COUNT=0
+    config_list_foreach "$section" "subscription_excluded_link_ids" append_subscription_excluded_id_to_file
+
+    if [ "$SUBSCRIPTION_EXCLUDED_IDS_COUNT" -eq 0 ]; then
+        config_get link_id "$section" "subscription_excluded_link_ids"
+        set -f
+        for link_id in $link_id; do
+            append_subscription_excluded_id_to_file "$link_id"
+        done
+        set +f
+    fi
+
+    deduped_file="$(mktemp)"
+    awk '!seen[$0]++' "$output_file" > "$deduped_file"
+    mv "$deduped_file" "$output_file"
+}
+
+append_urltest_proxy_link_to_file() {
+    local proxy_link="$1"
+
+    if [ -n "$proxy_link" ]; then
+        printf '%s\n' "$proxy_link" >> "$URLTEST_PROXY_LINKS_FILE"
+        URLTEST_PROXY_LINKS_COUNT=$((URLTEST_PROXY_LINKS_COUNT + 1))
+    fi
+}
+
+collect_urltest_proxy_links() {
+    local section="$1"
+    local output_file="$2"
+    local proxy_link deduped_file
+
+    : > "$output_file"
+    URLTEST_PROXY_LINKS_FILE="$output_file"
+    URLTEST_PROXY_LINKS_COUNT=0
+    config_list_foreach "$section" "urltest_proxy_links" append_urltest_proxy_link_to_file
+
+    if [ "$URLTEST_PROXY_LINKS_COUNT" -eq 0 ]; then
+        config_get proxy_link "$section" "urltest_proxy_links"
+        set -f
+        for proxy_link in $proxy_link; do
+            append_urltest_proxy_link_to_file "$proxy_link"
+        done
+        set +f
+    fi
+
+    if [ ! -s "$output_file" ]; then
+        return 1
+    fi
+
+    deduped_file="$(mktemp)"
+    awk '!seen[$0]++' "$output_file" > "$deduped_file"
+    mv "$deduped_file" "$output_file"
+}
+
+is_subscription_link_id_excluded() {
+    local link_id="$1"
+    local excluded_ids_file="$2"
+
+    [ -s "$excluded_ids_file" ] && grep -Fxq "$link_id" "$excluded_ids_file"
+}
+
+section_has_subscription_urls() {
+    local section="$1"
+    local urls_file
+
+    urls_file="$(mktemp)"
+    if collect_subscription_urls "$section" "$urls_file"; then
+        rm -f "$urls_file"
+        return 0
+    fi
+
+    rm -f "$urls_file"
+    return 1
+}
+
+extract_subscription_proxy_links() {
+    local source_file="$1"
+    local output_file="$2"
+
+    awk '{ gsub(/[[:space:],"\[\]]+/, "\n"); print }' "$source_file" |
+        sed 's/^[>-]*//' |
+        awk '/^[A-Za-z][A-Za-z0-9+.-]*:\/\// { print }' |
+        awk '!seen[$0]++' > "$output_file"
+}
+
+normalize_subscription_file() {
+    local source_file="$1"
+    local output_file="$2"
+    local decoded_file extracted_file
+
+    extracted_file="$(mktemp)"
+    decoded_file="$(mktemp)"
+
+    convert_crlf_to_lf "$source_file"
+    extract_subscription_proxy_links "$source_file" "$extracted_file"
+    if [ -s "$extracted_file" ]; then
+        mv "$extracted_file" "$output_file"
+        rm -f "$decoded_file"
+        return 0
+    fi
+
+    if base64 -d < "$source_file" > "$decoded_file" 2> /dev/null && [ -s "$decoded_file" ]; then
+        convert_crlf_to_lf "$decoded_file"
+        extract_subscription_proxy_links "$decoded_file" "$extracted_file"
+        if [ -s "$extracted_file" ]; then
+            mv "$extracted_file" "$output_file"
+            rm -f "$decoded_file"
+            return 0
+        fi
+    fi
+
+    rm -f "$decoded_file" "$extracted_file"
+    return 1
+}
+
+get_subscription_link_name() {
+    local link="$1"
+    local name
+
+    case "$link" in
+    *#*) name="${link#*#}" ;;
+    *) name="" ;;
+    esac
+
+    [ -n "$name" ] && url_decode "$name"
+}
+
+get_subscription_proxy_skip_reason() {
+    local link="$1"
+    local scheme security transport userinfo decoded_userinfo
+
+    scheme="$(url_get_scheme "$link")"
+    case "$scheme" in
+    vless | ss | trojan | socks4 | socks4a | socks5 | hysteria2 | hy2) ;;
+    *)
+        echo "unsupported_protocol"
+        return 0
+        ;;
+    esac
+
+    case "$scheme" in
+    vless | trojan)
+        transport="$(url_get_query_param "$link" "type")"
+        case "$transport" in
+        "" | tcp | raw | ws | grpc) ;;
+        *)
+            echo "unsupported_transport"
+            return 0
+            ;;
+        esac
+
+        security="$(url_get_query_param "$link" "security")"
+        case "$security" in
+        "" | none | tls | reality) ;;
+        *)
+            echo "unsupported_security"
+            return 0
+            ;;
+        esac
+        ;;
+    ss)
+        userinfo="$(url_get_userinfo "$link")"
+        if ! is_shadowsocks_userinfo_format "$userinfo"; then
+            decoded_userinfo="$(echo "$userinfo" | base64 -d 2> /dev/null)"
+            if [ -z "$decoded_userinfo" ] || ! is_shadowsocks_userinfo_format "$decoded_userinfo"; then
+                echo "invalid_config"
+                return 0
+            fi
+        fi
+        ;;
+    esac
+
+    return 1
+}
+
+append_subscription_skipped_proxy_link() {
+    local link="$1"
+    local reason="$2"
+    local link_id scheme transport name
+
+    link_id="$(get_subscription_link_id "$link")"
+    scheme="$(url_get_scheme "$link")"
+    transport="$(url_get_query_param "$link" "type")"
+    name="$(get_subscription_link_name "$link")"
+
+    jq -cn \
+        --arg id "$link_id" \
+        --arg name "$name" \
+        --arg protocol "$scheme" \
+        --arg transport "$transport" \
+        --arg reason "$reason" \
+        '{id: $id, name: $name, protocol: $protocol, transport: $transport, reason: $reason}' >> "$SUBSCRIPTION_SKIPPED_LINKS_FILE"
+}
+
+append_subscription_item() {
+    local link="$1"
+    local source_index="$2"
+    local supported="$3"
+    local enabled="$4"
+    local reason="$5"
+    local link_id scheme transport name source_name
+
+    link_id="$(get_subscription_link_id "$link")"
+    scheme="$(url_get_scheme "$link")"
+    transport="$(url_get_query_param "$link" "type")"
+    name="$(get_subscription_link_name "$link")"
+    source_name="Subscription $source_index"
+
+    jq -cn \
+        --arg id "$link_id" \
+        --arg name "$name" \
+        --arg protocol "$scheme" \
+        --arg transport "$transport" \
+        --arg reason "$reason" \
+        --arg sourceName "$source_name" \
+        --argjson sourceIndex "$source_index" \
+        --argjson supported "$supported" \
+        --argjson enabled "$enabled" \
+        '{
+            id: $id,
+            name: $name,
+            protocol: $protocol,
+            transport: $transport,
+            sourceIndex: $sourceIndex,
+            sourceName: $sourceName,
+            supported: $supported,
+            enabled: $enabled,
+            reason: $reason
+        }' >> "$SUBSCRIPTION_ITEMS_FILE"
+}
+
+filter_working_subscription_proxy_links() {
+    local section="$1"
+    local source_file="$2"
+    local output_file="$3"
+    local all_output_file="$4"
+    local skipped_file="$5"
+    local items_file="$6"
+    local excluded_ids_file="$7"
+    local source_index="$8"
+    local udp_over_tcp validation_config candidate_config link link_id i valid_links skipped_links skip_reason
+
+    config_get udp_over_tcp "$section" "enable_udp_over_tcp"
+    validation_config='{"outbounds":[]}'
+    valid_links=0
+    skipped_links=0
+    i=1
+
+    : > "$output_file"
+    : > "$all_output_file"
+    : > "$skipped_file"
+    : > "$items_file"
+    SUBSCRIPTION_SKIPPED_LINKS_FILE="$skipped_file"
+    SUBSCRIPTION_ITEMS_FILE="$items_file"
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+
+        if skip_reason="$(get_subscription_proxy_skip_reason "$link")"; then
+            append_subscription_skipped_proxy_link "$link" "$skip_reason"
+            append_subscription_item "$link" "$source_index" "false" "false" "$skip_reason"
+            skipped_links=$((skipped_links + 1))
+            i=$((i + 1))
+            continue
+        fi
+
+        if candidate_config="$(sing_box_cf_add_proxy_outbound "$validation_config" "$section-subscription-check-$i" \
+            "$link" "$udp_over_tcp")" && [ -n "$candidate_config" ]; then
+            link_id="$(get_subscription_link_id "$link")"
+            printf '%s\n' "$link" >> "$all_output_file"
+            validation_config="$candidate_config"
+            valid_links=$((valid_links + 1))
+            if is_subscription_link_id_excluded "$link_id" "$excluded_ids_file"; then
+                append_subscription_item "$link" "$source_index" "true" "false" "user_excluded"
+            else
+                printf '%s\n' "$link" >> "$output_file"
+                append_subscription_item "$link" "$source_index" "true" "true" ""
+            fi
+        else
+            append_subscription_skipped_proxy_link "$link" "invalid_config"
+            append_subscription_item "$link" "$source_index" "false" "false" "invalid_config"
+            skipped_links=$((skipped_links + 1))
+        fi
+
+        i=$((i + 1))
+    done < "$source_file"
+
+    if [ "$skipped_links" -gt 0 ]; then
+        log "Skipped $skipped_links unsupported subscription proxy links for section '$section'" "warn"
+    fi
+
+    [ "$valid_links" -gt 0 ]
+}
+
+download_subscription_to_file() {
+    local url="$1"
+    local filepath="$2"
+    local http_proxy_address="$3"
+    local retries="${4:-3}"
+    local wait="${5:-2}"
+    local attempt
+
+    for attempt in $(seq 1 "$retries"); do
+        rm -f "$filepath"
+        if [ -n "$http_proxy_address" ]; then
+            if command -v curl > /dev/null 2>&1; then
+                curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
+                    [ -s "$filepath" ] && return 0
+            fi
+            if command -v wget > /dev/null 2>&1; then
+                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
+                    wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+            fi
+            rm -f "$filepath"
+            log "Subscription download via service proxy failed; trying direct download" "debug"
+        fi
+        if command -v curl > /dev/null 2>&1; then
+            curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
+        elif command -v wget > /dev/null 2>&1; then
+            wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+        fi
+
+        log "Attempt $attempt/$retries to download subscription failed" "warn"
+        sleep "$wait"
+    done
+
+    return 1
+}
+refresh_subscription_cache() {
+    local section="$1"
+    local subscription_url cache_path all_cache_path skipped_cache_path items_cache_path tmpfile links_file \
+        validated_links_file all_links_file skipped_links_file items_file merged_links_file deduped_links_file \
+        merged_all_links_file deduped_all_links_file merged_skipped_links_file deduped_skipped_links_file \
+        merged_items_file deduped_items_file excluded_ids_file urls_file tmp_cache tmp_all_cache tmp_skipped_cache \
+        tmp_items_cache http_proxy_address failed_sources skipped_sources skipped_json items_json source_index
+
+    SUBSCRIPTION_CACHE_CHANGED=0
+    urls_file="$(mktemp)"
+    merged_links_file="$(mktemp)"
+    deduped_links_file="$(mktemp)"
+    merged_all_links_file="$(mktemp)"
+    deduped_all_links_file="$(mktemp)"
+    merged_skipped_links_file="$(mktemp)"
+    deduped_skipped_links_file="$(mktemp)"
+    merged_items_file="$(mktemp)"
+    deduped_items_file="$(mktemp)"
+    excluded_ids_file="$(mktemp)"
+    if ! collect_subscription_urls "$section" "$urls_file"; then
+        log "Subscription URL is not set for section '$section'" "error"
+        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
+            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
+            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
+        return 1
+    fi
+
+    collect_subscription_excluded_ids "$section" "$excluded_ids_file"
+    http_proxy_address="$(get_service_proxy_address)"
+    failed_sources=0
+    skipped_sources=0
+    source_index=1
+    : > "$merged_links_file"
+    : > "$merged_all_links_file"
+    : > "$merged_skipped_links_file"
+    : > "$merged_items_file"
+
+    while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
+        [ -n "$subscription_url" ] || continue
+        case "$subscription_url" in
+        http://* | https://*) ;;
+        *)
+            log "Skipping subscription source with unsupported URL scheme in section '$section'" "warn"
+            skipped_sources=$((skipped_sources + 1))
+            source_index=$((source_index + 1))
+            continue
+            ;;
+        esac
+
+        tmpfile="$(mktemp)"
+        links_file="$(mktemp)"
+        validated_links_file="$(mktemp)"
+        all_links_file="$(mktemp)"
+        skipped_links_file="$(mktemp)"
+        items_file="$(mktemp)"
+
+        if ! download_subscription_to_file "$subscription_url" "$tmpfile" "$http_proxy_address"; then
+            log "Subscription download failed for one of section '$section' sources" "warn"
+            failed_sources=$((failed_sources + 1))
+            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
+                "$items_file"
+            source_index=$((source_index + 1))
+            continue
+        fi
+
+        if ! normalize_subscription_file "$tmpfile" "$links_file"; then
+            log "One subscription source for section '$section' does not contain supported proxy links" "warn"
+            skipped_sources=$((skipped_sources + 1))
+            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
+                "$items_file"
+            source_index=$((source_index + 1))
+            continue
+        fi
+
+        if ! filter_working_subscription_proxy_links "$section" "$links_file" "$validated_links_file" \
+            "$all_links_file" "$skipped_links_file" "$items_file" "$excluded_ids_file" "$source_index"; then
+            log "One subscription source for section '$section' does not contain proxy links supported by podkop" "warn"
+            skipped_sources=$((skipped_sources + 1))
+            cat "$skipped_links_file" >> "$merged_skipped_links_file"
+            cat "$items_file" >> "$merged_items_file"
+            rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
+                "$items_file"
+            source_index=$((source_index + 1))
+            continue
+        fi
+
+        cat "$validated_links_file" >> "$merged_links_file"
+        cat "$all_links_file" >> "$merged_all_links_file"
+        cat "$skipped_links_file" >> "$merged_skipped_links_file"
+        cat "$items_file" >> "$merged_items_file"
+        rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
+            "$items_file"
+        source_index=$((source_index + 1))
+    done < "$urls_file"
+
+
+    awk '!seen[$0]++' "$merged_links_file" > "$deduped_links_file"
+    awk '!seen[$0]++' "$merged_all_links_file" > "$deduped_all_links_file"
+    jq -c -s 'reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end) | .[]' \
+        "$merged_skipped_links_file" > "$deduped_skipped_links_file"
+    jq -c -s 'reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end) | .[]' \
+        "$merged_items_file" > "$deduped_items_file"
+    if [ ! -s "$deduped_links_file" ]; then
+        log "Subscriptions for section '$section' do not contain enabled proxy links supported by podkop" "warn"
+        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
+            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
+            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
+        return 1
+    fi
+
+    if ! mkdir -p "$SUBSCRIPTION_CACHE_DIR"; then
+        log "Failed to create subscription cache directory '$SUBSCRIPTION_CACHE_DIR'" "error"
+        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
+            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
+            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
+        return 1
+    fi
+
+    cache_path="$(get_subscription_cache_path "$section")"
+    all_cache_path="$(get_subscription_all_cache_path "$section")"
+    skipped_cache_path="$(get_subscription_skipped_cache_path "$section")"
+    items_cache_path="$(get_subscription_items_cache_path "$section")"
+
+    if [ -s "$deduped_skipped_links_file" ]; then
+        skipped_json="$(jq -s '.' "$deduped_skipped_links_file")"
+    else
+        skipped_json="[]"
+    fi
+
+    if [ -s "$deduped_items_file" ]; then
+        items_json="$(jq -s '.' "$deduped_items_file")"
+    else
+        items_json="[]"
+    fi
+
+    if [ ! -f "$cache_path" ] || ! cmp -s "$deduped_links_file" "$cache_path"; then
+        tmp_cache="$cache_path.tmp.$$"
+        if cp "$deduped_links_file" "$tmp_cache" && mv "$tmp_cache" "$cache_path"; then
+            chmod 600 "$cache_path" 2> /dev/null
+            SUBSCRIPTION_CACHE_CHANGED=1
+            log "Subscription cache updated for section '$section'" "info"
+        else
+            rm -f "$tmp_cache" "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
+                "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
+                "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
+            log "Failed to update subscription cache for section '$section'" "error"
+            return 1
+        fi
+    fi
+
+    tmp_all_cache="$all_cache_path.tmp.$$"
+    if cp "$deduped_all_links_file" "$tmp_all_cache" && mv "$tmp_all_cache" "$all_cache_path"; then
+        chmod 600 "$all_cache_path" 2> /dev/null
+    else
+        rm -f "$tmp_all_cache"
+        log "Failed to update full subscription links cache for section '$section'" "warn"
+    fi
+
+    tmp_skipped_cache="$skipped_cache_path.tmp.$$"
+    if printf '%s\n' "$skipped_json" > "$tmp_skipped_cache" && mv "$tmp_skipped_cache" "$skipped_cache_path"; then
+        chmod 600 "$skipped_cache_path" 2> /dev/null
+    else
+        rm -f "$tmp_skipped_cache"
+        log "Failed to update skipped subscription links cache for section '$section'" "warn"
+    fi
+
+    tmp_items_cache="$items_cache_path.tmp.$$"
+    if printf '%s\n' "$items_json" > "$tmp_items_cache" && mv "$tmp_items_cache" "$items_cache_path"; then
+        chmod 600 "$items_cache_path" 2> /dev/null
+    else
+        rm -f "$tmp_items_cache"
+        log "Failed to update subscription items cache for section '$section'" "warn"
+    fi
+
+    if [ "$skipped_sources" -gt 0 ]; then
+        log "Skipped $skipped_sources subscription sources without podkop-compatible links for section '$section'" "warn"
+    fi
+
+    if [ "$failed_sources" -gt 0 ]; then
+        log "Skipped $failed_sources subscription sources that could not be downloaded for section '$section'" "warn"
+    fi
+
+    rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
+        "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
+        "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
+    return 0
+}
+
+load_subscription_proxy_links_for_section() {
+    local section="$1"
+    local output_file="$2"
+    local cache_path
+
+    cache_path="$(get_subscription_cache_path "$section")"
+    if [ "$PODKOP_SUBSCRIPTION_CACHE_ONLY" = "1" ] && [ -s "$cache_path" ]; then
+        log "Using cached subscription for section '$section'" "debug"
+    elif ! refresh_subscription_cache "$section"; then
+        log "Using cached subscription for section '$section'" "warn"
+    fi
+
+    if [ -s "$cache_path" ]; then
+        if cp "$cache_path" "$output_file"; then
+            return 0
+        fi
+
+        log "Failed to read subscription cache for section '$section'" "error"
+        return 1
+    fi
+
+    log "Subscription cache is not available for section '$section'" "fatal"
+    return 1
+}
+
+get_subscription_cached_links() {
+    local section="$1"
+    local cache_path
+
+    if [ -z "$section" ]; then
+        echo "[]"
+        return 1
+    fi
+
+    cache_path="$(get_subscription_cache_path "$section")"
+    if [ ! -s "$cache_path" ]; then
+        echo "[]"
+        return 0
+    fi
+
+    jq -R -s 'split("\n") | map(select(length > 0))' "$cache_path"
+}
+
+get_subscription_skipped_links() {
+    local section="$1"
+    local cache_path
+
+    if [ -z "$section" ]; then
+        echo "[]"
+        return 1
+    fi
+
+    cache_path="$(get_subscription_skipped_cache_path "$section")"
+    if [ ! -s "$cache_path" ]; then
+        echo "[]"
+        return 0
+    fi
+
+    cat "$cache_path"
+}
+
+get_subscription_items() {
+    local section="$1"
+    local cache_path
+
+    if [ -z "$section" ]; then
+        echo "[]"
+        return 1
+    fi
+
+    cache_path="$(get_subscription_items_cache_path "$section")"
+    if [ ! -s "$cache_path" ]; then
+        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
+    fi
+
+    if [ ! -s "$cache_path" ]; then
+        echo "[]"
+        return 0
+    fi
+
+    cat "$cache_path"
+}
+
+get_subscription_items_cached() {
+    local section="$1"
+    local cache_path
+
+    if [ -z "$section" ]; then
+        echo "[]"
+        return 1
+    fi
+
+    cache_path="$(get_subscription_items_cache_path "$section")"
+    if [ ! -s "$cache_path" ]; then
+        echo "[]"
+        return 0
+    fi
+
+    cat "$cache_path"
+}
+
+validate_subscription_link_id() {
+    local link_id="$1"
+
+    if [ "${#link_id}" -ne 32 ]; then
+        return 1
+    fi
+
+    case "$link_id" in
+    *[!A-Fa-f0-9]*) return 1 ;;
+    esac
+
+    return 0
+}
+
+validate_subscription_section_name() {
+    local section="$1"
+
+    case "$section" in
+    "" | *[!A-Za-z0-9_-]*) return 1 ;;
+    esac
+
+    return 0
+}
+
+normalize_subscription_enabled_value() {
+    local enabled="$1"
+
+    case "$enabled" in
+    1 | true | on | enabled)
+        echo "1"
+        return 0
+        ;;
+    0 | false | off | disabled)
+        echo "0"
+        return 0
+        ;;
+    esac
+
+    return 1
+}
+
+validate_subscription_urltest_section() {
+    local section="$1"
+    local connection_type proxy_config_type
+
+    if ! validate_subscription_section_name "$section"; then
+        return 1
+    fi
+
+    config_get connection_type "$section" "connection_type"
+    config_get proxy_config_type "$section" "proxy_config_type"
+    [ "$connection_type" = "proxy" ] && [ "$proxy_config_type" = "subscription_urltest" ]
+}
+
+apply_subscription_exclusions_to_cached_links() {
+    local section="$1"
+    local cache_path all_cache_path items_cache_path excluded_ids_file active_links_file tmp_cache tmp_items_cache \
+        excluded_ids_json link link_id items_json
+
+    SUBSCRIPTION_CACHE_CHANGED=0
+    cache_path="$(get_subscription_cache_path "$section")"
+    all_cache_path="$(get_subscription_all_cache_path "$section")"
+    items_cache_path="$(get_subscription_items_cache_path "$section")"
+    excluded_ids_file="$(mktemp)"
+    active_links_file="$(mktemp)"
+
+    if [ ! -s "$all_cache_path" ] && [ -s "$cache_path" ]; then
+        cp "$cache_path" "$all_cache_path"
+        chmod 600 "$all_cache_path" 2> /dev/null
+    fi
+
+    if [ ! -s "$all_cache_path" ]; then
+        rm -f "$excluded_ids_file" "$active_links_file"
+        return 1
+    fi
+
+    collect_subscription_excluded_ids "$section" "$excluded_ids_file"
+    : > "$active_links_file"
+
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        link_id="$(get_subscription_link_id "$link")"
+        if ! is_subscription_link_id_excluded "$link_id" "$excluded_ids_file"; then
+            printf '%s\n' "$link" >> "$active_links_file"
+        fi
+    done < "$all_cache_path"
+
+    if [ ! -s "$active_links_file" ]; then
+        rm -f "$excluded_ids_file" "$active_links_file"
+        return 1
+    fi
+
+    if [ ! -f "$cache_path" ] || ! cmp -s "$active_links_file" "$cache_path"; then
+        tmp_cache="$cache_path.tmp.$$"
+        if cp "$active_links_file" "$tmp_cache" && mv "$tmp_cache" "$cache_path"; then
+            chmod 600 "$cache_path" 2> /dev/null
+            SUBSCRIPTION_CACHE_CHANGED=1
+        else
+            rm -f "$tmp_cache" "$excluded_ids_file" "$active_links_file"
+            return 1
+        fi
+    fi
+
+    if [ -s "$items_cache_path" ]; then
+        excluded_ids_json="$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$excluded_ids_file")"
+        tmp_items_cache="$items_cache_path.tmp.$$"
+        items_json="$(jq -c --argjson excludedIds "$excluded_ids_json" '
+            map(
+                if .supported == true then
+                    . as $item
+                    | .enabled = (($excludedIds | index($item.id)) == null)
+                    | .reason = (if (($excludedIds | index($item.id)) == null) then "" else "user_excluded" end)
+                else
+                    .
+                end
+            )
+        ' "$items_cache_path")"
+        if printf '%s\n' "$items_json" > "$tmp_items_cache" && mv "$tmp_items_cache" "$items_cache_path"; then
+            chmod 600 "$items_cache_path" 2> /dev/null
+        else
+            rm -f "$tmp_items_cache"
+            log "Failed to update subscription items cache for section '$section'" "warn"
+        fi
+    fi
+
+    rm -f "$excluded_ids_file" "$active_links_file"
+    return 0
+}
+
+set_subscription_link_enabled() {
+    local section="$1"
+    local link_id="$2"
+    local enabled="$3"
+
+    set_subscription_links_enabled "$section" "$link_id" "$enabled"
+}
+
+set_subscription_links_enabled() {
+    local section="$1"
+    local items_cache_path excluded_ids_file tmp_excluded_file link_id enabled enabled_value \
+        excluded_ids_json remaining_enabled_count changed_count reload_required
+
+    if [ "$#" -lt 3 ] || [ $((($# - 1) % 2)) -ne 0 ]; then
+        echo '{"success":false,"error":"invalid_arguments"}'
+        return 1
+    fi
+
+    if ! validate_subscription_urltest_section "$section"; then
+        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
+        return 1
+    fi
+
+    shift
+
+    items_cache_path="$(get_subscription_items_cache_path "$section")"
+    if [ ! -s "$items_cache_path" ]; then
+        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
+    fi
+
+    if [ ! -s "$items_cache_path" ]; then
+        echo '{"success":false,"error":"subscription_cache_missing"}'
+        return 1
+    fi
+
+    excluded_ids_file="$(mktemp)"
+    collect_subscription_excluded_ids "$section" "$excluded_ids_file"
+    changed_count=0
+
+    while [ "$#" -gt 0 ]; do
+        link_id="$1"
+        enabled="$2"
+        shift 2
+
+        if ! validate_subscription_link_id "$link_id"; then
+            rm -f "$excluded_ids_file"
+            echo '{"success":false,"error":"invalid_arguments"}'
+            return 1
+        fi
+
+        enabled_value="$(normalize_subscription_enabled_value "$enabled")"
+        if [ -z "$enabled_value" ]; then
+            rm -f "$excluded_ids_file"
+            echo '{"success":false,"error":"invalid_enabled_value"}'
+            return 1
+        fi
+
+        if ! jq -e --arg id "$link_id" 'any(.[]; .id == $id and .supported == true)' "$items_cache_path" > /dev/null 2>&1; then
+            rm -f "$excluded_ids_file"
+            echo '{"success":false,"error":"link_is_not_supported"}'
+            return 1
+        fi
+
+        tmp_excluded_file="$(mktemp)"
+        grep -Fxv "$link_id" "$excluded_ids_file" > "$tmp_excluded_file" 2> /dev/null || true
+        if [ "$enabled_value" -eq 0 ]; then
+            printf '%s\n' "$link_id" >> "$tmp_excluded_file"
+        fi
+        awk '!seen[$0]++' "$tmp_excluded_file" > "$excluded_ids_file"
+        rm -f "$tmp_excluded_file"
+        changed_count=$((changed_count + 1))
+    done
+
+    excluded_ids_json="$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$excluded_ids_file")"
+    remaining_enabled_count="$(jq --argjson excludedIds "$excluded_ids_json" '
+        [
+            .[]
+            | select(
+                .supported == true
+                and (. as $item | ($excludedIds | index($item.id)) == null)
+            )
+        ] | length
+    ' "$items_cache_path" 2> /dev/null || echo 0)"
+
+    if [ "$remaining_enabled_count" -eq 0 ]; then
+        rm -f "$excluded_ids_file"
+        echo '{"success":false,"error":"cannot_disable_last_enabled_link"}'
+        return 1
+    fi
+
+    uci -q delete "podkop.$section.subscription_excluded_link_ids"
+    while IFS= read -r link_id || [ -n "$link_id" ]; do
+        [ -n "$link_id" ] || continue
+        uci -q add_list "podkop.$section.subscription_excluded_link_ids=$link_id"
+    done < "$excluded_ids_file"
+    rm -f "$excluded_ids_file"
+
+    if ! uci commit podkop; then
+        echo '{"success":false,"error":"uci_commit_failed"}'
+        return 1
+    fi
+
+    config_load "$PODKOP_CONFIG"
+    if ! apply_subscription_exclusions_to_cached_links "$section"; then
+        if ! refresh_subscription_cache "$section" > /dev/null 2>&1; then
+            echo '{"success":false,"error":"subscription_cache_update_failed"}'
+            return 1
+        fi
+    fi
+
+    reload_required="$SUBSCRIPTION_CACHE_CHANGED"
+    if [ "$reload_required" -eq 1 ]; then
+        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
+            echo '{"success":false,"error":"reload_failed"}'
+            return 1
+        fi
+    fi
+
+    printf '{"success":true,"changed":%s,"reloaded":%s}\n' "$changed_count" "$reload_required"
+}
+
+subscription_update_section_handler() {
+    local section="$1"
+    local connection_type proxy_config_type
+
+    if [ -n "$SUBSCRIPTION_UPDATE_TARGET" ] && [ "$SUBSCRIPTION_UPDATE_TARGET" != "$section" ]; then
+        return 0
+    fi
+
+    config_get connection_type "$section" "connection_type"
+    config_get proxy_config_type "$section" "proxy_config_type"
+
+    if [ "$connection_type" != "proxy" ] || [ "$proxy_config_type" != "subscription_urltest" ] ||
+        ! section_has_subscription_urls "$section"; then
+        return 0
+    fi
+
+    SUBSCRIPTION_FOUND_SECTIONS=$((SUBSCRIPTION_FOUND_SECTIONS + 1))
+    if refresh_subscription_cache "$section"; then
+        if [ "$SUBSCRIPTION_CACHE_CHANGED" -eq 1 ]; then
+            SUBSCRIPTION_UPDATED_SECTIONS=$((SUBSCRIPTION_UPDATED_SECTIONS + 1))
+        fi
+    else
+        SUBSCRIPTION_FAILED_SECTIONS=$((SUBSCRIPTION_FAILED_SECTIONS + 1))
+    fi
+}
+
+subscription_update() {
+    SUBSCRIPTION_UPDATE_TARGET="$1"
+    SUBSCRIPTION_FOUND_SECTIONS=0
+    SUBSCRIPTION_UPDATED_SECTIONS=0
+    SUBSCRIPTION_FAILED_SECTIONS=0
+
+    if subscription_runtime_busy; then
+        echolog "Subscription runtime is busy, skipping subscription update"
+        return 0
+    fi
+
+    if ! subscription_action_lock_acquire "subscription_update"; then
+        echolog "Subscription runtime is busy, skipping subscription update"
+        return 0
+    fi
+    trap 'subscription_action_lock_release' EXIT INT TERM
+
+    echolog "Starting subscription update..."
+    config_foreach subscription_update_section_handler "section"
+
+    if [ "$SUBSCRIPTION_FOUND_SECTIONS" -eq 0 ]; then
+        echolog "No Subscription URLTest sections found"
+        return 0
+    fi
+
+    if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
+        echolog "Subscription cache changed, reloading podkop..."
+        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload
+        return $?
+    fi
+
+    if [ "$SUBSCRIPTION_FAILED_SECTIONS" -gt 0 ]; then
+        echolog "Subscription update finished with failures; cached subscriptions were kept"
+        return 1
+    fi
+
+    echolog "Subscription update completed, no changes"
+}
+
+subscription_update_json() {
+    local section="$1"
+    local output status success
+
+    output="$(subscription_update "$section" 2>&1)"
+    status=$?
+    if [ "$status" -eq 0 ]; then
+        success=true
+    else
+        success=false
+    fi
+
+    jq -cn --argjson success "$success" --arg output "$output" --argjson status "$status" \
+        '{success:$success, status:$status, output:$output}'
+}
+
+get_clash_api_base_url() {
+    local clash_api_controller_address
+
+    clash_api_controller_address="$(get_service_listen_address)"
+    if [ -z "$clash_api_controller_address" ]; then
+        clash_api_controller_address="127.0.0.1"
+    fi
+
+    echo "$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"
+}
+
+get_clash_api_auth_header() {
+    local enable_yacd_wan_access yacd_secret_key
+
+    config_get_bool enable_yacd_wan_access "settings" "enable_yacd_wan_access" 0
+    config_get yacd_secret_key "settings" "yacd_secret_key"
+
+    if [ "$enable_yacd_wan_access" -eq 1 ]; then
+        echo "Authorization: Bearer $yacd_secret_key"
+    fi
+}
+
+clash_api_get_proxy_now() {
+    local clash_url="$1"
+    local auth_header="$2"
+    local proxy_tag="$3"
+
+    curl -s --header "$auth_header" "$clash_url/proxies/$proxy_tag" | jq -r '.now // ""'
+}
+
+clash_api_wait_proxy_now() {
+    local clash_url="$1"
+    local auth_header="$2"
+    local proxy_tag="$3"
+    local attempts="${4:-15}"
+    local proxy_now attempt
+
+    for attempt in $(seq 1 "$attempts"); do
+        proxy_now="$(clash_api_get_proxy_now "$clash_url" "$auth_header" "$proxy_tag")"
+        if [ -n "$proxy_now" ]; then
+            echo "$proxy_now"
+            return 0
+        fi
+        sleep 1
+    done
+
+    return 1
+}
+
+clash_api_set_group_proxy_raw() {
+    local clash_url="$1"
+    local auth_header="$2"
+    local group_tag="$3"
+    local proxy_tag="$4"
+    local response http_code
+
+    response=$(
+        curl -X PUT -s -w "\n%{http_code}" "$clash_url/proxies/$group_tag" \
+            --header "$auth_header" \
+            --data-raw "{\"name\":\"$proxy_tag\"}"
+    )
+    http_code="$(echo "$response" | tail -n 1)"
+
+    [ "$http_code" = "204" ]
+}
+
+get_subscription_benchmark_port() {
+    echo "42080"
+}
+
+get_subscription_benchmark_bytes() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608}"
+}
+
+get_subscription_benchmark_streams() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4}"
+}
+
+get_subscription_benchmark_timeout() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15}"
+}
+
+get_subscription_benchmark_warmup_bytes() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0}"
+}
+
+get_subscription_benchmark_attempts() {
+    echo "${PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3}"
+}
+
+subscription_runtime_busy() {
+    local status_file state
+
+    if subscription_action_lock_busy; then
+        return 0
+    fi
+
+    status_file="$(subscription_patch_update_status_file)"
+    if [ -s "$status_file" ]; then
+        state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
+        [ "$state" = "running" ] && return 0
+    fi
+
+    ps w 2> /dev/null | grep -E "podkop-subscriptions-patch-update-runner|/usr/bin/podkop reload|/etc/init.d/podkop reload" | grep -v grep > /dev/null
+}
+
+subscription_speedtest_restore_mixed_proxy() {
+    local section="$1"
+    local original_mixed_enabled="$2"
+    local original_mixed_port="$3"
+    local mixed_changed="$4"
+
+    [ "${mixed_changed:-0}" -eq 1 ] || return 0
+
+    if [ -n "$original_mixed_enabled" ]; then
+        uci -q set "podkop.$section.mixed_proxy_enabled=$original_mixed_enabled"
+    else
+        uci -q delete "podkop.$section.mixed_proxy_enabled"
+    fi
+
+    if [ -n "$original_mixed_port" ]; then
+        uci -q set "podkop.$section.mixed_proxy_port=$original_mixed_port"
+    else
+        uci -q delete "podkop.$section.mixed_proxy_port"
+    fi
+
+    uci commit podkop > /dev/null 2>&1 || return 1
+    config_load "$PODKOP_CONFIG"
+    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
+}
+
+subscription_speedtest_result_error() {
+    local id="$1"
+    local tag="$2"
+    local name="$3"
+    local error="$4"
+
+    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" --arg error "$error" \
+        '{id:$id, tag:$tag, name:$name, success:false, error:$error}'
+}
+
+subscription_speedtest_result_success() {
+    local id="$1"
+    local tag="$2"
+    local name="$3"
+    local bytes_per_second="$4"
+    local time_total="$5"
+    local size_download="$6"
+    local http_code="$7"
+
+    jq -cn --arg id "$id" --arg tag "$tag" --arg name "$name" \
+        --argjson bytesPerSecond "$bytes_per_second" \
+        --argjson timeTotal "$time_total" \
+        --argjson sizeDownload "$size_download" \
+        --argjson httpCode "$http_code" \
+        '{id:$id, tag:$tag, name:$name, success:true, bytesPerSecond:$bytesPerSecond, timeTotal:$timeTotal, sizeDownload:$sizeDownload, httpCode:$httpCode}'
+}
+
+subscription_speedtest() {
+    local section="$1"
+    local only_id="$2"
+    local items_cache_path active_items_file results_file clash_url auth_header selector_tag urltest_tag original_proxy restore_proxy \
+        original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
+        warmup_url benchmark_bytes benchmark_streams benchmark_timeout warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
+        output output_dir stream stream_file bytes_per_second time_total time_starttransfer transfer_time size_download http_code success_http_code results_json attempt best_bytes_per_second \
+        best_time_total best_size_download best_http_code clash_ready completed_streams total_size max_time cache_buster
+
+    if [ -z "$section" ]; then
+        echo '{"success":false,"error":"section_required"}'
+        return 1
+    fi
+
+    if ! validate_subscription_urltest_section "$section"; then
+        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
+        return 1
+    fi
+
+    if subscription_runtime_busy; then
+        echo '{"success":false,"error":"service_busy"}'
+        return 1
+    fi
+
+    if ! subscription_action_lock_acquire "speedtest"; then
+        echo '{"success":false,"error":"service_busy"}'
+        return 1
+    fi
+    trap 'subscription_action_lock_release' EXIT INT TERM
+
+    items_cache_path="$(get_subscription_items_cache_path "$section")"
+    if [ ! -s "$items_cache_path" ]; then
+        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
+    fi
+
+    if [ ! -s "$items_cache_path" ]; then
+        echo '{"success":false,"error":"subscription_cache_missing"}'
+        return 1
+    fi
+
+    active_items_file="$(mktemp)"
+    results_file="$(mktemp)"
+    if [ -n "$only_id" ]; then
+        jq -c --arg id "$only_id" \
+            '[.[] | select(.supported == true and .enabled == true)] | to_entries[] | select(.value.id == $id) | .value + {activeIndex:(.key + 1)}' \
+            "$items_cache_path" > "$active_items_file"
+    else
+        jq -c '[.[] | select(.supported == true and .enabled == true)] | to_entries[] | .value + {activeIndex:(.key + 1)}' \
+            "$items_cache_path" > "$active_items_file"
+    fi
+
+    if [ ! -s "$active_items_file" ]; then
+        rm -f "$active_items_file" "$results_file"
+        if [ -n "$only_id" ]; then
+            echo '{"success":false,"error":"subscription_link_not_available"}'
+        else
+            echo '{"success":false,"error":"no_enabled_links"}'
+        fi
+        return 1
+    fi
+
+    clash_url="$(get_clash_api_base_url)"
+    auth_header="$(get_clash_api_auth_header)"
+    selector_tag="$(get_outbound_tag_by_section "$section")"
+    urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
+    restore_proxy="$urltest_tag"
+    original_proxy="$(clash_api_wait_proxy_now "$clash_url" "$auth_header" "$selector_tag" 15)"
+
+    if [ -z "$original_proxy" ]; then
+        rm -f "$active_items_file" "$results_file"
+        echo '{"success":false,"error":"selector_not_available"}'
+        return 1
+    fi
+
+    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
+    config_get original_mixed_port "$section" "mixed_proxy_port"
+    mixed_port="$original_mixed_port"
+    [ -n "$mixed_port" ] || mixed_port="$(get_subscription_benchmark_port "$section")"
+    mixed_changed=0
+    trap 'clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 || clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true; subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1; rm -f "$active_items_file" "$results_file"; subscription_action_lock_release; exit 130' INT TERM HUP
+
+    if [ "$original_mixed_enabled" != "1" ] || [ -z "$original_mixed_port" ]; then
+        uci -q set "podkop.$section.mixed_proxy_enabled=1"
+        uci -q set "podkop.$section.mixed_proxy_port=$mixed_port"
+        if ! uci commit podkop > /dev/null 2>&1; then
+            rm -f "$active_items_file" "$results_file"
+            echo '{"success":false,"error":"uci_commit_failed"}'
+            return 1
+        fi
+        config_load "$PODKOP_CONFIG"
+        mixed_changed=1
+
+        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
+            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+            rm -f "$active_items_file" "$results_file"
+            echo '{"success":false,"error":"reload_failed"}'
+            return 1
+        fi
+    fi
+
+    mixed_address="$(get_service_listen_address)"
+    if [ -z "$mixed_address" ]; then
+        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
+            clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+        rm -f "$active_items_file" "$results_file"
+        echo '{"success":false,"error":"mixed_proxy_address_missing"}'
+        return 1
+    fi
+
+    clash_ready=0
+    for attempt in $(seq 1 10); do
+        if [ -n "$(clash_api_wait_proxy_now "$clash_url" "$auth_header" "$selector_tag" 1)" ]; then
+            clash_ready=1
+            break
+        fi
+        sleep 1
+    done
+
+    if [ "$clash_ready" -ne 1 ]; then
+        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
+            clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+        rm -f "$active_items_file" "$results_file"
+        echo '{"success":false,"error":"selector_not_available"}'
+        return 1
+    fi
+
+    benchmark_bytes="$(get_subscription_benchmark_bytes)"
+    benchmark_streams="$(get_subscription_benchmark_streams)"
+    benchmark_timeout="$(get_subscription_benchmark_timeout)"
+    warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"
+    benchmark_attempts="$(get_subscription_benchmark_attempts)"
+    case "$benchmark_bytes" in ''|*[!0-9]*) benchmark_bytes=8388608 ;; esac
+    case "$benchmark_streams" in ''|*[!0-9]*) benchmark_streams=4 ;; esac
+    case "$benchmark_timeout" in ''|*[!0-9]*) benchmark_timeout=15 ;; esac
+    case "$warmup_bytes" in ''|*[!0-9]*) warmup_bytes=0 ;; esac
+    case "$benchmark_attempts" in ''|*[!0-9]*) benchmark_attempts=3 ;; esac
+    [ "$benchmark_bytes" -gt 0 ] || benchmark_bytes=8388608
+    [ "$benchmark_streams" -gt 0 ] || benchmark_streams=1
+    [ "$benchmark_streams" -le 8 ] || benchmark_streams=8
+    [ "$benchmark_timeout" -ge 5 ] || benchmark_timeout=5
+    [ "$benchmark_attempts" -gt 0 ] || benchmark_attempts=3
+    min_size_download=$((benchmark_bytes * 9 / 10))
+    benchmark_url="https://speed.cloudflare.com/__down?bytes=$benchmark_bytes"
+    warmup_url="https://speed.cloudflare.com/__down?bytes=$warmup_bytes"
+    index=1
+    while IFS= read -r item_json || [ -n "$item_json" ]; do
+        [ -n "$item_json" ] || continue
+
+        id="$(echo "$item_json" | jq -r '.id')"
+        name="$(echo "$item_json" | jq -r '.name // ""')"
+        index="$(echo "$item_json" | jq -r '.activeIndex')"
+        tag="$(get_outbound_tag_by_section "$section-$index")"
+
+        if ! clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$tag"; then
+            subscription_speedtest_result_error "$id" "$tag" "$name" "select_failed" >> "$results_file"
+            index=$((index + 1))
+            continue
+        fi
+
+        if [ "$warmup_bytes" -gt 0 ]; then
+            curl -L -s -o /dev/null \
+                -x "http://$mixed_address:$mixed_port" \
+                --connect-timeout 3 \
+                -m 4 \
+                "$warmup_url" > /dev/null 2>&1 || true
+        fi
+
+        best_bytes_per_second=0
+        best_time_total=0
+        best_size_download=0
+        best_http_code=0
+        for attempt in $(seq 1 "$benchmark_attempts"); do
+            output_dir="$(mktemp -d)" || continue
+            cache_buster="$(date +%s)-$$-$attempt"
+            stream=1
+            while [ "$stream" -le "$benchmark_streams" ]; do
+                stream_file="$output_dir/$stream.out"
+                curl -L -s -o /dev/null \
+                    -x "http://$mixed_address:$mixed_port" \
+                    --connect-timeout 4 \
+                    -m "$benchmark_timeout" \
+                    -w '%{time_total} %{time_starttransfer} %{size_download} %{http_code}' \
+                    "$benchmark_url&stream=$stream&r=$cache_buster" > "$stream_file" 2> /dev/null &
+                stream=$((stream + 1))
+            done
+            wait
+
+            completed_streams=0
+            total_size=0
+            max_time=0
+            success_http_code=0
+            stream=1
+            while [ "$stream" -le "$benchmark_streams" ]; do
+                stream_file="$output_dir/$stream.out"
+                output="$(cat "$stream_file" 2> /dev/null)"
+                time_total="$(echo "$output" | awk '{print ($1 == "" ? 0 : $1)}')"
+                time_starttransfer="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
+                size_download="$(echo "$output" | awk '{printf "%d", $3}')"
+                http_code="$(echo "$output" | awk '{printf "%d", $4}')"
+                transfer_time="$(
+                    awk -v total="$time_total" -v start="$time_starttransfer" '
+                        BEGIN {
+                            transfer = total - start
+                            if (transfer <= 0) {
+                                transfer = total
+                            }
+                            print transfer
+                        }
+                    '
+                )"
+
+                if [ "${size_download:-0}" -ge "$min_size_download" ] &&
+                    [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
+                    completed_streams=$((completed_streams + 1))
+                    total_size=$((total_size + size_download))
+                    success_http_code="$http_code"
+                    max_time="$(
+                        awk -v current="$max_time" -v candidate="$transfer_time" '
+                            BEGIN {
+                                if (candidate > current) {
+                                    print candidate
+                                } else {
+                                    print current
+                                }
+                            }
+                        '
+                    )"
+                fi
+
+                stream=$((stream + 1))
+            done
+            rm -rf "$output_dir"
+
+            bytes_per_second="$(
+                awk -v size="$total_size" -v total="$max_time" '
+                    BEGIN {
+                        if (total > 0) {
+                            printf "%d", size / total
+                        } else {
+                            printf "0"
+                        }
+                    }
+                '
+            )"
+
+            if [ "${bytes_per_second:-0}" -gt "$best_bytes_per_second" ] &&
+                [ "${completed_streams:-0}" -gt 0 ]; then
+                best_bytes_per_second="${bytes_per_second:-0}"
+                best_time_total="${max_time:-0}"
+                best_size_download="${total_size:-0}"
+                best_http_code="${success_http_code:-0}"
+            fi
+        done
+
+        if [ "$best_bytes_per_second" -gt 0 ]; then
+            subscription_speedtest_result_success "$id" "$tag" "$name" \
+                "$best_bytes_per_second" "$best_time_total" "$best_size_download" "$best_http_code" >> "$results_file"
+        else
+            subscription_speedtest_result_error "$id" "$tag" "$name" "download_failed" >> "$results_file"
+        fi
+
+        index=$((index + 1))
+    done < "$active_items_file"
+
+    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
+        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
+    subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
+
+    results_json="$(jq -s '.' "$results_file")"
+    rm -f "$active_items_file" "$results_file"
+    jq -cn --arg section "$section" --argjson results "$results_json" \
+        '{success:true, section:$section, results:$results}'
+}
+
+subscription_speedtest_status_file() {
+    echo "/tmp/podkop-subscriptions-speedtest.json"
+}
+
+subscription_speedtest_restore_state_file() {
+    echo "/tmp/podkop-subscriptions-speedtest-restore.json"
+}
+
+subscription_speedtest_write_status() {
+    local state="$1"
+    local message="$2"
+    local section="$3"
+    local item_id="$4"
+    local pid="$5"
+    local status_file updated_at
+
+    status_file="$(subscription_speedtest_status_file)"
+    updated_at="$(date -Iseconds 2> /dev/null || date)"
+    jq -cn --arg state "$state" --arg message "$message" \
+        --arg section "$section" --arg itemId "$item_id" \
+        --arg updatedAt "$updated_at" --argjson pid "${pid:-0}" \
+        --arg logTail "" \
+        '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
+        > "$status_file"
+}
+
+subscription_speedtest_start() {
+    local section="$1"
+    local item_id="$2"
+    local status_file restore_file runner state pid original_mixed_enabled original_mixed_port
+
+    if [ -z "$section" ] || [ -z "$item_id" ]; then
+        echo '{"success":false,"error":"section_and_item_required"}'
+        return 1
+    fi
+
+    status_file="$(subscription_speedtest_status_file)"
+    if [ -s "$status_file" ]; then
+        state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
+        pid="$(jq -r '.pid // ""' "$status_file" 2> /dev/null)"
+        if [ "$state" = "running" ] && subscription_action_lock_pid_alive "$pid"; then
+            echo '{"success":false,"error":"service_busy"}'
+            return 1
+        fi
+    fi
+
+    subscription_speedtest_write_status "running" "speedtest_running" "$section" "$item_id" "$$"
+
+    restore_file="$(subscription_speedtest_restore_state_file)"
+    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
+    config_get original_mixed_port "$section" "mixed_proxy_port"
+    jq -cn --arg section "$section" \
+        --arg originalMixedEnabled "$original_mixed_enabled" \
+        --arg originalMixedPort "$original_mixed_port" \
+        '{section:$section, originalMixedEnabled:$originalMixedEnabled, originalMixedPort:$originalMixedPort}' \
+        > "$restore_file"
+
+    updated_at="$(date -Iseconds 2> /dev/null || date)"
+    jq -cn --arg state "running" --arg message "speedtest_running" \
+        --arg section "$section" --arg itemId "$item_id" \
+        --arg updatedAt "$updated_at" --argjson pid "$$" \
+        --arg logTail "" \
+        '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
+        > "$status_file"
+
+    runner="/tmp/podkop-subscriptions-speedtest-runner.sh"
+    cat > "$runner" << 'EOF'
+#!/bin/ash
+status_file="/tmp/podkop-subscriptions-speedtest.json"
+restore_file="/tmp/podkop-subscriptions-speedtest-restore.json"
+section="$1"
+item_id="$2"
+
+write_status() {
+    local state="$1"
+    local message="$2"
+    local result_file="$3"
+    local log_tail="$4"
+    local updated_at
+
+    updated_at="$(date -Iseconds 2> /dev/null || date)"
+
+    if [ -n "$result_file" ] && [ -s "$result_file" ]; then
+        jq -cn --arg state "$state" --arg message "$message" \
+            --arg section "$section" --arg itemId "$item_id" \
+            --arg updatedAt "$updated_at" --argjson pid "$$" \
+            --arg logTail "$log_tail" --slurpfile result "$result_file" \
+            '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail, result:($result[0] // null)}' \
+            > "$status_file"
+    else
+        jq -cn --arg state "$state" --arg message "$message" \
+            --arg section "$section" --arg itemId "$item_id" \
+            --arg updatedAt "$updated_at" --argjson pid "$$" \
+            --arg logTail "$log_tail" \
+            '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
+            > "$status_file"
+    fi
+}
+
+result_file="$(mktemp)"
+output_file="$(mktemp)"
+
+write_status "running" "speedtest_running" "" ""
+
+/usr/bin/podkop subscription_speedtest "$section" "$item_id" > "$output_file" 2>&1
+rc="$?"
+
+if [ "$rc" -eq 0 ] && jq -e '.success == true' "$output_file" > /dev/null 2>&1; then
+    cp "$output_file" "$result_file"
+    write_status "success" "speedtest_success" "$result_file" ""
+else
+    message="speedtest_failed"
+    if jq -e '.error' "$output_file" > /dev/null 2>&1; then
+        message="$(jq -r '.error // "speedtest_failed"' "$output_file" 2> /dev/null)"
+    fi
+    write_status "error" "$message" "" "$(tail -n 20 "$output_file" 2> /dev/null)"
+    rm -f "$result_file" "$output_file" "$restore_file"
+    exit 1
+fi
+
+rm -f "$result_file" "$output_file" "$restore_file"
+EOF
+
+    chmod +x "$runner"
+    if command -v start-stop-daemon > /dev/null 2>&1; then
+        start-stop-daemon -S -b -x "$runner" -- "$section" "$item_id" > /dev/null 2>&1
+    elif command -v setsid > /dev/null 2>&1; then
+        setsid "$runner" "$section" "$item_id" < /dev/null > /dev/null 2>&1 &
+    else
+        "$runner" "$section" "$item_id" < /dev/null > /dev/null 2>&1 &
+    fi
+
+    echo '{"success":true,"started":true}'
+}
+
+subscription_speedtest_stop() {
+    local status_file restore_file state pid section item_id restore_section original_mixed_enabled original_mixed_port
+
+    status_file="$(subscription_speedtest_status_file)"
+    restore_file="$(subscription_speedtest_restore_state_file)"
+    if [ ! -s "$status_file" ]; then
+        echo '{"success":true,"stopped":false}'
+        return 0
+    fi
+
+    state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
+    pid="$(jq -r '.pid // ""' "$status_file" 2> /dev/null)"
+    section="$(jq -r '.section // ""' "$status_file" 2> /dev/null)"
+    item_id="$(jq -r '.itemId // ""' "$status_file" 2> /dev/null)"
+
+    if [ "$state" = "running" ] && subscription_action_lock_pid_alive "$pid"; then
+        kill_process_tree "$pid" > /dev/null 2>&1 || true
+        sleep 1
+    fi
+
+    if [ -s "$restore_file" ]; then
+        restore_section="$(jq -r '.section // ""' "$restore_file" 2> /dev/null)"
+        original_mixed_enabled="$(jq -r '.originalMixedEnabled // ""' "$restore_file" 2> /dev/null)"
+        original_mixed_port="$(jq -r '.originalMixedPort // ""' "$restore_file" 2> /dev/null)"
+        if [ -n "$restore_section" ]; then
+            subscription_speedtest_restore_mixed_proxy "$restore_section" "$original_mixed_enabled" "$original_mixed_port" 1 > /dev/null 2>&1 || true
+        fi
+        rm -f "$restore_file"
+    elif [ -n "$section" ]; then
+        subscription_speedtest_restore_mixed_proxy "$section" "" "" 1 > /dev/null 2>&1 || true
+    fi
+
+    subscription_speedtest_write_status "cancelled" "speedtest_cancelled" "$section" "$item_id" "0"
+    echo '{"success":true,"stopped":true}'
+}
+
+get_subscription_speedtest_status() {
+    local status_file
+
+    status_file="$(subscription_speedtest_status_file)"
+    if [ -s "$status_file" ]; then
+        cat "$status_file"
+    else
+        echo '{"state":"idle","message":"","section":"","itemId":"","updatedAt":"","logTail":""}'
+    fi
+}
+
+subscription_patch_update_status_file() {
+    echo "/tmp/podkop-subscriptions-patch-update.json"
+}
+
+subscription_patch_update() {
+    local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1 patch_update_podkop_update_v1
+
+    patch_update_start_stop_daemon_v1=1
+    patch_update_noop_v1=1
+    patch_update_podkop_update_v1=1
+
+    status_file="$(subscription_patch_update_status_file)"
+    runner="/tmp/podkop-subscriptions-patch-update-runner.sh"
+
+    cat > "$runner" << 'EOF'
+#!/bin/ash
+status_file="/tmp/podkop-subscriptions-patch-update.json"
+log_file="/tmp/podkop-subscriptions-patch-update.log"
+patch_update_timeout_v1=1
+
+write_status() {
+    local state="$1"
+    local message="$2"
+    local log_tail="$3"
+    jq -cn --arg state "$state" --arg message "$message" \
+        --arg updatedAt "$(date -Iseconds 2> /dev/null || date)" \
+        --arg logTail "$log_tail" \
+        '{state:$state, message:$message, updatedAt:$updatedAt, logTail:$logTail}' > "$status_file"
+}
+
+kill_process_tree() {
+    local pid="$1"
+    local child
+
+    [ -n "$pid" ] || return 0
+    [ -d "/proc/$pid" ] || return 0
+
+    if [ -r "/proc/$pid/task/$pid/children" ]; then
+        for child in $(cat "/proc/$pid/task/$pid/children" 2> /dev/null); do
+            kill_process_tree "$child"
+        done
+    fi
+
+    kill "$pid" 2> /dev/null || true
+}
+
+run_with_timeout() {
+    local limit="$1"
+    local pid watchdog rc
+
+    shift
+    "$@" >> "$log_file" 2>&1 &
+    pid="$!"
+
+    (
+        sleep "$limit"
+        kill_process_tree "$pid"
+    ) &
+    watchdog="$!"
+
+    wait "$pid"
+    rc="$?"
+    kill "$watchdog" 2> /dev/null || true
+    wait "$watchdog" > /dev/null 2>&1 || true
+
+    return "$rc"
+}
+
+write_status "running" "patch_update_running" ""
+
+tmp="/tmp/podkop-subscriptions-install.sh"
+install_url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i"
+download_ok=0
+
+if command -v curl > /dev/null 2>&1; then
+    if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 -o "$tmp" "$install_url"; then
+        download_ok=1
+    else
+        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+            if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 \
+                --resolve "raw.githubusercontent.com:443:$ip" \
+                -o "$tmp" "$install_url"; then
+                download_ok=1
+                break
+            fi
+        done
+    fi
+else
+    if run_with_timeout 45 wget -T 30 -O "$tmp" "$install_url"; then
+        download_ok=1
+    else
+        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+            if run_with_timeout 45 wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
+                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/i"; then
+                download_ok=1
+                break
+            fi
+        done
+    fi
+fi
+
+if [ "$download_ok" -ne 1 ] || [ ! -s "$tmp" ]; then
+    write_status "error" "download_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
+    exit 1
+fi
+
+if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}" sh "$tmp"; then
+    if grep -q "PODKOP_PATCH_NOOP=1" "$log_file" 2> /dev/null; then
+        write_status "success" "patch_update_noop" "$(tail -n 20 "$log_file" 2> /dev/null)"
+    else
+        write_status "success" "patch_update_success" "$(tail -n 20 "$log_file" 2> /dev/null)"
+    fi
+else
+    write_status "error" "install_failed" "$(tail -n 20 "$log_file" 2> /dev/null)"
+    exit 1
+fi
+EOF
+
+    chmod +x "$runner"
+    if command -v start-stop-daemon > /dev/null 2>&1; then
+        start-stop-daemon -S -b -x "$runner" > /dev/null 2>&1
+    elif command -v setsid > /dev/null 2>&1; then
+        setsid "$runner" < /dev/null > /dev/null 2>&1 &
+    else
+        "$runner" < /dev/null > /dev/null 2>&1 &
+    fi
+
+    echo '{"success":true,"started":true}'
+}
+get_subscription_patch_update_status() {
+    local status_file
+
+    status_file="$(subscription_patch_update_status_file)"
+    if [ -s "$status_file" ]; then
+        cat "$status_file"
+    else
+        echo '{"state":"idle","message":"","updatedAt":"","logTail":""}'
+    fi
+}
+
+subscription_action_lock_file() {
+    echo "/tmp/podkop-subscription-action.lock"
+}
+
+subscription_action_lock_pid_alive() {
+    local pid="$1"
+
+    [ -n "$pid" ] || return 1
+    case "$pid" in
+    *[!0-9]*)
+        return 1
+        ;;
+    esac
+
+    [ -d "/proc/$pid" ]
+}
+
+subscription_action_lock_busy() {
+    local lock_file pid
+
+    lock_file="$(subscription_action_lock_file)"
+    [ -s "$lock_file" ] || return 1
+
+    pid="$(awk 'NR == 1 {print $1}' "$lock_file" 2> /dev/null)"
+    if subscription_action_lock_pid_alive "$pid"; then
+        return 0
+    fi
+
+    rm -f "$lock_file"
+    return 1
+}
+
+subscription_action_lock_acquire() {
+    local action="$1"
+    local lock_file
+
+    lock_file="$(subscription_action_lock_file)"
+    if subscription_action_lock_busy; then
+        return 1
+    fi
+
+    printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$lock_file"
+}
+
+subscription_action_lock_release() {
+    local lock_file pid
+
+    lock_file="$(subscription_action_lock_file)"
+    [ -s "$lock_file" ] || return 0
+
+    pid="$(awk 'NR == 1 {print $1}' "$lock_file" 2> /dev/null)"
+    [ "$pid" = "$$" ] && rm -f "$lock_file"
+}
+
+# sing-box funcs
+sing_box_configure_service() {
+    local sing_box_enabled sing_box_user sing_box_config_path sing_box_conffile
+    sing_box_enabled="$(uci_get "sing-box" "main" "enabled")"
+    sing_box_user="$(uci_get "sing-box" "main" "user")"
+
+    if [ "$sing_box_enabled" -ne 1 ]; then
+        uci_set "sing-box" "main" "enabled" 1
+        uci_commit "sing-box"
+        log "sing-box service has been enabled"
+    fi
+
+    if [ "$sing_box_user" != "root" ]; then
+        uci_set "sing-box" "main" "user" "root"
+        uci_commit "sing-box"
+        log "sing-box service user has been changed to root"
+    fi
+
+    config_get sing_box_config_path "settings" "config_path"
+    sing_box_conffile="$(uci_get "sing-box" "main" "conffile")"
+    log "sing-box config path: $sing_box_config_path" "debug"
+    log "sing-box service conffile: $sing_box_conffile" "debug"
+    if [ "$sing_box_conffile" != "$sing_box_config_path" ]; then
+        uci_set "sing-box" "main" "conffile" "$sing_box_config_path"
+        uci_commit "sing-box"
+        log "Configuration file path has been set to $sing_box_config_path"
+    fi
+
+    [ -f /etc/rc.d/S99sing-box ] && log "Disable sing-box" && /etc/init.d/sing-box disable
+}
+
+sing_box_init_config() {
+    local config='{"log":{},"dns":{},"ntp":{},"certificate":{},"endpoints":[],"inbounds":[],"outbounds":[],"route":{},"services":[],"experimental":{}}'
+
+    sing_box_configure_log
+    sing_box_configure_inbounds
+    sing_box_configure_outbounds
+    sing_box_configure_dns
+    sing_box_configure_route
+    sing_box_configure_experimental
+    sing_box_additional_inbounds
+    sing_box_save_config
+}
+
+sing_box_configure_log() {
+    log "Configure the log section of a sing-box JSON configuration"
+
+    local log_level
+    config_get log_level "settings" "log_level" "warn"
+    config=$(sing_box_cm_configure_log "$config" false "$log_level" false)
+}
+
+sing_box_configure_inbounds() {
+    log "Configure the inbounds section of a sing-box JSON configuration"
+
+    config=$(
+        sing_box_cm_add_tproxy_inbound \
+            "$config" "$SB_TPROXY_INBOUND_TAG" "$SB_TPROXY_INBOUND_ADDRESS" "$SB_TPROXY_INBOUND_PORT" true true
+    )
+    config=$(
+        sing_box_cm_add_direct_inbound "$config" "$SB_DNS_INBOUND_TAG" "$SB_DNS_INBOUND_ADDRESS" "$SB_DNS_INBOUND_PORT"
+    )
+}
+
+sing_box_configure_outbounds() {
+    log "Configure the outbounds section of a sing-box JSON configuration"
+
+    config=$(sing_box_cm_add_direct_outbound "$config" "$SB_DIRECT_OUTBOUND_TAG")
+
+    config_foreach configure_outbound_handler "section"
+}
+
+configure_outbound_handler() {
+    local section="$1"
+
+    local connection_type
+    config_get connection_type "$section" "connection_type"
+    case "$connection_type" in
+    proxy)
+        log "Configuring outbound in proxy connection type for the $section section"
+        local proxy_config_type
+        config_get proxy_config_type "$section" "proxy_config_type"
+
+        case "$proxy_config_type" in
+        url)
+            log "Detected proxy configuration type: url" "debug"
+            local proxy_string udp_over_tcp
+            config_get proxy_string "$section" "proxy_string"
+            config_get udp_over_tcp "$section" "enable_udp_over_tcp"
+
+            if [ -z "$proxy_string" ]; then
+                log "Proxy string is not set. Aborted." "fatal"
+                exit 1
+            fi
+            config=$(sing_box_cf_add_proxy_outbound "$config" "$section" "$proxy_string" "$udp_over_tcp")
+            ;;
+        outbound)
+            log "Detected proxy configuration type: outbound" "debug"
+            local json_outbound
+            config_get json_outbound "$section" "outbound_json"
+            config=$(sing_box_cf_add_json_outbound "$config" "$section" "$json_outbound")
+            ;;
+        selector)
+            log "Detected proxy configuration type: selector" "debug"
+            local selector_proxy_links udp_over_tcp i outbound_tags outbound_tag default_outbound
+            config_get selector_proxy_links "$section" "selector_proxy_links"
+            config_get udp_over_tcp "$section" "enable_udp_over_tcp"
+
+            if [ -z "$selector_proxy_links" ]; then
+                log "URLTest proxy links is not set. Aborted." "fatal"
+                exit 1
+            fi
+
+            i=1
+            for link in $selector_proxy_links; do
+                config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")"
+                outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
+                if [ -z "$outbound_tags" ]; then
+                    outbound_tags="$outbound_tag"
+                    default_outbound="$outbound_tag"
+                else
+                    outbound_tags="$outbound_tags,$outbound_tag"
+                fi
+                i=$((i + 1))
+            done
+
+            selector_tag="$(get_outbound_tag_by_section "$section")"
+            selector_outbounds="$(comma_string_to_json_array "$outbound_tags")"
+            config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" \
+                "$default_outbound")"
+            ;;
+        subscription_urltest)
+            log "Detected proxy configuration type: subscription_urltest" "debug"
+            local udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
+                urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance urltest_testing_url \
+                links_file manual_links_file subscription_links_file deduped_links_file candidate_config link \
+                has_manual_links has_subscription_links subscription_mix_manual_links_v1
+            subscription_mix_manual_links_v1=1
+            config_get udp_over_tcp "$section" "enable_udp_over_tcp"
+            config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
+            config_get urltest_tolerance "$section" "urltest_tolerance" 50
+            config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
+
+            links_file="$(mktemp)"
+            manual_links_file="$(mktemp)"
+            subscription_links_file="$(mktemp)"
+            deduped_links_file="$(mktemp)"
+            : > "$links_file"
+            has_manual_links=0
+            has_subscription_links=0
+
+            if collect_urltest_proxy_links "$section" "$manual_links_file"; then
+                cat "$manual_links_file" >> "$links_file"
+                has_manual_links=1
+            fi
+
+            if section_has_subscription_urls "$section"; then
+                if load_subscription_proxy_links_for_section "$section" "$subscription_links_file"; then
+                    cat "$subscription_links_file" >> "$links_file"
+                    has_subscription_links=1
+                elif [ "$has_manual_links" -eq 1 ]; then
+                    log "Unable to load subscription links for section '$section', continuing with manual proxy links" "warn"
+                else
+                    rm -f "$links_file" "$manual_links_file" "$subscription_links_file" "$deduped_links_file"
+                    log "Unable to load subscription links. Aborted." "fatal"
+                    exit 1
+                fi
+            fi
+
+            if [ ! -s "$links_file" ]; then
+                rm -f "$links_file" "$manual_links_file" "$subscription_links_file" "$deduped_links_file"
+                log "Mix proxy links or subscription URLs are not set. Aborted." "fatal"
+                exit 1
+            fi
+
+            awk '!seen[$0]++' "$links_file" > "$deduped_links_file"
+            mv "$deduped_links_file" "$links_file"
+            rm -f "$manual_links_file" "$subscription_links_file"
+
+            i=1
+            while IFS= read -r link || [ -n "$link" ]; do
+                [ -n "$link" ] || continue
+
+                if ! candidate_config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")" ||
+                    [ -z "$candidate_config" ]; then
+                    log "Skipping unsupported subscription proxy link in section '$section'" "warn"
+                    i=$((i + 1))
+                    continue
+                fi
+
+                config="$candidate_config"
+                outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
+                if [ -z "$outbound_tags" ]; then
+                    outbound_tags="$outbound_tag"
+                else
+                    outbound_tags="$outbound_tags,$outbound_tag"
+                fi
+                i=$((i + 1))
+            done < "$links_file"
+            rm -f "$links_file" "$deduped_links_file"
+
+            if [ -z "$outbound_tags" ]; then
+                log "Mix does not contain supported proxy links. Aborted." "fatal"
+                exit 1
+            fi
+
+            urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
+            selector_tag="$(get_outbound_tag_by_section "$section")"
+            urltest_outbounds="$(comma_string_to_json_array "$outbound_tags")"
+            selector_outbounds="$(comma_string_to_json_array "$outbound_tags,$urltest_tag")"
+            config="$(sing_box_cm_add_urltest_outbound "$config" "$urltest_tag" "$urltest_outbounds" \
+                "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
+            config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" "$urltest_tag")"
+            ;;
+        urltest)
+            log "Detected proxy configuration type: urltest" "debug"
+            local urltest_proxy_links udp_over_tcp i urltest_tag selector_tag outbound_tag outbound_tags \
+                urltest_outbounds selector_outbounds urltest_check_interval urltest_tolerance urltest_testing_url
+            config_get urltest_proxy_links "$section" "urltest_proxy_links"
+            config_get udp_over_tcp "$section" "enable_udp_over_tcp"
+            config_get urltest_check_interval "$section" "urltest_check_interval" "3m"
+            config_get urltest_tolerance "$section" "urltest_tolerance" 50
+            config_get urltest_testing_url "$section" "urltest_testing_url" "https://www.gstatic.com/generate_204"
+
+            if [ -z "$urltest_proxy_links" ]; then
+                log "URLTest proxy links is not set. Aborted." "fatal"
+                exit 1
+            fi
+
+            i=1
+            for link in $urltest_proxy_links; do
+                config="$(sing_box_cf_add_proxy_outbound "$config" "$section-$i" "$link" "$udp_over_tcp")"
+                outbound_tag="$(get_outbound_tag_by_section "$section-$i")"
+                if [ -z "$outbound_tags" ]; then
+                    outbound_tags="$outbound_tag"
+                else
+                    outbound_tags="$outbound_tags,$outbound_tag"
+                fi
+                i=$((i + 1))
+            done
+
+            urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
+            selector_tag="$(get_outbound_tag_by_section "$section")"
+            urltest_outbounds="$(comma_string_to_json_array "$outbound_tags")"
+            selector_outbounds="$(comma_string_to_json_array "$outbound_tags,$urltest_tag")"
+            config="$(sing_box_cm_add_urltest_outbound "$config" "$urltest_tag" "$urltest_outbounds" \
+                "$urltest_testing_url" "$urltest_check_interval" "$urltest_tolerance")"
+            config="$(sing_box_cm_add_selector_outbound "$config" "$selector_tag" "$selector_outbounds" "$urltest_tag")"
+            ;;
+        *)
+            log "Unknown proxy configuration type: '$proxy_config_type'. Aborted." "fatal"
+            exit 1
+            ;;
+        esac
+        ;;
+    vpn)
+        log "Configuring outbound in VPN connection type for the $section section"
+        local interface_name domain_resolver_enabled domain_resolver_dns_type domain_resolver_dns_server \
+            domain_resolver_dns_server_address outbound_tag domain_resolver_tag dns_domain_resolver
+
+        config_get interface_name "$section" "interface"
+        config_get domain_resolver_enabled "$section" "domain_resolver_enabled"
+        config_get domain_resolver_dns_type "$section" "domain_resolver_dns_type"
+        config_get domain_resolver_dns_server "$section" "domain_resolver_dns_server"
+
+        if [ -z "$interface_name" ]; then
+            log "VPN interface is not set. Aborted." "fatal"
+            exit 1
+        fi
+
+        local outbound_tag
+        outbound_tag="$(get_outbound_tag_by_section "$section")"
+
+        if [ "$domain_resolver_enabled" -eq 1 ]; then
+            domain_resolver_dns_server_address="$(url_get_host "$dns_server")"
+            if ! is_ipv4 "$domain_resolver_dns_server_address"; then
+                dns_domain_resolver=$SB_BOOTSTRAP_SERVER_TAG
+            fi
+            domain_resolver_tag="$(get_domain_resolver_tag "$section")"
+            config=$(sing_box_cf_add_dns_server "$config" "$domain_resolver_dns_type" "$domain_resolver_tag" \
+                "$domain_resolver_dns_server" "$dns_domain_resolver" "$outbound_tag")
+        fi
+
+        config=$(sing_box_cm_add_interface_outbound "$config" "$outbound_tag" "$interface_name" "$domain_resolver_tag")
+        ;;
+    block)
+        log "Connection type 'block' detected for the $section section – no outbound will be created (handled via reject route rules)"
+        ;;
+    exclusion)
+        log "Connection type 'exclusion' detected for the $section section – no outbound will be created (handled via route rules)"
+        ;;
+    *)
+        log "Unknown connection type '$connection_type' for the $section section. Aborted." "fatal"
+        exit 1
+        ;;
+    esac
+}
+
+sing_box_configure_dns() {
+    log "Configure the DNS section of a sing-box JSON configuration"
+    config=$(sing_box_cm_configure_dns "$config" "$SB_DNS_SERVER_TAG" "ipv4_only" true)
+
+    log "Adding DNS Servers" "debug"
+    local dns_type dns_server bootstrap_dns_server dns_domain_resolver dns_server_address
+    config_get dns_type "settings" "dns_type" "doh"
+    config_get dns_server "settings" "dns_server" "1.1.1.1"
+    config_get bootstrap_dns_server "settings" "bootstrap_dns_server" "77.88.8.8"
+
+    dns_server_address="$(url_get_host "$dns_server")"
+    if ! is_ipv4 "$dns_server_address"; then
+        dns_domain_resolver=$SB_BOOTSTRAP_SERVER_TAG
+    fi
+
+    config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
+    config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver")
+    config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE")
+
+    log "Adding DNS Rules"
+    local rewrite_ttl service_domains
+    config_get rewrite_ttl "settings" "dns_rewrite_ttl" "60"
+
+    config=$(sing_box_cm_add_dns_reject_rule "$config" "query_type" "HTTPS")
+    config=$(sing_box_cm_add_dns_reject_rule "$config" "domain_suffix" '"use-application-dns.net"')
+    config=$(sing_box_cm_add_dns_route_rule "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_DNS_RULE_TAG")
+    config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "rewrite_ttl" "$rewrite_ttl")
+    service_domains=$(comma_string_to_json_array "$FAKEIP_TEST_DOMAIN,$CHECK_PROXY_IP_DOMAIN")
+    config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "domain" "$service_domains")
+}
+
+sing_box_configure_route() {
+    log "Configure the route section of a sing-box JSON configuration"
+
+    local output_network_interface
+    config_get output_network_interface "settings" "output_network_interface"
+    if [ -z "$output_network_interface" ]; then
+        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" true "$SB_DNS_SERVER_TAG")
+    else
+        config=$(sing_box_cm_configure_route "$config" "$SB_DIRECT_OUTBOUND_TAG" false "$SB_DNS_SERVER_TAG" \
+            "$output_network_interface")
+    fi
+
+    local sniff_inbounds
+    sniff_inbounds=$(comma_string_to_json_array "$SB_TPROXY_INBOUND_TAG,$SB_DNS_INBOUND_TAG")
+    config=$(sing_box_cm_sniff_route_rule "$config" "inbound" "$sniff_inbounds")
+
+    config=$(sing_box_cm_add_hijack_dns_route_rule "$config" "protocol" "dns")
+
+    local disable_quic
+    config_get_bool disable_quic "settings" "disable_quic" 0
+    if [ "$disable_quic" -eq 1 ]; then
+        config=$(sing_box_cf_add_single_key_reject_rule "$config" "$SB_TPROXY_INBOUND_TAG" "protocol" "quic")
+    fi
+
+    local first_outbound_section
+    first_outbound_section="$(get_first_outbound_section)"
+    first_outbound_tag="$(get_outbound_tag_by_section "$first_outbound_section")"
+    config=$(sing_box_cf_proxy_domain "$config" "$SB_TPROXY_INBOUND_TAG" "$CHECK_PROXY_IP_DOMAIN" "$first_outbound_tag")
+    config=$(sing_box_cf_override_domain_port "$config" "$FAKEIP_TEST_DOMAIN" 8443)
+
+    configure_common_reject_route_rule
+    configure_common_direct_route_rule
+
+    local routing_excluded_ips
+    config_get routing_excluded_ips "settings" "routing_excluded_ips"
+    if [ -n "$routing_excluded_ips" ]; then
+        rule_tag="$(gen_id)"
+        config=$(sing_box_cm_add_route_rule "$config" "$rule_tag" "$SB_TPROXY_INBOUND_TAG" "$SB_DIRECT_OUTBOUND_TAG")
+        config_list_foreach "settings" "routing_excluded_ips" exclude_source_ip_from_routing_handler "$rule_tag"
+    fi
+
+    config_foreach include_source_ips_in_routing_handler "section"
+
+    config_foreach configure_routing_for_section_lists "section"
+}
+
+include_source_ips_in_routing_handler() {
+    local section="$1"
+
+    local fully_routed_ips rule_tag
+    config_get fully_routed_ips "$section" "fully_routed_ips"
+    if [ -n "$fully_routed_ips" ]; then
+        rule_tag="$(gen_id)"
+        config=$(
+            sing_box_cm_add_route_rule \
+                "$config" "$rule_tag" "$SB_TPROXY_INBOUND_TAG" "$(get_outbound_tag_by_section "$section")"
+        )
+        config_list_foreach "$section" "fully_routed_ips" include_source_ip_in_routing_handler "$rule_tag"
+    fi
+}
+
+configure_common_reject_route_rule() {
+    local block_sections block_section_lists_enabled
+    block_sections="$(get_sections_by_connection_type "block")"
+    block_section_lists_enabled=0
+
+    if [ -n "$block_sections" ]; then
+        for block_section in $block_sections; do
+            if section_has_enabled_lists "$block_section"; then
+                block_section_lists_enabled=1
+                break
+            fi
+        done
+        if [ "$block_section_lists_enabled" -eq 1 ]; then
+            config=$(sing_box_cm_add_reject_route_rule "$config" "$SB_REJECT_RULE_TAG" "$SB_TPROXY_INBOUND_TAG")
+        else
+            log "Block sections does not have any enabled list, reject rule is not required" "warn"
+        fi
+    fi
+}
+
+configure_common_direct_route_rule() {
+    local exclusion_sections exclusion_section_list_enabled
+    exclusion_sections="$(get_sections_by_connection_type "exclusion")"
+    exclusion_section_list_enabled=0
+
+    if [ -n "$exclusion_sections" ]; then
+        for exclusion_section in $exclusion_sections; do
+            if section_has_enabled_lists "$exclusion_section"; then
+                exclusion_section_list_enabled=1
+                break
+            fi
+        done
+        if [ "$exclusion_section_list_enabled" -eq 1 ]; then
+            config=$(sing_box_cm_add_route_rule "$config" "$SB_EXCLUSION_RULE_TAG" "$SB_TPROXY_INBOUND_TAG" \
+                "$SB_DIRECT_OUTBOUND_TAG")
+        else
+            log "Exclusion sections does not have any enabled list, route rule is not required" "warn"
+        fi
+    fi
+}
+
+include_source_ip_in_routing_handler() {
+    local source_ip="$1"
+    local rule_tag="$2"
+    nft_list_all_traffic_from_ip "$source_ip"
+    config=$(sing_box_cm_patch_route_rule "$config" "$rule_tag" "source_ip_cidr" "$source_ip")
+}
+
+exclude_source_ip_from_routing_handler() {
+    local source_ip="$1"
+    local rule_tag="$2"
+
+    config=$(sing_box_cm_patch_route_rule "$config" "$rule_tag" "source_ip_cidr" "$source_ip")
+}
+
+configure_routing_for_section_lists() {
+    local section="$1"
+
+    log "Configuring routing for '$section' section"
+    if ! section_has_enabled_lists "$section"; then
+        log "Section '$section' does not have any enabled list, skipping..." "warn"
+        return 0
+    fi
+
+    local community_lists user_domain_list_type user_subnet_list_type local_domain_lists local_subnet_lists \
+        remote_domain_lists remote_subnet_lists section_connection_type route_rule_tag resolve_real_ip_for_routing
+    config_get community_lists "$section" "community_lists"
+    config_get user_domain_list_type "$section" "user_domain_list_type" "disabled"
+    config_get user_subnet_list_type "$section" "user_subnet_list_type" "disabled"
+    config_get local_domain_lists "$section" "local_domain_lists"
+    config_get local_subnet_lists "$section" "local_subnet_lists"
+    config_get remote_domain_lists "$section" "remote_domain_lists"
+    config_get remote_subnet_lists "$section" "remote_subnet_lists"
+    config_get section_connection_type "$section" "connection_type"
+    config_get_bool resolve_real_ip_for_routing "$section" "resolve_real_ip_for_routing" 0
+
+    case "$section_connection_type" in
+    proxy | vpn)
+        route_rule_tag="$(gen_id)"
+        outbound_tag=$(get_outbound_tag_by_section "$section")
+        config=$(sing_box_cm_add_route_rule "$config" "$route_rule_tag" "$SB_TPROXY_INBOUND_TAG" "$outbound_tag")
+        ;;
+    block)
+        route_rule_tag="$SB_REJECT_RULE_TAG"
+        ;;
+    exclusion)
+        route_rule_tag="$SB_EXCLUSION_RULE_TAG"
+        ;;
+    *)
+        log "Unsupported '$section_connection_type' connection type. Skipping routing for '$section' section" "fatal"
+        exit 1
+        ;;
+    esac
+
+    if [ -n "$community_lists" ]; then
+        log "Processing community list routing rules for '$section' section"
+        config_list_foreach "$section" "community_lists" configure_community_list_handler "$section" "$route_rule_tag"
+    fi
+
+    if [ "$user_domain_list_type" != "disabled" ]; then
+        log "Processing user domains routing rules for '$section' section"
+        configure_user_domain_list "$section" "$route_rule_tag"
+    fi
+
+    if [ "$user_subnet_list_type" != "disabled" ]; then
+        log "Processing user subnets routing rules for '$section' section"
+        configure_user_subnet_list "$section" "$route_rule_tag"
+    fi
+
+    if [ -n "$local_domain_lists" ]; then
+        log "Processing local domains routing rules for '$section' section"
+        configure_local_domain_lists "$section" "$route_rule_tag"
+    fi
+
+    if [ -n "$local_subnet_lists" ]; then
+        log "Processing local subnets routing rules for '$section' section"
+        configure_local_subnet_lists "$section" "$route_rule_tag"
+    fi
+
+    if [ -n "$remote_domain_lists" ]; then
+        log "Processing remote domains routing rules for '$section' section"
+        config_list_foreach "$section" "remote_domain_lists" configure_remote_domain_or_subnet_list_handler \
+            "domains" "$section" "$route_rule_tag"
+    fi
+
+    if [ -n "$remote_subnet_lists" ]; then
+        log "Processing remote subnets routing rules for '$section' section"
+        config_list_foreach "$section" "remote_subnet_lists" configure_remote_domain_or_subnet_list_handler \
+            "subnets" "$section" "$route_rule_tag"
+    fi
+
+    if [ "$resolve_real_ip_for_routing" -eq 1 ]; then
+        config=$(sing_box_cm_add_resolve_rule "$config" "$route_rule_tag" "$(gen_id)" "$SB_DNS_SERVER_TAG")
+        log "Added resolve rule for '$section' section" "debug"
+    fi
+}
+
+configure_community_list_handler() {
+    local tag="$1"
+    local section="$2"
+    local route_rule_tag="$3"
+
+    local ruleset_tag format url update_interval detour
+    ruleset_tag="$(get_ruleset_tag "$section" "$tag" "community")"
+    format="binary"
+    url="$SRS_MAIN_URL/$tag.srs"
+    detour="$(get_download_detour_tag)"
+    config_get update_interval "settings" "update_interval" "1d"
+
+    config=$(sing_box_cm_add_remote_ruleset "$config" "$ruleset_tag" "$format" "$url" "$detour" "$update_interval")
+    config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "rule_set" "$ruleset_tag")
+    config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "rule_set" "$ruleset_tag")
+}
+
+prepare_source_ruleset() {
+    local section="$1"
+    local name="$2"
+    local type="$3"
+    local route_rule_tag="$4"
+
+    log "Preparing a $name $type rule set for '$section' section" "debug"
+    ruleset_tag=$(get_ruleset_tag "$section" "$name" "$type")
+    ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
+    create_source_rule_set "$ruleset_filepath"
+    case $? in
+    0)
+        config=$(sing_box_cm_add_local_ruleset "$config" "$ruleset_tag" "source" "$ruleset_filepath")
+        config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "rule_set" "$ruleset_tag")
+        case "$type" in
+        domains)
+            config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "rule_set" "$ruleset_tag")
+            ;;
+        subnets) ;;
+        *)
+            log "Unsupported remote rule set type: $type" "error"
+            return 1
+            ;;
+        esac
+        ;;
+    3) log "Source rule set $ruleset_filepath already exists, skipping." "debug" ;;
+    esac
+}
+
+configure_user_domain_list() {
+    local section="$1"
+    local route_rule_tag="$2"
+
+    prepare_source_ruleset "$section" "user" "domains" "$route_rule_tag"
+
+    local user_domain_list_type items json_array
+    config_get user_domain_list_type "$section" "user_domain_list_type"
+    case "$user_domain_list_type" in
+    dynamic) config_get items "$section" "user_domains" ;;
+    text) config_get items "$section" "user_domains_text" ;;
+    esac
+
+    items="$(parse_domain_or_subnet_string_to_commas_string "$items" "domains")"
+    json_array="$(comma_string_to_json_array "$items")"
+    patch_source_ruleset_rules "$ruleset_filepath" "domain_suffix" "$json_array"
+}
+
+configure_user_subnet_list() {
+    local section="$1"
+    local route_rule_tag="$2"
+
+    prepare_source_ruleset "$section" "user" "subnets" "$route_rule_tag"
+
+    local user_subnet_list_type items json_array
+    config_get user_subnet_list_type "$section" "user_subnet_list_type"
+    case "$user_subnet_list_type" in
+    dynamic) config_get items "$section" "user_subnets" ;;
+    text) config_get items "$section" "user_subnets_text" ;;
+    esac
+
+    items="$(parse_domain_or_subnet_string_to_commas_string "$items" "subnets")"
+    json_array="$(comma_string_to_json_array "$items")"
+    patch_source_ruleset_rules "$ruleset_filepath" "ip_cidr" "$json_array"
+    nft_add_set_elements "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME" "$items"
+}
+
+configure_local_domain_lists() {
+    local section="$1"
+    local route_rule_tag="$2"
+
+    prepare_source_ruleset "$section" "local" "domains" "$route_rule_tag"
+
+    config_list_foreach "$section" "local_domain_lists" import_local_domain_list_handler "$ruleset_filepath"
+}
+
+import_local_domain_list_handler() {
+    local local_domain_list_filepath="$1"
+    local ruleset_filepath="$2"
+
+    if ! file_exists "$local_domain_list_filepath"; then
+        log "Local domain list file $local_domain_list_filepath not found" "error"
+        return 1
+    fi
+
+    import_plain_domain_list_to_local_source_ruleset_chunked "$local_domain_list_filepath" "$ruleset_filepath"
+}
+
+configure_local_subnet_lists() {
+    local section="$1"
+    local route_rule_tag="$2"
+
+    prepare_source_ruleset "$section" "local" "subnets" "$route_rule_tag"
+
+    config_list_foreach "$section" "local_subnet_lists" import_local_subnets_list_handler "$ruleset_filepath"
+}
+
+import_local_subnets_list_handler() {
+    local local_subnet_list_filepath="$1"
+    local ruleset_filepath="$2"
+
+    if ! file_exists "$local_subnet_list_filepath"; then
+        log "Local subnet list file $local_subnet_list_filepath not found" "error"
+        return 1
+    fi
+
+    import_plain_subnet_list_to_local_source_ruleset_chunked "$local_subnet_list_filepath" "$ruleset_filepath"
+    nft_add_set_elements_from_file_chunked "$local_subnet_list_filepath" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+}
+
+configure_remote_domain_or_subnet_list_handler() {
+    local url="$1"
+    local type="$2"
+    local section="$3"
+    local route_rule_tag="$4"
+
+    local file_extension
+    file_extension=$(url_get_file_extension "$url")
+    log "Detected file extension: '$file_extension'" "debug"
+    case "$file_extension" in
+    json | srs)
+        log "Creating a remote $type ruleset from the source URL" "info"
+        local basename ruleset_tag format detour update_interval
+        basename=$(url_get_basename "$url")
+        ruleset_tag=$(get_ruleset_tag "$section" "$basename" "remote-$type")
+        format="$(get_ruleset_format_by_file_extension "$file_extension")"
+        detour="$(get_download_detour_tag)"
+        config_get update_interval "settings" "update_interval" "1d"
+
+        config=$(sing_box_cm_add_remote_ruleset "$config" "$ruleset_tag" "$format" "$url" "$detour" "$update_interval")
+        config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "rule_set" "$ruleset_tag")
+        case "$type" in
+        domains)
+            config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "rule_set" "$ruleset_tag")
+            ;;
+        subnets) ;;
+        *) log "Unsupported remote rule set type: $type" "error" ;;
+        esac
+        ;;
+    *)
+        prepare_source_ruleset "$section" "remote" "$type" "$route_rule_tag"
+        ;;
+    esac
+}
+
+sing_box_configure_experimental() {
+    log "Configure the experimental section of a sing-box JSON configuration"
+
+    log "Configuring cache database"
+    local cache_file
+    config_get cache_file "settings" "cache_path" "/tmp/sing-box/cache.db"
+    config=$(sing_box_cm_configure_cache_file "$config" true "$cache_file" true)
+
+    log "Configuring Clash API"
+    local enable_yacd enable_yacd_wan_access clash_api_controller_address
+    config_get_bool enable_yacd "settings" "enable_yacd" 0
+    config_get_bool enable_yacd_wan_access "settings" "enable_yacd_wan_access" 0
+
+    if [ "$enable_yacd" -eq 1 ] && [ "$enable_yacd_wan_access" -eq 1 ]; then
+        clash_api_controller_address="0.0.0.0"
+    else
+        clash_api_controller_address="$(get_service_listen_address)"
+        if [ -z "$clash_api_controller_address" ]; then
+            log "Could not determine the listening IP address for the Clash API controller. It will run only on localhost." "warn"
+            clash_api_controller_address="127.0.0.1"
+        fi
+    fi
+
+    if [ "$enable_yacd" -eq 1 ]; then
+        log "YACD is enabled, enabling Clash API with downloadable YACD" "debug"
+        local yacd_secret_key external_controller_ui
+        config_get yacd_secret_key "settings" "yacd_secret_key"
+        external_controller_ui="ui"
+
+        config=$(
+            sing_box_cm_configure_clash_api \
+                "$config" \
+                "$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT" \
+                "$external_controller_ui" \
+                "$yacd_secret_key"
+        )
+    else
+        log "YACD is disabled, enabling Clash API in online mode" "debug"
+        config=$(
+            sing_box_cm_configure_clash_api "$config" "$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"
+        )
+    fi
+}
+
+sing_box_additional_inbounds() {
+    log "Configure the additional inbounds of a sing-box JSON configuration"
+
+    local download_lists_via_proxy
+    config_get_bool download_lists_via_proxy "settings" "download_lists_via_proxy" 0
+    if [ "$download_lists_via_proxy" -eq 1 ]; then
+        local download_lists_via_proxy_section section_outbound_tag
+        config_get download_lists_via_proxy_section "settings" "download_lists_via_proxy_section"
+        section_outbound_tag="$(get_outbound_tag_by_section "$download_lists_via_proxy_section")"
+        config=$(
+            sing_box_cf_add_mixed_inbound_and_route_rule \
+                "$config" \
+                "$SB_SERVICE_MIXED_INBOUND_TAG" \
+                "$SB_SERVICE_MIXED_INBOUND_ADDRESS" \
+                "$SB_SERVICE_MIXED_INBOUND_PORT" \
+                "$section_outbound_tag"
+        )
+    fi
+
+    config_foreach configure_section_mixed_proxy "section"
+}
+
+configure_section_mixed_proxy() {
+    local section="$1"
+
+    local mixed_inbound_enabled mixed_proxy_port mixed_inbound_tag mixed_outbound_tag mixed_proxy_address
+    config_get_bool mixed_inbound_enabled "$section" "mixed_proxy_enabled" 0
+    mixed_proxy_address="$(get_service_listen_address)"
+    if [ -z "$mixed_proxy_address" ]; then
+        log "Could not determine the listening IP address for the Mixed Proxy. The proxy will not be created." "warn"
+        return 1
+    fi
+    config_get mixed_proxy_port "$section" "mixed_proxy_port"
+    if [ "$mixed_inbound_enabled" -eq 1 ]; then
+        mixed_inbound_tag="$(get_inbound_tag_by_section "$section-mixed")"
+        mixed_outbound_tag="$(get_outbound_tag_by_section "$section")"
+        config=$(
+            sing_box_cf_add_mixed_inbound_and_route_rule \
+                "$config" \
+                "$mixed_inbound_tag" \
+                "$mixed_proxy_address" \
+                "$mixed_proxy_port" \
+                "$mixed_outbound_tag"
+        )
+    fi
+}
+
+sing_box_save_config() {
+    local sing_box_config_path temp_file_path current_config_hash temp_config_hash
+    config_get sing_box_config_path "settings" "config_path"
+    temp_file_path="$(mktemp)"
+
+    log "Save sing-box temporary config to $temp_file_path" "debug"
+    sing_box_cm_save_config_to_file "$config" "$temp_file_path"
+
+    sing_box_config_check "$temp_file_path"
+
+    current_config_hash=$(md5sum "$sing_box_config_path" 2> /dev/null | awk '{print $1}')
+    temp_config_hash=$(md5sum "$temp_file_path" | awk '{print $1}')
+    log "Current sing-box config hash: $current_config_hash" "debug"
+    log "Temporary sing-box config hash: $temp_config_hash" "debug"
+    if [ "$current_config_hash" != "$temp_config_hash" ]; then
+        log "sing-box configuration has changed and will be updated"
+        mv "$temp_file_path" "$sing_box_config_path"
+    else
+        log "sing-box configuration is unchanged"
+        rm "$temp_file_path"
+    fi
+}
+
+sing_box_config_check() {
+    local config_path="$1"
+
+    if ! sing-box -c "$config_path" check > /dev/null 2>&1; then
+        log "Sing-box configuration $config_path is invalid. Aborted." "fatal"
+        exit 1
+    fi
+}
+
+import_community_subnet_lists() {
+    local section="$1"
+    local community_lists
+    config_get community_lists "$section" "community_lists"
+    if [ -n "$community_lists" ]; then
+        log "Importing community subnet lists for '$section' section"
+        config_list_foreach "$section" "community_lists" import_community_service_subnet_list_handler
+    fi
+}
+
+import_community_service_subnet_list_handler() {
+    local service="$1"
+
+    case "$service" in
+    "twitter")
+        URL=$SUBNETS_TWITTER
+        ;;
+    "meta")
+        URL=$SUBNETS_META
+        ;;
+    "telegram")
+        URL=$SUBNETS_TELERAM
+        ;;
+    "cloudflare")
+        URL=$SUBNETS_CLOUDFLARE
+        ;;
+    "hetzner")
+        URL=$SUBNETS_HETZNER
+        ;;
+    "ovh")
+        URL=$SUBNETS_OVH
+        ;;
+    "digitalocean")
+        URL=$SUBNETS_DIGITALOCEAN
+        ;;
+    "cloudfront")
+        URL=$SUBNETS_CLOUDFRONT
+        ;;
+    "discord")
+        URL=$SUBNETS_DISCORD
+        nft_create_ipv4_set "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
+        nft add rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip daddr \
+            "@$NFT_DISCORD_SET_NAME" udp dport '{ 19000-20000, 50000-65535 }' meta mark set "$NFT_FAKEIP_MARK" counter
+        ;;
+    "roblox")
+        URL=$SUBNETS_ROBLOX
+        ;;
+    *) return 0 ;;
+    esac
+
+    local tmpfile http_proxy_address
+    tmpfile=$(mktemp)
+    http_proxy_address="$(get_service_proxy_address)"
+
+    if ! download_to_file "$URL" "$tmpfile" "$http_proxy_address" || [ ! -s "$tmpfile" ]; then
+        local cache_path
+        cache_path="$(get_community_subnet_cache_path "$service")"
+        if [ -s "$cache_path" ]; then
+            log "Download $service list failed, using cached subnet list" "warn"
+            cp "$cache_path" "$tmpfile"
+        else
+            log "Download $service list failed" "error"
+            return 1
+        fi
+    else
+        cache_community_subnet_list "$service" "$tmpfile"
+    fi
+
+    if [ "$service" = "discord" ]; then
+        nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_DISCORD_SET_NAME"
+    else
+        nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    fi
+
+    rm -f "$tmpfile"
+}
+
+import_domains_from_remote_domain_lists() {
+    local section="$1"
+    local remote_domain_lists
+    config_get remote_domain_lists "$section" "remote_domain_lists"
+    if [ -n "$remote_domain_lists" ]; then
+        log "Importing domains from remote domain lists for '$section' section"
+        config_list_foreach "$section" "remote_domain_lists" import_domains_from_remote_domain_list_handler "$section"
+    fi
+}
+
+import_domains_from_remote_domain_list_handler() {
+    local url="$1"
+    local section="$2"
+
+    log "Importing domains from URL: $url"
+
+    local file_extension
+    file_extension=$(url_get_file_extension "$url")
+    log "Detected file extension: '$file_extension'" "debug"
+    case "$file_extension" in
+    json | srs)
+        log "No update needed - sing-box manages updates automatically."
+        ;;
+    *)
+        log "Import domains from a remote plain-text list"
+        import_domains_from_remote_plain_file "$url" "$section"
+        ;;
+    esac
+}
+
+import_domains_from_remote_plain_file() {
+    local url="$1"
+    local section="$2"
+
+    local tmpfile http_proxy_address items json_array
+    tmpfile=$(mktemp)
+    http_proxy_address="$(get_service_proxy_address)"
+
+    download_to_file "$url" "$tmpfile" "$http_proxy_address"
+
+    if [ $? -ne 0 ] || [ ! -s "$tmpfile" ]; then
+        log "Download $url list failed" "error"
+        return 1
+    fi
+
+    convert_crlf_to_lf "$tmpfile"
+    ruleset_tag=$(get_ruleset_tag "$section" "remote" "domains")
+    ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
+    import_plain_domain_list_to_local_source_ruleset_chunked "$tmpfile" "$ruleset_filepath"
+
+    rm -f "$tmpfile"
+}
+
+import_subnets_from_remote_subnet_lists() {
+    local section="$1"
+    local remote_subnet_lists
+    config_get remote_subnet_lists "$section" "remote_subnet_lists"
+    if [ -n "$remote_subnet_lists" ]; then
+        log "Importing subnets from remote subnet lists for '$section' section"
+        config_list_foreach "$section" "remote_subnet_lists" import_subnets_from_remote_subnet_list_handler "$section"
+    fi
+}
+
+import_subnets_from_remote_subnet_list_handler() {
+    local url="$1"
+    local section="$2"
+
+    log "Importing subnets from URL: $url"
+
+    local file_extension
+    file_extension="$(url_get_file_extension "$url")"
+    log "Detected file extension: '$file_extension'" "debug"
+    case "$file_extension" in
+    json)
+        log "Import subnets from a remote JSON list" "info"
+        import_subnets_from_remote_json_file "$url"
+        ;;
+    srs)
+        log "Import subnets from a remote SRS list" "info"
+        import_subnets_from_remote_srs_file "$url"
+        ;;
+    *)
+        log "Import subnets from a remote plain-text list" "info"
+        import_subnets_from_remote_plain_file "$url" "$section"
+        ;;
+    esac
+}
+
+import_subnets_from_remote_json_file() {
+    local url="$1"
+    local json_tmpfile subnets_tmpfile http_proxy_address
+    json_tmpfile="$(mktemp)"
+    subnets_tmpfile="$(mktemp)"
+    http_proxy_address="$(get_service_proxy_address)"
+
+    download_to_file "$url" "$json_tmpfile" "$http_proxy_address"
+
+    if [ $? -ne 0 ] || [ ! -s "$json_tmpfile" ]; then
+        log "Download $url list failed" "error"
+        return 1
+    fi
+
+    extract_ip_cidr_from_json_ruleset_to_file "$json_tmpfile" "$subnets_tmpfile"
+    nft_add_set_elements_from_file_chunked "$subnets_tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    rm -f "$json_tmpfile" "$subnets_tmpfile"
+}
+
+import_subnets_from_remote_srs_file() {
+    local url="$1"
+
+    local binary_tmpfile json_tmpfile subnets_tmpfile http_proxy_address
+    binary_tmpfile="$(mktemp)"
+    json_tmpfile="$(mktemp)"
+    subnets_tmpfile="$(mktemp)"
+    http_proxy_address="$(get_service_proxy_address)"
+
+    download_to_file "$url" "$binary_tmpfile" "$http_proxy_address"
+
+    if [ $? -ne 0 ] || [ ! -s "$binary_tmpfile" ]; then
+        log "Download $url list failed" "error"
+        return 1
+    fi
+
+    if ! decompile_binary_ruleset "$binary_tmpfile" "$json_tmpfile"; then
+        log "Failed to decompile binary rule set file" "error"
+        return 1
+    fi
+
+    extract_ip_cidr_from_json_ruleset_to_file "$json_tmpfile" "$subnets_tmpfile"
+    nft_add_set_elements_from_file_chunked "$subnets_tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+    rm -f "$binary_tmpfile" "$json_tmpfile" "$subnets_tmpfile"
+}
+
+import_subnets_from_remote_plain_file() {
+    local url="$1"
+    local section="$2"
+
+    local tmpfile http_proxy_address items json_array
+    tmpfile=$(mktemp)
+    http_proxy_address="$(get_service_proxy_address)"
+
+    download_to_file "$url" "$tmpfile" "$http_proxy_address"
+
+    if [ $? -ne 0 ] || [ ! -s "$tmpfile" ]; then
+        log "Download $url list failed" "error"
+        return 1
+    fi
+
+    convert_crlf_to_lf "$tmpfile"
+
+    ruleset_tag=$(get_ruleset_tag "$section" "remote" "subnets")
+    ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
+    import_plain_subnet_list_to_local_source_ruleset_chunked "$tmpfile" "$ruleset_filepath"
+    nft_add_set_elements_from_file_chunked "$tmpfile" "$NFT_TABLE_NAME" "$NFT_COMMON_SET_NAME"
+
+    rm -f "$tmpfile"
+}
+
+## Support functions
+get_service_proxy_address() {
+    local download_lists_via_proxy
+    config_get_bool download_lists_via_proxy "settings" "download_lists_via_proxy" 0
+    if [ "$download_lists_via_proxy" -eq 1 ]; then
+        echo "$SB_SERVICE_MIXED_INBOUND_ADDRESS:$SB_SERVICE_MIXED_INBOUND_PORT"
+    else
+        echo ""
+    fi
+}
+
+get_download_detour_tag() {
+    config_get_bool download_lists_via_proxy "settings" "download_lists_via_proxy" 0
+    if [ "$download_lists_via_proxy" -eq 1 ]; then
+        local download_lists_via_proxy_section section_outbound_tag
+        config_get download_lists_via_proxy_section "settings" "download_lists_via_proxy_section"
+        section_outbound_tag="$(get_outbound_tag_by_section "$download_lists_via_proxy_section")"
+        echo "$section_outbound_tag"
+    else
+        echo ""
+    fi
+}
+
+_determine_first_outbound_section() {
+    local section="$1"
+
+    local connection_type
+    config_get connection_type "$section" "connection_type"
+
+    if [ "$connection_type" = "proxy" ] || [ "$connection_type" = "vpn" ]; then
+        [ -z "$first_section" ] && first_section="$1"
+    fi
+}
+
+get_first_outbound_section() {
+    local first_section=""
+
+    config_foreach _determine_first_outbound_section "section"
+
+    echo "$first_section"
+}
+
+get_sections_by_connection_type() {
+    local connection_type="$1"
+
+    uci show podkop | grep "\.connection_type='$connection_type'" | cut -d'.' -f2
+}
+
+section_by_connection_type_exists() {
+    local connection_type="$1"
+
+    if uci show podkop | grep -q "\.connection_type='$connection_type'"; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+section_has_enabled_lists() {
+    local section="$1"
+    local community_lists user_domain_list_type user_subnet_list_type local_domain_lists local_subnet_lists \
+        remote_domain_lists remote_subnet_lists
+
+    config_get community_lists "$section" "community_lists"
+    config_get user_domain_list_type "$section" "user_domain_list_type" "disabled"
+    config_get user_subnet_list_type "$section" "user_subnet_list_type" "disabled"
+    config_get local_domain_lists "$section" "local_domain_lists"
+    config_get local_subnet_lists "$section" "local_subnet_lists"
+    config_get remote_domain_lists "$section" "remote_domain_lists"
+    config_get remote_subnet_lists "$section" "remote_subnet_lists"
+
+    if [ -n "$community_lists" ] ||
+        [ "$user_domain_list_type" != "disabled" ] ||
+        [ "$user_subnet_list_type" != "disabled" ] ||
+        [ -n "$local_domain_lists" ] ||
+        [ -n "$local_subnet_lists" ] ||
+        [ -n "$remote_domain_lists" ] ||
+        [ -n "$remote_subnet_lists" ]; then
+        return 0
+    else
+        return 1
+    fi
+}
+
+get_service_listen_address() {
+    local service_listen_address
+
+    config_get service_listen_address "settings" "service_listen_address"
+    if [ -n "$service_listen_address" ]; then
+        log "Attention! The service_listen_address option is being used, overriding the automatic detection of the listening IP address!" "warn"
+        echo "$service_listen_address"
+        return 0
+    fi
+
+    local interface="lan"
+    network_get_ipaddr service_listen_address "$interface"
+
+    if [ -z "$service_listen_address" ]; then
+        log "Failed to determine the listening IP address. Please open an issue to report this problem: https://github.com/itdoginfo/podkop/issues" "error"
+        return 1
+    fi
+
+    echo "$service_listen_address"
+}
+
+## nftables
+nft_list_all_traffic_from_ip() {
+    local ip="$1"
+
+    if ! nft list chain inet "$NFT_TABLE_NAME" mangle | grep -q "ip saddr $ip"; then
+        nft insert rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip saddr "$ip" \
+            meta l4proto tcp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft insert rule inet "$NFT_TABLE_NAME" mangle iifname "@$NFT_INTERFACE_SET_NAME" ip saddr "$ip" \
+            meta l4proto udp meta mark set "$NFT_FAKEIP_MARK" counter
+        nft insert rule inet "$NFT_TABLE_NAME" mangle ip saddr "$ip" ip daddr @localv4 return
+    fi
+}
+
+# Diagnotics
+check_proxy() {
+    local sing_box_config_path
+    config_get sing_box_config_path "settings" "config_path"
+
+    if ! command -v sing-box > /dev/null 2>&1; then
+        nolog "sing-box is not installed"
+        return 1
+    fi
+
+    if [ ! -f "$sing_box_config_path" ]; then
+        nolog "Configuration file not found"
+        return 1
+    fi
+
+    nolog "Checking sing-box configuration..."
+
+    if ! sing-box -c "$sing_box_config_path" check > /dev/null; then
+        nolog "Invalid configuration"
+        return 1
+    fi
+
+    jq '
+    walk(
+        if type == "object" then
+            with_entries(
+                if .key == "uuid" then
+                    .value = "MASKED"
+                elif .key == "server" then
+                    .value = "MASKED"
+                elif .key == "server_name" then
+                    .value = "MASKED"
+                elif .key == "password" then
+                    .value = "MASKED"
+                elif .key == "public_key" then
+                    .value = "MASKED"
+                elif .key == "short_id" then
+                    .value = "MASKED"
+                elif .key == "fingerprint" then
+                    .value = "MASKED"
+                elif .key == "server_port" then
+                    .value = "MASKED"
+                else . end
+            )
+        else . end
+    )' "$sing_box_config_path"
+
+    nolog "Checking proxy connection..."
+
+    for attempt in $(seq 1 5); do
+        response=$(sing-box tools fetch ifconfig.me -D /etc/sing-box 2> /dev/null)
+        if echo "$response" | grep -q "^<html\|403 Forbidden"; then
+            continue
+        fi
+        if [[ $response =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            ip=$(echo "$response" | sed -n 's/^[0-9]\+\.[0-9]\+\.[0-9]\+\.\([0-9]\+\)$/X.X.X.\1/p')
+            nolog "$ip - should match proxy IP"
+            return 0
+        elif echo "$response" | grep -q "^[0-9a-fA-F:]*::[0-9a-fA-F:]*$\|^[0-9a-fA-F:]\+$"; then
+            ip=$(echo "$response" | sed 's/\([0-9a-fA-F]\+:[0-9a-fA-F]\+:[0-9a-fA-F]\+\):.*/\1:XXXX:XXXX:XXXX/')
+            nolog "$ip - should match proxy IP"
+            return 0
+        fi
+        if [ $attempt -eq 5 ]; then
+            nolog "Failed to get valid IP address after 5 attempts"
+            if [ -z "$response" ]; then
+                nolog "Error: Empty response"
+            else
+                nolog "Error response: $response"
+            fi
+            return 1
+        fi
+    done
+}
+
+check_nft() {
+    if ! command -v nft > /dev/null 2>&1; then
+        nolog "nft is not installed"
+        return 1
+    fi
+
+    nolog "Checking $NFT_TABLE_NAME rules..."
+
+    # Check if table exists
+    if ! nft list table inet "$NFT_TABLE_NAME" > /dev/null 2>&1; then
+        nolog "❌ $NFT_TABLE_NAME not found"
+        return 1
+    fi
+
+    local found_hetzner=0
+    local found_ovh=0
+
+    check_domain_list_contains() {
+        local section="$1"
+
+        config_get_bool domain_list_enabled "$section" "domain_list_enabled" "0"
+        if [ "$domain_list_enabled" -eq 1 ]; then
+            config_list_foreach "$section" "domain_list" check_domain_value
+        fi
+    }
+
+    check_domain_value() {
+        local domain_value="$1"
+
+        if [ "$domain_value" = "hetzner" ]; then
+            found_hetzner=1
+        elif [ "$domain_value" = "ovh" ]; then
+            found_ovh=1
+        fi
+    }
+
+    config_foreach check_domain_list_contains
+
+    if [ "$found_hetzner" -eq 1 ] || [ "$found_ovh" -eq 1 ]; then
+
+        local sets="podkop_subnets podkop_domains interfaces podkop_discord_subnets localv4"
+
+        nolog "Sets statistics:"
+        for set_name in $sets; do
+            if nft list set inet "$NFT_TABLE_NAME" $set_name > /dev/null 2>&1; then
+                # Count elements using grep to count commas and add 1 (last element has no comma)
+                local count=$(nft list set inet "$NFT_TABLE_NAME" $set_name 2> /dev/null | grep -o ',\|{' | wc -l)
+                echo "- $set_name: $count elements"
+            fi
+        done
+
+        nolog "Chain configurations:"
+
+        # Create a temporary file for processing
+        local tmp_file=$(mktemp)
+        nft list table inet "$NFT_TABLE_NAME" > "$tmp_file"
+
+        # Extract chain configurations without element listings
+        sed -n '/chain mangle {/,/}/p' "$tmp_file" | grep -v "elements" | grep -v "^[[:space:]]*[0-9]"
+        sed -n '/chain proxy {/,/}/p' "$tmp_file" | grep -v "elements" | grep -v "^[[:space:]]*[0-9]"
+
+        # Clean up
+        rm -f "$tmp_file"
+    else
+        # Simple view as originally implemented
+        nolog "Sets configuration:"
+        nft list table inet "$NFT_TABLE_NAME"
+    fi
+
+    nolog "NFT check completed"
+}
+
+check_logs() {
+    if ! command -v logread > /dev/null 2>&1; then
+        nolog "Error: logread command not found"
+        return 1
+    fi
+
+    local logs
+    logs=$(logread | grep -E "podkop|sing-box")
+
+    if [ -z "$logs" ]; then
+        nolog "Logs not found"
+        return 1
+    fi
+
+    # Find the last occurrence of "Starting podkop"
+    local start_line
+    start_line=$(echo "$logs" | grep -n "podkop.*Starting podkop" | tail -n 1 | cut -d: -f1)
+
+    if [ -n "$start_line" ]; then
+        echo "$logs" | tail -n +"$start_line"
+    else
+        nolog "No 'Starting podkop' message found, showing last 100 lines"
+        echo "$logs" | tail -n 100
+    fi
+}
+
+show_sing_box_config() {
+    local sing_box_config_path
+    config_get sing_box_config_path "settings" "config_path"
+    nolog "Current sing-box configuration:"
+
+    if [ ! -f "$sing_box_config_path" ]; then
+        nolog "Configuration file not found"
+        return 1
+    fi
+
+    jq '
+    walk(
+        if type == "object" then
+            with_entries(
+                if .key == "uuid" then
+                    .value = "MASKED"
+                elif .key == "server" then
+                    .value = "MASKED"
+                elif .key == "server_name" then
+                    .value = "MASKED"
+                elif .key == "password" then
+                    .value = "MASKED"
+                elif .key == "public_key" then
+                    .value = "MASKED"
+                elif .key == "short_id" then
+                    .value = "MASKED"
+                elif .key == "fingerprint" then
+                    .value = "MASKED"
+                elif .key == "server_port" then
+                    .value = "MASKED"
+                else . end
+            )
+        else . end
+    )' "$sing_box_config_path"
+}
+
+show_config() {
+    if [ ! -f "$PODKOP_CONFIG" ]; then
+        nolog "Configuration file not found"
+        return 1
+    fi
+
+    tmp_config=$(mktemp)
+
+    sed -e 's/\(option proxy_string\).*/\1 '\''MASKED'\''/g' \
+        -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
+        -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
+        -e 's/\(list selector_proxy_links\).*/\1 '\''MASKED'\''/g' \
+        -e 's/\(option subscription_url\).*/\1 '\''MASKED'\''/g' \
+        -e 's/\(list subscription_url\).*/\1 '\''MASKED'\''/g' \
+        -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
+        -e "s@\\(option domain_resolver_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
+        -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
+        "$PODKOP_CONFIG" > "$tmp_config"
+
+    cat "$tmp_config"
+    rm -f "$tmp_config"
+}
+
+show_version() {
+    echo "$PODKOP_VERSION"
+}
+
+show_sing_box_version() {
+    local version
+    version=$(sing-box version | head -n 1 | awk '{print $3}')
+    echo "$version"
+}
+
+show_system_info() {
+    echo "=== OpenWrt Version ==="
+    grep OPENWRT_RELEASE /etc/os-release | cut -d'"' -f2
+    echo
+    echo "=== Device Model ==="
+    cat /tmp/sysinfo/model
+}
+
+get_system_info() {
+    local podkop_version podkop_latest_version luci_app_version sing_box_version openwrt_version device_model
+
+    podkop_version="$PODKOP_VERSION"
+
+    podkop_latest_version=$(curl -m 3 -s https://api.github.com/repos/itdoginfo/podkop/releases/latest | grep '"tag_name":' | cut -d'"' -f4)
+    [ -z "$podkop_latest_version" ] && podkop_latest_version="unknown"
+
+    if [ -f /www/luci-static/resources/view/podkop/main.js ]; then
+        luci_app_version=$(grep 'var PODKOP_LUCI_APP_VERSION' /www/luci-static/resources/view/podkop/main.js | cut -d'"' -f2)
+    else
+        luci_app_version="not installed"
+    fi
+
+    if command -v sing-box > /dev/null 2>&1; then
+        sing_box_version=$(sing-box version 2> /dev/null | head -n 1 | awk '{print $3}')
+        [ -z "$sing_box_version" ] && sing_box_version="unknown"
+    else
+        sing_box_version="not installed"
+    fi
+
+    if [ -f /etc/os-release ]; then
+        openwrt_version=$(grep OPENWRT_RELEASE /etc/os-release | cut -d'"' -f2)
+        [ -z "$openwrt_version" ] && openwrt_version="unknown"
+    else
+        openwrt_version="unknown"
+    fi
+
+    if [ -f /tmp/sysinfo/model ]; then
+        device_model=$(cat /tmp/sysinfo/model)
+        [ -z "$device_model" ] && device_model="unknown"
+    else
+        device_model="unknown"
+    fi
+
+    echo "{\"podkop_version\": \"$podkop_version\", \"podkop_latest_version\": \"$podkop_latest_version\", \"luci_app_version\": \"$luci_app_version\", \"sing_box_version\": \"$sing_box_version\", \"openwrt_version\": \"$openwrt_version\", \"device_model\": \"$device_model\"}" | jq .
+}
+
+get_sing_box_status() {
+    local running=0
+    local enabled=0
+    local status=""
+    local version=""
+    local dns_configured=0
+
+    # Check if service is enabled
+    if [ -x /etc/rc.d/S99sing-box ]; then
+        enabled=1
+    fi
+
+    # Check if service is running
+    if pgrep -f "sing-box" > /dev/null; then
+        running=1
+        version=$(sing-box version | head -n 1 | awk '{print $3}')
+    fi
+
+    # Check DNS configuration
+    local dns_server
+    dns_server=$(uci get dhcp.@dnsmasq[0].server 2> /dev/null)
+    if [ "$dns_server" = "127.0.0.42" ]; then
+        dns_configured=1
+    fi
+
+    # Format status message
+    if [ $running -eq 1 ]; then
+        if [ $enabled -eq 1 ]; then
+            status="running & enabled"
+        else
+            status="running but disabled"
+        fi
+    else
+        if [ $enabled -eq 1 ]; then
+            status="stopped but enabled"
+        else
+            status="stopped & disabled"
+        fi
+    fi
+
+    echo "{\"running\":$running,\"enabled\":$enabled,\"status\":\"$status\",\"dns_configured\":$dns_configured}"
+}
+
+get_status() {
+    local enabled=0
+    local status=""
+
+    # Check if service is enabled
+    if [ -x /etc/rc.d/S99podkop ]; then
+        enabled=1
+        status="enabled"
+    else
+        status="disabled"
+    fi
+
+    echo "{\"enabled\":$enabled,\"status\":\"$status\"}"
+}
+
+check_dns_available() {
+    local dns_type dns_server bootstrap_dns_server
+    config_get dns_type "settings" "dns_type"
+    config_get dns_server "settings" "dns_server"
+    config_get bootstrap_dns_server "settings" "bootstrap_dns_server"
+
+    local dns_status=0
+    local dns_on_router=0
+    local bootstrap_dns_status=0
+    local dhcp_config_status=1
+    local domain="google.com"
+
+    # Mask NextDNS ID if present
+    local display_dns_server="$dns_server"
+    if echo "$dns_server" | grep -q "\.dns\.nextdns\.io$"; then
+        local nextdns_id
+        nextdns_id=$(echo "$dns_server" | cut -d'.' -f1)
+        display_dns_server="$(echo "$nextdns_id" | sed 's/./*/g').dns.nextdns.io"
+    elif echo "$dns_server" | grep -q "^dns\.nextdns\.io/"; then
+        local masked_path
+        masked_path=$(echo "$dns_server" | cut -d'/' -f2- | sed 's/./*/g')
+        display_dns_server="dns.nextdns.io/$masked_path"
+    fi
+
+    if [ "$dns_type" = "doh" ]; then
+        # Check if dns_server already contains a path
+        local doh_path="/dns-query"
+        if echo "$dns_server" | grep -q "/"; then
+            # Path is already present, extract it
+            doh_path="/$(echo "$dns_server" | cut -d'/' -f2-)"
+            dns_server="$(echo "$dns_server" | cut -d'/' -f1)"
+        fi
+
+        if dig @"$dns_server" "$domain" +https="$doh_path" +timeout=2 +tries=1 > /dev/null 2>&1; then
+            dns_status=1
+        fi
+    elif [ "$dns_type" = "dot" ]; then
+        if dig @"$dns_server" "$domain" +tls +timeout=2 +tries=1 > /dev/null 2>&1; then
+            dns_status=1
+        fi
+    elif [ "$dns_type" = "udp" ]; then
+        if dig @"$dns_server" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1; then
+            dns_status=1
+        fi
+    fi
+
+    # Check if local DNS resolver is working
+    if dig @127.0.0.1 "$domain" +timeout=2 +tries=1 > /dev/null 2>&1; then
+        dns_on_router=1
+    fi
+
+    # Check bootstrap DNS server
+    if [ -n "$bootstrap_dns_server" ]; then
+        if dig @"$bootstrap_dns_server" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1; then
+            bootstrap_dns_status=1
+        fi
+    fi
+
+    # Check if /etc/config/dhcp has server 127.0.0.42
+    config_load dhcp
+    config_foreach check_dhcp_has_podkop_dns dnsmasq
+    config_load "$PODKOP_CONFIG"
+
+    echo "{\"dns_type\":\"$dns_type\",\"dns_server\":\"$display_dns_server\",\"dns_status\":$dns_status,\"dns_on_router\":$dns_on_router,\"bootstrap_dns_server\":\"$bootstrap_dns_server\",\"bootstrap_dns_status\":$bootstrap_dns_status,\"dhcp_config_status\":$dhcp_config_status}" | jq .
+}
+
+check_dhcp_has_podkop_dns() {
+    local server_list cachesize noresolv server_found
+    config_get server_list "$1" "server"
+    config_get cachesize "$1" "cachesize"
+    config_get noresolv "$1" "noresolv"
+
+    server_found=0
+
+    if [ -n "$server_list" ]; then
+        for server in $server_list; do
+            if [ "$server" = "127.0.0.42" ]; then
+                server_found=1
+                break
+            fi
+        done
+    fi
+
+    if [ "$cachesize" != "0" ] || [ "$noresolv" != "1" ] || [ "$server_found" != "1" ]; then
+        dhcp_config_status=0
+    fi
+}
+
+check_nft_rules() {
+    local table_exist=0
+    local rules_mangle_exist=0
+    local rules_mangle_counters=0
+    local rules_mangle_output_exist=0
+    local rules_mangle_output_counters=0
+    local rules_proxy_exist=0
+    local rules_proxy_counters=0
+    local rules_other_mark_exist=0
+
+    # Generate traffic through PodkopTable
+    curl -m 3 -s "https://$CHECK_PROXY_IP_DOMAIN/check" > /dev/null 2>&1 &
+    local pid1=$!
+    curl -m 3 -s "https://$FAKEIP_TEST_DOMAIN/check" > /dev/null 2>&1 &
+    local pid2=$!
+
+    wait $pid1 2> /dev/null
+    wait $pid2 2> /dev/null
+    sleep 1
+
+    # Check if PodkopTable exists
+    if nft list table inet "$NFT_TABLE_NAME" > /dev/null 2>&1; then
+        table_exist=1
+
+        # Check mangle chain rules
+        if nft list chain inet "$NFT_TABLE_NAME" mangle > /dev/null 2>&1; then
+            local mangle_output
+            mangle_output=$(nft list chain inet "$NFT_TABLE_NAME" mangle)
+            if echo "$mangle_output" | grep -q "counter"; then
+                rules_mangle_exist=1
+
+                if echo "$mangle_output" | grep "counter" | grep -qv "packets 0 bytes 0"; then
+                    rules_mangle_counters=1
+                fi
+            fi
+        fi
+
+        # Check mangle_output chain rules
+        if nft list chain inet "$NFT_TABLE_NAME" mangle_output > /dev/null 2>&1; then
+            local mangle_output_output
+            mangle_output_output=$(nft list chain inet "$NFT_TABLE_NAME" mangle_output)
+            if echo "$mangle_output_output" | grep -q "counter"; then
+                rules_mangle_output_exist=1
+
+                if echo "$mangle_output_output" | grep "counter" | grep -qv "packets 0 bytes 0"; then
+                    rules_mangle_output_counters=1
+                fi
+            fi
+        fi
+
+        # Check proxy chain rules
+        if nft list chain inet "$NFT_TABLE_NAME" proxy > /dev/null 2>&1; then
+            local proxy_output
+            proxy_output=$(nft list chain inet "$NFT_TABLE_NAME" proxy)
+            if echo "$proxy_output" | grep -q "counter"; then
+                rules_proxy_exist=1
+
+                if echo "$proxy_output" | grep "counter" | grep -qv "packets 0 bytes 0"; then
+                    rules_proxy_counters=1
+                fi
+            fi
+        fi
+    fi
+
+    # Check for other mark rules outside PodkopTable
+    nft list tables 2> /dev/null | while read -r _ family table_name; do
+        [ -z "$table_name" ] && continue
+
+        [ "$table_name" = "$NFT_TABLE_NAME" ] && continue
+
+        if nft list table "$family" "$table_name" 2> /dev/null | grep -q "meta mark set"; then
+            touch /tmp/podkop_mark_check.$$
+            break
+        fi
+    done
+
+    if [ -f /tmp/podkop_mark_check.$$ ]; then
+        rules_other_mark_exist=1
+        rm -f /tmp/podkop_mark_check.$$
+    fi
+
+    echo "{\"table_exist\":$table_exist,\"rules_mangle_exist\":$rules_mangle_exist,\"rules_mangle_counters\":$rules_mangle_counters,\"rules_mangle_output_exist\":$rules_mangle_output_exist,\"rules_mangle_output_counters\":$rules_mangle_output_counters,\"rules_proxy_exist\":$rules_proxy_exist,\"rules_proxy_counters\":$rules_proxy_counters,\"rules_other_mark_exist\":$rules_other_mark_exist}" | jq .
+}
+
+check_sing_box() {
+    local sing_box_installed=0
+    local sing_box_version_ok=0
+    local sing_box_service_exist=0
+    local sing_box_autostart_disabled=0
+    local sing_box_process_running=0
+    local sing_box_ports_listening=0
+
+    # Check if sing-box is installed
+    if command -v sing-box > /dev/null 2>&1; then
+        sing_box_installed=1
+
+        # Check version (must be >= 1.12.4)
+        local version
+        version=$(sing-box version 2> /dev/null | head -n 1 | awk '{print $3}')
+        if [ -n "$version" ]; then
+            version=$(echo "$version" | sed 's/^v//')
+            local major
+            local minor
+            local patch
+            major=$(echo "$version" | cut -d. -f1)
+            minor=$(echo "$version" | cut -d. -f2)
+            patch=$(echo "$version" | cut -d. -f3)
+
+            # Compare version: must be >= 1.12.4
+            if [ "$major" -gt 1 ] ||
+                [ "$major" -eq 1 ] && [ "$minor" -gt 12 ] ||
+                [ "$major" -eq 1 ] && [ "$minor" -eq 12 ] && [ "$patch" -ge 4 ]; then
+                sing_box_version_ok=1
+            fi
+        fi
+    fi
+
+    # Check if service exists
+    if [ -f /etc/init.d/sing-box ]; then
+        sing_box_service_exist=1
+
+        if ! /etc/init.d/sing-box enabled 2> /dev/null; then
+            sing_box_autostart_disabled=1
+        fi
+    fi
+
+    # Check if process is running
+    if pgrep "sing-box" > /dev/null 2>&1; then
+        sing_box_process_running=1
+    fi
+
+    # Check if sing-box is listening on required ports
+    local port_53_ok=0
+    local port_1602_ok=0
+
+    if netstat -ln 2> /dev/null | grep -q "127.0.0.42:53"; then
+        port_53_ok=1
+    fi
+
+    if netstat -ln 2> /dev/null | grep -q "127.0.0.1:1602"; then
+        port_1602_ok=1
+    fi
+
+    # Both ports must be listening
+    if [ "$port_53_ok" = "1" ] && [ "$port_1602_ok" = "1" ]; then
+        sing_box_ports_listening=1
+    fi
+
+    echo "{\"sing_box_installed\":$sing_box_installed,\"sing_box_version_ok\":$sing_box_version_ok,\"sing_box_service_exist\":$sing_box_service_exist,\"sing_box_autostart_disabled\":$sing_box_autostart_disabled,\"sing_box_process_running\":$sing_box_process_running,\"sing_box_ports_listening\":$sing_box_ports_listening}" | jq .
+}
+
+check_fakeip() {
+    local response_file curl_meta http_code remote_ip fakeip_address body fakeip_status proxy_ip fakeip_timeout fakeip_route_check_v3
+
+    fakeip_route_check_v3=1
+    FAKEIP_TEST_DOMAIN="${FAKEIP_TEST_DOMAIN:-fakeip.podkop.fyi}"
+    fakeip_timeout="${PODKOP_FAKEIP_CHECK_TIMEOUT:-8}"
+    response_file="$(mktemp)"
+    curl_meta=$(curl -m "$fakeip_timeout" -s -o "$response_file" -w "%{http_code} %{remote_ip}" "https://$FAKEIP_TEST_DOMAIN/check" 2> /dev/null)
+    body="$(cat "$response_file" 2> /dev/null)"
+    rm -f "$response_file"
+
+    if [ -n "$body" ] && echo "$body" | jq -e . > /dev/null 2>&1; then
+        fakeip_status="$(echo "$body" | jq -r '.fakeip // false')"
+        if [ "$fakeip_status" = "true" ]; then
+            echo "$body" | jq .
+            return
+        fi
+
+        http_code="${curl_meta%% *}"
+        remote_ip="${curl_meta#* }"
+        fakeip_address="$(dig +short @127.0.0.42 "$FAKEIP_TEST_DOMAIN" 2> /dev/null | head -n 1)"
+        if [ "$http_code" = "200" ] && echo "$remote_ip" | grep -q "^198\.18\." && echo "$fakeip_address" | grep -q "^198\.18\."; then
+            proxy_ip="$(echo "$body" | jq -r '.IP // empty')"
+            printf '{"fakeip":true,"IP":"%s"}\n' "$proxy_ip" | jq .
+            return
+        fi
+
+        echo "$body" | jq .
+    fi
+}
+
+#######################################
+# Clash API interface for managing proxies and groups
+# Arguments:
+#   $1 - Action: get_proxies, get_proxy_latency, get_group_latency, set_group_proxy
+#   $2 - Proxy/Group tag (required for latency and set operations)
+#   $3 - Timeout in ms (optional, defaults: 2000 for proxy, 5000 for group) or target proxy tag for set_group_proxy
+# Outputs:
+#   JSON formatted response
+# Usage:
+#   clash_api get_proxies
+#   clash_api get_proxy_latency <proxy_tag> [timeout]
+#   clash_api get_group_latency <group_tag> [timeout]
+#   clash_api set_group_proxy <group_tag> <proxy_tag>
+#######################################
+
+clash_api() {
+    local action="$1"
+    local clash_api_controller_address CLASH_URL TEST_URL
+    clash_api_controller_address="$(get_service_listen_address)"
+    if [ -z "$clash_api_controller_address" ]; then
+        clash_api_controller_address="127.0.0.1"
+    fi
+    CLASH_URL="http://$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"
+    TEST_URL="https://www.gstatic.com/generate_204"
+
+    local enable_yacd_wan_access yacd_secret_key auth_header
+    config_get_bool enable_yacd_wan_access "settings" "enable_yacd_wan_access" 0
+    config_get yacd_secret_key "settings" "yacd_secret_key"
+
+    if [ "$enable_yacd_wan_access" -eq 1 ]; then
+        auth_header="Authorization: Bearer $yacd_secret_key"
+    else
+        auth_header=""
+    fi
+
+    case "$action" in
+    get_proxies)
+        curl -s --header "$auth_header" "$CLASH_URL/proxies" | jq .
+        ;;
+
+    get_proxy_latency)
+        local proxy_tag="$2"
+        local timeout="${3:-2000}"
+
+        if [ -z "$proxy_tag" ]; then
+            echo '{"error":"proxy_tag required"}' | jq .
+            return 1
+        fi
+
+        curl -G -s "$CLASH_URL/proxies/$proxy_tag/delay" \
+            --header "$auth_header" \
+            --data-urlencode "url=$TEST_URL" \
+            --data-urlencode "timeout=$timeout" | jq .
+        ;;
+
+    get_group_latency)
+        local group_tag="$2"
+        local timeout="${3:-5000}"
+
+        if [ -z "$group_tag" ]; then
+            echo '{"error":"group_tag required"}' | jq .
+            return 1
+        fi
+
+        curl -G -s "$CLASH_URL/group/$group_tag/delay" \
+            --header "$auth_header" \
+            --data-urlencode "url=$TEST_URL" \
+            --data-urlencode "timeout=$timeout" | jq .
+        ;;
+
+    set_group_proxy)
+        local group_tag="$2"
+        local proxy_tag="$3"
+
+        if [ -z "$group_tag" ] || [ -z "$proxy_tag" ]; then
+            echo '{"error":"group_tag and proxy_tag required"}' | jq .
+            return 1
+        fi
+
+        local response
+        response=$(
+            curl -X PUT -s -w "\n%{http_code}" "$CLASH_URL/proxies/$group_tag" \
+                --header "$auth_header" \
+                --data-raw "{\"name\":\"$proxy_tag\"}"
+        )
+
+        local http_code
+        local body
+        http_code=$(echo "$response" | tail -n 1)
+        body=$(echo "$response" | sed '$d')
+
+        case "$http_code" in
+        204)
+            echo "{\"success\":true,\"group\":\"$group_tag\",\"proxy\":\"$proxy_tag\"}" | jq .
+            ;;
+        404)
+            echo "{\"success\":false,\"error\":\"group_not_found\",\"message\":\"$group_tag does not exist\"}" | jq .
+            return 1
+            ;;
+        400)
+            if echo "$body" | grep -q "not found"; then
+                echo "{\"success\":false,\"error\":\"proxy_not_found\",\"message\":\"$proxy_tag not found in group $group_tag\"}" | jq .
+            else
+                echo '{"success":false,"error":"bad_request","message":"Invalid request"}' | jq .
+            fi
+            return 1
+            ;;
+        *)
+            if [ -n "$body" ]; then
+                local body_json
+                body_json=$(echo "$body" | jq -c .)
+                echo "{\"success\":false,\"http_code\":$http_code,\"body\":$body_json}" | jq .
+            else
+                echo "{\"success\":false,\"http_code\":$http_code}" | jq .
+            fi
+            return 1
+            ;;
+        esac
+        ;;
+
+    *)
+        echo '{"error":"unknown action","available":["get_proxies","get_proxy_latency","get_group_latency","set_group_proxy"]}' | jq .
+        return 1
+        ;;
+    esac
+}
+
+print_global() {
+    local message="$1"
+    echo "$message"
+}
+
+global_check() {
+    local PODKOP_LUCI_VERSION="Unknown"
+    [ -n "$1" ] && PODKOP_LUCI_VERSION="$1"
+
+    print_global "📡 Global check run!"
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "🛠️ System info"
+
+    local system_info_json
+    system_info_json=$(get_system_info)
+
+    if [ -n "$system_info_json" ]; then
+        local podkop_version podkop_latest_version luci_app_version sing_box_version openwrt_version device_model
+
+        podkop_version=$(echo "$system_info_json" | jq -r '.podkop_version // "unknown"')
+        podkop_latest_version=$(echo "$system_info_json" | jq -r '.podkop_latest_version // "unknown"')
+        luci_app_version=$(echo "$system_info_json" | jq -r '.luci_app_version // "unknown"')
+        sing_box_version=$(echo "$system_info_json" | jq -r '.sing_box_version // "unknown"')
+        openwrt_version=$(echo "$system_info_json" | jq -r '.openwrt_version // "unknown"')
+        device_model=$(echo "$system_info_json" | jq -r '.device_model // "unknown"')
+
+        print_global "🕳️ Podkop:        $podkop_version (latest: $podkop_latest_version)"
+        print_global "🕳️ LuCI App:      $luci_app_version"
+        print_global "📦 Sing-box:      $sing_box_version"
+        print_global "🛜 OpenWrt:       $openwrt_version"
+        print_global "🛜 Device:        $device_model"
+    else
+        print_global "❌ Failed to get system info"
+    fi
+
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "➡️ DNS status"
+
+    local dns_check_json
+    dns_check_json=$(check_dns_available)
+
+    if [ -n "$dns_check_json" ]; then
+        local dns_type dns_server dns_status dns_on_router bootstrap_dns_server bootstrap_dns_status dhcp_config_status
+
+        dns_type=$(echo "$dns_check_json" | jq -r '.dns_type // "unknown"')
+        dns_server=$(echo "$dns_check_json" | jq -r '.dns_server // "unknown"')
+        dns_status=$(echo "$dns_check_json" | jq -r '.dns_status // 0')
+        dns_on_router=$(echo "$dns_check_json" | jq -r '.dns_on_router // 0')
+        bootstrap_dns_server=$(echo "$dns_check_json" | jq -r '.bootstrap_dns_server // ""')
+        bootstrap_dns_status=$(echo "$dns_check_json" | jq -r '.bootstrap_dns_status // 0')
+        dhcp_config_status=$(echo "$dns_check_json" | jq -r '.dhcp_config_status // 0')
+
+        # Bootstrap DNS
+        if [ -n "$bootstrap_dns_server" ]; then
+            if [ "$bootstrap_dns_status" -eq 1 ]; then
+                print_global "✅ Bootstrap DNS: $bootstrap_dns_server"
+            else
+                print_global "❌ Bootstrap DNS: $bootstrap_dns_server"
+            fi
+        fi
+
+        # DNS server status
+        if [ "$dns_status" -eq 1 ]; then
+            print_global "✅ Main DNS: $dns_server [$dns_type]"
+        else
+            print_global "❌ Main DNS: $dns_server [$dns_type]"
+        fi
+
+        # DNS on router
+        if [ "$dns_on_router" -eq 1 ]; then
+            print_global "✅ DNS on router"
+        else
+            print_global "❌ DNS on router"
+        fi
+
+        # DHCP configuration check
+        local dont_touch_dhcp
+        config_get dont_touch_dhcp "settings" "dont_touch_dhcp"
+
+        if [ "$dont_touch_dhcp" = "1" ]; then
+            print_global "⚠️ dont_touch_dhcp is enabled. 📄 DHCP config:"
+            awk '/^config /{p=($2=="dnsmasq")} p' /etc/config/dhcp
+        elif [ "$dhcp_config_status" -eq 0 ]; then
+            print_global "❌ DHCP configuration differs from template. 📄 DHCP config:"
+            awk '/^config /{p=($2=="dnsmasq")} p' /etc/config/dhcp
+        else
+            print_global "✅ /etc/config/dhcp"
+        fi
+    else
+        print_global "❌ Failed to get DNS info"
+    fi
+
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "📦 Sing-box status"
+
+    local singbox_check_json
+    singbox_check_json=$(check_sing_box)
+
+    if [ -n "$singbox_check_json" ]; then
+        local sing_box_installed sing_box_version_ok sing_box_service_exist sing_box_autostart_disabled sing_box_process_running sing_box_ports_listening
+
+        sing_box_installed=$(echo "$singbox_check_json" | jq -r '.sing_box_installed // 0')
+        sing_box_version_ok=$(echo "$singbox_check_json" | jq -r '.sing_box_version_ok // 0')
+        sing_box_service_exist=$(echo "$singbox_check_json" | jq -r '.sing_box_service_exist // 0')
+        sing_box_autostart_disabled=$(echo "$singbox_check_json" | jq -r '.sing_box_autostart_disabled // 0')
+        sing_box_process_running=$(echo "$singbox_check_json" | jq -r '.sing_box_process_running // 0')
+        sing_box_ports_listening=$(echo "$singbox_check_json" | jq -r '.sing_box_ports_listening // 0')
+
+        if [ "$sing_box_installed" -eq 1 ]; then
+            print_global "✅ Sing-box installed"
+        else
+            print_global "❌ Sing-box installed"
+        fi
+
+        if [ "$sing_box_version_ok" -eq 1 ]; then
+            print_global "✅ Sing-box version is compatible (newer than 1.12.4)"
+        else
+            print_global "❌ Sing-box version is not compatible (older than 1.12.4)"
+        fi
+
+        if [ "$sing_box_service_exist" -eq 1 ]; then
+            print_global "✅ Sing-box service exist"
+        else
+            print_global "❌ Sing-box service exist"
+        fi
+
+        if [ "$sing_box_autostart_disabled" -eq 1 ]; then
+            print_global "✅ Sing-box autostart disabled"
+        else
+            print_global "❌ Sing-box autostart disabled"
+        fi
+
+        if [ "$sing_box_process_running" -eq 1 ]; then
+            print_global "✅ Sing-box process running"
+        else
+            print_global "❌ Sing-box process running"
+        fi
+
+        if [ "$sing_box_ports_listening" -eq 1 ]; then
+            print_global "✅ Sing-box listening ports"
+        else
+            print_global "❌ Sing-box listening ports"
+        fi
+    else
+        print_global "❌ Failed to get sing-box info"
+    fi
+
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "🧱 NFT rules status"
+
+    local nft_check_json
+    nft_check_json=$(check_nft_rules)
+
+    if [ -n "$nft_check_json" ]; then
+        local table_exist rules_mangle_exist rules_mangle_counters rules_mangle_output_exist rules_mangle_output_counters rules_proxy_exist rules_proxy_counters rules_other_mark_exist
+
+        table_exist=$(echo "$nft_check_json" | jq -r '.table_exist // 0')
+        rules_mangle_exist=$(echo "$nft_check_json" | jq -r '.rules_mangle_exist // 0')
+        rules_mangle_counters=$(echo "$nft_check_json" | jq -r '.rules_mangle_counters // 0')
+        rules_mangle_output_exist=$(echo "$nft_check_json" | jq -r '.rules_mangle_output_exist // 0')
+        rules_mangle_output_counters=$(echo "$nft_check_json" | jq -r '.rules_mangle_output_counters // 0')
+        rules_proxy_exist=$(echo "$nft_check_json" | jq -r '.rules_proxy_exist // 0')
+        rules_proxy_counters=$(echo "$nft_check_json" | jq -r '.rules_proxy_counters // 0')
+        rules_other_mark_exist=$(echo "$nft_check_json" | jq -r '.rules_other_mark_exist // 0')
+
+        if [ "$table_exist" -eq 1 ]; then
+            print_global "✅ Table exist"
+        else
+            print_global "❌ Table exist"
+        fi
+
+        if [ "$rules_mangle_exist" -eq 1 ]; then
+            print_global "✅ Rules mangle exist"
+        else
+            print_global "❌ Rules mangle exist"
+        fi
+
+        if [ "$rules_mangle_counters" -eq 1 ]; then
+            print_global "✅ Rules mangle counters"
+        else
+            print_global "⚠️  Rules mangle counters"
+        fi
+
+        if [ "$rules_mangle_output_exist" -eq 1 ]; then
+            print_global "✅ Rules mangle output exist"
+        else
+            print_global "❌ Rules mangle output exist"
+        fi
+
+        if [ "$rules_mangle_output_counters" -eq 1 ]; then
+            print_global "✅ Rules mangle output counters"
+        else
+            print_global "⚠️  Rules mangle output counters"
+        fi
+
+        if [ "$rules_proxy_exist" -eq 1 ]; then
+            print_global "✅ Rules proxy exist"
+        else
+            print_global "❌ Rules proxy exist"
+        fi
+
+        if [ "$rules_proxy_counters" -eq 1 ]; then
+            print_global "✅ Rules proxy counters"
+        else
+            print_global "⚠️  Rules proxy counters"
+        fi
+
+        if [ "$rules_other_mark_exist" -eq 1 ]; then
+            print_global "⚠️  Additional marking rules found:"
+            nft list ruleset | awk '/table inet '"$NFT_TABLE_NAME"'/{flag=1; next} /^table/{flag=0} !flag' | grep -E "mark set|meta mark"
+        else
+            print_global "✅ Additional marking rules found"
+        fi
+    else
+        print_global "❌ Failed to get NFT rules info"
+    fi
+
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "📄 Podkop config"
+    show_config
+
+    # print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # print_global "🔧 System check"
+
+    # if grep -E "^nameserver\s+([0-9]{1,3}\.){3}[0-9]{1,3}" "$RESOLV_CONF" | grep -vqE "127\.0\.0\.1|0\.0\.0\.0"; then
+    #     print_global "❌ /etc/resolv.conf contains external nameserver:"
+    #     cat /etc/resolv.conf
+    #     echo ""
+    # else
+    #     print_global "✅ /etc/resolv.conf"
+    # fi
+
+    # print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    # print_global "🧱 NFT table"
+    # check_nft
+
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "📄 WAN config"
+    if uci show network.wan > /dev/null 2>&1; then
+        awk '
+            /^config / {
+                p = ($2 == "interface" && $3 == "'\''wan'\''")
+                proto = ""
+            }
+            p {
+                if ($1 == "option" && $2 == "proto") {
+                    proto = $3
+                    print
+                } else if (proto == "'\''static'\''" && $1 == "option" && ($2 == "ipaddr" || $2 == "netmask" || $2 == "gateway")) {
+                    print "        option", $2, "'\''******'\''"
+                } else if (proto == "'\''pppoe'\''" && $1 == "option" && ($2 == "username" || $2 == "password")) {
+                    print "        option", $2, "'\''******'\''"
+                } else {
+                    print
+                }
+            }
+        ' /etc/config/network
+    else
+        print_global "❌ WAN configuration not found"
+    fi
+
+    if uci show network | grep -q endpoint_host; then
+        uci show network | grep endpoint_host | cut -d'=' -f2 | tr -d "'\" " | while read -r host; do
+            if [ "$host" = "engage.cloudflareclient.com" ]; then
+                print_global "⚠️ WARP detected: $host"
+                continue
+            fi
+
+            ip_prefix=$(echo "$host" | cut -d'.' -f1,2)
+            if echo "$CLOUDFLARE_OCTETS" | grep -wq "$ip_prefix"; then
+                print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                print_global "⚠️ WARP detected: $host"
+            fi
+        done
+    fi
+
+    if uci show network | grep -q route_allowed_ips; then
+        uci show network | grep "wireguard_.*\.route_allowed_ips='1'" | cut -d'.' -f1-2 | while read -r peer_section; do
+            local allowed_ips
+            allowed_ips=$(uci get "${peer_section}.allowed_ips" 2> /dev/null)
+
+            if [ "$allowed_ips" = "0.0.0.0/0" ]; then
+                print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+                print_global "⚠️ WG Route allowed IP enabled with 0.0.0.0/0"
+            fi
+        done
+    fi
+
+    if [ -f "/etc/init.d/zapret" ]; then
+        print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        print_global "⚠️ Zapret detected"
+    fi
+
+    print_global "━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+    print_global "🥸 FakeIP status"
+
+    local fakeip_check_json
+    fakeip_check_json=$(check_fakeip)
+
+    if [ -n "$fakeip_check_json" ]; then
+        local fakeip_status
+
+        fakeip_status=$(echo "$fakeip_check_json" | jq -r '.fakeip // false')
+
+        if [ "$fakeip_status" = "true" ]; then
+            print_global "✅ Router DNS is routed through sing-box"
+        else
+            print_global "⚠️ Router DNS is NOT routed through sing-box"
+        fi
+    else
+        print_global "❌ Failed to get FakeIP info"
+    fi
+
+    local fakeip_address
+    fakeip_address=$(dig +short @127.0.0.42 $FAKEIP_TEST_DOMAIN)
+
+    if echo "$fakeip_address" | grep -q "^198\.18\."; then
+        print_global "✅ Sing-box works with FakeIP: $fakeip_address"
+    else
+        print_global "❌ Sing-box does NOT work with FakeIP: $fakeip_address"
+    fi
+}
+
+show_help() {
+    cat << EOF
+Usage: $0 COMMAND
+
+Available commands:
+    start                   Start podkop service
+    stop                    Stop podkop service
+    reload                  Reload podkop configuration
+    restart                 Restart podkop service
+    main                    Run main podkop process
+    list_update             Update domain lists
+    subscription_update     Update subscription URLTest caches
+    subscription_update_json
+                            Update subscription URLTest caches and print JSON status
+    subscription_speedtest   Benchmark enabled subscription proxy items for a section
+    subscription_speedtest_start
+                            Start background benchmark for one subscription proxy item
+    subscription_speedtest_stop
+                            Stop background subscription benchmark
+    get_subscription_speedtest_status
+                            Show background subscription benchmark status
+    subscription_patch_update
+                            Update the Podkop subscriptions patch from GitHub
+    get_subscription_patch_update_status
+                            Show background patch update status
+    check_proxy             Check proxy connectivity
+    check_nft               Check NFT rules
+    check_nft_rules         Check NFT rules status
+    check_sing_box          Check sing-box installation and status
+    check_logs              Show podkop logs from system journal
+    check_sing_box_logs     Show sing-box logs
+    check_fakeip            Test FakeIP on router
+    clash_api               Clash API interface for managing proxies and groups
+    get_subscription_cached_links
+                            Show cached subscription proxy links for a section
+    get_subscription_skipped_links
+                            Show skipped subscription proxy links for a section
+    get_subscription_items
+                            Show subscription proxy items for a section
+    get_subscription_items_cached
+                            Show cached subscription proxy items without refresh
+    set_subscription_link_enabled
+                            Enable or disable a subscription proxy item by id
+    set_subscription_links_enabled
+                            Enable or disable multiple subscription proxy items by id
+    show_config             Display current podkop configuration
+    show_version            Show podkop version
+    show_sing_box_config    Show sing-box configuration
+    show_sing_box_version   Show sing-box version
+    show_system_info        Show system information
+    get_status              Get podkop service status
+    get_sing_box_status     Get sing-box service status
+    get_system_info         Get system information in JSON format
+    check_dns_available     Check DNS server availability
+    global_check            Run global system check
+EOF
+}
+
+case "$1" in
+start)
+    start
+    ;;
+stop)
+    stop
+    ;;
+reload)
+    reload
+    ;;
+restart)
+    restart
+    ;;
+main)
+    main
+    ;;
+list_update)
+    list_update
+    ;;
+subscription_update)
+    subscription_update "$2"
+    ;;
+subscription_update_json)
+    subscription_update_json "$2"
+    ;;
+subscription_speedtest)
+    subscription_speedtest "$2" "$3"
+    ;;
+subscription_speedtest_start)
+    subscription_speedtest_start "$2" "$3"
+    ;;
+subscription_speedtest_stop)
+    subscription_speedtest_stop
+    ;;
+get_subscription_speedtest_status)
+    get_subscription_speedtest_status
+    ;;
+subscription_patch_update)
+    subscription_patch_update
+    ;;
+get_subscription_patch_update_status)
+    get_subscription_patch_update_status
+    ;;
+check_proxy)
+    check_proxy
+    ;;
+check_nft)
+    check_nft
+    ;;
+check_nft_rules)
+    check_nft_rules
+    ;;
+check_sing_box)
+    check_sing_box
+    ;;
+check_logs)
+    check_logs
+    ;;
+check_sing_box_logs)
+    check_sing_box_logs
+    ;;
+check_fakeip)
+    check_fakeip
+    ;;
+clash_api)
+    clash_api "$2" "$3" "$4"
+    ;;
+get_subscription_cached_links)
+    get_subscription_cached_links "$2"
+    ;;
+get_subscription_skipped_links)
+    get_subscription_skipped_links "$2"
+    ;;
+get_subscription_items)
+    get_subscription_items "$2"
+    ;;
+get_subscription_items_cached)
+    get_subscription_items_cached "$2"
+    ;;
+set_subscription_link_enabled)
+    set_subscription_link_enabled "$2" "$3" "$4"
+    ;;
+set_subscription_links_enabled)
+    shift
+    set_subscription_links_enabled "$@"
+    ;;
+show_config)
+    show_config
+    ;;
+show_version)
+    show_version
+    ;;
+show_sing_box_config)
+    show_sing_box_config
+    ;;
+show_sing_box_version)
+    show_sing_box_version
+    ;;
+show_system_info)
+    show_system_info
+    ;;
+get_status)
+    get_status
+    ;;
+get_sing_box_status)
+    get_sing_box_status
+    ;;
+get_system_info)
+    get_system_info
+    ;;
+check_dns_available)
+    check_dns_available
+    ;;
+global_check)
+    global_check "${2:-}"
+    ;;
+*)
+    show_help
+    exit 1
+    ;;
+esac
+
+# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260627-mix-v1
+
+# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260704-fakeip-route-fix1
