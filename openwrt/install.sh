@@ -13,7 +13,7 @@ V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260708-runtime-0720-fix1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260709-dnsmasq-restart-fix1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -204,6 +204,12 @@ run_podkop_reload() {
 	fi
 
 	return 0
+}
+
+podkop_dnsmasq_configured() {
+	uci get dhcp.@dnsmasq[0].server 2>/dev/null | grep -Fxq "127.0.0.42" &&
+		[ "$(uci get dhcp.@dnsmasq[0].noresolv 2>/dev/null)" = "1" ] &&
+		[ "$(uci get dhcp.@dnsmasq[0].cachesize 2>/dev/null)" = "0" ]
 }
 
 get_path_size() {
@@ -950,10 +956,10 @@ rm -f /tmp/luci-indexcache
 rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 
 if [ -x /etc/init.d/podkop ]; then
-	if [ "$light_reload" -eq 1 ]; then
+	if [ "$light_reload" -eq 1 ] && podkop_dnsmasq_configured; then
 		reload_command="PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload"
 	else
-		reload_command="PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload"
+		reload_command="PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop restart"
 	fi
 
 	if ! run_podkop_reload "$reload_command"; then
