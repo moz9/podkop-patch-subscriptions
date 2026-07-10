@@ -108,6 +108,9 @@ function injectDnsOptimizerStyles() {
       border-collapse: collapse;
       table-layout: fixed;
     }
+    .pdk-dns-optimizer__table--main {
+      min-width: 880px;
+    }
     .pdk-dns-optimizer__table th,
     .pdk-dns-optimizer__table td {
       padding: 7px 8px;
@@ -116,12 +119,14 @@ function injectDnsOptimizerStyles() {
       vertical-align: top;
       overflow-wrap: anywhere;
     }
-    .pdk-dns-optimizer__table th:nth-child(1) { width: 23%; }
-    .pdk-dns-optimizer__table th:nth-child(2) { width: 12%; }
-    .pdk-dns-optimizer__table th:nth-child(3) { width: 12%; }
-    .pdk-dns-optimizer__table th:nth-child(4) { width: 12%; }
-    .pdk-dns-optimizer__table th:nth-child(5) { width: 18%; }
-    .pdk-dns-optimizer__table th:nth-child(6) { width: 23%; }
+    .pdk-dns-optimizer__table--main th:nth-child(1) { width: 20%; }
+    .pdk-dns-optimizer__table--main th:nth-child(2) { width: 9%; }
+    .pdk-dns-optimizer__table--main th:nth-child(3) { width: 9%; }
+    .pdk-dns-optimizer__table--main th:nth-child(4) { width: 9%; }
+    .pdk-dns-optimizer__table--main th:nth-child(5) { width: 10%; }
+    .pdk-dns-optimizer__table--main th:nth-child(6) { width: 12%; }
+    .pdk-dns-optimizer__table--main th:nth-child(7) { width: 14%; }
+    .pdk-dns-optimizer__table--main th:nth-child(8) { width: 17%; }
     .pdk-dns-optimizer__row--recommended {
       background: rgba(46, 189, 133, 0.08);
     }
@@ -217,7 +222,7 @@ function renderActionButton(text, className, disabled, onClick) {
     "button",
     {
       type: "button",
-      class: `cbi-button{className}`,
+      class: `cbi-button ${className}`,
       disabled: disabled || undefined,
       click: onClick,
     },
@@ -226,14 +231,37 @@ function renderActionButton(text, className, disabled, onClick) {
 }
 
 function resultClass(result) {
+  if (
+    Number(result.compatibilityPassed || 0) <
+      Number(result.compatibilityTotal || 0) ||
+    Number.isFinite(result.compatibilityScore) &&
+    result.compatibilityScore < 90
+  ) {
+    return "pdk-dns-optimizer__bad";
+  }
   if (result.reliable) {
-    return result.jitterMs <= 30 ? "pdk-dns-optimizer__ok" : "pdk-dns-optimizer__warn";
+    const tailSpread = Math.max(0, (result.p90Ms || 0) - result.medianMs);
+    return result.jitterMs <= 15 && tailSpread <= 25
+      ? "pdk-dns-optimizer__ok"
+      : "pdk-dns-optimizer__warn";
   }
   return "pdk-dns-optimizer__bad";
 }
 
 function resultVerdict(result) {
-  if (result.reliable && result.jitterMs <= 30) {
+  const tailSpread = Math.max(0, (result.p90Ms || 0) - result.medianMs);
+  if (
+    Number(result.compatibilityPassed || 0) <
+      Number(result.compatibilityTotal || 0) ||
+    Number.isFinite(result.compatibilityScore) &&
+    result.compatibilityScore < 90
+  ) {
+    return "Сбои на проверочных сервисах";
+  }
+  if (result.reliable && result.universalEligible === false) {
+    return "Стабильно, но DNS с фильтрацией";
+  }
+  if (result.reliable && result.jitterMs <= 15 && tailSpread <= 25) {
     return "Отлично";
   }
   if (result.reliable) {
@@ -248,6 +276,48 @@ function resultVerdict(result) {
   return "Есть потери или тайм-ауты";
 }
 
+function compatibilityLabel(result) {
+  const passed = Number(result.compatibilityPassed || 0);
+  const total = Number(result.compatibilityTotal || 0);
+  if (!total) {
+    return "—";
+  }
+  return `${passed}/${total}`;
+}
+
+function compatibilityTitle(result) {
+  const failures = Array.isArray(result.compatibilityFailures)
+    ? result.compatibilityFailures
+    : [];
+  const unstable = Array.isArray(result.compatibilityUnstable)
+    ? result.compatibilityUnstable
+    : [];
+  if (!failures.length && !unstable.length) {
+    return "Все проверочные сервисы стабильно разрешаются";
+  }
+  const details = [];
+  if (failures.length) {
+    details.push(`не разрешаются: ${failures.join(", ")}`);
+  }
+  if (unstable.length) {
+    details.push(`один из двух запросов не прошёл: ${unstable.join(", ")}`);
+  }
+  return details.join("; ");
+}
+
+function recommendationExplanation(status) {
+  const confidence = Number.isFinite(status.recommendationConfidence)
+    ? status.recommendationConfidence
+    : 100;
+  if (status.recommendationReason === "close_results_keep_current") {
+    return "Статистического преимущества нет: варианты практически равны, поэтому сохранён текущий DNS без случайного переключения.";
+  }
+  if (status.recommendationReason === "close_results") {
+    return `Преимущество слабое (${confidence}%): выбран лучший вариант по полной выборке.`;
+  }
+  return `Уверенность в преимуществе: ${confidence}%.`;
+}
+
 function renderRecommendation(status) {
   const result = status.recommendation;
   if (!result) {
@@ -255,7 +325,7 @@ function renderRecommendation(status) {
   }
 
   return E("div", { class: "pdk-dns-optimizer__recommendation" }, [
-    E("strong", {}, `Рекомендуется:{result.provider} (${protocolLabel(result.protocol)})`),
+    E("strong", {}, `Рекомендуется: ${result.provider} (${protocolLabel(result.protocol)})`),
     E("div", { class: "pdk-dns-optimizer__pair" }, [
       E("span", {}, [E("b", {}, "Основной: "), result.dnsServer]),
       E("span", {}, [E("b", {}, "Bootstrap: "), `${result.bootstrapProvider} (${result.bootstrapDnsServer})`]),
@@ -263,7 +333,7 @@ function renderRecommendation(status) {
     E(
       "div",
       { class: "pdk-dns-optimizer__detail" },
-      `${result.successCount}/${result.totalQueries} успешных запросов, медиана{result.medianMs} мс, разброс ${result.jitterMs} мс; bootstrap ${result.bootstrapMedianMs} мс. NXDOMAIN не подменяется. ${profileLabel(result.profile)}.`,
+      `Совместимость сервисов ${compatibilityLabel(result)}, стабильно в обоих проходах ${result.compatibilityStable || 0}/${result.compatibilityTotal || 0}; ${result.successCount}/${result.totalQueries} успешных запросов, медиана ${result.medianMs} мс, P90 ${result.p90Ms} мс, стабильный разброс ${result.jitterMs} мс; bootstrap ${result.bootstrapMedianMs} мс. NXDOMAIN не подменяется. ${profileLabel(result.profile)}. ${recommendationExplanation(status)}`,
     ),
   ]);
 }
@@ -287,20 +357,28 @@ function renderMainResults(status) {
       E("td", {}, [E("b", {}, result.provider), E("div", { class: "pdk-dns-optimizer__detail" }, result.dnsServer)]),
       E("td", { class: resultClass(result) }, `${result.successRate}%`),
       E("td", {}, result.medianMs ? `${result.medianMs} мс` : "—"),
+      E("td", {}, result.p90Ms ? `${result.p90Ms} мс` : "—"),
       E("td", {}, result.jitterMs || result.reliable ? `${result.jitterMs} мс` : "—"),
+      E(
+        "td",
+        { class: resultClass(result), title: compatibilityTitle(result) },
+        compatibilityLabel(result),
+      ),
       E("td", {}, profileLabel(result.profile)),
       E("td", { class: resultClass(result) }, resultVerdict(result)),
     ]);
   });
 
   return E("div", { class: "pdk-dns-optimizer__table-wrap" }, [
-    E("table", { class: "pdk-dns-optimizer__table" }, [
+    E("table", { class: "pdk-dns-optimizer__table pdk-dns-optimizer__table--main" }, [
       E("thead", {}, [
         E("tr", {}, [
           E("th", {}, "Основной DNS"),
           E("th", {}, "Успех"),
           E("th", {}, "Медиана"),
-          E("th", {}, "Разброс"),
+          E("th", {}, "P90"),
+          E("th", {}, "Разброс IQR"),
+          E("th", {}, "Сервисы"),
           E("th", {}, "Особенности"),
           E("th", {}, "Оценка"),
         ]),
@@ -328,7 +406,8 @@ function renderBootstrapResults(status) {
             E("th", {}, "Адрес"),
             E("th", {}, "Успех"),
             E("th", {}, "Медиана"),
-            E("th", {}, "Разброс"),
+            E("th", {}, "P90"),
+            E("th", {}, "Разброс IQR"),
             E("th", {}, "Тип"),
           ]),
         ]),
@@ -341,6 +420,7 @@ function renderBootstrapResults(status) {
               E("td", {}, result.server),
               E("td", { class: resultClass(result) }, `${result.successRate}%`),
               E("td", {}, result.medianMs ? `${result.medianMs} мс` : "—"),
+              E("td", {}, result.p90Ms ? `${result.p90Ms} мс` : "—"),
               E("td", {}, result.jitterMs || result.reliable ? `${result.jitterMs} мс` : "—"),
               E("td", {}, profileLabel(result.profile)),
             ]),
@@ -410,7 +490,7 @@ function renderDnsOptimizer() {
         E(
           "div",
           { class: "pdk-dns-optimizer__description" },
-          "Проверяет реальные DNS-запросы с роутера и подбирает совместимую пару основного и bootstrap DNS для выбранного выше протокола.",
+          "Проверяет стабильность, отсутствие подмены и совместимость с Google Play, игровыми и CDN-сервисами. Скорость учитывается только после этих проверок.",
         ),
       ]),
       E("div", { class: "pdk-dns-optimizer__actions" }, [
@@ -431,7 +511,7 @@ function renderDnsOptimizer() {
     ]),
     E("div", { class: "pdk-dns-optimizer__status" }, optimizerMessage(status)),
     E("div", { class: "pdk-dns-optimizer__progress" }, [
-      E("span", { style: `width:{Math.max(0, Math.min(100, status.progress || 0))}%` }),
+      E("span", { style: `width: ${Math.max(0, Math.min(100, status.progress || 0))}%` }),
     ]),
     renderRecommendation(status),
     renderMainResults(status),
@@ -448,6 +528,16 @@ function updateDnsOptimizerNode() {
   const replacement = renderDnsOptimizer();
   dnsOptimizerState.node.replaceWith(replacement);
   dnsOptimizerState.node = replacement;
+}
+
+function scheduleDnsOptimizerRefresh(delay) {
+  if (dnsOptimizerState.pollTimer) {
+    window.clearTimeout(dnsOptimizerState.pollTimer);
+  }
+  dnsOptimizerState.pollTimer = window.setTimeout(
+    refreshDnsOptimizerStatus,
+    delay,
+  );
 }
 
 async function refreshDnsOptimizerStatus() {
@@ -489,30 +579,19 @@ async function startDnsBenchmark() {
     progress: 0,
   };
   updateDnsOptimizerNode();
+  scheduleDnsOptimizerRefresh(250);
 
   try {
     const result = await callDnsOptimizer(["benchmark_start", protocol]);
     if (!result.success) {
       if (result.error === "busy") {
-        dnsOptimizerState.pollTimer = window.setTimeout(
-          refreshDnsOptimizerStatus,
-          250,
-        );
         return;
       }
       throw new Error(result.error || "start_failed");
     }
-    dnsOptimizerState.pollTimer = window.setTimeout(
-      refreshDnsOptimizerStatus,
-      500,
-    );
-  } catch (error) {
-    dnsOptimizerState.status = {
-      state: "error",
-      message: error.message === "busy" ? "starting" : "worker_stopped",
-      progress: 100,
-    };
-    updateDnsOptimizerNode();
+    scheduleDnsOptimizerRefresh(250);
+  } catch (_error) {
+    scheduleDnsOptimizerRefresh(250);
   }
 }
 
@@ -528,6 +607,7 @@ async function applyRecommendedDns() {
     progress: 5,
   };
   updateDnsOptimizerNode();
+  scheduleDnsOptimizerRefresh(250);
 
   try {
     const result = await callDnsOptimizer([
@@ -538,25 +618,13 @@ async function applyRecommendedDns() {
     ]);
     if (!result.success) {
       if (result.error === "busy") {
-        dnsOptimizerState.pollTimer = window.setTimeout(
-          refreshDnsOptimizerStatus,
-          250,
-        );
         return;
       }
       throw new Error(result.error || "start_failed");
     }
-    dnsOptimizerState.pollTimer = window.setTimeout(
-      refreshDnsOptimizerStatus,
-      500,
-    );
+    scheduleDnsOptimizerRefresh(250);
   } catch (_error) {
-    dnsOptimizerState.status = {
-      state: "error",
-      message: "worker_stopped",
-      progress: 100,
-    };
-    updateDnsOptimizerNode();
+    scheduleDnsOptimizerRefresh(250);
   }
 }
 
@@ -568,30 +636,19 @@ async function rollbackDns() {
     progress: 5,
   };
   updateDnsOptimizerNode();
+  scheduleDnsOptimizerRefresh(250);
 
   try {
     const result = await callDnsOptimizer(["rollback_start"]);
     if (!result.success) {
       if (result.error === "busy") {
-        dnsOptimizerState.pollTimer = window.setTimeout(
-          refreshDnsOptimizerStatus,
-          250,
-        );
         return;
       }
       throw new Error(result.error || "start_failed");
     }
-    dnsOptimizerState.pollTimer = window.setTimeout(
-      refreshDnsOptimizerStatus,
-      500,
-    );
+    scheduleDnsOptimizerRefresh(250);
   } catch (_error) {
-    dnsOptimizerState.status = {
-      state: "error",
-      message: "rollback_failed",
-      progress: 100,
-    };
-    updateDnsOptimizerNode();
+    scheduleDnsOptimizerRefresh(250);
   }
 }
 

@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260710-dns-optimizer-v3"
+VERSION="20260710-dns-optimizer-v5"
 STATE_DIR="/tmp/podkop-dns-optimizer"
 STATUS_FILE="$STATE_DIR/status.json"
 LOG_FILE="$STATE_DIR/worker.log"
@@ -195,6 +195,28 @@ EOF
     fi
 }
 
+write_compatibility_domains() {
+    cat <<'EOF'
+google_play|play.googleapis.com
+google_play|android.clients.google.com
+google_play|connectivitycheck.gstatic.com
+google_downloads|dl.google.com
+google_downloads|redirector.gvt1.com
+gaming|steamcdn-a.akamaihd.net
+gaming|media.steampowered.com
+cdn|cdn.jsdelivr.net
+developer|github.com
+software|www.microsoft.com
+EOF
+}
+
+profile_is_universal() {
+    case "$1" in
+        unfiltered|privacy|custom|isp) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 query_status() {
     sed -n 's/.*status: \([A-Z][A-Z]*\).*/\1/p' | head -n 1
 }
@@ -218,16 +240,16 @@ run_dns_query() {
             ;;
         doh)
             if [ -n "$tls_hostname" ]; then
-                output="$(run_with_timeout 5 dig @"$endpoint_ip" "$domain" A +https="$path" +tls-hostname="$tls_hostname" +timeout=3 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +https="$path" +tls-hostname="$tls_hostname" +timeout=2 +tries=1 +stats 2>&1 || true)"
             else
-                output="$(run_with_timeout 5 dig @"$endpoint_ip" "$domain" A +https="$path" +timeout=3 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +https="$path" +timeout=2 +tries=1 +stats 2>&1 || true)"
             fi
             ;;
         dot)
             if [ -n "$tls_hostname" ]; then
-                output="$(run_with_timeout 5 dig @"$endpoint_ip" "$domain" A +tls +tls-hostname="$tls_hostname" +timeout=3 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +tls +tls-hostname="$tls_hostname" +timeout=2 +tries=1 +stats 2>&1 || true)"
             else
-                output="$(run_with_timeout 5 dig @"$endpoint_ip" "$domain" A +tls +timeout=3 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +tls +timeout=2 +tries=1 +stats 2>&1 || true)"
             fi
             ;;
         *)
@@ -261,23 +283,30 @@ resolve_host() {
 
 calculate_stats() {
     local file="$1"
-    local count median min max jitter position
+    local count median q1 q3 jitter p90 median_position q1_position q3_position p90_position sorted
 
     count="$(wc -l < "$file" | tr -d ' ')"
     case "$count" in
         ''|*[!0-9]*) count=0 ;;
     esac
     if [ "$count" -eq 0 ]; then
-        printf '0|0\n'
+        printf '0|0|0\n'
         return 0
     fi
 
-    position=$(( (count + 1) / 2 ))
-    median="$(sort -n "$file" | sed -n "${position}p")"
-    min="$(sort -n "$file" | head -n 1)"
-    max="$(sort -n "$file" | tail -n 1)"
-    jitter=$((max - min))
-    printf '%s|%s\n' "$median" "$jitter"
+    sorted="$(mktemp)"
+    sort -n "$file" > "$sorted"
+    median_position=$(( (count + 1) / 2 ))
+    q1_position=$(( (count + 3) / 4 ))
+    q3_position=$(( (3 * count + 3) / 4 ))
+    p90_position=$(( (9 * count + 9) / 10 ))
+    median="$(sed -n "${median_position}p" "$sorted")"
+    q1="$(sed -n "${q1_position}p" "$sorted")"
+    q3="$(sed -n "${q3_position}p" "$sorted")"
+    p90="$(sed -n "${p90_position}p" "$sorted")"
+    rm -f "$sorted"
+    jitter=$((q3 - q1))
+    printf '%s|%s|%s\n' "$median" "$jitter" "$p90"
 }
 
 benchmark_bootstrap_candidate() {
@@ -285,56 +314,66 @@ benchmark_bootstrap_candidate() {
     local provider="$2"
     local server="$3"
     local profile="$4"
-    local times domain output success failures total stats median jitter success_rate score reliable
+    local times domain round output success failures total stats median jitter p90 success_rate score reliable
 
     times="$(mktemp)"
     success=0
     failures=0
-    total=0
-    for domain in example.com github.com cdn.jsdelivr.net; do
-        total=$((total + 1))
-        output="$(run_dns_query udp "$server" "" "" "$domain" NOERROR 2> /dev/null || true)"
-        if [ -n "$output" ]; then
-            printf '%s\n' "$output" >> "$times"
-            success=$((success + 1))
-        else
-            failures=$((failures + 1))
-            [ "$failures" -ge 2 ] && break
-        fi
+    total=8
+    run_dns_query udp "$server" "" "" example.net NOERROR >/dev/null 2>&1 || true
+    for round in 1 2; do
+        for domain in example.com github.com cdn.jsdelivr.net cloudflare.com; do
+            output="$(run_dns_query udp "$server" "" "" "$domain" NOERROR 2> /dev/null || true)"
+            if [ -n "$output" ]; then
+                printf '%s\n' "$output" >> "$times"
+                success=$((success + 1))
+            else
+                failures=$((failures + 1))
+                [ "$failures" -ge 2 ] && break 2
+            fi
+        done
     done
-
-    total=3
 
     stats="$(calculate_stats "$times")"
     rm -f "$times"
     median="${stats%%|*}"
-    jitter="${stats#*|}"
+    stats="${stats#*|}"
+    jitter="${stats%%|*}"
+    p90="${stats#*|}"
     success_rate=$((success * 100 / total))
-    score=$((success_rate * 10000 - median * 20 - jitter * 10))
+    score=$((success_rate * 10000 - median * 25 - p90 * 12 - jitter * 15))
     reliable=false
-    [ "$success" -eq "$total" ] && reliable=true
+    [ "$success" -ge 7 ] && reliable=true
 
     jq -cn \
         --arg id "$id" --arg provider "$provider" --arg server "$server" --arg profile "$profile" \
         --argjson successCount "$success" --argjson totalQueries "$total" \
-        --argjson successRate "$success_rate" --argjson medianMs "$median" --argjson jitterMs "$jitter" \
+        --argjson successRate "$success_rate" --argjson medianMs "$median" --argjson jitterMs "$jitter" --argjson p90Ms "$p90" \
         --argjson score "$score" --argjson reliable "$reliable" \
-        '{id:$id,provider:$provider,server:$server,profile:$profile,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,jitterMs:$jitterMs,score:$score,reliable:$reliable}'
+        '{id:$id,provider:$provider,server:$server,profile:$profile,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,score:$score,reliable:$reliable}'
 }
 
 find_compatible_bootstrap() {
     local bootstrap_json="$1"
     local host="$2"
     local main_id="$3"
-    local family server ip line candidates
+    local family server ip line candidates current_bootstrap
 
     family="${main_id%%_*}"
+    current_bootstrap="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
     candidates="$(mktemp)"
-    jq --arg family "$family" '
+    jq --arg family "$family" --arg current "$current_bootstrap" '
         map(select(.reliable == true))
         | sort_by(.score)
         | reverse
-        | (map(select((.id | startswith($family)) | not)) + map(select(.id | startswith($family))))
+        | (map(select((.id | startswith($family)) | not)) + map(select(.id | startswith($family)))) as $ranked
+        | ($ranked[0] // null) as $best
+        | (map(select(.server == $current))[0] // null) as $currentResult
+        | if $best != null and $currentResult != null
+            and (($currentResult.id | startswith($family)) | not)
+            and (($best.score - $currentResult.score) <= (($best.jitterMs + $currentResult.jitterMs + 5) * 40))
+          then [$currentResult] + ($ranked | map(select(.server != $current)))
+          else $ranked end
     ' "$bootstrap_json" > "$candidates"
 
     if is_ipv4 "$host"; then
@@ -366,16 +405,25 @@ benchmark_main_candidate() {
     local profile="$5"
     local bootstrap_json="$6"
     local host path compatible bootstrap endpoint_ip bootstrap_line bootstrap_provider bootstrap_median bootstrap_jitter
-    local times domain round output success failures total stats median jitter success_rate nxdomain_ok reliable score error stop_early
+    local times compatibility_domains successful_domains domain category round output success failures total stats median jitter p90 success_rate nxdomain_ok reliable score error stop_early
+    local compatibility_total compatibility_passed compatibility_stable compatibility_score compatibility_failures compatibility_unstable universal_eligible
 
     host="$(candidate_host "$value")"
     path="$(candidate_path "$value")"
+    compatibility_domains="$(mktemp)"
+    successful_domains="$(mktemp)"
+    printf '__probe_sentinel__\n' > "$successful_domains"
+    write_compatibility_domains > "$compatibility_domains"
+    compatibility_total="$(wc -l < "$compatibility_domains" | tr -d ' ')"
+    total=$((compatibility_total * 2))
     compatible="$(find_compatible_bootstrap "$bootstrap_json" "$host" "$id" || true)"
     if [ -z "$compatible" ]; then
         jq -cn \
             --arg id "$id" --arg provider "$provider" --arg dnsServer "$value" --arg profile "$profile" \
-            --arg protocol "$protocol" --arg error "bootstrap_failed" \
-            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,successCount:0,totalQueries:8,successRate:0,medianMs:0,jitterMs:0,nxdomainOk:false,reliable:false,score:-1000000,error:$error}'
+            --arg protocol "$protocol" --arg error "bootstrap_failed" --argjson totalQueries "$total" \
+            --argjson compatibilityTotal "$compatibility_total" \
+            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,successCount:0,totalQueries:$totalQueries,successRate:0,medianMs:0,p90Ms:0,jitterMs:0,nxdomainOk:false,compatibilityPassed:0,compatibilityStable:0,compatibilityTotal:$compatibilityTotal,compatibilityScore:0,compatibilityFailures:[],compatibilityUnstable:[],universalEligible:false,reliable:false,score:-1000000,error:$error}'
+        rm -f "$compatibility_domains" "$successful_domains"
         return 0
     fi
 
@@ -390,10 +438,15 @@ benchmark_main_candidate() {
     times="$(mktemp)"
     success=0
     failures=0
-    total=8
     stop_early=0
+    if is_ipv4 "$host"; then
+        run_dns_query "$protocol" "$endpoint_ip" "" "$path" example.net NOERROR >/dev/null 2>&1 || true
+    else
+        run_dns_query "$protocol" "$endpoint_ip" "$host" "$path" example.net NOERROR >/dev/null 2>&1 || true
+    fi
     for round in 1 2; do
-        for domain in example.com github.com cdn.jsdelivr.net cloudflare.com; do
+        while IFS='|' read -r category domain; do
+            [ -n "$domain" ] || continue
             if is_ipv4 "$host"; then
                 output="$(run_dns_query "$protocol" "$endpoint_ip" "" "$path" "$domain" NOERROR 2> /dev/null || true)"
             else
@@ -401,6 +454,7 @@ benchmark_main_candidate() {
             fi
             if [ -n "$output" ]; then
                 printf '%s\n' "$output" >> "$times"
+                printf '%s\n' "$domain" >> "$successful_domains"
                 success=$((success + 1))
             else
                 failures=$((failures + 1))
@@ -409,12 +463,12 @@ benchmark_main_candidate() {
                     break
                 fi
             fi
-        done
+        done < "$compatibility_domains"
         [ "$stop_early" -eq 1 ] && break
     done
 
     nxdomain_ok=false
-    if [ "$success" -eq "$total" ]; then
+    if [ "$success" -ge $((total - 1)) ]; then
         if is_ipv4 "$host"; then
             output="$(run_dns_query "$protocol" "$endpoint_ip" "" "$path" "podkop-dns-test.invalid" NXDOMAIN 2> /dev/null || true)"
         else
@@ -426,16 +480,43 @@ benchmark_main_candidate() {
     stats="$(calculate_stats "$times")"
     rm -f "$times"
     median="${stats%%|*}"
-    jitter="${stats#*|}"
+    stats="${stats#*|}"
+    jitter="${stats%%|*}"
+    p90="${stats#*|}"
     success_rate=$((success * 100 / total))
-    score=$((success_rate * 10000 - median * 20 - jitter * 10 - bootstrap_median * 5))
+    compatibility_passed="$(awk -F '|' '
+        NR == FNR { successes[$0]++; next }
+        successes[$2] >= 1 { passed++ }
+        END { print passed + 0 }
+    ' "$successful_domains" "$compatibility_domains")"
+    compatibility_stable="$(awk -F '|' '
+        NR == FNR { successes[$0]++; next }
+        successes[$2] >= 2 { stable++ }
+        END { print stable + 0 }
+    ' "$successful_domains" "$compatibility_domains")"
+    compatibility_score=$(((compatibility_passed * 70 + compatibility_stable * 30) / compatibility_total))
+    compatibility_failures="$(awk -F '|' '
+        NR == FNR { successes[$0]++; next }
+        successes[$2] == 0 { print $2 }
+    ' "$successful_domains" "$compatibility_domains" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+    compatibility_unstable="$(awk -F '|' '
+        NR == FNR { successes[$0]++; next }
+        successes[$2] == 1 { print $2 }
+    ' "$successful_domains" "$compatibility_domains" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+    score=$((compatibility_score * 10000 + success_rate * 1000 - median * 30 - p90 * 12 - jitter * 15 - bootstrap_median * 5))
     reliable=false
+    universal_eligible=false
     error=""
-    if [ "$success" -eq "$total" ] && [ "$nxdomain_ok" = true ]; then
+    if [ "$success" -ge $((total - 1)) ] && [ "$compatibility_passed" -eq "$compatibility_total" ] && [ "$nxdomain_ok" = true ]; then
         reliable=true
-    elif [ "$success" -eq "$total" ]; then
+        if profile_is_universal "$profile"; then
+            universal_eligible=true
+        fi
+    elif [ "$success" -ge $((total - 1)) ] && [ "$nxdomain_ok" != true ]; then
         score=$((score - 500000))
         error="nxdomain_check_failed"
+    elif [ "$compatibility_passed" -lt "$compatibility_total" ]; then
+        error="service_compatibility_failed"
     else
         error="dns_queries_failed"
     fi
@@ -445,16 +526,20 @@ benchmark_main_candidate() {
         --arg protocol "$protocol" --arg endpointIp "$endpoint_ip" \
         --arg bootstrapDnsServer "$bootstrap" --arg bootstrapProvider "$bootstrap_provider" --arg error "$error" \
         --argjson successCount "$success" --argjson totalQueries "$total" --argjson successRate "$success_rate" \
-        --argjson medianMs "$median" --argjson jitterMs "$jitter" \
+        --argjson medianMs "$median" --argjson p90Ms "$p90" --argjson jitterMs "$jitter" \
         --argjson bootstrapMedianMs "$bootstrap_median" --argjson bootstrapJitterMs "$bootstrap_jitter" \
-        --argjson nxdomainOk "$nxdomain_ok" --argjson reliable "$reliable" --argjson score "$score" \
-        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapMedianMs:$bootstrapMedianMs,bootstrapJitterMs:$bootstrapJitterMs,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
+        --argjson compatibilityPassed "$compatibility_passed" --argjson compatibilityTotal "$compatibility_total" \
+        --argjson compatibilityStable "$compatibility_stable" --argjson compatibilityScore "$compatibility_score" \
+        --argjson compatibilityFailures "$compatibility_failures" --argjson compatibilityUnstable "$compatibility_unstable" \
+        --argjson nxdomainOk "$nxdomain_ok" --argjson universalEligible "$universal_eligible" --argjson reliable "$reliable" --argjson score "$score" \
+        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapMedianMs:$bootstrapMedianMs,bootstrapJitterMs:$bootstrapJitterMs,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
+    rm -f "$compatibility_domains" "$successful_domains"
 }
 
 run_benchmark() {
     local protocol="$1"
     local main_file bootstrap_file bootstrap_jsonl bootstrap_json main_jsonl final_file
-    local total completed line id provider value profile result recommendation state message current_dns current_bootstrap
+    local total completed line id provider value profile result recommendation ranking confidence recommendation_reason current_candidate state message current_dns current_bootstrap
 
     case "$protocol" in
         udp|doh|dot) ;;
@@ -493,22 +578,54 @@ run_benchmark() {
         write_status "running" "benchmark" "benchmarking_main" $((completed * 100 / total)) "$completed" "$total" "$$"
     done < "$main_file"
 
-    recommendation="$(jq -s 'map(select(.reliable == true)) | sort_by(.score) | reverse | .[0] // null' "$main_jsonl")"
+    current_dns="$(uci -q get podkop.settings.dns_server 2> /dev/null || true)"
+    current_bootstrap="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
+    ranking="$(jq -s '
+        map(select(.reliable == true))
+        | (map(select(.universalEligible == true))) as $universal
+        | (if ($universal | length) > 0 then $universal else . end)
+        | sort_by(.score)
+        | reverse
+    ' "$main_jsonl")"
+    recommendation="$(printf '%s\n' "$ranking" | jq -c '.[0] // null')"
+    confidence="$(printf '%s\n' "$ranking" | jq '
+        if length < 2 then 100
+        else
+            (.[0].score - .[1].score) as $gap
+            | ((.[0].jitterMs + .[1].jitterMs + 5) * 40) as $noise
+            | (($gap * 100 / $noise) | floor)
+            | if . < 0 then 0 elif . > 100 then 100 else . end
+        end
+    ')"
+    recommendation_reason="clear_winner"
+    if [ "$confidence" -lt 35 ] && [ "$recommendation" != "null" ]; then
+        current_candidate="$(printf '%s\n' "$ranking" | jq -c --arg current "$current_dns" '
+            .[0] as $best
+            | (map(select(.dnsServer == $current))[0] // null) as $currentResult
+            | if $currentResult != null
+                and (($best.score - $currentResult.score) <= (($best.jitterMs + $currentResult.jitterMs + 5) * 40))
+              then $currentResult else null end
+        ')"
+        if [ "$current_candidate" != "null" ]; then
+            recommendation="$current_candidate"
+            recommendation_reason="close_results_keep_current"
+        else
+            recommendation_reason="close_results"
+        fi
+    fi
     state="success"
     message="benchmark_complete"
     if [ "$recommendation" = "null" ]; then
         state="error"
         message="no_reliable_dns"
     fi
-    current_dns="$(uci -q get podkop.settings.dns_server 2> /dev/null || true)"
-    current_bootstrap="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
-
     jq -cn \
         --arg state "$state" --arg action "benchmark" --arg message "$message" --arg protocol "$protocol" \
         --arg updatedAt "$(updated_at)" --arg currentDnsServer "$current_dns" --arg currentBootstrapDnsServer "$current_bootstrap" \
-        --argjson pid "$$" --argjson recommendation "$recommendation" \
+        --arg recommendationReason "$recommendation_reason" --arg methodVersion "universal-stability-v1" \
+        --argjson pid "$$" --argjson recommendation "$recommendation" --argjson recommendationConfidence "$confidence" \
         --slurpfile results "$main_jsonl" --slurpfile bootstrapResults "$bootstrap_json" \
-        '{state:$state,action:$action,message:$message,protocol:$protocol,progress:100,completed:($results | length),total:($results | length),pid:$pid,updatedAt:$updatedAt,current:{dnsServer:$currentDnsServer,bootstrapDnsServer:$currentBootstrapDnsServer},recommendation:$recommendation,results:($results | sort_by(.score) | reverse),bootstrapResults:($bootstrapResults[0] // [])}' \
+        '{state:$state,action:$action,message:$message,protocol:$protocol,progress:100,completed:($results | length),total:($results | length),pid:$pid,updatedAt:$updatedAt,methodVersion:$methodVersion,current:{dnsServer:$currentDnsServer,bootstrapDnsServer:$currentBootstrapDnsServer},recommendation:$recommendation,recommendationConfidence:$recommendationConfidence,recommendationReason:$recommendationReason,results:($results | sort_by(.score) | reverse),bootstrapResults:($bootstrapResults[0] // [])}' \
         > "$final_file"
     write_final_status "$final_file"
 }
@@ -573,6 +690,34 @@ restart_podkop() {
         /usr/bin/podkop restart >> "$LOG_FILE" 2>&1
 }
 
+validate_service_compatibility() {
+    local server="$1"
+    local domains successful domain category round output total passed success_count
+
+    domains="$(mktemp)"
+    successful="$(mktemp)"
+    printf '__probe_sentinel__\n' > "$successful"
+    write_compatibility_domains > "$domains"
+    for round in 1 2; do
+        while IFS='|' read -r category domain; do
+            [ -n "$domain" ] || continue
+            output="$(run_dns_query udp "$server" "" "" "$domain" NOERROR 2> /dev/null || true)"
+            [ -n "$output" ] && printf '%s\n' "$domain" >> "$successful"
+        done < "$domains"
+    done
+
+    total="$(wc -l < "$domains" | tr -d ' ')"
+    passed="$(awk -F '|' '
+        NR == FNR { successes[$0]++; next }
+        successes[$2] >= 1 { passed++ }
+        END { print passed + 0 }
+    ' "$successful" "$domains")"
+    success_count="$(wc -l < "$successful" | tr -d ' ')"
+    success_count=$((success_count - 1))
+    rm -f "$domains" "$successful"
+    [ "$passed" -eq "$total" ] && [ "$success_count" -ge $((total * 2 - 1)) ]
+}
+
 validate_podkop_dns() {
     local config_path dont_touch server noresolv cachesize output
 
@@ -588,6 +733,7 @@ validate_podkop_dns() {
     printf '%s\n' "$output" | grep -q 'status: NOERROR' || return 1
     output="$(dig @127.0.0.42 fakeip.podkop.fyi A +timeout=3 +tries=1 +short 2> /dev/null)"
     printf '%s\n' "$output" | grep -Eq '^198\.(18|19)\.' || return 1
+    validate_service_compatibility 127.0.0.42 || return 1
 
     dont_touch="$(uci -q get podkop.settings.dont_touch_dhcp 2> /dev/null || echo 0)"
     if [ "$dont_touch" != "1" ]; then
@@ -598,6 +744,9 @@ validate_podkop_dns() {
         [ "$noresolv" = "1" ] || return 1
         [ "$cachesize" = "0" ] || return 1
         dig @127.0.0.1 fakeip.podkop.fyi A +timeout=3 +tries=1 +short 2> /dev/null | grep -Eq '^198\.(18|19)\.' || return 1
+        for output in play.googleapis.com dl.google.com steamcdn-a.akamaihd.net; do
+            dig @127.0.0.1 "$output" A +timeout=3 +tries=1 +short 2> /dev/null | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || return 1
+        done
     fi
 }
 
