@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260710-dns-optimizer-v2"
+VERSION="20260710-dns-optimizer-v3"
 STATE_DIR="/tmp/podkop-dns-optimizer"
 STATUS_FILE="$STATE_DIR/status.json"
 LOG_FILE="$STATE_DIR/worker.log"
@@ -639,16 +639,16 @@ write_apply_final() {
     local dns_server="$5"
     local bootstrap="$6"
     local rolled_back="$7"
-    local action="${8:-apply}"
+    local operation="${8:-apply}"
     local final_file
 
     final_file="$(mktemp)"
     jq -cn \
-        --arg state "$state" --arg action "$action" --arg message "$message" --arg protocol "$protocol" \
+        --arg state "$state" --arg operation "$operation" --arg message "$message" --arg protocol "$protocol" \
         --arg provider "$provider" --arg dnsServer "$dns_server" --arg bootstrapDnsServer "$bootstrap" \
         --arg updatedAt "$(updated_at)" --argjson pid "$$" --argjson rolledBack "$rolled_back" \
         --argjson backupAvailable "$( [ -s "$PREVIOUS_FILE" ] && echo true || echo false )" \
-        '{state:$state,action:$action,message:$message,progress:100,completed:1,total:1,pid:$pid,updatedAt:$updatedAt,applied:{protocol:$protocol,provider:$provider,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer},rolledBack:$rolledBack,backupAvailable:$backupAvailable}' \
+        '{state:$state,action:"completed",operation:$operation,message:$message,progress:100,completed:1,total:1,pid:$pid,updatedAt:$updatedAt,applied:{protocol:$protocol,provider:$provider,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer},rolledBack:$rolledBack,backupAvailable:$backupAvailable}' \
         > "$final_file"
     write_final_status "$final_file"
     rm -f "$final_file"

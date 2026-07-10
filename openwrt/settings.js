@@ -11,8 +11,10 @@ const dnsOptimizerState = {
   node: null,
   status: null,
   protocolOption: null,
+  dnsServerOption: null,
+  bootstrapDnsServerOption: null,
   pollTimer: null,
-  reloadScheduled: false,
+  syncedOperation: null,
 };
 
 function injectDnsOptimizerStyles() {
@@ -180,14 +182,14 @@ function optimizerMessage(status) {
     restarting_podkop: "Устанавливаем DNS и перезапускаем Podkop…",
     validating_dns: "Проверяем sing-box, DNS, FakeIP и dnsmasq…",
     rolling_back: "Проверка не пройдена. Автоматически возвращаем прежние DNS…",
-    apply_complete: "DNS установлен и полностью проверен. Страница будет обновлена.",
+    apply_complete: "DNS установлен и полностью проверен. Поля обновлены без перезагрузки страницы.",
     apply_failed_rolled_back: "Новая пара не прошла проверку. Прежние DNS автоматически восстановлены.",
     apply_failed_rollback_failed: "Не удалось применить DNS и автоматический откат завершился ошибкой.",
     bootstrap_incompatible: "Выбранный bootstrap DNS не разрешает адрес основного DNS.",
     invalid_recommendation: "Результат подбора устарел. Запустите проверку ещё раз.",
     backup_failed: "Не удалось сохранить прежние DNS. Применение отменено.",
     no_previous_dns: "Нет сохранённых DNS для отката.",
-    rollback_complete: "Предыдущие DNS восстановлены и проверены. Страница будет обновлена.",
+    rollback_complete: "Предыдущие DNS восстановлены и проверены. Поля обновлены без перезагрузки страницы.",
     rollback_failed: "Не удалось восстановить предыдущие DNS.",
     worker_start_failed: "Не удалось запустить фоновую проверку DNS.",
     worker_stopped: "Фоновая проверка неожиданно остановилась.",
@@ -349,12 +351,39 @@ function renderBootstrapResults(status) {
   ]);
 }
 
-function schedulePageReload() {
-  if (dnsOptimizerState.reloadScheduled) {
+function syncAppliedDnsToForm(status) {
+  const operation = status?.operation || status?.action;
+  const applied = status?.applied;
+  if (
+    status?.state !== "success" ||
+    !["apply", "rollback"].includes(operation) ||
+    !applied
+  ) {
     return;
   }
-  dnsOptimizerState.reloadScheduled = true;
-  window.setTimeout(() => window.location.reload(), 2500);
+
+  const operationKey = `${operation}:${status.updatedAt || ""}`;
+  if (dnsOptimizerState.syncedOperation === operationKey) {
+    return;
+  }
+
+  const values = [
+    [dnsOptimizerState.protocolOption, applied.protocol],
+    [dnsOptimizerState.dnsServerOption, applied.dnsServer],
+    [dnsOptimizerState.bootstrapDnsServerOption, applied.bootstrapDnsServer],
+  ];
+
+  values.forEach(([option, value]) => {
+    if (!option || !value) {
+      return;
+    }
+    try {
+      option.getUIElement("settings")?.setValue(value);
+    } catch (_error) {
+      // The status remains visible even if a third-party theme replaced a control.
+    }
+  });
+  dnsOptimizerState.syncedOperation = operationKey;
 }
 
 function renderDnsOptimizer() {
@@ -437,6 +466,7 @@ async function refreshDnsOptimizerStatus() {
       error: error.message,
     };
   }
+  syncAppliedDnsToForm(dnsOptimizerState.status);
   updateDnsOptimizerNode();
 
   if (dnsOptimizerState.status.state === "running") {
@@ -444,11 +474,6 @@ async function refreshDnsOptimizerStatus() {
       refreshDnsOptimizerStatus,
       1000,
     );
-  } else if (
-    dnsOptimizerState.status.state === "success" &&
-    ["apply", "rollback"].includes(dnsOptimizerState.status.action)
-  ) {
-    schedulePageReload();
   }
 }
 
@@ -595,6 +620,7 @@ function createSettingsContent(section) {
   });
   o.default = "8.8.8.8";
   o.rmempty = false;
+  dnsOptimizerState.dnsServerOption = o;
   o.validate = function (section_id, value) {
     const validation = main.validateDNS(value);
 
@@ -618,6 +644,7 @@ function createSettingsContent(section) {
   });
   o.default = "77.88.8.8";
   o.rmempty = false;
+  dnsOptimizerState.bootstrapDnsServerOption = o;
   o.validate = function (section_id, value) {
     const validation = main.validateDNS(value);
 

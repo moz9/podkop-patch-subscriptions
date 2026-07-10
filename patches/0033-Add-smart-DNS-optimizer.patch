@@ -1,8 +1,8 @@
 diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
-index efe3c29..901d987 100644
+index efe3c29..ccbd85e 100644
 --- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
 +++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
-@@ -1,10 +1,575 @@
+@@ -1,10 +1,600 @@
  "use strict";
  "require form";
  "require uci";
@@ -16,8 +16,10 @@ index efe3c29..901d987 100644
 +  node: null,
 +  status: null,
 +  protocolOption: null,
++  dnsServerOption: null,
++  bootstrapDnsServerOption: null,
 +  pollTimer: null,
-+  reloadScheduled: false,
++  syncedOperation: null,
 +};
 +
 +function injectDnsOptimizerStyles() {
@@ -185,14 +187,14 @@ index efe3c29..901d987 100644
 +    restarting_podkop: "Устанавливаем DNS и перезапускаем Podkop…",
 +    validating_dns: "Проверяем sing-box, DNS, FakeIP и dnsmasq…",
 +    rolling_back: "Проверка не пройдена. Автоматически возвращаем прежние DNS…",
-+    apply_complete: "DNS установлен и полностью проверен. Страница будет обновлена.",
++    apply_complete: "DNS установлен и полностью проверен. Поля обновлены без перезагрузки страницы.",
 +    apply_failed_rolled_back: "Новая пара не прошла проверку. Прежние DNS автоматически восстановлены.",
 +    apply_failed_rollback_failed: "Не удалось применить DNS и автоматический откат завершился ошибкой.",
 +    bootstrap_incompatible: "Выбранный bootstrap DNS не разрешает адрес основного DNS.",
 +    invalid_recommendation: "Результат подбора устарел. Запустите проверку ещё раз.",
 +    backup_failed: "Не удалось сохранить прежние DNS. Применение отменено.",
 +    no_previous_dns: "Нет сохранённых DNS для отката.",
-+    rollback_complete: "Предыдущие DNS восстановлены и проверены. Страница будет обновлена.",
++    rollback_complete: "Предыдущие DNS восстановлены и проверены. Поля обновлены без перезагрузки страницы.",
 +    rollback_failed: "Не удалось восстановить предыдущие DNS.",
 +    worker_start_failed: "Не удалось запустить фоновую проверку DNS.",
 +    worker_stopped: "Фоновая проверка неожиданно остановилась.",
@@ -354,12 +356,39 @@ index efe3c29..901d987 100644
 +  ]);
 +}
 +
-+function schedulePageReload() {
-+  if (dnsOptimizerState.reloadScheduled) {
++function syncAppliedDnsToForm(status) {
++  const operation = status?.operation || status?.action;
++  const applied = status?.applied;
++  if (
++    status?.state !== "success" ||
++    !["apply", "rollback"].includes(operation) ||
++    !applied
++  ) {
 +    return;
 +  }
-+  dnsOptimizerState.reloadScheduled = true;
-+  window.setTimeout(() => window.location.reload(), 2500);
++
++  const operationKey = `${operation}:${status.updatedAt || ""}`;
++  if (dnsOptimizerState.syncedOperation === operationKey) {
++    return;
++  }
++
++  const values = [
++    [dnsOptimizerState.protocolOption, applied.protocol],
++    [dnsOptimizerState.dnsServerOption, applied.dnsServer],
++    [dnsOptimizerState.bootstrapDnsServerOption, applied.bootstrapDnsServer],
++  ];
++
++  values.forEach(([option, value]) => {
++    if (!option || !value) {
++      return;
++    }
++    try {
++      option.getUIElement("settings")?.setValue(value);
++    } catch (_error) {
++      // The status remains visible even if a third-party theme replaced a control.
++    }
++  });
++  dnsOptimizerState.syncedOperation = operationKey;
 +}
 +
 +function renderDnsOptimizer() {
@@ -442,6 +471,7 @@ index efe3c29..901d987 100644
 +      error: error.message,
 +    };
 +  }
++  syncAppliedDnsToForm(dnsOptimizerState.status);
 +  updateDnsOptimizerNode();
 +
 +  if (dnsOptimizerState.status.state === "running") {
@@ -449,11 +479,6 @@ index efe3c29..901d987 100644
 +      refreshDnsOptimizerStatus,
 +      1000,
 +    );
-+  } else if (
-+    dnsOptimizerState.status.state === "success" &&
-+    ["apply", "rollback"].includes(dnsOptimizerState.status.action)
-+  ) {
-+    schedulePageReload();
 +  }
 +}
 +
@@ -578,7 +603,7 @@ index efe3c29..901d987 100644
  function createSettingsContent(section) {
    let o = section.option(
      form.ListValue,
-@@ -17,6 +582,7 @@ function createSettingsContent(section) {
+@@ -17,6 +607,7 @@ function createSettingsContent(section) {
    o.value("udp", _("UDP (Unprotected DNS)"));
    o.default = "udp";
    o.rmempty = false;
@@ -586,7 +611,23 @@ index efe3c29..901d987 100644
  
    o = section.option(
      form.Value,
-@@ -62,6 +628,18 @@ function createSettingsContent(section) {
+@@ -29,6 +620,7 @@ function createSettingsContent(section) {
+   });
+   o.default = "8.8.8.8";
+   o.rmempty = false;
++  dnsOptimizerState.dnsServerOption = o;
+   o.validate = function (section_id, value) {
+     const validation = main.validateDNS(value);
+ 
+@@ -52,6 +644,7 @@ function createSettingsContent(section) {
+   });
+   o.default = "77.88.8.8";
+   o.rmempty = false;
++  dnsOptimizerState.bootstrapDnsServerOption = o;
+   o.validate = function (section_id, value) {
+     const validation = main.validateDNS(value);
+ 
+@@ -62,6 +655,18 @@ function createSettingsContent(section) {
      return validation.message;
    };
  
@@ -628,13 +669,13 @@ index 6d0eabc..1a52df4 100644
 +}
 diff --git a/podkop/files/usr/bin/podkop-dns-optimizer b/podkop/files/usr/bin/podkop-dns-optimizer
 new file mode 100644
-index 0000000..a43e13a
+index 0000000..250b152
 --- /dev/null
 +++ b/podkop/files/usr/bin/podkop-dns-optimizer
 @@ -0,0 +1,845 @@
 +#!/bin/ash
 +
-+VERSION="20260710-dns-optimizer-v2"
++VERSION="20260710-dns-optimizer-v3"
 +STATE_DIR="/tmp/podkop-dns-optimizer"
 +STATUS_FILE="$STATE_DIR/status.json"
 +LOG_FILE="$STATE_DIR/worker.log"
@@ -1273,16 +1314,16 @@ index 0000000..a43e13a
 +    local dns_server="$5"
 +    local bootstrap="$6"
 +    local rolled_back="$7"
-+    local action="${8:-apply}"
++    local operation="${8:-apply}"
 +    local final_file
 +
 +    final_file="$(mktemp)"
 +    jq -cn \
-+        --arg state "$state" --arg action "$action" --arg message "$message" --arg protocol "$protocol" \
++        --arg state "$state" --arg operation "$operation" --arg message "$message" --arg protocol "$protocol" \
 +        --arg provider "$provider" --arg dnsServer "$dns_server" --arg bootstrapDnsServer "$bootstrap" \
 +        --arg updatedAt "$(updated_at)" --argjson pid "$$" --argjson rolledBack "$rolled_back" \
 +        --argjson backupAvailable "$( [ -s "$PREVIOUS_FILE" ] && echo true || echo false )" \
-+        '{state:$state,action:$action,message:$message,progress:100,completed:1,total:1,pid:$pid,updatedAt:$updatedAt,applied:{protocol:$protocol,provider:$provider,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer},rolledBack:$rolledBack,backupAvailable:$backupAvailable}' \
++        '{state:$state,action:"completed",operation:$operation,message:$message,progress:100,completed:1,total:1,pid:$pid,updatedAt:$updatedAt,applied:{protocol:$protocol,provider:$provider,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer},rolledBack:$rolledBack,backupAvailable:$backupAvailable}' \
 +        > "$final_file"
 +    write_final_status "$final_file"
 +    rm -f "$final_file"
