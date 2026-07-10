@@ -1,0 +1,357 @@
+#!/bin/ash
+
+VERSION="20260710-update-manager-v1"
+STATE_DIR="/tmp/podkop-update-manager"
+STATUS_FILE="$STATE_DIR/status.json"
+DETAILS_FILE="$STATE_DIR/details.json"
+LOG_FILE="$STATE_DIR/update.log"
+LOCK_DIR="$STATE_DIR/lock"
+MANIFEST_URL="${PODKOP_PATCH_MANIFEST_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/update-manifest.json}"
+RELEASE_URL="${PODKOP_OFFICIAL_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/latest}"
+INSTALLER_URL="${PODKOP_PATCH_INSTALLER_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i}"
+
+mkdir -p "$STATE_DIR"
+
+updated_at() {
+    date -Iseconds 2>/dev/null || date
+}
+
+log_line() {
+    printf '%s %s\n' "$(updated_at)" "$*" >> "$LOG_FILE"
+}
+
+log_tail() {
+    tail -n 200 "$LOG_FILE" 2>/dev/null || true
+}
+
+write_status() {
+    local state="$1"
+    local message="$2"
+    local tmp details
+
+    tmp="$(mktemp)"
+    details='{}'
+    if [ -s "$DETAILS_FILE" ] && jq -e . "$DETAILS_FILE" >/dev/null 2>&1; then
+        details="$(cat "$DETAILS_FILE")"
+    fi
+
+    jq -cn \
+        --arg state "$state" \
+        --arg message "$message" \
+        --arg updatedAt "$(updated_at)" \
+        --arg logTail "$(log_tail)" \
+        --argjson details "$details" \
+        '$details + {state:$state,message:$message,updatedAt:$updatedAt,logTail:$logTail}' \
+        > "$tmp" && mv "$tmp" "$STATUS_FILE"
+    rm -f "$tmp"
+}
+
+normalize_version() {
+    printf '%s' "$1" | sed 's/^v//; s/[^0-9.].*$//'
+}
+
+is_semver() {
+    echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
+}
+
+version_gt() {
+    local a b amaj amin apat bmaj bmin bpat
+    a="$(normalize_version "$1")"
+    b="$(normalize_version "$2")"
+    [ "$a" != "$b" ] || return 1
+    amaj="$(echo "$a" | cut -d. -f1)"
+    amin="$(echo "$a" | cut -d. -f2)"
+    apat="$(echo "$a" | cut -d. -f3)"
+    bmaj="$(echo "$b" | cut -d. -f1)"
+    bmin="$(echo "$b" | cut -d. -f2)"
+    bpat="$(echo "$b" | cut -d. -f3)"
+    [ "$amaj" -gt "$bmaj" ] && return 0
+    [ "$amaj" -lt "$bmaj" ] && return 1
+    [ "$amin" -gt "$bmin" ] && return 0
+    [ "$amin" -lt "$bmin" ] && return 1
+    [ "$apat" -gt "$bpat" ]
+}
+
+kill_process_tree() {
+    local pid="$1"
+    local child
+    [ -n "$pid" ] && [ -d "/proc/$pid" ] || return 0
+    if [ -r "/proc/$pid/task/$pid/children" ]; then
+        for child in $(cat "/proc/$pid/task/$pid/children" 2>/dev/null); do
+            kill_process_tree "$child"
+        done
+    fi
+    kill "$pid" 2>/dev/null || true
+}
+
+run_with_timeout() {
+    local limit="$1"
+    local pid watchdog rc
+    shift
+
+    "$@" >> "$LOG_FILE" 2>&1 &
+    pid="$!"
+    (
+        sleep "$limit"
+        kill_process_tree "$pid"
+    ) &
+    watchdog="$!"
+
+    wait "$pid"
+    rc="$?"
+    kill "$watchdog" 2>/dev/null || true
+    wait "$watchdog" >/dev/null 2>&1 || true
+    return "$rc"
+}
+
+download_file() {
+    local url="$1"
+    local output="$2"
+    local raw_path ip
+
+    rm -f "$output"
+    if command -v curl >/dev/null 2>&1; then
+        if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 -o "$output" "$url"; then
+            [ -s "$output" ] && return 0
+        fi
+    fi
+    if command -v wget >/dev/null 2>&1; then
+        if run_with_timeout 45 wget --no-check-certificate -T 30 -O "$output" "$url"; then
+            [ -s "$output" ] && return 0
+        fi
+    fi
+
+    case "$url" in
+    https://raw.githubusercontent.com/*)
+        raw_path="${url#https://raw.githubusercontent.com/}"
+        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+            if command -v curl >/dev/null 2>&1 && run_with_timeout 45 curl -fsSL \
+                --connect-timeout 10 -m 30 --resolve "raw.githubusercontent.com:443:$ip" \
+                -o "$output" "$url"; then
+                [ -s "$output" ] && return 0
+            fi
+            if command -v wget >/dev/null 2>&1 && run_with_timeout 45 wget -T 30 \
+                --no-check-certificate --header="Host: raw.githubusercontent.com" \
+                -O "$output" "https://$ip/$raw_path"; then
+                [ -s "$output" ] && return 0
+            fi
+        done
+        ;;
+    esac
+    return 1
+}
+
+current_podkop_version() {
+    /usr/bin/podkop show_version 2>/dev/null | sed 's/^v//' | head -n 1
+}
+
+current_patch_version() {
+    sed -n 's/^# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=//p' /usr/bin/podkop 2>/dev/null | tail -n 1
+}
+
+version_supported() {
+    local manifest="$1"
+    local version="$2"
+    jq -e --arg version "$version" '.supportedPodkopVersions | index($version) != null' "$manifest" >/dev/null 2>&1
+}
+
+perform_check() {
+    local publish="${1:-1}"
+    local manifest release current_podkop latest_podkop current_patch latest_patch
+    local current_supported latest_supported podkop_update patch_update mode can_update message
+    local cache_buster
+
+    manifest="$STATE_DIR/manifest.json"
+    release="$STATE_DIR/release.json"
+    cache_buster="$(date +%s 2>/dev/null || echo 0)"
+    log_line "Checking Podkop and subscription patch updates."
+
+    if ! download_file "$MANIFEST_URL?t=$cache_buster" "$manifest" ||
+        ! jq -e '.schemaVersion == 1 and (.patchVersion | type == "string") and (.supportedPodkopVersions | type == "array")' "$manifest" >/dev/null 2>&1; then
+        log_line "Compatibility manifest download or validation failed."
+        write_status "error" "manifest_failed"
+        return 1
+    fi
+    if ! download_file "$RELEASE_URL" "$release"; then
+        log_line "Official Podkop release information download failed."
+        write_status "error" "release_check_failed"
+        return 1
+    fi
+
+    current_podkop="$(normalize_version "$(current_podkop_version)")"
+    latest_podkop="$(normalize_version "$(jq -r '.tag_name // ""' "$release")")"
+    current_patch="$(current_patch_version)"
+    latest_patch="$(jq -r '.patchVersion' "$manifest")"
+
+    if ! is_semver "$current_podkop" || ! is_semver "$latest_podkop"; then
+        log_line "Invalid version data: installed=$current_podkop latest=$latest_podkop"
+        write_status "error" "version_check_failed"
+        return 1
+    fi
+
+    current_supported=false
+    latest_supported=false
+    podkop_update=false
+    patch_update=false
+    version_supported "$manifest" "$current_podkop" && current_supported=true
+    version_supported "$manifest" "$latest_podkop" && latest_supported=true
+    version_gt "$latest_podkop" "$current_podkop" && podkop_update=true
+    [ "$current_patch" = "$latest_patch" ] || patch_update=true
+
+    mode="none"
+    can_update=false
+    message="up_to_date"
+    if [ "$podkop_update" = true ] && [ "$latest_supported" != true ]; then
+        mode="blocked"
+        message="unsupported_podkop"
+    elif [ "$podkop_update" = true ]; then
+        mode="podkop_and_patch"
+        can_update=true
+        message="updates_available"
+    elif [ "$patch_update" = true ] && [ "$current_supported" = true ]; then
+        mode="patch"
+        can_update=true
+        message="updates_available"
+    elif [ "$patch_update" = true ]; then
+        mode="blocked"
+        message="installed_podkop_unsupported"
+    fi
+
+    jq -cn \
+        --arg currentPodkopVersion "$current_podkop" \
+        --arg latestPodkopVersion "$latest_podkop" \
+        --arg currentPatchVersion "$current_patch" \
+        --arg latestPatchVersion "$latest_patch" \
+        --arg updateMode "$mode" \
+        --arg checkedAt "$(updated_at)" \
+        --argjson podkopUpdateAvailable "$podkop_update" \
+        --argjson patchUpdateAvailable "$patch_update" \
+        --argjson currentPodkopSupported "$current_supported" \
+        --argjson latestPodkopSupported "$latest_supported" \
+        --argjson canUpdate "$can_update" \
+        --argjson supportedPodkopVersions "$(jq -c '.supportedPodkopVersions' "$manifest")" \
+        '{currentPodkopVersion:$currentPodkopVersion,latestPodkopVersion:$latestPodkopVersion,currentPatchVersion:$currentPatchVersion,latestPatchVersion:$latestPatchVersion,updateMode:$updateMode,checkedAt:$checkedAt,podkopUpdateAvailable:$podkopUpdateAvailable,patchUpdateAvailable:$patchUpdateAvailable,currentPodkopSupported:$currentPodkopSupported,latestPodkopSupported:$latestPodkopSupported,canUpdate:$canUpdate,supportedPodkopVersions:$supportedPodkopVersions}' \
+        > "$DETAILS_FILE"
+
+    log_line "Installed Podkop: $current_podkop; latest: $latest_podkop; supported: $latest_supported."
+    log_line "Installed patch: ${current_patch:-none}; latest: $latest_patch; mode: $mode."
+    [ "$publish" = "1" ] && write_status "ready" "$message"
+    return 0
+}
+
+perform_update() {
+    local mode can_update installer expected_podkop expected_patch current_podkop current_patch cache_buster
+
+    perform_check 0 || return 1
+    mode="$(jq -r '.updateMode // "none"' "$DETAILS_FILE")"
+    can_update="$(jq -r '.canUpdate // false' "$DETAILS_FILE")"
+
+    if [ "$mode" = "blocked" ]; then
+        write_status "blocked" "$( [ "$(jq -r '.podkopUpdateAvailable' "$DETAILS_FILE")" = true ] && echo unsupported_podkop || echo installed_podkop_unsupported )"
+        return 0
+    fi
+    if [ "$can_update" != true ]; then
+        write_status "success" "patch_update_noop"
+        return 0
+    fi
+
+    write_status "running" "patch_update_running"
+    installer="$STATE_DIR/installer.sh"
+    cache_buster="$(date +%s 2>/dev/null || echo 0)"
+    if ! download_file "$INSTALLER_URL?t=$cache_buster" "$installer"; then
+        log_line "Installer download failed."
+        write_status "error" "download_failed"
+        return 1
+    fi
+
+    log_line "Starting transactional update in mode: $mode."
+    if ! run_with_timeout 900 env PODKOP_PATCH_UPDATE_PODKOP=1 sh "$installer"; then
+        log_line "Installer returned an error. Existing backup and rollback rules remain active."
+        write_status "error" "install_failed"
+        return 1
+    fi
+
+    expected_podkop="$(jq -r 'if .podkopUpdateAvailable then .latestPodkopVersion else .currentPodkopVersion end' "$DETAILS_FILE")"
+    expected_patch="$(jq -r '.latestPatchVersion' "$DETAILS_FILE")"
+    current_podkop="$(normalize_version "$(current_podkop_version)")"
+    current_patch="$(current_patch_version)"
+    if [ "$current_podkop" != "$expected_podkop" ] || [ "$current_patch" != "$expected_patch" ]; then
+        log_line "Post-update verification failed: Podkop=$current_podkop patch=$current_patch."
+        write_status "error" "post_update_verification_failed"
+        return 1
+    fi
+
+    jq --arg currentPodkopVersion "$current_podkop" \
+        --arg currentPatchVersion "$current_patch" \
+        '.currentPodkopVersion=$currentPodkopVersion | .currentPatchVersion=$currentPatchVersion | .podkopUpdateAvailable=false | .patchUpdateAvailable=false | .canUpdate=false | .updateMode="none"' \
+        "$DETAILS_FILE" > "$DETAILS_FILE.tmp" && mv "$DETAILS_FILE.tmp" "$DETAILS_FILE"
+    log_line "Update and post-update verification completed successfully."
+    write_status "success" "patch_update_success"
+}
+
+lock_busy() {
+    local pid
+    [ -s "$LOCK_DIR/pid" ] || return 1
+    pid="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
+    [ -n "$pid" ] && [ -d "/proc/$pid" ]
+}
+
+start_worker() {
+    local action="$1"
+    if lock_busy; then
+        echo '{"success":false,"error":"busy"}'
+        return 1
+    fi
+    rm -rf "$LOCK_DIR"
+    : > "$LOG_FILE"
+    write_status "$( [ "$action" = check ] && echo checking || echo running )" "$( [ "$action" = check ] && echo checking_updates || echo patch_update_running )"
+    if command -v start-stop-daemon >/dev/null 2>&1; then
+        start-stop-daemon -S -b -x "$0" -- worker "$action" >/dev/null 2>&1
+    elif command -v setsid >/dev/null 2>&1; then
+        setsid "$0" worker "$action" </dev/null >/dev/null 2>&1 &
+    else
+        "$0" worker "$action" </dev/null >/dev/null 2>&1 &
+    fi
+    echo '{"success":true,"started":true}'
+}
+
+run_worker() {
+    local action="$1"
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
+        write_status "error" "busy"
+        return 1
+    fi
+    echo "$$" > "$LOCK_DIR/pid"
+    trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+    case "$action" in
+    check) perform_check 1 ;;
+    update) perform_update ;;
+    *) write_status "error" "invalid_action"; return 1 ;;
+    esac
+}
+
+show_status() {
+    if [ -s "$STATUS_FILE" ]; then
+        state="$(jq -r '.state // "idle"' "$STATUS_FILE" 2>/dev/null)"
+        if { [ "$state" = checking ] || [ "$state" = running ]; } && ! lock_busy; then
+            log_line "Update worker stopped before completion."
+            write_status "error" "worker_stopped"
+        fi
+        cat "$STATUS_FILE"
+    else
+        echo '{"state":"idle","message":"","updatedAt":"","logTail":"","canUpdate":false,"updateMode":"none"}'
+    fi
+}
+
+case "$1" in
+check_start) start_worker check ;;
+update_start) start_worker update ;;
+status) show_status ;;
+log) cat "$LOG_FILE" 2>/dev/null || true ;;
+version) echo "$VERSION" ;;
+worker) run_worker "$2" ;;
+*)
+    echo "Usage: podkop-update-manager {check_start|update_start|status|log|version}" >&2
+    exit 1
+    ;;
+esac

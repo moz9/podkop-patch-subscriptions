@@ -4,7 +4,8 @@ set -eu
 PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 PODKOP_OFFICIAL_INSTALL_URL="${PODKOP_OFFICIAL_INSTALL_URL:-https://raw.githubusercontent.com/itdoginfo/podkop/main/install.sh}"
-PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-0.7.20}"
+PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-0.7.21}"
+PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS="${PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS:-0.7.19 0.7.20 0.7.21}"
 PODKOP_PATCH_LATEST_RELEASE_URL="${PODKOP_PATCH_LATEST_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/latest}"
 PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
@@ -13,7 +14,7 @@ V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260710-dns-optimizer-v3-stable-ui"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260710-update-center-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -24,6 +25,9 @@ SUBSCRIPTIONS_FILE="subscriptions.js"
 SETTINGS_JS_FILE="settings.js"
 DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
 DNS_OPTIMIZER_VERSION="20260710-dns-optimizer-v3"
+UPDATE_MANAGER_FILE="podkop-update-manager"
+UPDATE_MANAGER_VERSION="20260710-update-manager-v1"
+UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
@@ -31,6 +35,7 @@ RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podko
 RUNTIME_FILES="
 usr/bin/podkop
 usr/bin/podkop-dns-optimizer
+usr/bin/podkop-update-manager
 usr/lib/podkop/helpers.sh
 usr/lib/podkop/sing_box_config_facade.sh
 usr/share/rpcd/acl.d/luci-app-podkop.json
@@ -413,7 +418,10 @@ luci_assets_current() {
 		cmp -s /www/luci-static/resources/view/podkop/settings.js "$tmp_dir/$SETTINGS_JS_FILE" &&
 		[ -x /usr/bin/podkop-dns-optimizer ] &&
 		cmp -s /usr/bin/podkop-dns-optimizer "$tmp_dir/$DNS_OPTIMIZER_FILE" &&
+		[ -x /usr/bin/podkop-update-manager ] &&
+		cmp -s /usr/bin/podkop-update-manager "$tmp_dir/$UPDATE_MANAGER_FILE" &&
 		jq -e '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] == ["exec"]' /usr/share/rpcd/acl.d/luci-app-podkop.json >/dev/null 2>&1 &&
+		jq -e '.["luci-app-podkop"].read.file["/usr/bin/podkop-update-manager"] == ["exec"]' /usr/share/rpcd/acl.d/luci-app-podkop.json >/dev/null 2>&1 &&
 		[ -f /usr/lib/lua/luci/i18n/podkop.ru.lmo ] &&
 		cmp -s /usr/lib/lua/luci/i18n/podkop.ru.lmo "$tmp_dir/$LMO_DECODED_FILE"
 }
@@ -423,7 +431,7 @@ ensure_dns_optimizer_acl() {
 	acl_tmp="$tmp_dir/luci-app-podkop.json"
 
 	[ -f "$acl_file" ] || abort_with_restore "Podkop RPC ACL is missing"
-	jq '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] = ["exec"]' "$acl_file" > "$acl_tmp" ||
+	jq '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] = ["exec"] | .["luci-app-podkop"].read.file["/usr/bin/podkop-update-manager"] = ["exec"]' "$acl_file" > "$acl_tmp" ||
 		abort_with_restore "failed to update Podkop RPC ACL"
 	jq -e . "$acl_tmp" >/dev/null 2>&1 || abort_with_restore "Podkop RPC ACL validation failed"
 	cp "$acl_tmp" "$acl_file" || abort_with_restore "failed to install Podkop RPC ACL"
@@ -674,6 +682,14 @@ version_ge() {
 	[ "$cpatch" -ge "$rpatch" ]
 }
 
+podkop_version_supported() {
+	version="$1"
+	for supported_version in $PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS; do
+		[ "$version" = "$supported_version" ] && return 0
+	done
+	return 1
+}
+
 current_podkop_version() {
 	/usr/bin/podkop show_version 2>/dev/null | sed 's/^v//' || true
 }
@@ -732,14 +748,23 @@ update_official_podkop_if_requested() {
 	latest_version="$(latest_official_podkop_version || true)"
 
 	if [ -n "$latest_version" ] && version_ge "$latest_version" "$target_version"; then
-		target_version="$latest_version"
-		log "Latest official Podkop version: $target_version"
+		if podkop_version_supported "$latest_version"; then
+			target_version="$latest_version"
+			log "Latest official Podkop version: $target_version"
+		elif [ -n "$current_version" ] && podkop_version_supported "$current_version"; then
+			log "Latest official Podkop $latest_version is not supported by this patch. Keeping Podkop $current_version."
+			return 0
+		else
+			fail "latest official Podkop $latest_version is not supported by this patch; supported versions: $PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS"
+		fi
 	else
 		log "Could not detect a newer official Podkop release; target is $target_version."
 	fi
 
 	if [ "${PODKOP_PATCH_FORCE_PODKOP_UPDATE:-0}" != "1" ] &&
 		version_ge "$current_version" "$target_version"; then
+		podkop_version_supported "$current_version" ||
+			fail "installed Podkop $current_version is not supported by this patch; supported versions: $PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS"
 		log "Official Podkop is already $current_version; target is $target_version. Skipping official update."
 		return 0
 	fi
@@ -767,6 +792,13 @@ update_official_podkop_if_requested() {
 	fi
 
 	[ -x /usr/bin/podkop ] || fail "Official Podkop installer finished, but /usr/bin/podkop is missing"
+	current_version="$(current_podkop_version)"
+	if ! podkop_version_supported "$current_version"; then
+		if [ -n "${backup_dir:-}" ]; then
+			restore_runtime
+		fi
+		fail "official Podkop installed unsupported version $current_version; runtime was restored"
+	fi
 	if [ -n "${backup_dir:-}" ]; then
 		restore_missing_persistent_paths
 	fi
@@ -792,6 +824,7 @@ download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
 download "$RAW_BASE/$SECTION_JS_FILE" "$tmp_dir/$SECTION_JS_FILE"
 download "$RAW_BASE/$SETTINGS_JS_FILE" "$tmp_dir/$SETTINGS_JS_FILE"
 download "$RAW_BASE/$DNS_OPTIMIZER_FILE" "$tmp_dir/$DNS_OPTIMIZER_FILE"
+download "$RAW_BASE/$UPDATE_MANAGER_FILE" "$tmp_dir/$UPDATE_MANAGER_FILE"
 
 if [ "${PODKOP_PATCH_FORCE:-0}" != "1" ] && has_install_marker && has_latest_subscription_backend && luci_assets_current; then
 	log "Subscription URLTest patch is already up to date; nothing to do."
@@ -864,6 +897,14 @@ if { ! has_latest_subscription_backend || ! has_install_marker; } && has_subscri
 
 	if ! sh "$tmp_dir/$MAINTENANCE_UPGRADE_FILE"; then
 		abort_with_restore "runtime maintenance upgrade failed"
+	fi
+fi
+
+if ! grep -q '^subscription_patch_update_check() {' /usr/bin/podkop 2>/dev/null ||
+	! grep -q '^get_subscription_patch_update_log() {' /usr/bin/podkop 2>/dev/null; then
+	download "$RAW_BASE/$UPDATE_CENTER_UPGRADE_FILE" "$tmp_dir/$UPDATE_CENTER_UPGRADE_FILE"
+	if ! sh "$tmp_dir/$UPDATE_CENTER_UPGRADE_FILE"; then
+		abort_with_restore "runtime update center upgrade failed"
 	fi
 fi
 
@@ -952,6 +993,7 @@ cp "$tmp_dir/$SECTION_JS_FILE" /www/luci-static/resources/view/podkop/section.js
 cp "$tmp_dir/$SUBSCRIPTIONS_FILE" /www/luci-static/resources/view/podkop/subscriptions.js
 cp "$tmp_dir/$SETTINGS_JS_FILE" /www/luci-static/resources/view/podkop/settings.js
 cp "$tmp_dir/$DNS_OPTIMIZER_FILE" /usr/bin/podkop-dns-optimizer
+cp "$tmp_dir/$UPDATE_MANAGER_FILE" /usr/bin/podkop-update-manager
 ensure_dns_optimizer_acl
 
 mkdir -p /usr/lib/lua/luci/i18n
@@ -962,6 +1004,7 @@ cp "$tmp_dir/$LMO_DECODED_FILE" /usr/lib/lua/luci/i18n/podkop.ru.lmo || abort_wi
 
 chmod 755 /usr/bin/podkop
 chmod 755 /usr/bin/podkop-dns-optimizer
+chmod 755 /usr/bin/podkop-update-manager
 [ -f /usr/lib/podkop/sing_box_config_facade.sh ] && chmod 644 /usr/lib/podkop/sing_box_config_facade.sh
 [ -f /www/luci-static/resources/view/podkop/main.js ] && chmod 644 /www/luci-static/resources/view/podkop/main.js
 [ -f /www/luci-static/resources/view/podkop/podkop.js ] && chmod 644 /www/luci-static/resources/view/podkop/podkop.js
@@ -980,8 +1023,16 @@ if ! ash -n /usr/bin/podkop-dns-optimizer; then
 	abort_with_restore "DNS optimizer syntax check failed"
 fi
 
+if ! ash -n /usr/bin/podkop-update-manager; then
+	abort_with_restore "update manager syntax check failed"
+fi
+
 if [ "$(/usr/bin/podkop-dns-optimizer version 2>/dev/null || true)" != "$DNS_OPTIMIZER_VERSION" ]; then
 	abort_with_restore "DNS optimizer version check failed"
+fi
+
+if [ "$(/usr/bin/podkop-update-manager version 2>/dev/null || true)" != "$UPDATE_MANAGER_VERSION" ]; then
+	abort_with_restore "update manager version check failed"
 fi
 
 if [ -z "$(/usr/bin/podkop show_version 2>/dev/null)" ]; then

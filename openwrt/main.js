@@ -627,7 +627,9 @@ var Podkop;
     AvailableMethods2["SUBSCRIPTION_SPEEDTEST_STOP"] = "subscription_speedtest_stop";
     AvailableMethods2["GET_SUBSCRIPTION_SPEEDTEST_STATUS"] = "get_subscription_speedtest_status";
     AvailableMethods2["SUBSCRIPTION_PATCH_UPDATE"] = "subscription_patch_update";
+    AvailableMethods2["SUBSCRIPTION_PATCH_UPDATE_CHECK"] = "subscription_patch_update_check";
     AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_STATUS"] = "get_subscription_patch_update_status";
+    AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_LOG"] = "get_subscription_patch_update_log";
     AvailableMethods2["GET_SYSTEM_INFO"] = "get_system_info";
     AvailableMethods2["GET_SUBSCRIPTION_CACHED_LINKS"] = "get_subscription_cached_links";
     AvailableMethods2["GET_SUBSCRIPTION_SKIPPED_LINKS"] = "get_subscription_skipped_links";
@@ -743,8 +745,20 @@ var PodkopShellMethods = {
     "/usr/bin/podkop",
     15e3
   ),
+  checkSubscriptionPatchUpdate: async () => callBaseMethod(
+    Podkop.AvailableMethods.SUBSCRIPTION_PATCH_UPDATE_CHECK,
+    [],
+    "/usr/bin/podkop",
+    15e3
+  ),
   getSubscriptionPatchUpdateStatus: async () => callBaseMethod(
     Podkop.AvailableMethods.GET_SUBSCRIPTION_PATCH_UPDATE_STATUS,
+    [],
+    "/usr/bin/podkop",
+    15e3
+  ),
+  getSubscriptionPatchUpdateLog: async () => callBaseMethod(
+    Podkop.AvailableMethods.GET_SUBSCRIPTION_PATCH_UPDATE_LOG,
     [],
     "/usr/bin/podkop",
     15e3
@@ -1293,6 +1307,17 @@ var DIAGNOSTICS_CHECKS_MAP = {
 
 // src/podkop/tabs/diagnostic/diagnostic.store.ts
 var initialDiagnosticStore = {
+  diagnosticsUpdateCenter: {
+    loading: false,
+    status: {
+      state: "idle",
+      message: "",
+      updatedAt: "",
+      logTail: "",
+      canUpdate: false,
+      updateMode: "none"
+    }
+  },
   diagnosticsSystemInfo: {
     loading: true,
     podkop_version: "loading",
@@ -3552,6 +3577,37 @@ function renderBookOpenTextIcon24() {
   );
 }
 
+// src/icons/renderCopyIcon24.ts
+function renderCopyIcon24() {
+  const NS = "http://www.w3.org/2000/svg";
+  return svgEl(
+    "svg",
+    {
+      xmlns: NS,
+      viewBox: "0 0 24 24",
+      fill: "none",
+      stroke: "currentColor",
+      "stroke-width": "2",
+      "stroke-linecap": "round",
+      "stroke-linejoin": "round",
+      class: "lucide lucide-copy-icon lucide-copy"
+    },
+    [
+      svgEl("rect", {
+        width: "14",
+        height: "14",
+        x: "8",
+        y: "8",
+        rx: "2",
+        ry: "2"
+      }),
+      svgEl("path", {
+        d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
+      })
+    ]
+  );
+}
+
 // src/partials/button/renderButton.ts
 function renderButton({
   ariaLabel,
@@ -3948,7 +4004,7 @@ function renderRunAction({
 }
 
 // src/podkop/tabs/diagnostic/partials/renderSystemInfo.ts
-function renderSystemInfo({ items }) {
+function renderSystemInfo({ items, footer }) {
   return E("div", { class: "pdk_diagnostic-page__right-bar__system-info" }, [
     E(
       "b",
@@ -3976,7 +4032,110 @@ function renderSystemInfo({ items }) {
           ])
         ]
       );
-    })
+    }),
+    ...footer ? [footer] : []
+  ]);
+}
+
+// src/podkop/tabs/diagnostic/partials/renderUpdateCenter.ts
+function statusText(status) {
+  const messages = {
+    checking_updates: "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u0438 \u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u043E\u0441\u0442\u044C\u2026",
+    updates_available: "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u044B \u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u044B\u0435 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F.",
+    up_to_date: "Podkop \u0438 \u043F\u0430\u0442\u0447 \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u044B.",
+    patch_update_running: "\u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F. \u041D\u0435 \u0432\u044B\u043A\u043B\u044E\u0447\u0430\u0439\u0442\u0435 \u0440\u043E\u0443\u0442\u0435\u0440.",
+    patch_update_success: "\u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E \u0438 \u043F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u043E.",
+    patch_update_noop: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u044B\u0435 \u0432\u0435\u0440\u0441\u0438\u0438.",
+    unsupported_podkop: "\u041D\u043E\u0432\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F Podkop \u043F\u043E\u043A\u0430 \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u043F\u0430\u0442\u0447\u0435\u043C. \u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043E.",
+    installed_podkop_unsupported: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043D\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F Podkop \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u044D\u0442\u0438\u043C \u0432\u044B\u043F\u0443\u0441\u043A\u043E\u043C \u043F\u0430\u0442\u0447\u0430.",
+    manifest_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043C\u0430\u043D\u0438\u0444\u0435\u0441\u0442 \u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u043E\u0441\u0442\u0438.",
+    release_check_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044E\u044E \u0432\u0435\u0440\u0441\u0438\u044E Podkop.",
+    version_check_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u0438\u0442\u044C \u0432\u0435\u0440\u0441\u0438\u0438 \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u043E\u0432.",
+    download_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u0449\u0438\u043A.",
+    install_failed: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043B\u0430\u0441\u044C \u043E\u0448\u0438\u0431\u043A\u043E\u0439. \u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u043B\u043E\u0433.",
+    post_update_verification_failed: "\u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043B\u043E\u0441\u044C, \u043D\u043E \u0438\u0442\u043E\u0433\u043E\u0432\u044B\u0435 \u0432\u0435\u0440\u0441\u0438\u0438 \u043D\u0435 \u043F\u0440\u043E\u0448\u043B\u0438 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443.",
+    status_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F.",
+    worker_stopped: "\u0424\u043E\u043D\u043E\u0432\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u043D\u0435\u043E\u0436\u0438\u0434\u0430\u043D\u043D\u043E \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u043B\u0430\u0441\u044C.",
+    busy: "\u0414\u0440\u0443\u0433\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u0443\u0436\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F."
+  };
+  return messages[status.message] || "\u041D\u0430\u0436\u043C\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0439.";
+}
+function versionValue(current, latest) {
+  if (!current && !latest) return "\u2014";
+  if (!latest || current === latest) return current || latest || "\u2014";
+  return `${current || "\u2014"} \u2192 ${latest}`;
+}
+function renderUpdateCenter({
+  loading,
+  status,
+  onCheck,
+  onUpdate,
+  onShowLog,
+  onCopyLog
+}) {
+  const running = ["checking", "running"].includes(status.state);
+  const hasLog = Boolean(status.logTail);
+  const updateText = status.updateMode === "patch" ? "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043F\u0430\u0442\u0447" : "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0432\u0441\u0451";
+  const stateClass = [
+    "pdk_diagnostic-update__status",
+    status.state === "blocked" || status.state === "error" ? "pdk_diagnostic-update__status--error" : "",
+    status.state === "success" ? "pdk_diagnostic-update__status--success" : ""
+  ].filter(Boolean).join(" ");
+  return E("div", { class: "pdk_diagnostic-update" }, [
+    E("b", { class: "pdk_diagnostic-update__title" }, "\u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F"),
+    E("div", { class: "pdk_diagnostic-update__versions" }, [
+      E("div", {}, [
+        E("span", {}, "Podkop"),
+        E(
+          "b",
+          {},
+          versionValue(
+            status.currentPodkopVersion,
+            status.latestPodkopVersion
+          )
+        )
+      ]),
+      E("div", {}, [
+        E("span", {}, "\u041F\u0430\u0442\u0447"),
+        E(
+          "b",
+          {},
+          versionValue(status.currentPatchVersion, status.latestPatchVersion)
+        )
+      ])
+    ]),
+    E("div", { class: stateClass }, statusText(status)),
+    E("div", { class: "pdk_diagnostic-update__actions" }, [
+      renderButton({
+        onClick: onCheck,
+        icon: renderSearchIcon24,
+        text: "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C",
+        loading: loading && status.state === "checking",
+        disabled: running
+      }),
+      renderButton({
+        classNames: ["cbi-button-apply"],
+        onClick: onUpdate,
+        icon: renderRotateCcwIcon24,
+        text: updateText,
+        loading: loading && status.state === "running",
+        disabled: running || !status.canUpdate
+      }),
+      renderButton({
+        onClick: onShowLog,
+        icon: renderBookOpenTextIcon24,
+        text: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043B\u043E\u0433",
+        hideText: true,
+        disabled: !hasLog
+      }),
+      renderButton({
+        onClick: onCopyLog,
+        icon: renderCopyIcon24,
+        text: "\u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u043B\u043E\u0433",
+        hideText: true,
+        disabled: !hasLog
+      })
+    ])
   ]);
 }
 
@@ -4169,6 +4328,7 @@ function getPodkopVersionRow(diagnosticsSystemInfo) {
 }
 
 // src/podkop/tabs/diagnostic/initController.ts
+var updatePollTimer;
 async function fetchSystemInfo() {
   const systemInfo = await PodkopShellMethods.getSystemInfo();
   if (systemInfo.success) {
@@ -4191,6 +4351,79 @@ async function fetchSystemInfo() {
       }
     });
   }
+}
+function stopUpdatePolling() {
+  if (updatePollTimer) {
+    clearTimeout(updatePollTimer);
+    updatePollTimer = void 0;
+  }
+}
+async function fetchUpdateStatus() {
+  const response = await PodkopShellMethods.getSubscriptionPatchUpdateStatus();
+  if (!response.success) {
+    store.set({
+      diagnosticsUpdateCenter: {
+        loading: false,
+        status: {
+          state: "error",
+          message: "status_failed",
+          updatedAt: "",
+          logTail: "",
+          canUpdate: false,
+          updateMode: "none"
+        }
+      }
+    });
+    return;
+  }
+  const status = response.data;
+  const running = ["checking", "running"].includes(status.state);
+  store.set({
+    diagnosticsUpdateCenter: {
+      loading: running,
+      status
+    }
+  });
+  stopUpdatePolling();
+  if (running) {
+    updatePollTimer = setTimeout(fetchUpdateStatus, 1e3);
+  } else if (status.state === "success") {
+    await fetchSystemInfo();
+  }
+}
+async function startUpdateOperation(kind) {
+  stopUpdatePolling();
+  const current = store.get().diagnosticsUpdateCenter.status;
+  store.set({
+    diagnosticsUpdateCenter: {
+      loading: true,
+      status: {
+        ...current,
+        state: kind === "check" ? "checking" : "running",
+        message: kind === "check" ? "checking_updates" : "patch_update_running"
+      }
+    }
+  });
+  const response = kind === "check" ? await PodkopShellMethods.checkSubscriptionPatchUpdate() : await PodkopShellMethods.updateSubscriptionPatch();
+  if (!response.success || !response.data.started) {
+    showToast("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F.", "error");
+    await fetchUpdateStatus();
+    return;
+  }
+  updatePollTimer = setTimeout(fetchUpdateStatus, 500);
+}
+async function getUpdateLog() {
+  const response = await PodkopShellMethods.getSubscriptionPatchUpdateLog();
+  if (!response.success) {
+    showToast("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u043B\u043E\u0433 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F.", "error");
+    return "";
+  }
+  return response.data || "";
+}
+async function handleShowUpdateLog() {
+  const log = await getUpdateLog();
+  if (!log) return;
+  ui.showModal("\u041B\u043E\u0433 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F", renderModal(log, "podkop_update"));
 }
 function renderDiagnosticsChecks() {
   logger.debug("[DIAGNOSTIC]", "renderDiagnosticsChecks");
@@ -4514,6 +4747,7 @@ function renderDiagnosticAvailableActionsWidget() {
 function renderDiagnosticSystemInfoWidget() {
   logger.debug("[DIAGNOSTIC]", "renderDiagnosticSystemInfoWidget");
   const diagnosticsSystemInfo = store.get().diagnosticsSystemInfo;
+  const diagnosticsUpdateCenter = store.get().diagnosticsUpdateCenter;
   const container = document.getElementById("pdk_diagnostic-page-system-info");
   const renderedSystemInfo = renderSystemInfo({
     items: [
@@ -4534,7 +4768,15 @@ function renderDiagnosticSystemInfoWidget() {
         key: "Device",
         value: diagnosticsSystemInfo.device_model
       }
-    ]
+    ],
+    footer: renderUpdateCenter({
+      loading: diagnosticsUpdateCenter.loading,
+      status: diagnosticsUpdateCenter.status,
+      onCheck: () => startUpdateOperation("check"),
+      onUpdate: () => startUpdateOperation("update"),
+      onShowLog: handleShowUpdateLog,
+      onCopyLog: () => copyToClipboard(diagnosticsUpdateCenter.status.logTail || "")
+    })
   });
   return preserveScrollForPage(() => {
     container.replaceChildren(renderedSystemInfo);
@@ -4551,7 +4793,7 @@ async function onStoreUpdate2(next, prev, diff) {
   if (diff.diagnosticsActions || diff.servicesInfoWidget) {
     renderDiagnosticAvailableActionsWidget();
   }
-  if (diff.diagnosticsSystemInfo) {
+  if (diff.diagnosticsSystemInfo || diff.diagnosticsUpdateCenter) {
     renderDiagnosticSystemInfoWidget();
   }
 }
@@ -4582,14 +4824,17 @@ function onPageMount2() {
   renderWikiDisclaimerWidget();
   fetchServicesInfo();
   fetchSystemInfo();
+  fetchUpdateStatus();
 }
 function onPageUnmount2() {
+  stopUpdatePolling();
   store.unsubscribe(onStoreUpdate2);
   store.reset([
     "diagnosticsActions",
     "diagnosticsSystemInfo",
     "diagnosticsChecks",
-    "diagnosticsRunAction"
+    "diagnosticsRunAction",
+    "diagnosticsUpdateCenter"
   ]);
 }
 function registerLifecycleListeners2() {
@@ -4729,6 +4974,55 @@ var styles4 = `
 .pdk_diagnostic-page__right-bar__system-info__row__tag--success {
     border: 1px var(--success-color-medium, green) solid;
     color: var(--success-color-medium, green);
+}
+
+.pdk_diagnostic-update {
+    border-top: 1px solid var(--background-color-low, lightgray);
+    padding-top: 10px;
+    display: grid;
+    grid-template-columns: 1fr;
+    row-gap: 8px;
+    min-width: 0;
+}
+
+.pdk_diagnostic-update__versions {
+    display: grid;
+    grid-template-columns: 1fr;
+    row-gap: 4px;
+}
+
+.pdk_diagnostic-update__versions > div {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    column-gap: 8px;
+}
+
+.pdk_diagnostic-update__versions b {
+    overflow-wrap: anywhere;
+}
+
+.pdk_diagnostic-update__status {
+    color: var(--text-color-medium, inherit);
+    line-height: 1.35;
+}
+
+.pdk_diagnostic-update__status--error {
+    color: var(--error-color-medium, red);
+}
+
+.pdk_diagnostic-update__status--success {
+    color: var(--success-color-medium, green);
+}
+
+.pdk_diagnostic-update__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    align-items: center;
+}
+
+.pdk_diagnostic-update__actions .pdk-partial-button {
+    min-height: 34px;
 }
 
 .pdk_diagnostic-page__left-bar {

@@ -1,0 +1,1430 @@
+diff --git a/fe-app-podkop/src/icons/index.ts b/fe-app-podkop/src/icons/index.ts
+index 419b490..be9e34d 100644
+--- a/fe-app-podkop/src/icons/index.ts
++++ b/fe-app-podkop/src/icons/index.ts
+@@ -16,3 +16,4 @@ export * from './renderSquareChartGanttIcon24';
+ export * from './renderCogIcon24';
+ export * from './renderSearchIcon24';
+ export * from './renderBookOpenTextIcon24';
++export * from './renderCopyIcon24';
+diff --git a/fe-app-podkop/src/icons/renderCopyIcon24.ts b/fe-app-podkop/src/icons/renderCopyIcon24.ts
+new file mode 100644
+index 0000000..0bb798e
+--- /dev/null
++++ b/fe-app-podkop/src/icons/renderCopyIcon24.ts
+@@ -0,0 +1,31 @@
++import { svgEl } from '../helpers';
++
++export function renderCopyIcon24() {
++  const NS = 'http://www.w3.org/2000/svg';
++  return svgEl(
++    'svg',
++    {
++      xmlns: NS,
++      viewBox: '0 0 24 24',
++      fill: 'none',
++      stroke: 'currentColor',
++      'stroke-width': '2',
++      'stroke-linecap': 'round',
++      'stroke-linejoin': 'round',
++      class: 'lucide lucide-copy-icon lucide-copy',
++    },
++    [
++      svgEl('rect', {
++        width: '14',
++        height: '14',
++        x: '8',
++        y: '8',
++        rx: '2',
++        ry: '2',
++      }),
++      svgEl('path', {
++        d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2',
++      }),
++    ],
++  );
++}
+diff --git a/fe-app-podkop/src/podkop/methods/shell/index.ts b/fe-app-podkop/src/podkop/methods/shell/index.ts
+index 040067e..310e91d 100644
+--- a/fe-app-podkop/src/podkop/methods/shell/index.ts
++++ b/fe-app-podkop/src/podkop/methods/shell/index.ts
+@@ -122,6 +122,13 @@ export const PodkopShellMethods = {
+       '/usr/bin/podkop',
+       15000,
+     ),
++  checkSubscriptionPatchUpdate: async () =>
++    callBaseMethod<Podkop.SubscriptionPatchUpdateStartResult>(
++      Podkop.AvailableMethods.SUBSCRIPTION_PATCH_UPDATE_CHECK,
++      [],
++      '/usr/bin/podkop',
++      15000,
++    ),
+   getSubscriptionPatchUpdateStatus: async () =>
+     callBaseMethod<Podkop.SubscriptionPatchUpdateStatus>(
+       Podkop.AvailableMethods.GET_SUBSCRIPTION_PATCH_UPDATE_STATUS,
+@@ -129,6 +136,13 @@ export const PodkopShellMethods = {
+       '/usr/bin/podkop',
+       15000,
+     ),
++  getSubscriptionPatchUpdateLog: async () =>
++    callBaseMethod<string>(
++      Podkop.AvailableMethods.GET_SUBSCRIPTION_PATCH_UPDATE_LOG,
++      [],
++      '/usr/bin/podkop',
++      15000,
++    ),
+   getSystemInfo: async () =>
+     callBaseMethod<Podkop.GetSystemInfo>(
+       Podkop.AvailableMethods.GET_SYSTEM_INFO,
+diff --git a/fe-app-podkop/src/podkop/services/store.service.ts b/fe-app-podkop/src/podkop/services/store.service.ts
+index b160105..632fd99 100644
+--- a/fe-app-podkop/src/podkop/services/store.service.ts
++++ b/fe-app-podkop/src/podkop/services/store.service.ts
+@@ -204,6 +204,10 @@ export interface StoreType {
+     openwrt_version: string;
+     device_model: string;
+   };
++  diagnosticsUpdateCenter: {
++    loading: boolean;
++    status: Podkop.SubscriptionPatchUpdateStatus;
++  };
+ }
+ 
+ const initialStore: StoreType = {
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/diagnostic.store.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/diagnostic.store.ts
+index c6ea562..7a50ed4 100644
+--- a/fe-app-podkop/src/podkop/tabs/diagnostic/diagnostic.store.ts
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/diagnostic.store.ts
+@@ -10,7 +10,19 @@ export const initialDiagnosticStore: Pick<
+   | 'diagnosticsRunAction'
+   | 'diagnosticsActions'
+   | 'diagnosticsSystemInfo'
++  | 'diagnosticsUpdateCenter'
+ > = {
++  diagnosticsUpdateCenter: {
++    loading: false,
++    status: {
++      state: 'idle',
++      message: '',
++      updatedAt: '',
++      logTail: '',
++      canUpdate: false,
++      updateMode: 'none',
++    },
++  },
+   diagnosticsSystemInfo: {
+     loading: true,
+     podkop_version: 'loading',
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/initController.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/initController.ts
+index 7ef08cd..c1d36c7 100644
+--- a/fe-app-podkop/src/podkop/tabs/diagnostic/initController.ts
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/initController.ts
+@@ -10,6 +10,7 @@ import {
+   renderCheckSection,
+   renderRunAction,
+   renderSystemInfo,
++  renderUpdateCenter,
+ } from './partials';
+ import { PodkopShellMethods } from '../../methods';
+ import { fetchServicesInfo } from '../../fetchers';
+@@ -20,6 +21,9 @@ import { showToast } from '../../../helpers/showToast';
+ import { renderWikiDisclaimer } from './partials/renderWikiDisclaimer';
+ import { runSectionsCheck } from './checks/runSectionsCheck';
+ import { getPodkopVersionRow } from './helpers/getPodkopVersionRow';
++import { copyToClipboard } from '../../../helpers/copyToClipboard';
++
++let updatePollTimer: ReturnType<typeof setTimeout> | undefined;
+ 
+ async function fetchSystemInfo() {
+   const systemInfo = await PodkopShellMethods.getSystemInfo();
+@@ -46,6 +50,91 @@ async function fetchSystemInfo() {
+   }
+ }
+ 
++function stopUpdatePolling() {
++  if (updatePollTimer) {
++    clearTimeout(updatePollTimer);
++    updatePollTimer = undefined;
++  }
++}
++
++async function fetchUpdateStatus() {
++  const response = await PodkopShellMethods.getSubscriptionPatchUpdateStatus();
++  if (!response.success) {
++    store.set({
++      diagnosticsUpdateCenter: {
++        loading: false,
++        status: {
++          state: 'error',
++          message: 'status_failed',
++          updatedAt: '',
++          logTail: '',
++          canUpdate: false,
++          updateMode: 'none',
++        },
++      },
++    });
++    return;
++  }
++
++  const status = response.data;
++  const running = ['checking', 'running'].includes(status.state);
++  store.set({
++    diagnosticsUpdateCenter: {
++      loading: running,
++      status,
++    },
++  });
++
++  stopUpdatePolling();
++  if (running) {
++    updatePollTimer = setTimeout(fetchUpdateStatus, 1000);
++  } else if (status.state === 'success') {
++    await fetchSystemInfo();
++  }
++}
++
++async function startUpdateOperation(kind: 'check' | 'update') {
++  stopUpdatePolling();
++  const current = store.get().diagnosticsUpdateCenter.status;
++  store.set({
++    diagnosticsUpdateCenter: {
++      loading: true,
++      status: {
++        ...current,
++        state: kind === 'check' ? 'checking' : 'running',
++        message:
++          kind === 'check' ? 'checking_updates' : 'patch_update_running',
++      },
++    },
++  });
++
++  const response =
++    kind === 'check'
++      ? await PodkopShellMethods.checkSubscriptionPatchUpdate()
++      : await PodkopShellMethods.updateSubscriptionPatch();
++  if (!response.success || !response.data.started) {
++    showToast('Не удалось запустить операцию обновления.', 'error');
++    await fetchUpdateStatus();
++    return;
++  }
++  updatePollTimer = setTimeout(fetchUpdateStatus, 500);
++}
++
++async function getUpdateLog() {
++  const response = await PodkopShellMethods.getSubscriptionPatchUpdateLog();
++  if (!response.success) {
++    showToast('Не удалось получить лог обновления.', 'error');
++    return '';
++  }
++  return response.data || '';
++}
++
++async function handleShowUpdateLog() {
++  const log = await getUpdateLog();
++  if (!log) return;
++  ui.showModal('Лог обновления', renderModal(log, 'podkop_update'));
++}
++
+ function renderDiagnosticsChecks() {
+   logger.debug('[DIAGNOSTIC]', 'renderDiagnosticsChecks');
+   const diagnosticsChecks = store
+@@ -412,6 +501,7 @@ function renderDiagnosticAvailableActionsWidget() {
+ function renderDiagnosticSystemInfoWidget() {
+   logger.debug('[DIAGNOSTIC]', 'renderDiagnosticSystemInfoWidget');
+   const diagnosticsSystemInfo = store.get().diagnosticsSystemInfo;
++  const diagnosticsUpdateCenter = store.get().diagnosticsUpdateCenter;
+ 
+   const container = document.getElementById('pdk_diagnostic-page-system-info');
+ 
+@@ -435,6 +525,15 @@ function renderDiagnosticSystemInfoWidget() {
+         value: diagnosticsSystemInfo.device_model,
+       },
+     ],
++    footer: renderUpdateCenter({
++      loading: diagnosticsUpdateCenter.loading,
++      status: diagnosticsUpdateCenter.status,
++      onCheck: () => startUpdateOperation('check'),
++      onUpdate: () => startUpdateOperation('update'),
++      onShowLog: handleShowUpdateLog,
++      onCopyLog: () =>
++        copyToClipboard(diagnosticsUpdateCenter.status.logTail || ''),
++    }),
+   });
+ 
+   return preserveScrollForPage(() => {
+@@ -460,7 +559,7 @@ async function onStoreUpdate(
+     renderDiagnosticAvailableActionsWidget();
+   }
+ 
+-  if (diff.diagnosticsSystemInfo) {
++  if (diff.diagnosticsSystemInfo || diff.diagnosticsUpdateCenter) {
+     renderDiagnosticSystemInfoWidget();
+   }
+ }
+@@ -515,9 +614,14 @@ function onPageMount() {
+ 
+   // Initial system info fetch
+   fetchSystemInfo();
++
++  // Restore update status without starting a network request.
++  fetchUpdateStatus();
+ }
+ 
+ function onPageUnmount() {
++  stopUpdatePolling();
++
+   // Remove old listener
+   store.unsubscribe(onStoreUpdate);
+ 
+@@ -527,6 +631,7 @@ function onPageUnmount() {
+     'diagnosticsSystemInfo',
+     'diagnosticsChecks',
+     'diagnosticsRunAction',
++    'diagnosticsUpdateCenter',
+   ]);
+ }
+ 
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/partials/index.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/partials/index.ts
+index 517093a..068bd20 100644
+--- a/fe-app-podkop/src/podkop/tabs/diagnostic/partials/index.ts
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/partials/index.ts
+@@ -2,3 +2,4 @@ export * from './renderAvailableActions';
+ export * from './renderCheckSection';
+ export * from './renderRunAction';
+ export * from './renderSystemInfo';
++export * from './renderUpdateCenter';
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderSystemInfo.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderSystemInfo.ts
+index f686b8a..4350799 100644
+--- a/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderSystemInfo.ts
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderSystemInfo.ts
+@@ -11,9 +11,10 @@ export interface IRenderSystemInfoRow {
+ 
+ interface IRenderSystemInfoProps {
+   items: Array<IRenderSystemInfoRow>;
++  footer?: HTMLElement;
+ }
+ 
+-export function renderSystemInfo({ items }: IRenderSystemInfoProps) {
++export function renderSystemInfo({ items, footer }: IRenderSystemInfoProps) {
+   return E('div', { class: 'pdk_diagnostic-page__right-bar__system-info' }, [
+     E(
+       'b',
+@@ -45,5 +46,6 @@ export function renderSystemInfo({ items }: IRenderSystemInfoProps) {
+         ],
+       );
+     }),
++    ...(footer ? [footer] : []),
+   ]);
+ }
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderUpdateCenter.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderUpdateCenter.ts
+new file mode 100644
+index 0000000..df2b9a8
+--- /dev/null
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderUpdateCenter.ts
+@@ -0,0 +1,131 @@
++import { renderButton } from '../../../../partials';
++import {
++  renderBookOpenTextIcon24,
++  renderCopyIcon24,
++  renderRotateCcwIcon24,
++  renderSearchIcon24,
++} from '../../../../icons';
++import { Podkop } from '../../../types';
++
++interface IRenderUpdateCenterProps {
++  loading: boolean;
++  status: Podkop.SubscriptionPatchUpdateStatus;
++  onCheck: () => void;
++  onUpdate: () => void;
++  onShowLog: () => void;
++  onCopyLog: () => void;
++}
++
++function statusText(status: Podkop.SubscriptionPatchUpdateStatus) {
++  const messages: Record<string, string> = {
++    checking_updates: 'Проверяем обновления и совместимость…',
++    updates_available: 'Доступны совместимые обновления.',
++    up_to_date: 'Podkop и патч актуальны.',
++    patch_update_running: 'Обновление выполняется. Не выключайте роутер.',
++    patch_update_success: 'Обновление установлено и проверено.',
++    patch_update_noop: 'Установлены актуальные версии.',
++    unsupported_podkop:
++      'Новая версия Podkop пока не поддерживается патчем. Обновление заблокировано.',
++    installed_podkop_unsupported:
++      'Установленная версия Podkop не поддерживается этим выпуском патча.',
++    manifest_failed: 'Не удалось загрузить манифест совместимости.',
++    release_check_failed: 'Не удалось получить последнюю версию Podkop.',
++    version_check_failed: 'Не удалось определить версии компонентов.',
++    download_failed: 'Не удалось скачать установщик.',
++    install_failed: 'Установка завершилась ошибкой. Откройте лог.',
++    post_update_verification_failed:
++      'Обновление завершилось, но итоговые версии не прошли проверку.',
++    status_failed: 'Не удалось получить состояние обновления.',
++    worker_stopped: 'Фоновая операция обновления неожиданно остановилась.',
++    busy: 'Другая операция обновления уже выполняется.',
++  };
++  return messages[status.message] || 'Нажмите проверку обновлений.';
++}
++
++function versionValue(current?: string, latest?: string) {
++  if (!current && !latest) return '—';
++  if (!latest || current === latest) return current || latest || '—';
++  return `${current || '—'} → ${latest}`;
++}
++
++export function renderUpdateCenter({
++  loading,
++  status,
++  onCheck,
++  onUpdate,
++  onShowLog,
++  onCopyLog,
++}: IRenderUpdateCenterProps) {
++  const running = ['checking', 'running'].includes(status.state);
++  const hasLog = Boolean(status.logTail);
++  const updateText =
++    status.updateMode === 'patch' ? 'Обновить патч' : 'Обновить всё';
++  const stateClass = [
++    'pdk_diagnostic-update__status',
++    status.state === 'blocked' || status.state === 'error'
++      ? 'pdk_diagnostic-update__status--error'
++      : '',
++    status.state === 'success'
++      ? 'pdk_diagnostic-update__status--success'
++      : '',
++  ]
++    .filter(Boolean)
++    .join(' ');
++
++  return E('div', { class: 'pdk_diagnostic-update' }, [
++    E('b', { class: 'pdk_diagnostic-update__title' }, 'Обновления'),
++    E('div', { class: 'pdk_diagnostic-update__versions' }, [
++      E('div', {}, [
++        E('span', {}, 'Podkop'),
++        E(
++          'b',
++          {},
++          versionValue(
++            status.currentPodkopVersion,
++            status.latestPodkopVersion,
++          ),
++        ),
++      ]),
++      E('div', {}, [
++        E('span', {}, 'Патч'),
++        E(
++          'b',
++          {},
++          versionValue(status.currentPatchVersion, status.latestPatchVersion),
++        ),
++      ]),
++    ]),
++    E('div', { class: stateClass }, statusText(status)),
++    E('div', { class: 'pdk_diagnostic-update__actions' }, [
++      renderButton({
++        onClick: onCheck,
++        icon: renderSearchIcon24,
++        text: 'Проверить',
++        loading: loading && status.state === 'checking',
++        disabled: running,
++      }),
++      renderButton({
++        classNames: ['cbi-button-apply'],
++        onClick: onUpdate,
++        icon: renderRotateCcwIcon24,
++        text: updateText,
++        loading: loading && status.state === 'running',
++        disabled: running || !status.canUpdate,
++      }),
++      renderButton({
++        onClick: onShowLog,
++        icon: renderBookOpenTextIcon24,
++        text: 'Открыть лог',
++        hideText: true,
++        disabled: !hasLog,
++      }),
++      renderButton({
++        onClick: onCopyLog,
++        icon: renderCopyIcon24,
++        text: 'Копировать лог',
++        hideText: true,
++        disabled: !hasLog,
++      }),
++    ]),
++  ]);
++}
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/styles.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/styles.ts
+index def1d78..901d80f 100644
+--- a/fe-app-podkop/src/podkop/tabs/diagnostic/styles.ts
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/styles.ts
+@@ -101,6 +101,55 @@ export const styles = `
+     color: var(--success-color-medium, green);
+ }
+ 
++.pdk_diagnostic-update {
++    border-top: 1px solid var(--background-color-low, lightgray);
++    padding-top: 10px;
++    display: grid;
++    grid-template-columns: 1fr;
++    row-gap: 8px;
++    min-width: 0;
++}
++
++.pdk_diagnostic-update__versions {
++    display: grid;
++    grid-template-columns: 1fr;
++    row-gap: 4px;
++}
++
++.pdk_diagnostic-update__versions > div {
++    display: grid;
++    grid-template-columns: auto minmax(0, 1fr);
++    column-gap: 8px;
++}
++
++.pdk_diagnostic-update__versions b {
++    overflow-wrap: anywhere;
++}
++
++.pdk_diagnostic-update__status {
++    color: var(--text-color-medium, inherit);
++    line-height: 1.35;
++}
++
++.pdk_diagnostic-update__status--error {
++    color: var(--error-color-medium, red);
++}
++
++.pdk_diagnostic-update__status--success {
++    color: var(--success-color-medium, green);
++}
++
++.pdk_diagnostic-update__actions {
++    display: flex;
++    flex-wrap: wrap;
++    gap: 6px;
++    align-items: center;
++}
++
++.pdk_diagnostic-update__actions .pdk-partial-button {
++    min-height: 34px;
++}
++
+ .pdk_diagnostic-page__left-bar {
+     display: grid;
+     grid-template-columns: 1fr;
+diff --git a/fe-app-podkop/src/podkop/types.ts b/fe-app-podkop/src/podkop/types.ts
+index 9777a15..1911503 100644
+--- a/fe-app-podkop/src/podkop/types.ts
++++ b/fe-app-podkop/src/podkop/types.ts
+@@ -70,7 +70,9 @@ export namespace Podkop {
+     SUBSCRIPTION_SPEEDTEST_STOP = 'subscription_speedtest_stop',
+     GET_SUBSCRIPTION_SPEEDTEST_STATUS = 'get_subscription_speedtest_status',
+     SUBSCRIPTION_PATCH_UPDATE = 'subscription_patch_update',
++    SUBSCRIPTION_PATCH_UPDATE_CHECK = 'subscription_patch_update_check',
+     GET_SUBSCRIPTION_PATCH_UPDATE_STATUS = 'get_subscription_patch_update_status',
++    GET_SUBSCRIPTION_PATCH_UPDATE_LOG = 'get_subscription_patch_update_log',
+     GET_SYSTEM_INFO = 'get_system_info',
+     GET_SUBSCRIPTION_CACHED_LINKS = 'get_subscription_cached_links',
+     GET_SUBSCRIPTION_SKIPPED_LINKS = 'get_subscription_skipped_links',
+@@ -191,10 +193,29 @@ export namespace Podkop {
+   }
+ 
+   export interface SubscriptionPatchUpdateStatus {
+-    state: 'idle' | 'running' | 'success' | 'error';
++    state:
++      | 'idle'
++      | 'checking'
++      | 'ready'
++      | 'running'
++      | 'success'
++      | 'blocked'
++      | 'error';
+     message: string;
+     updatedAt: string;
+     logTail: string;
++    currentPodkopVersion?: string;
++    latestPodkopVersion?: string;
++    currentPatchVersion?: string;
++    latestPatchVersion?: string;
++    updateMode?: 'none' | 'patch' | 'podkop_and_patch' | 'blocked';
++    podkopUpdateAvailable?: boolean;
++    patchUpdateAvailable?: boolean;
++    currentPodkopSupported?: boolean;
++    latestPodkopSupported?: boolean;
++    canUpdate?: boolean;
++    supportedPodkopVersions?: string[];
++    checkedAt?: string;
+   }
+ 
+   export interface ConfigProxyUrlTestSection {
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index 11d6c3c..3c877df 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -627,7 +627,9 @@ var Podkop;
+     AvailableMethods2["SUBSCRIPTION_SPEEDTEST_STOP"] = "subscription_speedtest_stop";
+     AvailableMethods2["GET_SUBSCRIPTION_SPEEDTEST_STATUS"] = "get_subscription_speedtest_status";
+     AvailableMethods2["SUBSCRIPTION_PATCH_UPDATE"] = "subscription_patch_update";
++    AvailableMethods2["SUBSCRIPTION_PATCH_UPDATE_CHECK"] = "subscription_patch_update_check";
+     AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_STATUS"] = "get_subscription_patch_update_status";
++    AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_LOG"] = "get_subscription_patch_update_log";
+     AvailableMethods2["GET_SYSTEM_INFO"] = "get_system_info";
+     AvailableMethods2["GET_SUBSCRIPTION_CACHED_LINKS"] = "get_subscription_cached_links";
+     AvailableMethods2["GET_SUBSCRIPTION_SKIPPED_LINKS"] = "get_subscription_skipped_links";
+@@ -743,12 +745,24 @@ var PodkopShellMethods = {
+     "/usr/bin/podkop",
+     15e3
+   ),
++  checkSubscriptionPatchUpdate: async () => callBaseMethod(
++    Podkop.AvailableMethods.SUBSCRIPTION_PATCH_UPDATE_CHECK,
++    [],
++    "/usr/bin/podkop",
++    15e3
++  ),
+   getSubscriptionPatchUpdateStatus: async () => callBaseMethod(
+     Podkop.AvailableMethods.GET_SUBSCRIPTION_PATCH_UPDATE_STATUS,
+     [],
+     "/usr/bin/podkop",
+     15e3
+   ),
++  getSubscriptionPatchUpdateLog: async () => callBaseMethod(
++    Podkop.AvailableMethods.GET_SUBSCRIPTION_PATCH_UPDATE_LOG,
++    [],
++    "/usr/bin/podkop",
++    15e3
++  ),
+   getSystemInfo: async () => callBaseMethod(
+     Podkop.AvailableMethods.GET_SYSTEM_INFO
+   ),
+@@ -1293,6 +1307,17 @@ var DIAGNOSTICS_CHECKS_MAP = {
+ 
+ // src/podkop/tabs/diagnostic/diagnostic.store.ts
+ var initialDiagnosticStore = {
++  diagnosticsUpdateCenter: {
++    loading: false,
++    status: {
++      state: "idle",
++      message: "",
++      updatedAt: "",
++      logTail: "",
++      canUpdate: false,
++      updateMode: "none"
++    }
++  },
+   diagnosticsSystemInfo: {
+     loading: true,
+     podkop_version: "loading",
+@@ -3552,6 +3577,37 @@ function renderBookOpenTextIcon24() {
+   );
+ }
+ 
++// src/icons/renderCopyIcon24.ts
++function renderCopyIcon24() {
++  const NS = "http://www.w3.org/2000/svg";
++  return svgEl(
++    "svg",
++    {
++      xmlns: NS,
++      viewBox: "0 0 24 24",
++      fill: "none",
++      stroke: "currentColor",
++      "stroke-width": "2",
++      "stroke-linecap": "round",
++      "stroke-linejoin": "round",
++      class: "lucide lucide-copy-icon lucide-copy"
++    },
++    [
++      svgEl("rect", {
++        width: "14",
++        height: "14",
++        x: "8",
++        y: "8",
++        rx: "2",
++        ry: "2"
++      }),
++      svgEl("path", {
++        d: "M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"
++      })
++    ]
++  );
++}
++
+ // src/partials/button/renderButton.ts
+ function renderButton({
+   ariaLabel,
+@@ -3948,7 +4004,7 @@ function renderRunAction({
+ }
+ 
+ // src/podkop/tabs/diagnostic/partials/renderSystemInfo.ts
+-function renderSystemInfo({ items }) {
++function renderSystemInfo({ items, footer }) {
+   return E("div", { class: "pdk_diagnostic-page__right-bar__system-info" }, [
+     E(
+       "b",
+@@ -3976,7 +4032,110 @@ function renderSystemInfo({ items }) {
+           ])
+         ]
+       );
+-    })
++    }),
++    ...footer ? [footer] : []
++  ]);
++}
++
++// src/podkop/tabs/diagnostic/partials/renderUpdateCenter.ts
++function statusText(status) {
++  const messages = {
++    checking_updates: "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u0438 \u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u043E\u0441\u0442\u044C\u2026",
++    updates_available: "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u044B \u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u044B\u0435 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F.",
++    up_to_date: "Podkop \u0438 \u043F\u0430\u0442\u0447 \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u044B.",
++    patch_update_running: "\u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F. \u041D\u0435 \u0432\u044B\u043A\u043B\u044E\u0447\u0430\u0439\u0442\u0435 \u0440\u043E\u0443\u0442\u0435\u0440.",
++    patch_update_success: "\u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043E \u0438 \u043F\u0440\u043E\u0432\u0435\u0440\u0435\u043D\u043E.",
++    patch_update_noop: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u044B\u0435 \u0432\u0435\u0440\u0441\u0438\u0438.",
++    unsupported_podkop: "\u041D\u043E\u0432\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F Podkop \u043F\u043E\u043A\u0430 \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u043F\u0430\u0442\u0447\u0435\u043C. \u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043E.",
++    installed_podkop_unsupported: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043D\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F Podkop \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u044D\u0442\u0438\u043C \u0432\u044B\u043F\u0443\u0441\u043A\u043E\u043C \u043F\u0430\u0442\u0447\u0430.",
++    manifest_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043C\u0430\u043D\u0438\u0444\u0435\u0441\u0442 \u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u043E\u0441\u0442\u0438.",
++    release_check_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044E\u044E \u0432\u0435\u0440\u0441\u0438\u044E Podkop.",
++    version_check_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u0438\u0442\u044C \u0432\u0435\u0440\u0441\u0438\u0438 \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u043E\u0432.",
++    download_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0441\u043A\u0430\u0447\u0430\u0442\u044C \u0443\u0441\u0442\u0430\u043D\u043E\u0432\u0449\u0438\u043A.",
++    install_failed: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043A\u0430 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043B\u0430\u0441\u044C \u043E\u0448\u0438\u0431\u043A\u043E\u0439. \u041E\u0442\u043A\u0440\u043E\u0439\u0442\u0435 \u043B\u043E\u0433.",
++    post_update_verification_failed: "\u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0437\u0430\u0432\u0435\u0440\u0448\u0438\u043B\u043E\u0441\u044C, \u043D\u043E \u0438\u0442\u043E\u0433\u043E\u0432\u044B\u0435 \u0432\u0435\u0440\u0441\u0438\u0438 \u043D\u0435 \u043F\u0440\u043E\u0448\u043B\u0438 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443.",
++    status_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u0441\u043E\u0441\u0442\u043E\u044F\u043D\u0438\u0435 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F.",
++    worker_stopped: "\u0424\u043E\u043D\u043E\u0432\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u043D\u0435\u043E\u0436\u0438\u0434\u0430\u043D\u043D\u043E \u043E\u0441\u0442\u0430\u043D\u043E\u0432\u0438\u043B\u0430\u0441\u044C.",
++    busy: "\u0414\u0440\u0443\u0433\u0430\u044F \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044F \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u0443\u0436\u0435 \u0432\u044B\u043F\u043E\u043B\u043D\u044F\u0435\u0442\u0441\u044F."
++  };
++  return messages[status.message] || "\u041D\u0430\u0436\u043C\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0439.";
++}
++function versionValue(current, latest) {
++  if (!current && !latest) return "\u2014";
++  if (!latest || current === latest) return current || latest || "\u2014";
++  return `${current || "\u2014"} \u2192 ${latest}`;
++}
++function renderUpdateCenter({
++  loading,
++  status,
++  onCheck,
++  onUpdate,
++  onShowLog,
++  onCopyLog
++}) {
++  const running = ["checking", "running"].includes(status.state);
++  const hasLog = Boolean(status.logTail);
++  const updateText = status.updateMode === "patch" ? "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u043F\u0430\u0442\u0447" : "\u041E\u0431\u043D\u043E\u0432\u0438\u0442\u044C \u0432\u0441\u0451";
++  const stateClass = [
++    "pdk_diagnostic-update__status",
++    status.state === "blocked" || status.state === "error" ? "pdk_diagnostic-update__status--error" : "",
++    status.state === "success" ? "pdk_diagnostic-update__status--success" : ""
++  ].filter(Boolean).join(" ");
++  return E("div", { class: "pdk_diagnostic-update" }, [
++    E("b", { class: "pdk_diagnostic-update__title" }, "\u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F"),
++    E("div", { class: "pdk_diagnostic-update__versions" }, [
++      E("div", {}, [
++        E("span", {}, "Podkop"),
++        E(
++          "b",
++          {},
++          versionValue(
++            status.currentPodkopVersion,
++            status.latestPodkopVersion
++          )
++        )
++      ]),
++      E("div", {}, [
++        E("span", {}, "\u041F\u0430\u0442\u0447"),
++        E(
++          "b",
++          {},
++          versionValue(status.currentPatchVersion, status.latestPatchVersion)
++        )
++      ])
++    ]),
++    E("div", { class: stateClass }, statusText(status)),
++    E("div", { class: "pdk_diagnostic-update__actions" }, [
++      renderButton({
++        onClick: onCheck,
++        icon: renderSearchIcon24,
++        text: "\u041F\u0440\u043E\u0432\u0435\u0440\u0438\u0442\u044C",
++        loading: loading && status.state === "checking",
++        disabled: running
++      }),
++      renderButton({
++        classNames: ["cbi-button-apply"],
++        onClick: onUpdate,
++        icon: renderRotateCcwIcon24,
++        text: updateText,
++        loading: loading && status.state === "running",
++        disabled: running || !status.canUpdate
++      }),
++      renderButton({
++        onClick: onShowLog,
++        icon: renderBookOpenTextIcon24,
++        text: "\u041E\u0442\u043A\u0440\u044B\u0442\u044C \u043B\u043E\u0433",
++        hideText: true,
++        disabled: !hasLog
++      }),
++      renderButton({
++        onClick: onCopyLog,
++        icon: renderCopyIcon24,
++        text: "\u041A\u043E\u043F\u0438\u0440\u043E\u0432\u0430\u0442\u044C \u043B\u043E\u0433",
++        hideText: true,
++        disabled: !hasLog
++      })
++    ])
+   ]);
+ }
+ 
+@@ -4169,6 +4328,7 @@ function getPodkopVersionRow(diagnosticsSystemInfo) {
+ }
+ 
+ // src/podkop/tabs/diagnostic/initController.ts
++var updatePollTimer;
+ async function fetchSystemInfo() {
+   const systemInfo = await PodkopShellMethods.getSystemInfo();
+   if (systemInfo.success) {
+@@ -4192,6 +4352,79 @@ async function fetchSystemInfo() {
+     });
+   }
+ }
++function stopUpdatePolling() {
++  if (updatePollTimer) {
++    clearTimeout(updatePollTimer);
++    updatePollTimer = void 0;
++  }
++}
++async function fetchUpdateStatus() {
++  const response = await PodkopShellMethods.getSubscriptionPatchUpdateStatus();
++  if (!response.success) {
++    store.set({
++      diagnosticsUpdateCenter: {
++        loading: false,
++        status: {
++          state: "error",
++          message: "status_failed",
++          updatedAt: "",
++          logTail: "",
++          canUpdate: false,
++          updateMode: "none"
++        }
++      }
++    });
++    return;
++  }
++  const status = response.data;
++  const running = ["checking", "running"].includes(status.state);
++  store.set({
++    diagnosticsUpdateCenter: {
++      loading: running,
++      status
++    }
++  });
++  stopUpdatePolling();
++  if (running) {
++    updatePollTimer = setTimeout(fetchUpdateStatus, 1e3);
++  } else if (status.state === "success") {
++    await fetchSystemInfo();
++  }
++}
++async function startUpdateOperation(kind) {
++  stopUpdatePolling();
++  const current = store.get().diagnosticsUpdateCenter.status;
++  store.set({
++    diagnosticsUpdateCenter: {
++      loading: true,
++      status: {
++        ...current,
++        state: kind === "check" ? "checking" : "running",
++        message: kind === "check" ? "checking_updates" : "patch_update_running"
++      }
++    }
++  });
++  const response = kind === "check" ? await PodkopShellMethods.checkSubscriptionPatchUpdate() : await PodkopShellMethods.updateSubscriptionPatch();
++  if (!response.success || !response.data.started) {
++    showToast("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u043F\u0443\u0441\u0442\u0438\u0442\u044C \u043E\u043F\u0435\u0440\u0430\u0446\u0438\u044E \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F.", "error");
++    await fetchUpdateStatus();
++    return;
++  }
++  updatePollTimer = setTimeout(fetchUpdateStatus, 500);
++}
++async function getUpdateLog() {
++  const response = await PodkopShellMethods.getSubscriptionPatchUpdateLog();
++  if (!response.success) {
++    showToast("\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u043B\u043E\u0433 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F.", "error");
++    return "";
++  }
++  return response.data || "";
++}
++async function handleShowUpdateLog() {
++  const log = await getUpdateLog();
++  if (!log) return;
++  ui.showModal("\u041B\u043E\u0433 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F", renderModal(log, "podkop_update"));
++}
+ function renderDiagnosticsChecks() {
+   logger.debug("[DIAGNOSTIC]", "renderDiagnosticsChecks");
+   const diagnosticsChecks = store.get().diagnosticsChecks.sort((a, b) => a.order - b.order);
+@@ -4514,6 +4747,7 @@ function renderDiagnosticAvailableActionsWidget() {
+ function renderDiagnosticSystemInfoWidget() {
+   logger.debug("[DIAGNOSTIC]", "renderDiagnosticSystemInfoWidget");
+   const diagnosticsSystemInfo = store.get().diagnosticsSystemInfo;
++  const diagnosticsUpdateCenter = store.get().diagnosticsUpdateCenter;
+   const container = document.getElementById("pdk_diagnostic-page-system-info");
+   const renderedSystemInfo = renderSystemInfo({
+     items: [
+@@ -4534,7 +4768,15 @@ function renderDiagnosticSystemInfoWidget() {
+         key: "Device",
+         value: diagnosticsSystemInfo.device_model
+       }
+-    ]
++    ],
++    footer: renderUpdateCenter({
++      loading: diagnosticsUpdateCenter.loading,
++      status: diagnosticsUpdateCenter.status,
++      onCheck: () => startUpdateOperation("check"),
++      onUpdate: () => startUpdateOperation("update"),
++      onShowLog: handleShowUpdateLog,
++      onCopyLog: () => copyToClipboard(diagnosticsUpdateCenter.status.logTail || "")
++    })
+   });
+   return preserveScrollForPage(() => {
+     container.replaceChildren(renderedSystemInfo);
+@@ -4551,7 +4793,7 @@ async function onStoreUpdate2(next, prev, diff) {
+   if (diff.diagnosticsActions || diff.servicesInfoWidget) {
+     renderDiagnosticAvailableActionsWidget();
+   }
+-  if (diff.diagnosticsSystemInfo) {
++  if (diff.diagnosticsSystemInfo || diff.diagnosticsUpdateCenter) {
+     renderDiagnosticSystemInfoWidget();
+   }
+ }
+@@ -4582,14 +4824,17 @@ function onPageMount2() {
+   renderWikiDisclaimerWidget();
+   fetchServicesInfo();
+   fetchSystemInfo();
++  fetchUpdateStatus();
+ }
+ function onPageUnmount2() {
++  stopUpdatePolling();
+   store.unsubscribe(onStoreUpdate2);
+   store.reset([
+     "diagnosticsActions",
+     "diagnosticsSystemInfo",
+     "diagnosticsChecks",
+-    "diagnosticsRunAction"
++    "diagnosticsRunAction",
++    "diagnosticsUpdateCenter"
+   ]);
+ }
+ function registerLifecycleListeners2() {
+@@ -4731,6 +4976,55 @@ var styles4 = `
+     color: var(--success-color-medium, green);
+ }
+ 
++.pdk_diagnostic-update {
++    border-top: 1px solid var(--background-color-low, lightgray);
++    padding-top: 10px;
++    display: grid;
++    grid-template-columns: 1fr;
++    row-gap: 8px;
++    min-width: 0;
++}
++
++.pdk_diagnostic-update__versions {
++    display: grid;
++    grid-template-columns: 1fr;
++    row-gap: 4px;
++}
++
++.pdk_diagnostic-update__versions > div {
++    display: grid;
++    grid-template-columns: auto minmax(0, 1fr);
++    column-gap: 8px;
++}
++
++.pdk_diagnostic-update__versions b {
++    overflow-wrap: anywhere;
++}
++
++.pdk_diagnostic-update__status {
++    color: var(--text-color-medium, inherit);
++    line-height: 1.35;
++}
++
++.pdk_diagnostic-update__status--error {
++    color: var(--error-color-medium, red);
++}
++
++.pdk_diagnostic-update__status--success {
++    color: var(--success-color-medium, green);
++}
++
++.pdk_diagnostic-update__actions {
++    display: flex;
++    flex-wrap: wrap;
++    gap: 6px;
++    align-items: center;
++}
++
++.pdk_diagnostic-update__actions .pdk-partial-button {
++    min-height: 34px;
++}
++
+ .pdk_diagnostic-page__left-bar {
+     display: grid;
+     grid-template-columns: 1fr;
+diff --git a/luci-app-podkop/root/usr/share/rpcd/acl.d/luci-app-podkop.json b/luci-app-podkop/root/usr/share/rpcd/acl.d/luci-app-podkop.json
+index 1a52df4..9ed39fd 100644
+--- a/luci-app-podkop/root/usr/share/rpcd/acl.d/luci-app-podkop.json
++++ b/luci-app-podkop/root/usr/share/rpcd/acl.d/luci-app-podkop.json
+@@ -11,6 +11,9 @@
+         ],
+         "/usr/bin/podkop-dns-optimizer": [
+           "exec"
++        ],
++        "/usr/bin/podkop-update-manager": [
++          "exec"
+         ]
+       },
+       "ubus": {
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 3dd7a01..9ad8f00 100644
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -2400,6 +2400,11 @@ subscription_patch_update_status_file() {
+ subscription_patch_update() {
+     local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1 patch_update_podkop_update_v1
+ 
++    if [ -x /usr/bin/podkop-update-manager ]; then
++        /usr/bin/podkop-update-manager update_start
++        return $?
++    fi
++
+     patch_update_start_stop_daemon_v1=1
+     patch_update_noop_v1=1
+     patch_update_podkop_update_v1=1
+@@ -2526,6 +2531,11 @@ EOF
+ get_subscription_patch_update_status() {
+     local status_file
+ 
++    if [ -x /usr/bin/podkop-update-manager ]; then
++        /usr/bin/podkop-update-manager status
++        return $?
++    fi
++
+     status_file="$(subscription_patch_update_status_file)"
+     if [ -s "$status_file" ]; then
+         cat "$status_file"
+@@ -2534,6 +2544,21 @@ get_subscription_patch_update_status() {
+     fi
+ }
+ 
++subscription_patch_update_check() {
++    if [ ! -x /usr/bin/podkop-update-manager ]; then
++        echo '{"success":false,"error":"update_manager_missing"}'
++        return 1
++    fi
++    /usr/bin/podkop-update-manager check_start
++}
++
++get_subscription_patch_update_log() {
++    if [ ! -x /usr/bin/podkop-update-manager ]; then
++        return 0
++    fi
++    /usr/bin/podkop-update-manager log
++}
++
+ subscription_action_lock_file() {
+     echo "/tmp/podkop-subscription-action.lock"
+ }
+@@ -4814,8 +4839,12 @@ Available commands:
+                             Show background subscription benchmark status
+     subscription_patch_update
+                             Update the Podkop subscriptions patch from GitHub
++    subscription_patch_update_check
++                            Check compatible Podkop and patch updates
+     get_subscription_patch_update_status
+                             Show background patch update status
++    get_subscription_patch_update_log
++                            Show the full Podkop and patch update log
+     check_proxy             Check proxy connectivity
+     check_nft               Check NFT rules
+     check_nft_rules         Check NFT rules status
+@@ -4889,9 +4918,15 @@ get_subscription_speedtest_status)
+ subscription_patch_update)
+     subscription_patch_update
+     ;;
++subscription_patch_update_check)
++    subscription_patch_update_check
++    ;;
+ get_subscription_patch_update_status)
+     get_subscription_patch_update_status
+     ;;
++get_subscription_patch_update_log)
++    get_subscription_patch_update_log
++    ;;
+ check_proxy)
+     check_proxy
+     ;;
+diff --git a/podkop/files/usr/bin/podkop-update-manager b/podkop/files/usr/bin/podkop-update-manager
+new file mode 100755
+index 0000000..f8e4319
+--- /dev/null
++++ b/podkop/files/usr/bin/podkop-update-manager
+@@ -0,0 +1,357 @@
++#!/bin/ash
++
++VERSION="20260710-update-manager-v1"
++STATE_DIR="/tmp/podkop-update-manager"
++STATUS_FILE="$STATE_DIR/status.json"
++DETAILS_FILE="$STATE_DIR/details.json"
++LOG_FILE="$STATE_DIR/update.log"
++LOCK_DIR="$STATE_DIR/lock"
++MANIFEST_URL="${PODKOP_PATCH_MANIFEST_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/update-manifest.json}"
++RELEASE_URL="${PODKOP_OFFICIAL_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/latest}"
++INSTALLER_URL="${PODKOP_PATCH_INSTALLER_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i}"
++
++mkdir -p "$STATE_DIR"
++
++updated_at() {
++    date -Iseconds 2>/dev/null || date
++}
++
++log_line() {
++    printf '%s %s\n' "$(updated_at)" "$*" >> "$LOG_FILE"
++}
++
++log_tail() {
++    tail -n 200 "$LOG_FILE" 2>/dev/null || true
++}
++
++write_status() {
++    local state="$1"
++    local message="$2"
++    local tmp details
++
++    tmp="$(mktemp)"
++    details='{}'
++    if [ -s "$DETAILS_FILE" ] && jq -e . "$DETAILS_FILE" >/dev/null 2>&1; then
++        details="$(cat "$DETAILS_FILE")"
++    fi
++
++    jq -cn \
++        --arg state "$state" \
++        --arg message "$message" \
++        --arg updatedAt "$(updated_at)" \
++        --arg logTail "$(log_tail)" \
++        --argjson details "$details" \
++        '$details + {state:$state,message:$message,updatedAt:$updatedAt,logTail:$logTail}' \
++        > "$tmp" && mv "$tmp" "$STATUS_FILE"
++    rm -f "$tmp"
++}
++
++normalize_version() {
++    printf '%s' "$1" | sed 's/^v//; s/[^0-9.].*$//'
++}
++
++is_semver() {
++    echo "$1" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'
++}
++
++version_gt() {
++    local a b amaj amin apat bmaj bmin bpat
++    a="$(normalize_version "$1")"
++    b="$(normalize_version "$2")"
++    [ "$a" != "$b" ] || return 1
++    amaj="$(echo "$a" | cut -d. -f1)"
++    amin="$(echo "$a" | cut -d. -f2)"
++    apat="$(echo "$a" | cut -d. -f3)"
++    bmaj="$(echo "$b" | cut -d. -f1)"
++    bmin="$(echo "$b" | cut -d. -f2)"
++    bpat="$(echo "$b" | cut -d. -f3)"
++    [ "$amaj" -gt "$bmaj" ] && return 0
++    [ "$amaj" -lt "$bmaj" ] && return 1
++    [ "$amin" -gt "$bmin" ] && return 0
++    [ "$amin" -lt "$bmin" ] && return 1
++    [ "$apat" -gt "$bpat" ]
++}
++
++kill_process_tree() {
++    local pid="$1"
++    local child
++    [ -n "$pid" ] && [ -d "/proc/$pid" ] || return 0
++    if [ -r "/proc/$pid/task/$pid/children" ]; then
++        for child in $(cat "/proc/$pid/task/$pid/children" 2>/dev/null); do
++            kill_process_tree "$child"
++        done
++    fi
++    kill "$pid" 2>/dev/null || true
++}
++
++run_with_timeout() {
++    local limit="$1"
++    local pid watchdog rc
++    shift
++
++    "$@" >> "$LOG_FILE" 2>&1 &
++    pid="$!"
++    (
++        sleep "$limit"
++        kill_process_tree "$pid"
++    ) &
++    watchdog="$!"
++
++    wait "$pid"
++    rc="$?"
++    kill "$watchdog" 2>/dev/null || true
++    wait "$watchdog" >/dev/null 2>&1 || true
++    return "$rc"
++}
++
++download_file() {
++    local url="$1"
++    local output="$2"
++    local raw_path ip
++
++    rm -f "$output"
++    if command -v curl >/dev/null 2>&1; then
++        if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 -o "$output" "$url"; then
++            [ -s "$output" ] && return 0
++        fi
++    fi
++    if command -v wget >/dev/null 2>&1; then
++        if run_with_timeout 45 wget --no-check-certificate -T 30 -O "$output" "$url"; then
++            [ -s "$output" ] && return 0
++        fi
++    fi
++
++    case "$url" in
++    https://raw.githubusercontent.com/*)
++        raw_path="${url#https://raw.githubusercontent.com/}"
++        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
++            if command -v curl >/dev/null 2>&1 && run_with_timeout 45 curl -fsSL \
++                --connect-timeout 10 -m 30 --resolve "raw.githubusercontent.com:443:$ip" \
++                -o "$output" "$url"; then
++                [ -s "$output" ] && return 0
++            fi
++            if command -v wget >/dev/null 2>&1 && run_with_timeout 45 wget -T 30 \
++                --no-check-certificate --header="Host: raw.githubusercontent.com" \
++                -O "$output" "https://$ip/$raw_path"; then
++                [ -s "$output" ] && return 0
++            fi
++        done
++        ;;
++    esac
++    return 1
++}
++
++current_podkop_version() {
++    /usr/bin/podkop show_version 2>/dev/null | sed 's/^v//' | head -n 1
++}
++
++current_patch_version() {
++    sed -n 's/^# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=//p' /usr/bin/podkop 2>/dev/null | tail -n 1
++}
++
++version_supported() {
++    local manifest="$1"
++    local version="$2"
++    jq -e --arg version "$version" '.supportedPodkopVersions | index($version) != null' "$manifest" >/dev/null 2>&1
++}
++
++perform_check() {
++    local publish="${1:-1}"
++    local manifest release current_podkop latest_podkop current_patch latest_patch
++    local current_supported latest_supported podkop_update patch_update mode can_update message
++    local cache_buster
++
++    manifest="$STATE_DIR/manifest.json"
++    release="$STATE_DIR/release.json"
++    cache_buster="$(date +%s 2>/dev/null || echo 0)"
++    log_line "Checking Podkop and subscription patch updates."
++
++    if ! download_file "$MANIFEST_URL?t=$cache_buster" "$manifest" ||
++        ! jq -e '.schemaVersion == 1 and (.patchVersion | type == "string") and (.supportedPodkopVersions | type == "array")' "$manifest" >/dev/null 2>&1; then
++        log_line "Compatibility manifest download or validation failed."
++        write_status "error" "manifest_failed"
++        return 1
++    fi
++    if ! download_file "$RELEASE_URL" "$release"; then
++        log_line "Official Podkop release information download failed."
++        write_status "error" "release_check_failed"
++        return 1
++    fi
++
++    current_podkop="$(normalize_version "$(current_podkop_version)")"
++    latest_podkop="$(normalize_version "$(jq -r '.tag_name // ""' "$release")")"
++    current_patch="$(current_patch_version)"
++    latest_patch="$(jq -r '.patchVersion' "$manifest")"
++
++    if ! is_semver "$current_podkop" || ! is_semver "$latest_podkop"; then
++        log_line "Invalid version data: installed=$current_podkop latest=$latest_podkop"
++        write_status "error" "version_check_failed"
++        return 1
++    fi
++
++    current_supported=false
++    latest_supported=false
++    podkop_update=false
++    patch_update=false
++    version_supported "$manifest" "$current_podkop" && current_supported=true
++    version_supported "$manifest" "$latest_podkop" && latest_supported=true
++    version_gt "$latest_podkop" "$current_podkop" && podkop_update=true
++    [ "$current_patch" = "$latest_patch" ] || patch_update=true
++
++    mode="none"
++    can_update=false
++    message="up_to_date"
++    if [ "$podkop_update" = true ] && [ "$latest_supported" != true ]; then
++        mode="blocked"
++        message="unsupported_podkop"
++    elif [ "$podkop_update" = true ]; then
++        mode="podkop_and_patch"
++        can_update=true
++        message="updates_available"
++    elif [ "$patch_update" = true ] && [ "$current_supported" = true ]; then
++        mode="patch"
++        can_update=true
++        message="updates_available"
++    elif [ "$patch_update" = true ]; then
++        mode="blocked"
++        message="installed_podkop_unsupported"
++    fi
++
++    jq -cn \
++        --arg currentPodkopVersion "$current_podkop" \
++        --arg latestPodkopVersion "$latest_podkop" \
++        --arg currentPatchVersion "$current_patch" \
++        --arg latestPatchVersion "$latest_patch" \
++        --arg updateMode "$mode" \
++        --arg checkedAt "$(updated_at)" \
++        --argjson podkopUpdateAvailable "$podkop_update" \
++        --argjson patchUpdateAvailable "$patch_update" \
++        --argjson currentPodkopSupported "$current_supported" \
++        --argjson latestPodkopSupported "$latest_supported" \
++        --argjson canUpdate "$can_update" \
++        --argjson supportedPodkopVersions "$(jq -c '.supportedPodkopVersions' "$manifest")" \
++        '{currentPodkopVersion:$currentPodkopVersion,latestPodkopVersion:$latestPodkopVersion,currentPatchVersion:$currentPatchVersion,latestPatchVersion:$latestPatchVersion,updateMode:$updateMode,checkedAt:$checkedAt,podkopUpdateAvailable:$podkopUpdateAvailable,patchUpdateAvailable:$patchUpdateAvailable,currentPodkopSupported:$currentPodkopSupported,latestPodkopSupported:$latestPodkopSupported,canUpdate:$canUpdate,supportedPodkopVersions:$supportedPodkopVersions}' \
++        > "$DETAILS_FILE"
++
++    log_line "Installed Podkop: $current_podkop; latest: $latest_podkop; supported: $latest_supported."
++    log_line "Installed patch: ${current_patch:-none}; latest: $latest_patch; mode: $mode."
++    [ "$publish" = "1" ] && write_status "ready" "$message"
++    return 0
++}
++
++perform_update() {
++    local mode can_update installer expected_podkop expected_patch current_podkop current_patch cache_buster
++
++    perform_check 0 || return 1
++    mode="$(jq -r '.updateMode // "none"' "$DETAILS_FILE")"
++    can_update="$(jq -r '.canUpdate // false' "$DETAILS_FILE")"
++
++    if [ "$mode" = "blocked" ]; then
++        write_status "blocked" "$( [ "$(jq -r '.podkopUpdateAvailable' "$DETAILS_FILE")" = true ] && echo unsupported_podkop || echo installed_podkop_unsupported )"
++        return 0
++    fi
++    if [ "$can_update" != true ]; then
++        write_status "success" "patch_update_noop"
++        return 0
++    fi
++
++    write_status "running" "patch_update_running"
++    installer="$STATE_DIR/installer.sh"
++    cache_buster="$(date +%s 2>/dev/null || echo 0)"
++    if ! download_file "$INSTALLER_URL?t=$cache_buster" "$installer"; then
++        log_line "Installer download failed."
++        write_status "error" "download_failed"
++        return 1
++    fi
++
++    log_line "Starting transactional update in mode: $mode."
++    if ! run_with_timeout 900 env PODKOP_PATCH_UPDATE_PODKOP=1 sh "$installer"; then
++        log_line "Installer returned an error. Existing backup and rollback rules remain active."
++        write_status "error" "install_failed"
++        return 1
++    fi
++
++    expected_podkop="$(jq -r 'if .podkopUpdateAvailable then .latestPodkopVersion else .currentPodkopVersion end' "$DETAILS_FILE")"
++    expected_patch="$(jq -r '.latestPatchVersion' "$DETAILS_FILE")"
++    current_podkop="$(normalize_version "$(current_podkop_version)")"
++    current_patch="$(current_patch_version)"
++    if [ "$current_podkop" != "$expected_podkop" ] || [ "$current_patch" != "$expected_patch" ]; then
++        log_line "Post-update verification failed: Podkop=$current_podkop patch=$current_patch."
++        write_status "error" "post_update_verification_failed"
++        return 1
++    fi
++
++    jq --arg currentPodkopVersion "$current_podkop" \
++        --arg currentPatchVersion "$current_patch" \
++        '.currentPodkopVersion=$currentPodkopVersion | .currentPatchVersion=$currentPatchVersion | .podkopUpdateAvailable=false | .patchUpdateAvailable=false | .canUpdate=false | .updateMode="none"' \
++        "$DETAILS_FILE" > "$DETAILS_FILE.tmp" && mv "$DETAILS_FILE.tmp" "$DETAILS_FILE"
++    log_line "Update and post-update verification completed successfully."
++    write_status "success" "patch_update_success"
++}
++
++lock_busy() {
++    local pid
++    [ -s "$LOCK_DIR/pid" ] || return 1
++    pid="$(cat "$LOCK_DIR/pid" 2>/dev/null)"
++    [ -n "$pid" ] && [ -d "/proc/$pid" ]
++}
++
++start_worker() {
++    local action="$1"
++    if lock_busy; then
++        echo '{"success":false,"error":"busy"}'
++        return 1
++    fi
++    rm -rf "$LOCK_DIR"
++    : > "$LOG_FILE"
++    write_status "$( [ "$action" = check ] && echo checking || echo running )" "$( [ "$action" = check ] && echo checking_updates || echo patch_update_running )"
++    if command -v start-stop-daemon >/dev/null 2>&1; then
++        start-stop-daemon -S -b -x "$0" -- worker "$action" >/dev/null 2>&1
++    elif command -v setsid >/dev/null 2>&1; then
++        setsid "$0" worker "$action" </dev/null >/dev/null 2>&1 &
++    else
++        "$0" worker "$action" </dev/null >/dev/null 2>&1 &
++    fi
++    echo '{"success":true,"started":true}'
++}
++
++run_worker() {
++    local action="$1"
++    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
++        write_status "error" "busy"
++        return 1
++    fi
++    echo "$$" > "$LOCK_DIR/pid"
++    trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
++    case "$action" in
++    check) perform_check 1 ;;
++    update) perform_update ;;
++    *) write_status "error" "invalid_action"; return 1 ;;
++    esac
++}
++
++show_status() {
++    if [ -s "$STATUS_FILE" ]; then
++        state="$(jq -r '.state // "idle"' "$STATUS_FILE" 2>/dev/null)"
++        if { [ "$state" = checking ] || [ "$state" = running ]; } && ! lock_busy; then
++            log_line "Update worker stopped before completion."
++            write_status "error" "worker_stopped"
++        fi
++        cat "$STATUS_FILE"
++    else
++        echo '{"state":"idle","message":"","updatedAt":"","logTail":"","canUpdate":false,"updateMode":"none"}'
++    fi
++}
++
++case "$1" in
++check_start) start_worker check ;;
++update_start) start_worker update ;;
++status) show_status ;;
++log) cat "$LOG_FILE" 2>/dev/null || true ;;
++version) echo "$VERSION" ;;
++worker) run_worker "$2" ;;
++*)
++    echo "Usage: podkop-update-manager {check_start|update_start|status|log|version}" >&2
++    exit 1
++    ;;
++esac
