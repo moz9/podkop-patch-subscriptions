@@ -13,7 +13,7 @@ V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260709-dnsmasq-restart-fix1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260710-dns-optimizer-v2-acl-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -21,18 +21,24 @@ MAIN_JS_FILE="main.js"
 SECTION_JS_FILE="section.js"
 LMO_FILE="podkop.ru.lmo.base64"
 SUBSCRIPTIONS_FILE="subscriptions.js"
+SETTINGS_JS_FILE="settings.js"
+DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
+DNS_OPTIMIZER_VERSION="20260710-dns-optimizer-v2"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 
 RUNTIME_FILES="
 usr/bin/podkop
+usr/bin/podkop-dns-optimizer
 usr/lib/podkop/helpers.sh
 usr/lib/podkop/sing_box_config_facade.sh
+usr/share/rpcd/acl.d/luci-app-podkop.json
 www/luci-static/resources/view/podkop/main.js
 www/luci-static/resources/view/podkop/podkop.js
 www/luci-static/resources/view/podkop/section.js
 www/luci-static/resources/view/podkop/subscriptions.js
+www/luci-static/resources/view/podkop/settings.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -319,6 +325,7 @@ restore_runtime() {
 	restore_persistent_paths
 	rm -f /tmp/luci-indexcache
 	rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
+	/etc/init.d/rpcd restart >/dev/null 2>&1 || true
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 }
 
@@ -402,8 +409,25 @@ luci_assets_current() {
 		cmp -s /www/luci-static/resources/view/podkop/section.js "$tmp_dir/$SECTION_JS_FILE" &&
 		[ -f /www/luci-static/resources/view/podkop/subscriptions.js ] &&
 		cmp -s /www/luci-static/resources/view/podkop/subscriptions.js "$tmp_dir/$SUBSCRIPTIONS_FILE" &&
+		[ -f /www/luci-static/resources/view/podkop/settings.js ] &&
+		cmp -s /www/luci-static/resources/view/podkop/settings.js "$tmp_dir/$SETTINGS_JS_FILE" &&
+		[ -x /usr/bin/podkop-dns-optimizer ] &&
+		cmp -s /usr/bin/podkop-dns-optimizer "$tmp_dir/$DNS_OPTIMIZER_FILE" &&
+		jq -e '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] == ["exec"]' /usr/share/rpcd/acl.d/luci-app-podkop.json >/dev/null 2>&1 &&
 		[ -f /usr/lib/lua/luci/i18n/podkop.ru.lmo ] &&
 		cmp -s /usr/lib/lua/luci/i18n/podkop.ru.lmo "$tmp_dir/$LMO_DECODED_FILE"
+}
+
+ensure_dns_optimizer_acl() {
+	acl_file="/usr/share/rpcd/acl.d/luci-app-podkop.json"
+	acl_tmp="$tmp_dir/luci-app-podkop.json"
+
+	[ -f "$acl_file" ] || abort_with_restore "Podkop RPC ACL is missing"
+	jq '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] = ["exec"]' "$acl_file" > "$acl_tmp" ||
+		abort_with_restore "failed to update Podkop RPC ACL"
+	jq -e . "$acl_tmp" >/dev/null 2>&1 || abort_with_restore "Podkop RPC ACL validation failed"
+	cp "$acl_tmp" "$acl_file" || abort_with_restore "failed to install Podkop RPC ACL"
+	chmod 644 "$acl_file"
 }
 
 ensure_podkop_dispatcher() {
@@ -756,6 +780,7 @@ light_reload=0
 trap 'rm -rf "$tmp_dir"' EXIT
 
 command -v base64 >/dev/null 2>&1 || fail "base64 utility is required"
+command -v jq >/dev/null 2>&1 || fail "jq utility is required"
 
 update_official_podkop_if_requested
 
@@ -765,6 +790,8 @@ download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
 download "$RAW_BASE/$SECTION_JS_FILE" "$tmp_dir/$SECTION_JS_FILE"
+download "$RAW_BASE/$SETTINGS_JS_FILE" "$tmp_dir/$SETTINGS_JS_FILE"
+download "$RAW_BASE/$DNS_OPTIMIZER_FILE" "$tmp_dir/$DNS_OPTIMIZER_FILE"
 
 if [ "${PODKOP_PATCH_FORCE:-0}" != "1" ] && has_install_marker && has_latest_subscription_backend && luci_assets_current; then
 	log "Subscription URLTest patch is already up to date; nothing to do."
@@ -923,6 +950,9 @@ mkdir -p /www/luci-static/resources/view/podkop
 cp "$tmp_dir/$MAIN_JS_FILE" /www/luci-static/resources/view/podkop/main.js
 cp "$tmp_dir/$SECTION_JS_FILE" /www/luci-static/resources/view/podkop/section.js
 cp "$tmp_dir/$SUBSCRIPTIONS_FILE" /www/luci-static/resources/view/podkop/subscriptions.js
+cp "$tmp_dir/$SETTINGS_JS_FILE" /www/luci-static/resources/view/podkop/settings.js
+cp "$tmp_dir/$DNS_OPTIMIZER_FILE" /usr/bin/podkop-dns-optimizer
+ensure_dns_optimizer_acl
 
 mkdir -p /usr/lib/lua/luci/i18n
 if ! decode_lmo_asset; then
@@ -931,17 +961,27 @@ fi
 cp "$tmp_dir/$LMO_DECODED_FILE" /usr/lib/lua/luci/i18n/podkop.ru.lmo || abort_with_restore "failed to install LuCI translation"
 
 chmod 755 /usr/bin/podkop
+chmod 755 /usr/bin/podkop-dns-optimizer
 [ -f /usr/lib/podkop/sing_box_config_facade.sh ] && chmod 644 /usr/lib/podkop/sing_box_config_facade.sh
 [ -f /www/luci-static/resources/view/podkop/main.js ] && chmod 644 /www/luci-static/resources/view/podkop/main.js
 [ -f /www/luci-static/resources/view/podkop/podkop.js ] && chmod 644 /www/luci-static/resources/view/podkop/podkop.js
 [ -f /www/luci-static/resources/view/podkop/section.js ] && chmod 644 /www/luci-static/resources/view/podkop/section.js
 [ -f /www/luci-static/resources/view/podkop/subscriptions.js ] && chmod 644 /www/luci-static/resources/view/podkop/subscriptions.js
+[ -f /www/luci-static/resources/view/podkop/settings.js ] && chmod 644 /www/luci-static/resources/view/podkop/settings.js
 chmod 644 /usr/lib/lua/luci/i18n/podkop.ru.lmo
 
 ensure_podkop_dispatcher /usr/bin/podkop
 
 if ! ash -n /usr/bin/podkop; then
 	abort_with_restore "podkop syntax check failed"
+fi
+
+if ! ash -n /usr/bin/podkop-dns-optimizer; then
+	abort_with_restore "DNS optimizer syntax check failed"
+fi
+
+if [ "$(/usr/bin/podkop-dns-optimizer version 2>/dev/null || true)" != "$DNS_OPTIMIZER_VERSION" ]; then
+	abort_with_restore "DNS optimizer version check failed"
 fi
 
 if [ -z "$(/usr/bin/podkop show_version 2>/dev/null)" ]; then
@@ -973,6 +1013,7 @@ if command -v sing-box >/dev/null 2>&1 && [ -f /etc/sing-box/config.json ]; then
 	fi
 fi
 
+/etc/init.d/rpcd restart >/dev/null 2>&1 || true
 /etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 
 log "Installed Subscription URLTest patch."

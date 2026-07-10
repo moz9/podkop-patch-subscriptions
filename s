@@ -88,6 +88,8 @@ for rel in \
 	subscriptions.js \
 	main.js \
 	section.js \
+	settings.js \
+	podkop-dns-optimizer \
 	podkop-subscription-maintenance-upgrade.sh \
 	podkop-subscription-urltest-runtime.patch \
 	podkop-subscription-v0719-runtime.patch \

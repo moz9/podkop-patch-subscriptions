@@ -1,0 +1,845 @@
+#!/bin/ash
+
+VERSION="20260710-dns-optimizer-v2"
+STATE_DIR="/tmp/podkop-dns-optimizer"
+STATUS_FILE="$STATE_DIR/status.json"
+LOG_FILE="$STATE_DIR/worker.log"
+LOCK_DIR="$STATE_DIR/lock"
+PERSIST_DIR="/etc/podkop/dns-optimizer"
+PREVIOUS_FILE="$PERSIST_DIR/previous-dns.json"
+SELF="$(readlink -f "$0" 2> /dev/null || printf '%s' "$0")"
+
+updated_at() {
+    date -Iseconds 2> /dev/null || date
+}
+
+ensure_state_dir() {
+    mkdir -p "$STATE_DIR"
+    chmod 700 "$STATE_DIR" 2> /dev/null || true
+}
+
+write_status() {
+    local state="$1"
+    local action="$2"
+    local message="$3"
+    local progress="$4"
+    local completed="$5"
+    local total="$6"
+    local pid="$7"
+    local tmp
+
+    ensure_state_dir
+    tmp="$STATUS_FILE.tmp.$$"
+    jq -cn \
+        --arg state "$state" \
+        --arg action "$action" \
+        --arg message "$message" \
+        --arg updatedAt "$(updated_at)" \
+        --argjson progress "${progress:-0}" \
+        --argjson completed "${completed:-0}" \
+        --argjson total "${total:-0}" \
+        --argjson pid "${pid:-0}" \
+        '{state:$state,action:$action,message:$message,progress:$progress,completed:$completed,total:$total,pid:$pid,updatedAt:$updatedAt}' \
+        > "$tmp" && mv "$tmp" "$STATUS_FILE"
+    chmod 600 "$STATUS_FILE" 2> /dev/null || true
+}
+
+write_final_status() {
+    local source_file="$1"
+    local tmp
+
+    ensure_state_dir
+    tmp="$STATUS_FILE.tmp.$$"
+    cp "$source_file" "$tmp" && mv "$tmp" "$STATUS_FILE"
+    chmod 600 "$STATUS_FILE" 2> /dev/null || true
+}
+
+is_ipv4() {
+    echo "$1" | awk -F. '
+        NF != 4 { exit 1 }
+        {
+            for (i = 1; i <= 4; i++) {
+                if ($i !~ /^[0-9]+$/ || $i < 0 || $i > 255) exit 1
+            }
+        }
+    '
+}
+
+candidate_host() {
+    local value="$1"
+    value="${value%%/*}"
+    value="${value%%:*}"
+    printf '%s\n' "$value"
+}
+
+candidate_path() {
+    local value="$1"
+    case "$value" in
+        */*) printf '/%s\n' "${value#*/}" ;;
+        *) printf '/dns-query\n' ;;
+    esac
+}
+
+append_unique_candidate() {
+    local file="$1"
+    local id="$2"
+    local provider="$3"
+    local value="$4"
+    local profile="$5"
+
+    [ -n "$value" ] || return 0
+    if awk -F '|' -v value="$value" '$3 == value { found = 1 } END { exit !found }' "$file"; then
+        return 0
+    fi
+    printf '%s|%s|%s|%s\n' "$id" "$provider" "$value" "$profile" >> "$file"
+}
+
+write_main_candidates() {
+    local protocol="$1"
+    local file="$2"
+    local current current_host index dns
+
+    : > "$file"
+    case "$protocol" in
+        udp)
+            cat >> "$file" <<'EOF'
+cloudflare|Cloudflare|1.1.1.1|unfiltered
+google|Google|8.8.8.8|unfiltered
+quad9|Quad9 Secure|9.9.9.9|security
+quad9_ecs|Quad9 Secure ECS|9.9.9.11|security_ecs
+yandex|Yandex Basic|77.88.8.8|unfiltered
+adguard_unfiltered|AdGuard Unfiltered|94.140.14.140|unfiltered
+controld_unfiltered|Control D Unfiltered|76.76.2.0|unfiltered
+EOF
+            ;;
+        doh)
+            cat >> "$file" <<'EOF'
+cloudflare|Cloudflare|1.1.1.1|unfiltered
+google|Google|8.8.8.8|unfiltered
+quad9|Quad9 Secure|9.9.9.9|security
+quad9_ecs|Quad9 Secure ECS|9.9.9.11|security_ecs
+yandex|Yandex Basic|common.dot.dns.yandex.net|unfiltered
+adguard_unfiltered|AdGuard Unfiltered|unfiltered.adguard-dns.com/dns-query|unfiltered
+controld_unfiltered|Control D Unfiltered|freedns.controld.com/p0|unfiltered
+mullvad|Mullvad|dns.mullvad.net/dns-query|privacy
+EOF
+            ;;
+        dot)
+            cat >> "$file" <<'EOF'
+cloudflare|Cloudflare|1.1.1.1|unfiltered
+google|Google|8.8.8.8|unfiltered
+quad9|Quad9 Secure|9.9.9.9|security
+quad9_ecs|Quad9 Secure ECS|9.9.9.11|security_ecs
+yandex|Yandex Basic|common.dot.dns.yandex.net|unfiltered
+adguard_unfiltered|AdGuard Unfiltered|unfiltered.adguard-dns.com|unfiltered
+controld_unfiltered|Control D Unfiltered|p0.freedns.controld.com|unfiltered
+mullvad|Mullvad|dns.mullvad.net|privacy
+EOF
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    current="$(uci -q get podkop.settings.dns_server 2> /dev/null || true)"
+    current_host="$(candidate_host "$current")"
+    if [ -n "$current" ] && { is_ipv4 "$current_host" || echo "$current_host" | grep -Eq '^[A-Za-z0-9.-]+$'; }; then
+        append_unique_candidate "$file" "current" "Current DNS" "$current" "custom"
+    fi
+
+    if [ "$protocol" = "udp" ] && command -v ubus > /dev/null 2>&1; then
+        index=1
+        ubus call network.interface dump 2> /dev/null |
+            jq -r '.interface[]? | select(.up == true) | .["dns-server"][]?' 2> /dev/null |
+            while IFS= read -r dns; do
+                if is_ipv4 "$dns"; then
+                    append_unique_candidate "$file" "wan_$index" "WAN DNS $index" "$dns" "isp"
+                    index=$((index + 1))
+                fi
+            done
+    fi
+}
+
+write_bootstrap_candidates() {
+    local file="$1"
+    local current index dns
+
+    cat > "$file" <<'EOF'
+cloudflare_1|Cloudflare|1.1.1.1|unfiltered
+cloudflare_2|Cloudflare secondary|1.0.0.1|unfiltered
+google_1|Google|8.8.8.8|unfiltered
+google_2|Google secondary|8.8.4.4|unfiltered
+yandex_1|Yandex|77.88.8.8|unfiltered
+yandex_2|Yandex secondary|77.88.8.1|unfiltered
+quad9_1|Quad9 Secure|9.9.9.9|security
+quad9_ecs|Quad9 Secure ECS|9.9.9.11|security_ecs
+adguard_unfiltered|AdGuard Unfiltered|94.140.14.140|unfiltered
+controld_unfiltered|Control D Unfiltered|76.76.2.0|unfiltered
+EOF
+
+    current="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
+    if is_ipv4 "$current"; then
+        append_unique_candidate "$file" "current_bootstrap" "Current bootstrap" "$current" "custom"
+    fi
+
+    if command -v ubus > /dev/null 2>&1; then
+        index=1
+        ubus call network.interface dump 2> /dev/null |
+            jq -r '.interface[]? | select(.up == true) | .["dns-server"][]?' 2> /dev/null |
+            while IFS= read -r dns; do
+                if is_ipv4 "$dns"; then
+                    append_unique_candidate "$file" "wan_$index" "WAN DNS $index" "$dns" "isp"
+                    index=$((index + 1))
+                fi
+            done
+    fi
+}
+
+query_status() {
+    sed -n 's/.*status: \([A-Z][A-Z]*\).*/\1/p' | head -n 1
+}
+
+query_time() {
+    awk '/Query time:/ { print $4; exit }'
+}
+
+run_dns_query() {
+    local protocol="$1"
+    local endpoint_ip="$2"
+    local tls_hostname="$3"
+    local path="$4"
+    local domain="$5"
+    local expected="$6"
+    local output status elapsed
+
+    case "$protocol" in
+        udp)
+            output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +timeout=2 +tries=1 +stats 2>&1 || true)"
+            ;;
+        doh)
+            if [ -n "$tls_hostname" ]; then
+                output="$(run_with_timeout 5 dig @"$endpoint_ip" "$domain" A +https="$path" +tls-hostname="$tls_hostname" +timeout=3 +tries=1 +stats 2>&1 || true)"
+            else
+                output="$(run_with_timeout 5 dig @"$endpoint_ip" "$domain" A +https="$path" +timeout=3 +tries=1 +stats 2>&1 || true)"
+            fi
+            ;;
+        dot)
+            if [ -n "$tls_hostname" ]; then
+                output="$(run_with_timeout 5 dig @"$endpoint_ip" "$domain" A +tls +tls-hostname="$tls_hostname" +timeout=3 +tries=1 +stats 2>&1 || true)"
+            else
+                output="$(run_with_timeout 5 dig @"$endpoint_ip" "$domain" A +tls +timeout=3 +tries=1 +stats 2>&1 || true)"
+            fi
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+
+    status="$(printf '%s\n' "$output" | query_status)"
+    elapsed="$(printf '%s\n' "$output" | query_time)"
+    case "$elapsed" in
+        ''|*[!0-9]*) elapsed=0 ;;
+    esac
+
+    if [ "$expected" = "NXDOMAIN" ]; then
+        [ "$status" = "NXDOMAIN" ] || return 1
+    else
+        [ "$status" = "NOERROR" ] || return 1
+        printf '%s\n' "$output" | grep -Eq '[[:space:]]IN[[:space:]]+A[[:space:]]+[0-9]+' || return 1
+    fi
+
+    printf '%s\n' "$elapsed"
+}
+
+resolve_host() {
+    local bootstrap="$1"
+    local host="$2"
+
+    dig @"$bootstrap" "$host" A +timeout=2 +tries=1 +short 2> /dev/null |
+        awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }'
+}
+
+calculate_stats() {
+    local file="$1"
+    local count median min max jitter position
+
+    count="$(wc -l < "$file" | tr -d ' ')"
+    case "$count" in
+        ''|*[!0-9]*) count=0 ;;
+    esac
+    if [ "$count" -eq 0 ]; then
+        printf '0|0\n'
+        return 0
+    fi
+
+    position=$(( (count + 1) / 2 ))
+    median="$(sort -n "$file" | sed -n "${position}p")"
+    min="$(sort -n "$file" | head -n 1)"
+    max="$(sort -n "$file" | tail -n 1)"
+    jitter=$((max - min))
+    printf '%s|%s\n' "$median" "$jitter"
+}
+
+benchmark_bootstrap_candidate() {
+    local id="$1"
+    local provider="$2"
+    local server="$3"
+    local profile="$4"
+    local times domain output success failures total stats median jitter success_rate score reliable
+
+    times="$(mktemp)"
+    success=0
+    failures=0
+    total=0
+    for domain in example.com github.com cdn.jsdelivr.net; do
+        total=$((total + 1))
+        output="$(run_dns_query udp "$server" "" "" "$domain" NOERROR 2> /dev/null || true)"
+        if [ -n "$output" ]; then
+            printf '%s\n' "$output" >> "$times"
+            success=$((success + 1))
+        else
+            failures=$((failures + 1))
+            [ "$failures" -ge 2 ] && break
+        fi
+    done
+
+    total=3
+
+    stats="$(calculate_stats "$times")"
+    rm -f "$times"
+    median="${stats%%|*}"
+    jitter="${stats#*|}"
+    success_rate=$((success * 100 / total))
+    score=$((success_rate * 10000 - median * 20 - jitter * 10))
+    reliable=false
+    [ "$success" -eq "$total" ] && reliable=true
+
+    jq -cn \
+        --arg id "$id" --arg provider "$provider" --arg server "$server" --arg profile "$profile" \
+        --argjson successCount "$success" --argjson totalQueries "$total" \
+        --argjson successRate "$success_rate" --argjson medianMs "$median" --argjson jitterMs "$jitter" \
+        --argjson score "$score" --argjson reliable "$reliable" \
+        '{id:$id,provider:$provider,server:$server,profile:$profile,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,jitterMs:$jitterMs,score:$score,reliable:$reliable}'
+}
+
+find_compatible_bootstrap() {
+    local bootstrap_json="$1"
+    local host="$2"
+    local main_id="$3"
+    local family server ip line candidates
+
+    family="${main_id%%_*}"
+    candidates="$(mktemp)"
+    jq --arg family "$family" '
+        map(select(.reliable == true))
+        | sort_by(.score)
+        | reverse
+        | (map(select((.id | startswith($family)) | not)) + map(select(.id | startswith($family))))
+    ' "$bootstrap_json" > "$candidates"
+
+    if is_ipv4 "$host"; then
+        line="$(jq -c '.[0] // empty' "$candidates")"
+        rm -f "$candidates"
+        [ -n "$line" ] || return 1
+        server="$(printf '%s\n' "$line" | jq -r '.server')"
+        printf '%s|%s|%s\n' "$server" "$host" "$line"
+        return 0
+    fi
+
+    jq -c '.[]' "$candidates" |
+        while IFS= read -r line; do
+            server="$(printf '%s\n' "$line" | jq -r '.server')"
+            ip="$(resolve_host "$server" "$host")"
+            if [ -n "$ip" ]; then
+                printf '%s|%s|%s\n' "$server" "$ip" "$line"
+                break
+            fi
+        done
+    rm -f "$candidates"
+}
+
+benchmark_main_candidate() {
+    local protocol="$1"
+    local id="$2"
+    local provider="$3"
+    local value="$4"
+    local profile="$5"
+    local bootstrap_json="$6"
+    local host path compatible bootstrap endpoint_ip bootstrap_line bootstrap_provider bootstrap_median bootstrap_jitter
+    local times domain round output success failures total stats median jitter success_rate nxdomain_ok reliable score error stop_early
+
+    host="$(candidate_host "$value")"
+    path="$(candidate_path "$value")"
+    compatible="$(find_compatible_bootstrap "$bootstrap_json" "$host" "$id" || true)"
+    if [ -z "$compatible" ]; then
+        jq -cn \
+            --arg id "$id" --arg provider "$provider" --arg dnsServer "$value" --arg profile "$profile" \
+            --arg protocol "$protocol" --arg error "bootstrap_failed" \
+            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,successCount:0,totalQueries:8,successRate:0,medianMs:0,jitterMs:0,nxdomainOk:false,reliable:false,score:-1000000,error:$error}'
+        return 0
+    fi
+
+    bootstrap="${compatible%%|*}"
+    compatible="${compatible#*|}"
+    endpoint_ip="${compatible%%|*}"
+    bootstrap_line="${compatible#*|}"
+    bootstrap_provider="$(printf '%s\n' "$bootstrap_line" | jq -r '.provider')"
+    bootstrap_median="$(printf '%s\n' "$bootstrap_line" | jq -r '.medianMs')"
+    bootstrap_jitter="$(printf '%s\n' "$bootstrap_line" | jq -r '.jitterMs')"
+
+    times="$(mktemp)"
+    success=0
+    failures=0
+    total=8
+    stop_early=0
+    for round in 1 2; do
+        for domain in example.com github.com cdn.jsdelivr.net cloudflare.com; do
+            if is_ipv4 "$host"; then
+                output="$(run_dns_query "$protocol" "$endpoint_ip" "" "$path" "$domain" NOERROR 2> /dev/null || true)"
+            else
+                output="$(run_dns_query "$protocol" "$endpoint_ip" "$host" "$path" "$domain" NOERROR 2> /dev/null || true)"
+            fi
+            if [ -n "$output" ]; then
+                printf '%s\n' "$output" >> "$times"
+                success=$((success + 1))
+            else
+                failures=$((failures + 1))
+                if [ "$failures" -ge 2 ]; then
+                    stop_early=1
+                    break
+                fi
+            fi
+        done
+        [ "$stop_early" -eq 1 ] && break
+    done
+
+    nxdomain_ok=false
+    if [ "$success" -eq "$total" ]; then
+        if is_ipv4 "$host"; then
+            output="$(run_dns_query "$protocol" "$endpoint_ip" "" "$path" "podkop-dns-test.invalid" NXDOMAIN 2> /dev/null || true)"
+        else
+            output="$(run_dns_query "$protocol" "$endpoint_ip" "$host" "$path" "podkop-dns-test.invalid" NXDOMAIN 2> /dev/null || true)"
+        fi
+        [ -n "$output" ] && nxdomain_ok=true
+    fi
+
+    stats="$(calculate_stats "$times")"
+    rm -f "$times"
+    median="${stats%%|*}"
+    jitter="${stats#*|}"
+    success_rate=$((success * 100 / total))
+    score=$((success_rate * 10000 - median * 20 - jitter * 10 - bootstrap_median * 5))
+    reliable=false
+    error=""
+    if [ "$success" -eq "$total" ] && [ "$nxdomain_ok" = true ]; then
+        reliable=true
+    elif [ "$success" -eq "$total" ]; then
+        score=$((score - 500000))
+        error="nxdomain_check_failed"
+    else
+        error="dns_queries_failed"
+    fi
+
+    jq -cn \
+        --arg id "$id" --arg provider "$provider" --arg dnsServer "$value" --arg profile "$profile" \
+        --arg protocol "$protocol" --arg endpointIp "$endpoint_ip" \
+        --arg bootstrapDnsServer "$bootstrap" --arg bootstrapProvider "$bootstrap_provider" --arg error "$error" \
+        --argjson successCount "$success" --argjson totalQueries "$total" --argjson successRate "$success_rate" \
+        --argjson medianMs "$median" --argjson jitterMs "$jitter" \
+        --argjson bootstrapMedianMs "$bootstrap_median" --argjson bootstrapJitterMs "$bootstrap_jitter" \
+        --argjson nxdomainOk "$nxdomain_ok" --argjson reliable "$reliable" --argjson score "$score" \
+        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapMedianMs:$bootstrapMedianMs,bootstrapJitterMs:$bootstrapJitterMs,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
+}
+
+run_benchmark() {
+    local protocol="$1"
+    local main_file bootstrap_file bootstrap_jsonl bootstrap_json main_jsonl final_file
+    local total completed line id provider value profile result recommendation state message current_dns current_bootstrap
+
+    case "$protocol" in
+        udp|doh|dot) ;;
+        *)
+            write_status "error" "benchmark" "invalid_protocol" 0 0 0 "$$"
+            return 1
+            ;;
+    esac
+
+    main_file="$(mktemp)"
+    bootstrap_file="$(mktemp)"
+    bootstrap_jsonl="$(mktemp)"
+    bootstrap_json="$(mktemp)"
+    main_jsonl="$(mktemp)"
+    final_file="$(mktemp)"
+    trap "rm -f '$main_file' '$bootstrap_file' '$bootstrap_jsonl' '$bootstrap_json' '$main_jsonl' '$final_file'; rm -rf '$LOCK_DIR'" EXIT INT TERM
+
+    write_main_candidates "$protocol" "$main_file" || return 1
+    write_bootstrap_candidates "$bootstrap_file"
+    total=$(( $(wc -l < "$main_file") + $(wc -l < "$bootstrap_file") ))
+    completed=0
+    write_status "running" "benchmark" "benchmarking_bootstrap" 0 0 "$total" "$$"
+
+    while IFS='|' read -r id provider value profile; do
+        [ -n "$id" ] || continue
+        benchmark_bootstrap_candidate "$id" "$provider" "$value" "$profile" >> "$bootstrap_jsonl"
+        completed=$((completed + 1))
+        write_status "running" "benchmark" "benchmarking_bootstrap" $((completed * 100 / total)) "$completed" "$total" "$$"
+    done < "$bootstrap_file"
+    jq -s 'sort_by(.score) | reverse' "$bootstrap_jsonl" > "$bootstrap_json"
+
+    while IFS='|' read -r id provider value profile; do
+        [ -n "$id" ] || continue
+        benchmark_main_candidate "$protocol" "$id" "$provider" "$value" "$profile" "$bootstrap_json" >> "$main_jsonl"
+        completed=$((completed + 1))
+        write_status "running" "benchmark" "benchmarking_main" $((completed * 100 / total)) "$completed" "$total" "$$"
+    done < "$main_file"
+
+    recommendation="$(jq -s 'map(select(.reliable == true)) | sort_by(.score) | reverse | .[0] // null' "$main_jsonl")"
+    state="success"
+    message="benchmark_complete"
+    if [ "$recommendation" = "null" ]; then
+        state="error"
+        message="no_reliable_dns"
+    fi
+    current_dns="$(uci -q get podkop.settings.dns_server 2> /dev/null || true)"
+    current_bootstrap="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
+
+    jq -cn \
+        --arg state "$state" --arg action "benchmark" --arg message "$message" --arg protocol "$protocol" \
+        --arg updatedAt "$(updated_at)" --arg currentDnsServer "$current_dns" --arg currentBootstrapDnsServer "$current_bootstrap" \
+        --argjson pid "$$" --argjson recommendation "$recommendation" \
+        --slurpfile results "$main_jsonl" --slurpfile bootstrapResults "$bootstrap_json" \
+        '{state:$state,action:$action,message:$message,protocol:$protocol,progress:100,completed:($results | length),total:($results | length),pid:$pid,updatedAt:$updatedAt,current:{dnsServer:$currentDnsServer,bootstrapDnsServer:$currentBootstrapDnsServer},recommendation:$recommendation,results:($results | sort_by(.score) | reverse),bootstrapResults:($bootstrapResults[0] // [])}' \
+        > "$final_file"
+    write_final_status "$final_file"
+}
+
+run_with_timeout() {
+    local timeout_seconds="$1"
+    shift
+    local pid watchdog rc
+
+    "$@" &
+    pid="$!"
+    (
+        sleep "$timeout_seconds"
+        kill "$pid" 2> /dev/null || true
+        sleep 1
+        kill -9 "$pid" 2> /dev/null || true
+    ) > /dev/null 2>&1 &
+    watchdog="$!"
+
+    wait "$pid" 2> /dev/null
+    rc="$?"
+    kill -9 "$watchdog" 2> /dev/null || true
+    [ "$rc" -eq 143 ] && return 124
+    return "$rc"
+}
+
+save_previous_dns() {
+    local tmp dns_type dns_server bootstrap_dns_server
+
+    mkdir -p "$PERSIST_DIR"
+    chmod 700 "$PERSIST_DIR" 2> /dev/null || true
+    tmp="$PREVIOUS_FILE.tmp.$$"
+    dns_type="$(uci -q get podkop.settings.dns_type 2> /dev/null || true)"
+    dns_server="$(uci -q get podkop.settings.dns_server 2> /dev/null || true)"
+    bootstrap_dns_server="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
+    jq -cn \
+        --arg dnsType "$dns_type" --arg dnsServer "$dns_server" --arg bootstrapDnsServer "$bootstrap_dns_server" \
+        --arg savedAt "$(updated_at)" \
+        '{dnsType:$dnsType,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer,savedAt:$savedAt}' \
+        > "$tmp" && mv "$tmp" "$PREVIOUS_FILE"
+    chmod 600 "$PREVIOUS_FILE"
+}
+
+restore_previous_dns() {
+    local dns_type dns_server bootstrap_dns_server
+
+    [ -s "$PREVIOUS_FILE" ] || return 1
+    dns_type="$(jq -r '.dnsType // empty' "$PREVIOUS_FILE")"
+    dns_server="$(jq -r '.dnsServer // empty' "$PREVIOUS_FILE")"
+    bootstrap_dns_server="$(jq -r '.bootstrapDnsServer // empty' "$PREVIOUS_FILE")"
+    [ -n "$dns_type" ] && [ -n "$dns_server" ] && [ -n "$bootstrap_dns_server" ] || return 1
+
+    uci set "podkop.settings.dns_type=$dns_type"
+    uci set "podkop.settings.dns_server=$dns_server"
+    uci set "podkop.settings.bootstrap_dns_server=$bootstrap_dns_server"
+    uci commit podkop
+}
+
+restart_podkop() {
+    : > "$LOG_FILE"
+    run_with_timeout 90 env PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 \
+        /usr/bin/podkop restart >> "$LOG_FILE" 2>&1
+}
+
+validate_podkop_dns() {
+    local config_path dont_touch server noresolv cachesize output
+
+    [ "${PODKOP_DNS_OPTIMIZER_TEST_FAIL_VALIDATION:-0}" != "1" ] || return 1
+
+    config_path="$(uci -q get podkop.settings.config_path 2> /dev/null || true)"
+    [ -n "$config_path" ] || config_path="/etc/sing-box/config.json"
+    [ -s "$config_path" ] || return 1
+    sing-box check -c "$config_path" > /dev/null 2>&1 || return 1
+    /etc/init.d/sing-box status > /dev/null 2>&1 || return 1
+
+    output="$(dig @127.0.0.42 example.com A +timeout=3 +tries=1 +stats 2> /dev/null)"
+    printf '%s\n' "$output" | grep -q 'status: NOERROR' || return 1
+    output="$(dig @127.0.0.42 fakeip.podkop.fyi A +timeout=3 +tries=1 +short 2> /dev/null)"
+    printf '%s\n' "$output" | grep -Eq '^198\.(18|19)\.' || return 1
+
+    dont_touch="$(uci -q get podkop.settings.dont_touch_dhcp 2> /dev/null || echo 0)"
+    if [ "$dont_touch" != "1" ]; then
+        server="$(uci -q get dhcp.@dnsmasq[0].server 2> /dev/null || true)"
+        noresolv="$(uci -q get dhcp.@dnsmasq[0].noresolv 2> /dev/null || true)"
+        cachesize="$(uci -q get dhcp.@dnsmasq[0].cachesize 2> /dev/null || true)"
+        printf ' %s ' "$server" | grep -q ' 127.0.0.42 ' || return 1
+        [ "$noresolv" = "1" ] || return 1
+        [ "$cachesize" = "0" ] || return 1
+        dig @127.0.0.1 fakeip.podkop.fyi A +timeout=3 +tries=1 +short 2> /dev/null | grep -Eq '^198\.(18|19)\.' || return 1
+    fi
+}
+
+lookup_main_candidate() {
+    local protocol="$1"
+    local wanted_id="$2"
+    local file line
+
+    file="$(mktemp)"
+    write_main_candidates "$protocol" "$file" || {
+        rm -f "$file"
+        return 1
+    }
+    line="$(awk -F '|' -v id="$wanted_id" '$1 == id { print; exit }' "$file")"
+    rm -f "$file"
+    [ -n "$line" ] || return 1
+    printf '%s\n' "$line"
+}
+
+bootstrap_is_allowed() {
+    local wanted="$1"
+    local file
+
+    file="$(mktemp)"
+    write_bootstrap_candidates "$file"
+    if awk -F '|' -v server="$wanted" '$3 == server { found = 1 } END { exit !found }' "$file"; then
+        rm -f "$file"
+        return 0
+    fi
+    rm -f "$file"
+    return 1
+}
+
+write_apply_final() {
+    local state="$1"
+    local message="$2"
+    local protocol="$3"
+    local provider="$4"
+    local dns_server="$5"
+    local bootstrap="$6"
+    local rolled_back="$7"
+    local action="${8:-apply}"
+    local final_file
+
+    final_file="$(mktemp)"
+    jq -cn \
+        --arg state "$state" --arg action "$action" --arg message "$message" --arg protocol "$protocol" \
+        --arg provider "$provider" --arg dnsServer "$dns_server" --arg bootstrapDnsServer "$bootstrap" \
+        --arg updatedAt "$(updated_at)" --argjson pid "$$" --argjson rolledBack "$rolled_back" \
+        --argjson backupAvailable "$( [ -s "$PREVIOUS_FILE" ] && echo true || echo false )" \
+        '{state:$state,action:$action,message:$message,progress:100,completed:1,total:1,pid:$pid,updatedAt:$updatedAt,applied:{protocol:$protocol,provider:$provider,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer},rolledBack:$rolledBack,backupAvailable:$backupAvailable}' \
+        > "$final_file"
+    write_final_status "$final_file"
+    rm -f "$final_file"
+}
+
+run_apply() {
+    local protocol="$1"
+    local candidate_id="$2"
+    local bootstrap="$3"
+    local line provider dns_server host resolved
+
+    trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+    line="$(lookup_main_candidate "$protocol" "$candidate_id" || true)"
+    if [ -z "$line" ] || ! bootstrap_is_allowed "$bootstrap"; then
+        write_apply_final "error" "invalid_recommendation" "$protocol" "" "" "$bootstrap" false
+        return 1
+    fi
+    provider="$(printf '%s\n' "$line" | cut -d '|' -f 2)"
+    dns_server="$(printf '%s\n' "$line" | cut -d '|' -f 3)"
+    host="$(candidate_host "$dns_server")"
+    if ! is_ipv4 "$host"; then
+        resolved="$(resolve_host "$bootstrap" "$host")"
+        if [ -z "$resolved" ]; then
+            write_apply_final "error" "bootstrap_incompatible" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+            return 1
+        fi
+    fi
+
+    write_status "running" "apply" "saving_previous_dns" 10 0 1 "$$"
+    save_previous_dns || {
+        write_apply_final "error" "backup_failed" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+        return 1
+    }
+
+    uci set "podkop.settings.dns_type=$protocol"
+    uci set "podkop.settings.dns_server=$dns_server"
+    uci set "podkop.settings.bootstrap_dns_server=$bootstrap"
+    uci commit podkop
+
+    write_status "running" "apply" "restarting_podkop" 45 0 1 "$$"
+    if restart_podkop; then
+        write_status "running" "apply" "validating_dns" 80 0 1 "$$"
+        if validate_podkop_dns; then
+            write_apply_final "success" "apply_complete" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+            return 0
+        fi
+    fi
+
+    write_status "running" "apply" "rolling_back" 90 0 1 "$$"
+    if restore_previous_dns; then
+        restart_podkop > /dev/null 2>&1 || true
+        write_apply_final "error" "apply_failed_rolled_back" "$protocol" "$provider" "$dns_server" "$bootstrap" true
+    else
+        write_apply_final "error" "apply_failed_rollback_failed" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+    fi
+    return 1
+}
+
+run_rollback() {
+    local previous_protocol previous_provider previous_dns previous_bootstrap
+
+    trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+    [ -s "$PREVIOUS_FILE" ] || {
+        write_apply_final "error" "no_previous_dns" "" "" "" "" false "rollback"
+        return 1
+    }
+    previous_protocol="$(jq -r '.dnsType // empty' "$PREVIOUS_FILE")"
+    previous_dns="$(jq -r '.dnsServer // empty' "$PREVIOUS_FILE")"
+    previous_bootstrap="$(jq -r '.bootstrapDnsServer // empty' "$PREVIOUS_FILE")"
+    previous_provider="Previous DNS"
+
+    write_status "running" "rollback" "rolling_back" 25 0 1 "$$"
+    if restore_previous_dns && restart_podkop; then
+        write_status "running" "rollback" "validating_dns" 80 0 1 "$$"
+        if validate_podkop_dns; then
+            write_apply_final "success" "rollback_complete" "$previous_protocol" "$previous_provider" "$previous_dns" "$previous_bootstrap" false "rollback"
+            return 0
+        fi
+    fi
+    write_apply_final "error" "rollback_failed" "$previous_protocol" "$previous_provider" "$previous_dns" "$previous_bootstrap" false "rollback"
+    return 1
+}
+
+pid_alive() {
+    local pid="$1"
+    case "$pid" in
+        ''|*[!0-9]*|0) return 1 ;;
+    esac
+    kill -0 "$pid" 2> /dev/null
+}
+
+start_worker() {
+    local action="$1"
+    shift
+    local state pid
+
+    ensure_state_dir
+    if ! mkdir "$LOCK_DIR" 2> /dev/null; then
+        state="$(jq -r '.state // ""' "$STATUS_FILE" 2> /dev/null || true)"
+        pid="$(jq -r '.pid // 0' "$STATUS_FILE" 2> /dev/null || echo 0)"
+        if [ "$state" = "running" ] && { [ "$pid" = "0" ] || pid_alive "$pid"; }; then
+            echo '{"success":false,"error":"busy"}'
+            return 1
+        fi
+        rm -rf "$LOCK_DIR"
+        mkdir "$LOCK_DIR" 2> /dev/null || {
+            echo '{"success":false,"error":"busy"}'
+            return 1
+        }
+    fi
+
+    write_status "running" "$action" "starting" 0 0 1 0
+    if command -v start-stop-daemon > /dev/null 2>&1; then
+        if ! start-stop-daemon -S -b -x "$SELF" -- __worker "$action" "$@" < /dev/null > /dev/null 2>&1; then
+            rm -rf "$LOCK_DIR"
+            write_status "error" "$action" "worker_start_failed" 100 0 1 0
+            echo '{"success":false,"error":"worker_start_failed"}'
+            return 1
+        fi
+    elif command -v setsid > /dev/null 2>&1; then
+        setsid "$SELF" __worker "$action" "$@" < /dev/null > "$LOG_FILE" 2>&1 &
+    else
+        "$SELF" __worker "$action" "$@" < /dev/null > "$LOG_FILE" 2>&1 &
+    fi
+    echo '{"success":true,"started":true}'
+}
+
+show_status() {
+    local state pid tmp backup_available
+
+    if [ ! -s "$STATUS_FILE" ]; then
+        echo '{"state":"idle","action":"","message":"idle","progress":0,"completed":0,"total":0,"pid":0}'
+        return 0
+    fi
+    state="$(jq -r '.state // ""' "$STATUS_FILE" 2> /dev/null || true)"
+    pid="$(jq -r '.pid // 0' "$STATUS_FILE" 2> /dev/null || echo 0)"
+    if [ "$state" = "running" ] && [ "$pid" != "0" ] && ! pid_alive "$pid"; then
+        tmp="$STATUS_FILE.tmp.$$"
+        jq '.state = "error" | .message = "worker_stopped" | .progress = 100' "$STATUS_FILE" > "$tmp" && mv "$tmp" "$STATUS_FILE"
+        rm -rf "$LOCK_DIR"
+    fi
+    backup_available=false
+    [ -s "$PREVIOUS_FILE" ] && backup_available=true
+    jq --argjson backupAvailable "$backup_available" '.backupAvailable = $backupAvailable' "$STATUS_FILE"
+}
+
+show_help() {
+    cat <<EOF
+Usage: podkop-dns-optimizer <command>
+
+Commands:
+  benchmark_start [udp|doh|dot]
+  apply_start <protocol> <candidate_id> <bootstrap_ipv4>
+  rollback_start
+  status
+  version
+EOF
+}
+
+case "${1:-}" in
+    benchmark_start)
+        start_worker "benchmark" "${2:-udp}"
+        ;;
+    apply_start)
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] || {
+            echo '{"success":false,"error":"arguments_required"}'
+            exit 1
+        }
+        start_worker "apply" "$2" "$3" "$4"
+        ;;
+    rollback_start)
+        start_worker "rollback"
+        ;;
+    status)
+        show_status
+        ;;
+    version)
+        printf '%s\n' "$VERSION"
+        ;;
+    __worker)
+        action="${2:-}"
+        shift 2
+        case "$action" in
+            benchmark) run_benchmark "${1:-udp}" ;;
+            apply) run_apply "${1:-}" "${2:-}" "${3:-}" ;;
+            rollback) run_rollback ;;
+            *) rm -rf "$LOCK_DIR"; exit 1 ;;
+        esac
+        ;;
+    *)
+        show_help
+        exit 1
+        ;;
+esac
