@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260710-dns-optimizer-v5"
+VERSION="20260711-dns-optimizer-v6"
 STATE_DIR="/tmp/podkop-dns-optimizer"
 STATUS_FILE="$STATE_DIR/status.json"
 LOG_FILE="$STATE_DIR/worker.log"
@@ -195,19 +195,253 @@ EOF
     fi
 }
 
+write_selected_community_services() {
+    local file="$1"
+    local sections_file sorted_file line key value section connection_type values
+
+    : > "$file"
+    sections_file="$(mktemp)"
+    uci -q show podkop 2> /dev/null |
+        while IFS= read -r line; do
+            case "$line" in
+                podkop.*.connection_type=*) ;;
+                *) continue ;;
+            esac
+
+            key="${line%%=*}"
+            value="${line#*=}"
+            value="${value#\'}"
+            value="${value%\'}"
+            section="${key#podkop.}"
+            section="${section%.connection_type}"
+            case "$value" in
+                proxy|vpn) printf '%s\n' "$section" ;;
+            esac
+        done > "$sections_file"
+
+    while IFS= read -r section; do
+        [ -n "$section" ] || continue
+        connection_type="$(uci -q get "podkop.$section.connection_type" 2> /dev/null || true)"
+        case "$connection_type" in
+            proxy|vpn) ;;
+            *) continue ;;
+        esac
+        values="$(uci -q get "podkop.$section.community_lists" 2> /dev/null || true)"
+        for value in $values; do
+            [ -n "$value" ] || continue
+            grep -Fxq "$value" "$file" 2> /dev/null || printf '%s\n' "$value" >> "$file"
+        done
+    done < "$sections_file"
+
+    rm -f "$sections_file"
+    sorted_file="$(mktemp)"
+    if sort -u "$file" > "$sorted_file" 2> /dev/null; then
+        mv "$sorted_file" "$file"
+    else
+        rm -f "$sorted_file"
+    fi
+}
+
+write_community_service_probes() {
+    local service="$1"
+
+    case "$service" in
+        russia_inside)
+            printf '%s\n' \
+                'community|russia_inside|youtube.com' \
+                'community|russia_inside|instagram.com' \
+                'community|russia_inside|x.com' \
+                'community|russia_inside|discord.com'
+            ;;
+        russia_outside)
+            printf '%s\n' \
+                'community|russia_outside|gosuslugi.ru' \
+                'community|russia_outside|fssp.gov.ru'
+            ;;
+        ukraine_inside)
+            printf '%s\n' \
+                'community|ukraine_inside|1tv.ru' \
+                'community|ukraine_inside|rutube.ru'
+            ;;
+        geoblock)
+            printf '%s\n' \
+                'community|geoblock|openai.com' \
+                'community|geoblock|claude.ai'
+            ;;
+        block)
+            printf '%s\n' \
+                'community|block|signal.org' \
+                'community|block|linkedin.com'
+            ;;
+        news)
+            printf '%s\n' \
+                'community|news|ovd.info' \
+                'community|news|proekt.media'
+            ;;
+        anime)
+            printf '%s\n' \
+                'community|anime|shikimori.one' \
+                'community|anime|mangadex.org'
+            ;;
+        youtube)
+            printf '%s\n' \
+                'community|youtube|youtube.com' \
+                'community|youtube|googlevideo.com'
+            ;;
+        hdrezka)
+            printf '%s\n' \
+                'community|hdrezka|hdrezka.ag' \
+                'community|hdrezka|voidboost.cc'
+            ;;
+        tiktok)
+            printf '%s\n' \
+                'community|tiktok|tiktok.com' \
+                'community|tiktok|tiktokcdn.com'
+            ;;
+        google_ai)
+            printf '%s\n' \
+                'community|google_ai|gemini.google.com' \
+                'community|google_ai|generativelanguage.googleapis.com'
+            ;;
+        google_play)
+            printf '%s\n' \
+                'community|google_play|play.googleapis.com' \
+                'community|google_play|android.clients.google.com'
+            ;;
+        hodca)
+            printf '%s\n' \
+                'community|hodca|cloudflare.com' \
+                'community|hodca|ipinfo.app'
+            ;;
+        discord)
+            printf '%s\n' \
+                'community|discord|discord.com' \
+                'community|discord|cdn.discordapp.com'
+            ;;
+        meta)
+            printf '%s\n' \
+                'community|meta|instagram.com' \
+                'community|meta|facebook.com'
+            ;;
+        twitter)
+            printf '%s\n' \
+                'community|twitter|x.com' \
+                'community|twitter|twitter.com'
+            ;;
+        telegram)
+            printf '%s\n' \
+                'community|telegram|telegram.org' \
+                'community|telegram|t.me'
+            ;;
+        roblox)
+            printf '%s\n' \
+                'community|roblox|roblox.com' \
+                'community|roblox|rbxcdn.com'
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
 write_compatibility_domains() {
-    cat <<'EOF'
-google_play|play.googleapis.com
-google_play|android.clients.google.com
-google_play|connectivitycheck.gstatic.com
-google_downloads|dl.google.com
-google_downloads|redirector.gvt1.com
-gaming|steamcdn-a.akamaihd.net
-gaming|media.steampowered.com
-cdn|cdn.jsdelivr.net
-developer|github.com
-software|www.microsoft.com
+    local probes_file="$1"
+    local selected_file="$2"
+    local service
+
+    cat > "$probes_file" <<'EOF'
+base|google_play|play.googleapis.com
+base|google_play|android.clients.google.com
+base|google_play|connectivitycheck.gstatic.com
+base|google_downloads|dl.google.com
+base|google_downloads|redirector.gvt1.com
+base|gaming|steamcdn-a.akamaihd.net
+base|gaming|media.steampowered.com
+base|cdn|cdn.jsdelivr.net
+base|developer|github.com
+base|software|www.microsoft.com
 EOF
+
+    write_selected_community_services "$selected_file"
+    while IFS= read -r service; do
+        [ -n "$service" ] || continue
+        write_community_service_probes "$service" >> "$probes_file"
+    done < "$selected_file"
+}
+
+calculate_probe_scope_counts() {
+    local scope="$1"
+    local successful_file="$2"
+    local probes_file="$3"
+
+    awk -F '|' -v wanted_scope="$scope" '
+        NR == FNR { successes[$0]++; next }
+        $1 == wanted_scope {
+            key = $1 "|" $2 "|" $3
+            total++
+            if (successes[key] >= 1) passed++
+            if (successes[key] >= 2) stable++
+        }
+        END { printf "%d|%d|%d\n", passed + 0, stable + 0, total + 0 }
+    ' "$successful_file" "$probes_file"
+}
+
+build_community_results() {
+    local successful_file="$1"
+    local probes_file="$2"
+    local selected_file="$3"
+    local output_file="$4"
+    local performed="${5:-true}"
+    local service total_domains passed_domains stable_domains tested passed stable failures unstable
+
+    : > "$output_file"
+    while IFS= read -r service; do
+        [ -n "$service" ] || continue
+        total_domains="$(awk -F '|' -v service="$service" '$1 == "community" && $2 == service { total++ } END { print total + 0 }' "$probes_file")"
+        if [ "$total_domains" -eq 0 ] || [ "$performed" != "true" ]; then
+            jq -cn --arg id "$service" \
+                --argjson totalDomains "$total_domains" \
+                '{id:$id,tested:false,passed:null,stable:null,passedDomains:0,stableDomains:0,totalDomains:$totalDomains,failures:[],unstable:[]}' \
+                >> "$output_file"
+            continue
+        fi
+
+        passed_domains="$(awk -F '|' -v service="$service" '
+            NR == FNR { successes[$0]++; next }
+            $1 == "community" && $2 == service && successes[$1 "|" $2 "|" $3] >= 1 { passed++ }
+            END { print passed + 0 }
+        ' "$successful_file" "$probes_file")"
+        stable_domains="$(awk -F '|' -v service="$service" '
+            NR == FNR { successes[$0]++; next }
+            $1 == "community" && $2 == service && successes[$1 "|" $2 "|" $3] >= 2 { stable++ }
+            END { print stable + 0 }
+        ' "$successful_file" "$probes_file")"
+        failures="$(awk -F '|' -v service="$service" '
+            NR == FNR { successes[$0]++; next }
+            $1 == "community" && $2 == service && successes[$1 "|" $2 "|" $3] == 0 { print $3 }
+        ' "$successful_file" "$probes_file" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+        unstable="$(awk -F '|' -v service="$service" '
+            NR == FNR { successes[$0]++; next }
+            $1 == "community" && $2 == service && successes[$1 "|" $2 "|" $3] == 1 { print $3 }
+        ' "$successful_file" "$probes_file" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+        tested=true
+        passed=false
+        stable=false
+        [ "$passed_domains" -eq "$total_domains" ] && passed=true
+        [ "$stable_domains" -eq "$total_domains" ] && stable=true
+        jq -cn \
+            --arg id "$service" \
+            --argjson tested "$tested" \
+            --argjson passed "$passed" \
+            --argjson stable "$stable" \
+            --argjson passedDomains "$passed_domains" \
+            --argjson stableDomains "$stable_domains" \
+            --argjson totalDomains "$total_domains" \
+            --argjson failures "$failures" \
+            --argjson unstable "$unstable" \
+            '{id:$id,tested:$tested,passed:$passed,stable:$stable,passedDomains:$passedDomains,stableDomains:$stableDomains,totalDomains:$totalDomains,failures:$failures,unstable:$unstable}' \
+            >> "$output_file"
+    done < "$selected_file"
 }
 
 profile_is_universal() {
@@ -405,25 +639,45 @@ benchmark_main_candidate() {
     local profile="$5"
     local bootstrap_json="$6"
     local host path compatible bootstrap endpoint_ip bootstrap_line bootstrap_provider bootstrap_median bootstrap_jitter
-    local times compatibility_domains successful_domains domain category round output success failures total stats median jitter p90 success_rate nxdomain_ok reliable score error stop_early
-    local compatibility_total compatibility_passed compatibility_stable compatibility_score compatibility_failures compatibility_unstable universal_eligible
+    local times probes_file selected_file successful_file community_results_file scope service domain round output
+    local success failures total probe_count stats median jitter p90 success_rate nxdomain_ok reliable score error stop_early
+    local base_counts community_counts compatibility_total compatibility_passed compatibility_stable compatibility_score
+    local compatibility_failures compatibility_unstable universal_eligible community_probe_total community_probe_passed community_probe_stable
+    local community_score community_selected community_tested community_passed community_stable selected_community_json
 
     host="$(candidate_host "$value")"
     path="$(candidate_path "$value")"
-    compatibility_domains="$(mktemp)"
-    successful_domains="$(mktemp)"
-    printf '__probe_sentinel__\n' > "$successful_domains"
-    write_compatibility_domains > "$compatibility_domains"
-    compatibility_total="$(wc -l < "$compatibility_domains" | tr -d ' ')"
-    total=$((compatibility_total * 2))
+    probes_file="$(mktemp)"
+    selected_file="$(mktemp)"
+    successful_file="$(mktemp)"
+    community_results_file="$(mktemp)"
+    printf '__probe_sentinel__\n' > "$successful_file"
+    write_compatibility_domains "$probes_file" "$selected_file"
+    probe_count="$(wc -l < "$probes_file" | tr -d ' ')"
+    total=$((probe_count * 2))
+    base_counts="$(calculate_probe_scope_counts base "$successful_file" "$probes_file")"
+    compatibility_passed="${base_counts%%|*}"
+    base_counts="${base_counts#*|}"
+    compatibility_stable="${base_counts%%|*}"
+    compatibility_total="${base_counts#*|}"
+    community_counts="$(calculate_probe_scope_counts community "$successful_file" "$probes_file")"
+    community_probe_passed="${community_counts%%|*}"
+    community_counts="${community_counts#*|}"
+    community_probe_stable="${community_counts%%|*}"
+    community_probe_total="${community_counts#*|}"
+    community_selected="$(wc -l < "$selected_file" | tr -d ' ')"
+    selected_community_json="$(jq -Rsc 'split("\n") | map(select(length > 0))' "$selected_file")"
     compatible="$(find_compatible_bootstrap "$bootstrap_json" "$host" "$id" || true)"
     if [ -z "$compatible" ]; then
+        build_community_results "$successful_file" "$probes_file" "$selected_file" "$community_results_file" false
         jq -cn \
             --arg id "$id" --arg provider "$provider" --arg dnsServer "$value" --arg profile "$profile" \
             --arg protocol "$protocol" --arg error "bootstrap_failed" --argjson totalQueries "$total" \
-            --argjson compatibilityTotal "$compatibility_total" \
-            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,successCount:0,totalQueries:$totalQueries,successRate:0,medianMs:0,p90Ms:0,jitterMs:0,nxdomainOk:false,compatibilityPassed:0,compatibilityStable:0,compatibilityTotal:$compatibilityTotal,compatibilityScore:0,compatibilityFailures:[],compatibilityUnstable:[],universalEligible:false,reliable:false,score:-1000000,error:$error}'
-        rm -f "$compatibility_domains" "$successful_domains"
+            --argjson compatibilityTotal "$compatibility_total" --argjson selectedCommunityServices "$selected_community_json" \
+            --argjson communitySelected "$community_selected" --argjson communityProbeTotal "$community_probe_total" \
+            --slurpfile communityResults "$community_results_file" \
+            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,successCount:0,totalQueries:$totalQueries,successRate:0,medianMs:0,p90Ms:0,jitterMs:0,nxdomainOk:false,compatibilityPassed:0,compatibilityStable:0,compatibilityTotal:$compatibilityTotal,compatibilityScore:0,compatibilityFailures:[],compatibilityUnstable:[],selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:0,communityPassed:0,communityStable:0,communityProbePassed:0,communityProbeStable:0,communityProbeTotal:$communityProbeTotal,communityScore:0,communityResults:$communityResults,universalEligible:false,reliable:false,score:-1000000,error:$error}'
+        rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
         return 0
     fi
 
@@ -445,7 +699,7 @@ benchmark_main_candidate() {
         run_dns_query "$protocol" "$endpoint_ip" "$host" "$path" example.net NOERROR >/dev/null 2>&1 || true
     fi
     for round in 1 2; do
-        while IFS='|' read -r category domain; do
+        while IFS='|' read -r scope service domain; do
             [ -n "$domain" ] || continue
             if is_ipv4 "$host"; then
                 output="$(run_dns_query "$protocol" "$endpoint_ip" "" "$path" "$domain" NOERROR 2> /dev/null || true)"
@@ -454,16 +708,16 @@ benchmark_main_candidate() {
             fi
             if [ -n "$output" ]; then
                 printf '%s\n' "$output" >> "$times"
-                printf '%s\n' "$domain" >> "$successful_domains"
+                printf '%s|%s|%s\n' "$scope" "$service" "$domain" >> "$successful_file"
                 success=$((success + 1))
             else
                 failures=$((failures + 1))
-                if [ "$failures" -ge 2 ]; then
+                if [ "$failures" -ge 2 ] && [ "$success" -eq 0 ]; then
                     stop_early=1
                     break
                 fi
             fi
-        done < "$compatibility_domains"
+        done < "$probes_file"
         [ "$stop_early" -eq 1 ] && break
     done
 
@@ -484,30 +738,42 @@ benchmark_main_candidate() {
     jitter="${stats%%|*}"
     p90="${stats#*|}"
     success_rate=$((success * 100 / total))
-    compatibility_passed="$(awk -F '|' '
-        NR == FNR { successes[$0]++; next }
-        successes[$2] >= 1 { passed++ }
-        END { print passed + 0 }
-    ' "$successful_domains" "$compatibility_domains")"
-    compatibility_stable="$(awk -F '|' '
-        NR == FNR { successes[$0]++; next }
-        successes[$2] >= 2 { stable++ }
-        END { print stable + 0 }
-    ' "$successful_domains" "$compatibility_domains")"
+    base_counts="$(calculate_probe_scope_counts base "$successful_file" "$probes_file")"
+    compatibility_passed="${base_counts%%|*}"
+    base_counts="${base_counts#*|}"
+    compatibility_stable="${base_counts%%|*}"
+    compatibility_total="${base_counts#*|}"
+    community_counts="$(calculate_probe_scope_counts community "$successful_file" "$probes_file")"
+    community_probe_passed="${community_counts%%|*}"
+    community_counts="${community_counts#*|}"
+    community_probe_stable="${community_counts%%|*}"
+    community_probe_total="${community_counts#*|}"
     compatibility_score=$(((compatibility_passed * 70 + compatibility_stable * 30) / compatibility_total))
     compatibility_failures="$(awk -F '|' '
         NR == FNR { successes[$0]++; next }
-        successes[$2] == 0 { print $2 }
-    ' "$successful_domains" "$compatibility_domains" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+        $1 == "base" && successes[$1 "|" $2 "|" $3] == 0 { print $3 }
+    ' "$successful_file" "$probes_file" | jq -Rsc 'split("\n") | map(select(length > 0))')"
     compatibility_unstable="$(awk -F '|' '
         NR == FNR { successes[$0]++; next }
-        successes[$2] == 1 { print $2 }
-    ' "$successful_domains" "$compatibility_domains" | jq -Rsc 'split("\n") | map(select(length > 0))')"
-    score=$((compatibility_score * 10000 + success_rate * 1000 - median * 30 - p90 * 12 - jitter * 15 - bootstrap_median * 5))
+        $1 == "base" && successes[$1 "|" $2 "|" $3] == 1 { print $3 }
+    ' "$successful_file" "$probes_file" | jq -Rsc 'split("\n") | map(select(length > 0))')"
+    build_community_results "$successful_file" "$probes_file" "$selected_file" "$community_results_file" true
+    community_tested="$(jq -s 'map(select(.tested == true)) | length' "$community_results_file")"
+    community_passed="$(jq -s 'map(select(.tested == true and .passed == true)) | length' "$community_results_file")"
+    community_stable="$(jq -s 'map(select(.tested == true and .stable == true)) | length' "$community_results_file")"
+    if [ "$community_probe_total" -gt 0 ]; then
+        community_score=$(((community_probe_passed * 70 + community_probe_stable * 30) / community_probe_total))
+    else
+        community_score=100
+    fi
+    score=$((compatibility_score * 10000 + community_score * 15000 + success_rate * 1000 - median * 30 - p90 * 12 - jitter * 15 - bootstrap_median * 5))
     reliable=false
     universal_eligible=false
     error=""
-    if [ "$success" -ge $((total - 1)) ] && [ "$compatibility_passed" -eq "$compatibility_total" ] && [ "$nxdomain_ok" = true ]; then
+    if [ "$success" -ge $((total - 1)) ] \
+        && [ "$compatibility_passed" -eq "$compatibility_total" ] \
+        && [ "$community_probe_passed" -eq "$community_probe_total" ] \
+        && [ "$nxdomain_ok" = true ]; then
         reliable=true
         if profile_is_universal "$profile"; then
             universal_eligible=true
@@ -517,6 +783,8 @@ benchmark_main_candidate() {
         error="nxdomain_check_failed"
     elif [ "$compatibility_passed" -lt "$compatibility_total" ]; then
         error="service_compatibility_failed"
+    elif [ "$community_probe_passed" -lt "$community_probe_total" ]; then
+        error="community_service_failed"
     else
         error="dns_queries_failed"
     fi
@@ -531,9 +799,14 @@ benchmark_main_candidate() {
         --argjson compatibilityPassed "$compatibility_passed" --argjson compatibilityTotal "$compatibility_total" \
         --argjson compatibilityStable "$compatibility_stable" --argjson compatibilityScore "$compatibility_score" \
         --argjson compatibilityFailures "$compatibility_failures" --argjson compatibilityUnstable "$compatibility_unstable" \
+        --argjson selectedCommunityServices "$selected_community_json" --argjson communitySelected "$community_selected" \
+        --argjson communityTested "$community_tested" --argjson communityPassed "$community_passed" --argjson communityStable "$community_stable" \
+        --argjson communityProbePassed "$community_probe_passed" --argjson communityProbeStable "$community_probe_stable" \
+        --argjson communityProbeTotal "$community_probe_total" --argjson communityScore "$community_score" \
         --argjson nxdomainOk "$nxdomain_ok" --argjson universalEligible "$universal_eligible" --argjson reliable "$reliable" --argjson score "$score" \
-        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapMedianMs:$bootstrapMedianMs,bootstrapJitterMs:$bootstrapJitterMs,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
-    rm -f "$compatibility_domains" "$successful_domains"
+        --slurpfile communityResults "$community_results_file" \
+        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapMedianMs:$bootstrapMedianMs,bootstrapJitterMs:$bootstrapJitterMs,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:$communityTested,communityPassed:$communityPassed,communityStable:$communityStable,communityProbePassed:$communityProbePassed,communityProbeStable:$communityProbeStable,communityProbeTotal:$communityProbeTotal,communityScore:$communityScore,communityResults:$communityResults,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
+    rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
 }
 
 run_benchmark() {
@@ -622,7 +895,7 @@ run_benchmark() {
     jq -cn \
         --arg state "$state" --arg action "benchmark" --arg message "$message" --arg protocol "$protocol" \
         --arg updatedAt "$(updated_at)" --arg currentDnsServer "$current_dns" --arg currentBootstrapDnsServer "$current_bootstrap" \
-        --arg recommendationReason "$recommendation_reason" --arg methodVersion "universal-stability-v1" \
+        --arg recommendationReason "$recommendation_reason" --arg methodVersion "community-lists-v1" \
         --argjson pid "$$" --argjson recommendation "$recommendation" --argjson recommendationConfidence "$confidence" \
         --slurpfile results "$main_jsonl" --slurpfile bootstrapResults "$bootstrap_json" \
         '{state:$state,action:$action,message:$message,protocol:$protocol,progress:100,completed:($results | length),total:($results | length),pid:$pid,updatedAt:$updatedAt,methodVersion:$methodVersion,current:{dnsServer:$currentDnsServer,bootstrapDnsServer:$currentBootstrapDnsServer},recommendation:$recommendation,recommendationConfidence:$recommendationConfidence,recommendationReason:$recommendationReason,results:($results | sort_by(.score) | reverse),bootstrapResults:($bootstrapResults[0] // [])}' \
@@ -692,29 +965,30 @@ restart_podkop() {
 
 validate_service_compatibility() {
     local server="$1"
-    local domains successful domain category round output total passed success_count
+    local probes selected successful scope service domain round output total passed success_count
 
-    domains="$(mktemp)"
+    probes="$(mktemp)"
+    selected="$(mktemp)"
     successful="$(mktemp)"
     printf '__probe_sentinel__\n' > "$successful"
-    write_compatibility_domains > "$domains"
+    write_compatibility_domains "$probes" "$selected"
     for round in 1 2; do
-        while IFS='|' read -r category domain; do
+        while IFS='|' read -r scope service domain; do
             [ -n "$domain" ] || continue
             output="$(run_dns_query udp "$server" "" "" "$domain" NOERROR 2> /dev/null || true)"
-            [ -n "$output" ] && printf '%s\n' "$domain" >> "$successful"
-        done < "$domains"
+            [ -n "$output" ] && printf '%s|%s|%s\n' "$scope" "$service" "$domain" >> "$successful"
+        done < "$probes"
     done
 
-    total="$(wc -l < "$domains" | tr -d ' ')"
+    total="$(wc -l < "$probes" | tr -d ' ')"
     passed="$(awk -F '|' '
         NR == FNR { successes[$0]++; next }
-        successes[$2] >= 1 { passed++ }
+        successes[$1 "|" $2 "|" $3] >= 1 { passed++ }
         END { print passed + 0 }
-    ' "$successful" "$domains")"
+    ' "$successful" "$probes")"
     success_count="$(wc -l < "$successful" | tr -d ' ')"
     success_count=$((success_count - 1))
-    rm -f "$domains" "$successful"
+    rm -f "$probes" "$selected" "$successful"
     [ "$passed" -eq "$total" ] && [ "$success_count" -ge $((total * 2 - 1)) ]
 }
 
@@ -744,9 +1018,7 @@ validate_podkop_dns() {
         [ "$noresolv" = "1" ] || return 1
         [ "$cachesize" = "0" ] || return 1
         dig @127.0.0.1 fakeip.podkop.fyi A +timeout=3 +tries=1 +short 2> /dev/null | grep -Eq '^198\.(18|19)\.' || return 1
-        for output in play.googleapis.com dl.google.com steamcdn-a.akamaihd.net; do
-            dig @127.0.0.1 "$output" A +timeout=3 +tries=1 +short 2> /dev/null | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || return 1
-        done
+        validate_service_compatibility 127.0.0.1 || return 1
     fi
 }
 

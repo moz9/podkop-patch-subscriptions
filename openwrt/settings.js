@@ -104,12 +104,12 @@ function injectDnsOptimizerStyles() {
     }
     .pdk-dns-optimizer__table {
       width: 100%;
-      min-width: 690px;
+      min-width: 720px;
       border-collapse: collapse;
       table-layout: fixed;
     }
     .pdk-dns-optimizer__table--main {
-      min-width: 880px;
+      min-width: 800px;
     }
     .pdk-dns-optimizer__table th,
     .pdk-dns-optimizer__table td {
@@ -117,16 +117,57 @@ function injectDnsOptimizerStyles() {
       border-bottom: 1px solid rgba(127, 127, 127, 0.18);
       text-align: left;
       vertical-align: top;
-      overflow-wrap: anywhere;
+      overflow-wrap: break-word;
+      word-break: normal;
     }
-    .pdk-dns-optimizer__table--main th:nth-child(1) { width: 20%; }
-    .pdk-dns-optimizer__table--main th:nth-child(2) { width: 9%; }
-    .pdk-dns-optimizer__table--main th:nth-child(3) { width: 9%; }
-    .pdk-dns-optimizer__table--main th:nth-child(4) { width: 9%; }
-    .pdk-dns-optimizer__table--main th:nth-child(5) { width: 10%; }
-    .pdk-dns-optimizer__table--main th:nth-child(6) { width: 12%; }
-    .pdk-dns-optimizer__table--main th:nth-child(7) { width: 14%; }
-    .pdk-dns-optimizer__table--main th:nth-child(8) { width: 17%; }
+    .pdk-dns-optimizer__table th {
+      white-space: nowrap;
+      overflow-wrap: normal;
+      word-break: keep-all;
+    }
+    .pdk-dns-optimizer__table--main th:nth-child(1) { width: 19%; }
+    .pdk-dns-optimizer__table--main th:nth-child(2) { width: 13%; }
+    .pdk-dns-optimizer__table--main th:nth-child(3) { width: 14%; }
+    .pdk-dns-optimizer__table--main th:nth-child(4) { width: 8%; }
+    .pdk-dns-optimizer__table--main th:nth-child(5) { width: 25%; }
+    .pdk-dns-optimizer__table--main th:nth-child(6) { width: 21%; }
+    .pdk-dns-optimizer__metric-line + .pdk-dns-optimizer__metric-line {
+      margin-top: 2px;
+    }
+    .pdk-dns-optimizer__checks {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-top: 5px;
+    }
+    .pdk-dns-optimizer__check {
+      display: inline-flex;
+      align-items: center;
+      max-width: 100%;
+      padding: 2px 6px;
+      border: 1px solid rgba(127, 127, 127, 0.3);
+      border-radius: 999px;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+    .pdk-dns-optimizer__check--ok {
+      color: #2ebd85;
+      border-color: rgba(46, 189, 133, 0.55);
+      background: rgba(46, 189, 133, 0.08);
+    }
+    .pdk-dns-optimizer__check--warn {
+      color: #e6a23c;
+      border-color: rgba(230, 162, 60, 0.55);
+      background: rgba(230, 162, 60, 0.08);
+    }
+    .pdk-dns-optimizer__check--bad {
+      color: #ef5b6a;
+      border-color: rgba(239, 91, 106, 0.55);
+      background: rgba(239, 91, 106, 0.08);
+    }
+    .pdk-dns-optimizer__check--muted {
+      color: var(--text-color-secondary, #a8b3c7);
+    }
     .pdk-dns-optimizer__row--recommended {
       background: rgba(46, 189, 133, 0.08);
     }
@@ -153,6 +194,38 @@ function injectDnsOptimizerStyles() {
       .pdk-dns-optimizer { padding: 10px; }
       .pdk-dns-optimizer__actions { width: 100%; }
       .pdk-dns-optimizer__actions button { flex: 1 1 88px; }
+      .pdk-dns-optimizer__table--main {
+        display: block;
+        min-width: 0;
+      }
+      .pdk-dns-optimizer__table--main thead {
+        display: none;
+      }
+      .pdk-dns-optimizer__table--main tbody,
+      .pdk-dns-optimizer__table--main tr,
+      .pdk-dns-optimizer__table--main td {
+        display: block;
+        width: auto;
+      }
+      .pdk-dns-optimizer__table--main tr {
+        padding: 8px;
+        margin-bottom: 10px;
+        border: 1px solid rgba(127, 127, 127, 0.22);
+        border-radius: 6px;
+      }
+      .pdk-dns-optimizer__table--main td {
+        display: grid;
+        grid-template-columns: minmax(92px, 34%) minmax(0, 1fr);
+        gap: 8px;
+        padding: 6px 2px;
+      }
+      .pdk-dns-optimizer__table--main td::before {
+        content: attr(data-label);
+        color: var(--text-color-secondary, #a8b3c7);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
     }
   `;
   document.head.appendChild(style);
@@ -231,11 +304,21 @@ function renderActionButton(text, className, disabled, onClick) {
 }
 
 function resultClass(result) {
+  const communityResults = Array.isArray(result.communityResults)
+    ? result.communityResults
+    : [];
+  if (
+    communityResults.some(
+      (item) => item.tested === true && item.passed !== true,
+    )
+  ) {
+    return "pdk-dns-optimizer__bad";
+  }
   if (
     Number(result.compatibilityPassed || 0) <
       Number(result.compatibilityTotal || 0) ||
-    Number.isFinite(result.compatibilityScore) &&
-    result.compatibilityScore < 90
+    (Number.isFinite(result.compatibilityScore) &&
+      result.compatibilityScore < 90)
   ) {
     return "pdk-dns-optimizer__bad";
   }
@@ -250,13 +333,23 @@ function resultClass(result) {
 
 function resultVerdict(result) {
   const tailSpread = Math.max(0, (result.p90Ms || 0) - result.medianMs);
+  const communityResults = Array.isArray(result.communityResults)
+    ? result.communityResults
+    : [];
   if (
     Number(result.compatibilityPassed || 0) <
       Number(result.compatibilityTotal || 0) ||
-    Number.isFinite(result.compatibilityScore) &&
-    result.compatibilityScore < 90
+    (Number.isFinite(result.compatibilityScore) &&
+      result.compatibilityScore < 90)
   ) {
     return "Сбои на проверочных сервисах";
+  }
+  if (
+    communityResults.some(
+      (item) => item.tested === true && item.passed !== true,
+    )
+  ) {
+    return "Недоступен выбранный сервис";
   }
   if (result.reliable && result.universalEligible === false) {
     return "Стабильно, но DNS с фильтрацией";
@@ -272,6 +365,9 @@ function resultVerdict(result) {
   }
   if (result.error === "nxdomain_check_failed") {
     return "Возможна подмена DNS-ответов";
+  }
+  if (result.error === "community_service_failed") {
+    return "Проблема с выбранным списком";
   }
   return "Есть потери или тайм-ауты";
 }
@@ -305,6 +401,121 @@ function compatibilityTitle(result) {
   return details.join("; ");
 }
 
+const COMMUNITY_SERVICE_LABELS = {
+  russia_inside: "Россия внутри",
+  russia_outside: "Россия снаружи",
+  ukraine_inside: "Украина",
+  geoblock: "Геоблокировка",
+  block: "Блокировки",
+  porn: "Контент 18+",
+  news: "Новости",
+  anime: "Аниме",
+  youtube: "YouTube",
+  hdrezka: "HDRezka",
+  tiktok: "TikTok",
+  google_ai: "Google AI",
+  google_play: "Google Play",
+  hodca: "H.O.D.C.A",
+  discord: "Discord",
+  meta: "Meta",
+  twitter: "Twitter (X)",
+  telegram: "Telegram",
+  roblox: "Roblox",
+  cloudflare: "Cloudflare ASN",
+  cloudfront: "CloudFront ASN",
+  digitalocean: "DigitalOcean ASN",
+  hetzner: "Hetzner ASN",
+  ovh: "OVH ASN",
+};
+
+function communityServiceLabel(id) {
+  const label =
+    COMMUNITY_SERVICE_LABELS[id] ||
+    main.DOMAIN_LIST_OPTIONS?.[id] ||
+    id ||
+    "Список";
+  return typeof _ === "function" ? _(label) : label;
+}
+
+function communityResultTitle(item) {
+  if (item.tested !== true) {
+    return "Для этого списка нет отдельной DNS-проверки; он не влияет на рекомендацию";
+  }
+  const details = [];
+  if (Array.isArray(item.failures) && item.failures.length) {
+    details.push(`не разрешаются: ${item.failures.join(", ")}`);
+  }
+  if (Array.isArray(item.unstable) && item.unstable.length) {
+    details.push(`один из двух запросов не прошёл: ${item.unstable.join(", ")}`);
+  }
+  return details.length
+    ? details.join("; ")
+    : `${item.stableDomains || 0}/${item.totalDomains || 0} доменов стабильны в обоих проходах`;
+}
+
+function renderCommunityCheck(item) {
+  const label = communityServiceLabel(item.id);
+  let stateClass = "pdk-dns-optimizer__check--muted";
+  let suffix = "не проверяется по DNS";
+  if (item.tested === true && item.passed !== true) {
+    stateClass = "pdk-dns-optimizer__check--bad";
+    suffix = `${item.passedDomains || 0}/${item.totalDomains || 0}`;
+  } else if (item.tested === true && item.stable !== true) {
+    stateClass = "pdk-dns-optimizer__check--warn";
+    suffix = `${item.passedDomains || 0}/${item.totalDomains || 0}, нестабильно`;
+  } else if (item.tested === true) {
+    stateClass = "pdk-dns-optimizer__check--ok";
+    suffix = `${item.passedDomains || 0}/${item.totalDomains || 0}`;
+  }
+
+  return E(
+    "span",
+    {
+      class: `pdk-dns-optimizer__check ${stateClass}`,
+      title: communityResultTitle(item),
+    },
+    `${label}: ${suffix}`,
+  );
+}
+
+function renderChecks(result) {
+  const communityResults = Array.isArray(result.communityResults)
+    ? result.communityResults
+    : [];
+  const baseClass =
+    Number(result.compatibilityPassed || 0) ===
+    Number(result.compatibilityTotal || 0)
+      ? "pdk-dns-optimizer__check--ok"
+      : "pdk-dns-optimizer__check--bad";
+  const checks = [
+    E(
+      "span",
+      {
+        class: `pdk-dns-optimizer__check ${baseClass}`,
+        title: compatibilityTitle(result),
+      },
+      `База: ${compatibilityLabel(result)}`,
+    ),
+    ...communityResults.map(renderCommunityCheck),
+  ];
+
+  return E("div", { class: "pdk-dns-optimizer__checks" }, checks);
+}
+
+function communityRecommendationText(result) {
+  const selected = Number(result.communitySelected || 0);
+  const tested = Number(result.communityTested || 0);
+  const passed = Number(result.communityPassed || 0);
+  if (!selected) {
+    return "Списки сообщества не выбраны.";
+  }
+  const untested = Math.max(0, selected - tested);
+  const untestedText = untested
+    ? ` Ещё ${untested} выбрано, но не имеет отдельной DNS-проверки.`
+    : "";
+  return `Выбранные списки: ${passed}/${tested} проверенных доступны.${untestedText}`;
+}
+
 function recommendationExplanation(status) {
   const confidence = Number.isFinite(status.recommendationConfidence)
     ? status.recommendationConfidence
@@ -333,7 +544,7 @@ function renderRecommendation(status) {
     E(
       "div",
       { class: "pdk-dns-optimizer__detail" },
-      `Совместимость сервисов ${compatibilityLabel(result)}, стабильно в обоих проходах ${result.compatibilityStable || 0}/${result.compatibilityTotal || 0}; ${result.successCount}/${result.totalQueries} успешных запросов, медиана ${result.medianMs} мс, P90 ${result.p90Ms} мс, стабильный разброс ${result.jitterMs} мс; bootstrap ${result.bootstrapMedianMs} мс. NXDOMAIN не подменяется. ${profileLabel(result.profile)}. ${recommendationExplanation(status)}`,
+      `Базовая совместимость ${compatibilityLabel(result)}, стабильно в обоих проходах ${result.compatibilityStable || 0}/${result.compatibilityTotal || 0}; ${result.successCount}/${result.totalQueries} успешных запросов, медиана ${result.medianMs} мс, P90 ${result.p90Ms} мс, IQR ${result.jitterMs} мс; bootstrap ${result.bootstrapMedianMs} мс. ${communityRecommendationText(result)} NXDOMAIN не подменяется. ${profileLabel(result.profile)}. ${recommendationExplanation(status)}`,
     ),
   ]);
 }
@@ -354,18 +565,40 @@ function renderMainResults(status) {
     }
 
     return E("tr", { class: classes.join(" ") }, [
-      E("td", {}, [E("b", {}, result.provider), E("div", { class: "pdk-dns-optimizer__detail" }, result.dnsServer)]),
-      E("td", { class: resultClass(result) }, `${result.successRate}%`),
-      E("td", {}, result.medianMs ? `${result.medianMs} мс` : "—"),
-      E("td", {}, result.p90Ms ? `${result.p90Ms} мс` : "—"),
-      E("td", {}, result.jitterMs || result.reliable ? `${result.jitterMs} мс` : "—"),
+      E("td", { "data-label": "DNS" }, [
+        E("b", {}, result.provider),
+        E("div", { class: "pdk-dns-optimizer__detail" }, result.dnsServer),
+      ]),
+      E("td", { "data-label": "Надёжность", class: resultClass(result) }, [
+        E("b", {}, `${result.successRate}%`),
+        E(
+          "div",
+          { class: "pdk-dns-optimizer__detail" },
+          `${result.successCount}/${result.totalQueries}`,
+        ),
+      ]),
+      E("td", { "data-label": "Задержка" }, [
+        E(
+          "div",
+          { class: "pdk-dns-optimizer__metric-line" },
+          `Медиана: ${Number.isFinite(result.medianMs) ? `${result.medianMs} мс` : "—"}`,
+        ),
+        E(
+          "div",
+          { class: "pdk-dns-optimizer__metric-line" },
+          `P90: ${Number.isFinite(result.p90Ms) ? `${result.p90Ms} мс` : "—"}`,
+        ),
+      ]),
       E(
         "td",
-        { class: resultClass(result), title: compatibilityTitle(result) },
-        compatibilityLabel(result),
+        { "data-label": "IQR" },
+        result.jitterMs || result.reliable ? `${result.jitterMs} мс` : "—",
       ),
-      E("td", {}, profileLabel(result.profile)),
-      E("td", { class: resultClass(result) }, resultVerdict(result)),
+      E("td", { "data-label": "Проверки" }, renderChecks(result)),
+      E("td", { "data-label": "Оценка", class: resultClass(result) }, [
+        E("div", {}, resultVerdict(result)),
+        E("div", { class: "pdk-dns-optimizer__detail" }, profileLabel(result.profile)),
+      ]),
     ]);
   });
 
@@ -373,13 +606,11 @@ function renderMainResults(status) {
     E("table", { class: "pdk-dns-optimizer__table pdk-dns-optimizer__table--main" }, [
       E("thead", {}, [
         E("tr", {}, [
-          E("th", {}, "Основной DNS"),
-          E("th", {}, "Успех"),
-          E("th", {}, "Медиана"),
-          E("th", {}, "P90"),
-          E("th", {}, "Разброс IQR"),
-          E("th", {}, "Сервисы"),
-          E("th", {}, "Особенности"),
+          E("th", {}, "DNS"),
+          E("th", {}, "Надёжность"),
+          E("th", {}, "Задержка"),
+          E("th", {}, "IQR"),
+          E("th", {}, "Проверки"),
           E("th", {}, "Оценка"),
         ]),
       ]),
@@ -419,8 +650,8 @@ function renderBootstrapResults(status) {
               E("td", {}, result.provider),
               E("td", {}, result.server),
               E("td", { class: resultClass(result) }, `${result.successRate}%`),
-              E("td", {}, result.medianMs ? `${result.medianMs} мс` : "—"),
-              E("td", {}, result.p90Ms ? `${result.p90Ms} мс` : "—"),
+              E("td", {}, Number.isFinite(result.medianMs) ? `${result.medianMs} мс` : "—"),
+              E("td", {}, Number.isFinite(result.p90Ms) ? `${result.p90Ms} мс` : "—"),
               E("td", {}, result.jitterMs || result.reliable ? `${result.jitterMs} мс` : "—"),
               E("td", {}, profileLabel(result.profile)),
             ]),
@@ -490,7 +721,7 @@ function renderDnsOptimizer() {
         E(
           "div",
           { class: "pdk-dns-optimizer__description" },
-          "Проверяет стабильность, отсутствие подмены и совместимость с Google Play, игровыми и CDN-сервисами. Скорость учитывается только после этих проверок.",
+          "Проверяет стабильность, отсутствие подмены, базовые сервисы и выбранные списки сообщества Podkop — например YouTube, Telegram и Meta. Скорость учитывается только после этих проверок.",
         ),
       ]),
       E("div", { class: "pdk-dns-optimizer__actions" }, [
