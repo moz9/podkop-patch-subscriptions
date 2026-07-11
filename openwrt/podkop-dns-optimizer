@@ -1,12 +1,13 @@
 #!/bin/ash
 
-VERSION="20260711-dns-optimizer-v6"
-STATE_DIR="/tmp/podkop-dns-optimizer"
+VERSION="20260711-dns-optimizer-v8"
+STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
 STATUS_FILE="$STATE_DIR/status.json"
 LOG_FILE="$STATE_DIR/worker.log"
 LOCK_DIR="$STATE_DIR/lock"
-PERSIST_DIR="/etc/podkop/dns-optimizer"
+PERSIST_DIR="${PODKOP_DNS_OPTIMIZER_PERSIST_DIR:-/etc/podkop/dns-optimizer}"
 PREVIOUS_FILE="$PERSIST_DIR/previous-dns.json"
+LAST_BENCHMARK_FILE="$PERSIST_DIR/last-benchmark.json"
 SELF="$(readlink -f "$0" 2> /dev/null || printf '%s' "$0")"
 
 updated_at() {
@@ -54,6 +55,17 @@ write_final_status() {
     chmod 600 "$STATUS_FILE" 2> /dev/null || true
 }
 
+save_last_benchmark() {
+    local source_file="$1"
+    local tmp
+
+    mkdir -p "$PERSIST_DIR"
+    chmod 700 "$PERSIST_DIR" 2> /dev/null || true
+    tmp="$LAST_BENCHMARK_FILE.tmp.$$"
+    cp "$source_file" "$tmp" && mv "$tmp" "$LAST_BENCHMARK_FILE"
+    chmod 600 "$LAST_BENCHMARK_FILE" 2> /dev/null || true
+}
+
 is_ipv4() {
     echo "$1" | awk -F. '
         NF != 4 { exit 1 }
@@ -94,10 +106,62 @@ append_unique_candidate() {
     printf '%s|%s|%s|%s\n' "$id" "$provider" "$value" "$profile" >> "$file"
 }
 
+filter_selected_candidates() {
+    local file="$1"
+    local option="$2"
+    local selected tmp
+
+    selected="$(uci -q get "podkop.settings.$option" 2> /dev/null || true)"
+    if [ -z "$selected" ]; then
+        case "$option" in
+            dns_optimizer_candidates)
+                selected="cloudflare google yandex adguard_unfiltered controld_unfiltered mullvad"
+                ;;
+            dns_optimizer_bootstrap_candidates)
+                selected="cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 adguard_unfiltered controld_unfiltered"
+                ;;
+            *) return 0 ;;
+        esac
+    fi
+    tmp="$(mktemp)"
+    awk -F '|' -v selected=" $selected " '
+        index(selected, " " $1 " ") > 0 { print }
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
+append_saved_custom_candidates() {
+    local protocol="$1"
+    local file="$2"
+    local values value host index
+
+    values="$(uci -q get "podkop.settings.dns_optimizer_custom_$protocol" 2> /dev/null || true)"
+    [ -n "$values" ] || return 0
+    index=1
+    set -f
+    for value in $values; do
+        host="$(candidate_host "$value")"
+        case "$protocol" in
+            udp)
+                is_ipv4 "$host" || continue
+                ;;
+            doh)
+                is_ipv4 "$host" || echo "$host" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+                ;;
+            dot)
+                case "$value" in */*) continue ;; esac
+                is_ipv4 "$host" || echo "$host" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+                ;;
+        esac
+        append_unique_candidate "$file" "saved_custom_${protocol}_$index" "Saved custom DNS $index" "$value" "custom"
+        index=$((index + 1))
+    done
+    set +f
+}
+
 write_main_candidates() {
     local protocol="$1"
     local file="$2"
-    local current current_host index dns
+    local current current_host current_pair current_protocol active_slot index dns include_current include_wan
 
     : > "$file"
     case "$protocol" in
@@ -141,13 +205,23 @@ EOF
             ;;
     esac
 
-    current="$(uci -q get podkop.settings.dns_server 2> /dev/null || true)"
-    current_host="$(candidate_host "$current")"
-    if [ -n "$current" ] && { is_ipv4 "$current_host" || echo "$current_host" | grep -Eq '^[A-Za-z0-9.-]+$'; }; then
-        append_unique_candidate "$file" "current" "Current DNS" "$current" "custom"
+    filter_selected_candidates "$file" "dns_optimizer_candidates"
+    append_saved_custom_candidates "$protocol" "$file"
+
+    include_current="$(uci -q get podkop.settings.dns_optimizer_include_current 2> /dev/null || echo 1)"
+    if [ "$include_current" != "0" ]; then
+        active_slot="$(configured_active_slot)"
+        current_pair="$(read_configured_pair "$active_slot" || true)"
+        current_protocol="$(printf '%s\n' "$current_pair" | cut -d '|' -f 1)"
+        current="$(printf '%s\n' "$current_pair" | cut -d '|' -f 2)"
+        current_host="$(candidate_host "$current")"
+        if [ "$current_protocol" = "$protocol" ] && [ -n "$current" ] && { is_ipv4 "$current_host" || echo "$current_host" | grep -Eq '^[A-Za-z0-9.-]+$'; }; then
+            append_unique_candidate "$file" "current" "Current DNS" "$current" "custom"
+        fi
     fi
 
-    if [ "$protocol" = "udp" ] && command -v ubus > /dev/null 2>&1; then
+    include_wan="$(uci -q get podkop.settings.dns_optimizer_include_wan 2> /dev/null || echo 0)"
+    if [ "$include_wan" = "1" ] && [ "$protocol" = "udp" ] && command -v ubus > /dev/null 2>&1; then
         index=1
         ubus call network.interface dump 2> /dev/null |
             jq -r '.interface[]? | select(.up == true) | .["dns-server"][]?' 2> /dev/null |
@@ -162,7 +236,7 @@ EOF
 
 write_bootstrap_candidates() {
     local file="$1"
-    local current index dns
+    local current current_pair active_slot index dns include_current include_wan
 
     cat > "$file" <<'EOF'
 cloudflare_1|Cloudflare|1.1.1.1|unfiltered
@@ -177,12 +251,20 @@ adguard_unfiltered|AdGuard Unfiltered|94.140.14.140|unfiltered
 controld_unfiltered|Control D Unfiltered|76.76.2.0|unfiltered
 EOF
 
-    current="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
-    if is_ipv4 "$current"; then
-        append_unique_candidate "$file" "current_bootstrap" "Current bootstrap" "$current" "custom"
+    filter_selected_candidates "$file" "dns_optimizer_bootstrap_candidates"
+
+    include_current="$(uci -q get podkop.settings.dns_optimizer_include_current 2> /dev/null || echo 1)"
+    if [ "$include_current" != "0" ]; then
+        active_slot="$(configured_active_slot)"
+        current_pair="$(read_configured_pair "$active_slot" || true)"
+        current="$(printf '%s\n' "$current_pair" | cut -d '|' -f 3)"
+        if is_ipv4 "$current"; then
+            append_unique_candidate "$file" "current_bootstrap" "Current bootstrap" "$current" "custom"
+        fi
     fi
 
-    if command -v ubus > /dev/null 2>&1; then
+    include_wan="$(uci -q get podkop.settings.dns_optimizer_include_wan 2> /dev/null || echo 0)"
+    if [ "$include_wan" = "1" ] && command -v ubus > /dev/null 2>&1; then
         index=1
         ubus call network.interface dump 2> /dev/null |
             jq -r '.interface[]? | select(.up == true) | .["dns-server"][]?' 2> /dev/null |
@@ -446,7 +528,7 @@ build_community_results() {
 
 profile_is_universal() {
     case "$1" in
-        unfiltered|privacy|custom|isp) return 0 ;;
+        unfiltered|privacy) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -513,6 +595,81 @@ resolve_host() {
 
     dig @"$bootstrap" "$host" A +timeout=2 +tries=1 +short 2> /dev/null |
         awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }'
+}
+
+read_configured_pair() {
+    local slot="$1"
+    local protocol dns_server bootstrap_dns_server
+
+    case "$slot" in
+        primary)
+            protocol="$(uci -q get podkop.settings.dns_type 2> /dev/null || true)"
+            dns_server="$(uci -q get podkop.settings.dns_server 2> /dev/null || true)"
+            bootstrap_dns_server="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
+            ;;
+        secondary)
+            protocol="$(uci -q get podkop.settings.secondary_dns_type 2> /dev/null || true)"
+            dns_server="$(uci -q get podkop.settings.secondary_dns_server 2> /dev/null || true)"
+            bootstrap_dns_server="$(uci -q get podkop.settings.secondary_bootstrap_dns_server 2> /dev/null || true)"
+            ;;
+        *) return 1 ;;
+    esac
+
+    [ -n "$protocol" ] && [ -n "$dns_server" ] && [ -n "$bootstrap_dns_server" ] || return 1
+    printf '%s|%s|%s\n' "$protocol" "$dns_server" "$bootstrap_dns_server"
+}
+
+configured_active_slot() {
+    local enabled slot
+
+    enabled="$(uci -q get podkop.settings.dns_failover_enabled 2> /dev/null || echo 0)"
+    slot="$(uci -q get podkop.settings.dns_failover_active_slot 2> /dev/null || echo primary)"
+    if [ "$enabled" = "1" ] && [ "$slot" = "secondary" ] && read_configured_pair secondary > /dev/null 2>&1; then
+        printf 'secondary\n'
+    else
+        printf 'primary\n'
+    fi
+}
+
+probe_configured_pair() {
+    local slot="$1"
+    local pair protocol dns_server bootstrap host endpoint_ip tls_hostname path domain elapsed successes total
+
+    pair="$(read_configured_pair "$slot" || true)"
+    if [ -z "$pair" ]; then
+        jq -cn --arg slot "$slot" '{success:false,slot:$slot,error:"pair_not_configured"}'
+        return 1
+    fi
+    protocol="$(printf '%s\n' "$pair" | cut -d '|' -f 1)"
+    dns_server="$(printf '%s\n' "$pair" | cut -d '|' -f 2)"
+    bootstrap="$(printf '%s\n' "$pair" | cut -d '|' -f 3)"
+    host="$(candidate_host "$dns_server")"
+    path="$(candidate_path "$dns_server")"
+    endpoint_ip="$host"
+    tls_hostname=""
+    if ! is_ipv4 "$host"; then
+        endpoint_ip="$(resolve_host "$bootstrap" "$host")"
+        tls_hostname="$host"
+    fi
+    if ! is_ipv4 "$endpoint_ip"; then
+        jq -cn --arg slot "$slot" --arg protocol "$protocol" '{success:false,slot:$slot,protocol:$protocol,error:"bootstrap_failed"}'
+        return 1
+    fi
+
+    successes=0
+    total=3
+    for domain in example.com github.com play.googleapis.com; do
+        elapsed="$(run_dns_query "$protocol" "$endpoint_ip" "$tls_hostname" "$path" "$domain" NOERROR 2> /dev/null || true)"
+        [ -n "$elapsed" ] && successes=$((successes + 1))
+    done
+    if [ "$successes" -ge 2 ]; then
+        jq -cn --arg slot "$slot" --arg protocol "$protocol" --argjson successes "$successes" --argjson total "$total" \
+            '{success:true,slot:$slot,protocol:$protocol,successes:$successes,total:$total}'
+        return 0
+    fi
+    jq -cn --arg slot "$slot" --arg protocol "$protocol" --argjson successes "$successes" --argjson total "$total" \
+        '{success:false,slot:$slot,protocol:$protocol,successes:$successes,total:$total,error:"dns_unavailable"}'
+    return 1
 }
 
 calculate_stats() {
@@ -591,23 +748,23 @@ find_compatible_bootstrap() {
     local bootstrap_json="$1"
     local host="$2"
     local main_id="$3"
-    local family server ip line candidates current_bootstrap
+    local family server ip line candidates
 
     family="${main_id%%_*}"
-    current_bootstrap="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
     candidates="$(mktemp)"
-    jq --arg family "$family" --arg current "$current_bootstrap" '
-        map(select(.reliable == true))
-        | sort_by(.score)
-        | reverse
-        | (map(select((.id | startswith($family)) | not)) + map(select(.id | startswith($family)))) as $ranked
-        | ($ranked[0] // null) as $best
-        | (map(select(.server == $current))[0] // null) as $currentResult
-        | if $best != null and $currentResult != null
-            and (($currentResult.id | startswith($family)) | not)
-            and (($best.score - $currentResult.score) <= (($best.jitterMs + $currentResult.jitterMs + 5) * 40))
-          then [$currentResult] + ($ranked | map(select(.server != $current)))
-          else $ranked end
+    jq --arg family "$family" '
+        map(select(
+            .reliable == true
+            and (.profile == "unfiltered" or .profile == "privacy")
+        ))
+        | sort_by([
+            (-(.successRate // 0)),
+            (if (.id | startswith($family)) then 1 else 0 end),
+            (.p90Ms // 999999),
+            (.jitterMs // 999999),
+            (.medianMs // 999999),
+            .id
+        ])
     ' "$bootstrap_json" > "$candidates"
 
     if is_ipv4 "$host"; then
@@ -639,6 +796,7 @@ benchmark_main_candidate() {
     local profile="$5"
     local bootstrap_json="$6"
     local host path compatible bootstrap endpoint_ip bootstrap_line bootstrap_provider bootstrap_median bootstrap_jitter
+    local bootstrap_p90 bootstrap_success_rate bootstrap_profile bootstrap_universal_eligible
     local times probes_file selected_file successful_file community_results_file scope service domain round output
     local success failures total probe_count stats median jitter p90 success_rate nxdomain_ok reliable score error stop_early
     local base_counts community_counts compatibility_total compatibility_passed compatibility_stable compatibility_score
@@ -688,6 +846,13 @@ benchmark_main_candidate() {
     bootstrap_provider="$(printf '%s\n' "$bootstrap_line" | jq -r '.provider')"
     bootstrap_median="$(printf '%s\n' "$bootstrap_line" | jq -r '.medianMs')"
     bootstrap_jitter="$(printf '%s\n' "$bootstrap_line" | jq -r '.jitterMs')"
+    bootstrap_p90="$(printf '%s\n' "$bootstrap_line" | jq -r '.p90Ms')"
+    bootstrap_success_rate="$(printf '%s\n' "$bootstrap_line" | jq -r '.successRate')"
+    bootstrap_profile="$(printf '%s\n' "$bootstrap_line" | jq -r '.profile')"
+    bootstrap_universal_eligible=false
+    if profile_is_universal "$bootstrap_profile"; then
+        bootstrap_universal_eligible=true
+    fi
 
     times="$(mktemp)"
     success=0
@@ -775,7 +940,7 @@ benchmark_main_candidate() {
         && [ "$community_probe_passed" -eq "$community_probe_total" ] \
         && [ "$nxdomain_ok" = true ]; then
         reliable=true
-        if profile_is_universal "$profile"; then
+        if profile_is_universal "$profile" && [ "$bootstrap_universal_eligible" = true ]; then
             universal_eligible=true
         fi
     elif [ "$success" -ge $((total - 1)) ] && [ "$nxdomain_ok" != true ]; then
@@ -792,10 +957,13 @@ benchmark_main_candidate() {
     jq -cn \
         --arg id "$id" --arg provider "$provider" --arg dnsServer "$value" --arg profile "$profile" \
         --arg protocol "$protocol" --arg endpointIp "$endpoint_ip" \
-        --arg bootstrapDnsServer "$bootstrap" --arg bootstrapProvider "$bootstrap_provider" --arg error "$error" \
+        --arg bootstrapDnsServer "$bootstrap" --arg bootstrapProvider "$bootstrap_provider" \
+        --arg bootstrapProfile "$bootstrap_profile" --arg error "$error" \
         --argjson successCount "$success" --argjson totalQueries "$total" --argjson successRate "$success_rate" \
         --argjson medianMs "$median" --argjson p90Ms "$p90" --argjson jitterMs "$jitter" \
-        --argjson bootstrapMedianMs "$bootstrap_median" --argjson bootstrapJitterMs "$bootstrap_jitter" \
+        --argjson bootstrapSuccessRate "$bootstrap_success_rate" --argjson bootstrapMedianMs "$bootstrap_median" \
+        --argjson bootstrapP90Ms "$bootstrap_p90" --argjson bootstrapJitterMs "$bootstrap_jitter" \
+        --argjson bootstrapUniversalEligible "$bootstrap_universal_eligible" \
         --argjson compatibilityPassed "$compatibility_passed" --argjson compatibilityTotal "$compatibility_total" \
         --argjson compatibilityStable "$compatibility_stable" --argjson compatibilityScore "$compatibility_score" \
         --argjson compatibilityFailures "$compatibility_failures" --argjson compatibilityUnstable "$compatibility_unstable" \
@@ -805,14 +973,14 @@ benchmark_main_candidate() {
         --argjson communityProbeTotal "$community_probe_total" --argjson communityScore "$community_score" \
         --argjson nxdomainOk "$nxdomain_ok" --argjson universalEligible "$universal_eligible" --argjson reliable "$reliable" --argjson score "$score" \
         --slurpfile communityResults "$community_results_file" \
-        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapMedianMs:$bootstrapMedianMs,bootstrapJitterMs:$bootstrapJitterMs,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:$communityTested,communityPassed:$communityPassed,communityStable:$communityStable,communityProbePassed:$communityProbePassed,communityProbeStable:$communityProbeStable,communityProbeTotal:$communityProbeTotal,communityScore:$communityScore,communityResults:$communityResults,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
+        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapProfile:$bootstrapProfile,bootstrapSuccessRate:$bootstrapSuccessRate,bootstrapMedianMs:$bootstrapMedianMs,bootstrapP90Ms:$bootstrapP90Ms,bootstrapJitterMs:$bootstrapJitterMs,bootstrapUniversalEligible:$bootstrapUniversalEligible,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:$communityTested,communityPassed:$communityPassed,communityStable:$communityStable,communityProbePassed:$communityProbePassed,communityProbeStable:$communityProbeStable,communityProbeTotal:$communityProbeTotal,communityScore:$communityScore,communityResults:$communityResults,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
     rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
 }
 
 run_benchmark() {
     local protocol="$1"
     local main_file bootstrap_file bootstrap_jsonl bootstrap_json main_jsonl final_file
-    local total completed line id provider value profile result recommendation ranking confidence recommendation_reason current_candidate state message current_dns current_bootstrap
+    local total completed line id provider value profile result recommendation secondary_recommendation ranking confidence recommendation_reason current_candidate state message current_dns current_bootstrap current_pair active_slot
 
     case "$protocol" in
         udp|doh|dot) ;;
@@ -851,14 +1019,26 @@ run_benchmark() {
         write_status "running" "benchmark" "benchmarking_main" $((completed * 100 / total)) "$completed" "$total" "$$"
     done < "$main_file"
 
-    current_dns="$(uci -q get podkop.settings.dns_server 2> /dev/null || true)"
-    current_bootstrap="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
+    active_slot="$(configured_active_slot)"
+    current_pair="$(read_configured_pair "$active_slot" || true)"
+    current_dns="$(printf '%s\n' "$current_pair" | cut -d '|' -f 2)"
+    current_bootstrap="$(printf '%s\n' "$current_pair" | cut -d '|' -f 3)"
     ranking="$(jq -s '
-        map(select(.reliable == true))
-        | (map(select(.universalEligible == true))) as $universal
-        | (if ($universal | length) > 0 then $universal else . end)
-        | sort_by(.score)
-        | reverse
+        map(select(
+            .reliable == true
+            and .universalEligible == true
+            and .bootstrapUniversalEligible == true
+        ))
+        | sort_by([
+            (-(if .successRate < .bootstrapSuccessRate then .successRate else .bootstrapSuccessRate end)),
+            (-.communityScore),
+            (-.compatibilityScore),
+            (if .p90Ms > .bootstrapP90Ms then .p90Ms else .bootstrapP90Ms end),
+            (if .jitterMs > .bootstrapJitterMs then .jitterMs else .bootstrapJitterMs end),
+            (if .medianMs > .bootstrapMedianMs then .medianMs else .bootstrapMedianMs end),
+            .id,
+            .bootstrapDnsServer
+        ])
     ' "$main_jsonl")"
     recommendation="$(printf '%s\n' "$ranking" | jq -c '.[0] // null')"
     confidence="$(printf '%s\n' "$ranking" | jq '
@@ -872,9 +1052,14 @@ run_benchmark() {
     ')"
     recommendation_reason="clear_winner"
     if [ "$confidence" -lt 35 ] && [ "$recommendation" != "null" ]; then
-        current_candidate="$(printf '%s\n' "$ranking" | jq -c --arg current "$current_dns" '
+        current_candidate="$(printf '%s\n' "$ranking" | jq -c --arg current "$current_dns" --arg currentBootstrap "$current_bootstrap" '
             .[0] as $best
-            | (map(select(.dnsServer == $current))[0] // null) as $currentResult
+            | (map(select(
+                .dnsServer == $current
+                and .bootstrapDnsServer == $currentBootstrap
+                and .universalEligible == true
+                and .bootstrapUniversalEligible == true
+              ))[0] // null) as $currentResult
             | if $currentResult != null
                 and (($best.score - $currentResult.score) <= (($best.jitterMs + $currentResult.jitterMs + 5) * 40))
               then $currentResult else null end
@@ -886,20 +1071,39 @@ run_benchmark() {
             recommendation_reason="close_results"
         fi
     fi
+    secondary_recommendation="$(printf '%s\n' "$ranking" | jq -c --argjson primary "$recommendation" '
+        if $primary == null then null
+        else
+            (map(select(
+                .id != $primary.id
+                and .dnsServer != $primary.dnsServer
+                and .provider != $primary.provider
+                and .bootstrapDnsServer != $primary.bootstrapDnsServer
+            ))[0])
+            // (map(select(
+                .id != $primary.id
+                and .dnsServer != $primary.dnsServer
+                and .provider != $primary.provider
+            ))[0])
+            // null
+        end
+    ')"
     state="success"
     message="benchmark_complete"
     if [ "$recommendation" = "null" ]; then
         state="error"
-        message="no_reliable_dns"
+        message="no_universal_pair"
+        recommendation_reason="no_universal_pair"
     fi
     jq -cn \
         --arg state "$state" --arg action "benchmark" --arg message "$message" --arg protocol "$protocol" \
-        --arg updatedAt "$(updated_at)" --arg currentDnsServer "$current_dns" --arg currentBootstrapDnsServer "$current_bootstrap" \
-        --arg recommendationReason "$recommendation_reason" --arg methodVersion "community-lists-v1" \
-        --argjson pid "$$" --argjson recommendation "$recommendation" --argjson recommendationConfidence "$confidence" \
+        --arg updatedAt "$(updated_at)" --arg currentDnsServer "$current_dns" --arg currentBootstrapDnsServer "$current_bootstrap" --arg activeSlot "$active_slot" \
+        --arg recommendationReason "$recommendation_reason" --arg methodVersion "dual-failover-v1" \
+        --argjson pid "$$" --argjson recommendation "$recommendation" --argjson secondaryRecommendation "$secondary_recommendation" --argjson recommendationConfidence "$confidence" \
         --slurpfile results "$main_jsonl" --slurpfile bootstrapResults "$bootstrap_json" \
-        '{state:$state,action:$action,message:$message,protocol:$protocol,progress:100,completed:($results | length),total:($results | length),pid:$pid,updatedAt:$updatedAt,methodVersion:$methodVersion,current:{dnsServer:$currentDnsServer,bootstrapDnsServer:$currentBootstrapDnsServer},recommendation:$recommendation,recommendationConfidence:$recommendationConfidence,recommendationReason:$recommendationReason,results:($results | sort_by(.score) | reverse),bootstrapResults:($bootstrapResults[0] // [])}' \
+        '{state:$state,action:$action,message:$message,protocol:$protocol,progress:100,completed:($results | length),total:($results | length),pid:$pid,updatedAt:$updatedAt,methodVersion:$methodVersion,current:{dnsServer:$currentDnsServer,bootstrapDnsServer:$currentBootstrapDnsServer},recommendation:$recommendation,secondaryRecommendation:$secondaryRecommendation,recommendationConfidence:$recommendationConfidence,recommendationReason:$recommendationReason,activeSlot:$activeSlot,results:($results | sort_by(.score) | reverse),bootstrapResults:($bootstrapResults[0] // [])}' \
         > "$final_file"
+    save_last_benchmark "$final_file" || true
     write_final_status "$final_file"
 }
 
@@ -926,7 +1130,8 @@ run_with_timeout() {
 }
 
 save_previous_dns() {
-    local tmp dns_type dns_server bootstrap_dns_server
+    local tmp dns_type dns_server bootstrap_dns_server failover_enabled active_slot
+    local secondary_dns_type secondary_dns_server secondary_bootstrap_dns_server
 
     mkdir -p "$PERSIST_DIR"
     chmod 700 "$PERSIST_DIR" 2> /dev/null || true
@@ -934,26 +1139,56 @@ save_previous_dns() {
     dns_type="$(uci -q get podkop.settings.dns_type 2> /dev/null || true)"
     dns_server="$(uci -q get podkop.settings.dns_server 2> /dev/null || true)"
     bootstrap_dns_server="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
+    failover_enabled="$(uci -q get podkop.settings.dns_failover_enabled 2> /dev/null || true)"
+    active_slot="$(uci -q get podkop.settings.dns_failover_active_slot 2> /dev/null || true)"
+    secondary_dns_type="$(uci -q get podkop.settings.secondary_dns_type 2> /dev/null || true)"
+    secondary_dns_server="$(uci -q get podkop.settings.secondary_dns_server 2> /dev/null || true)"
+    secondary_bootstrap_dns_server="$(uci -q get podkop.settings.secondary_bootstrap_dns_server 2> /dev/null || true)"
     jq -cn \
         --arg dnsType "$dns_type" --arg dnsServer "$dns_server" --arg bootstrapDnsServer "$bootstrap_dns_server" \
+        --arg failoverEnabled "$failover_enabled" --arg activeSlot "$active_slot" \
+        --arg secondaryDnsType "$secondary_dns_type" --arg secondaryDnsServer "$secondary_dns_server" \
+        --arg secondaryBootstrapDnsServer "$secondary_bootstrap_dns_server" \
         --arg savedAt "$(updated_at)" \
-        '{dnsType:$dnsType,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer,savedAt:$savedAt}' \
+        '{dnsType:$dnsType,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer,failoverEnabled:$failoverEnabled,activeSlot:$activeSlot,secondaryDnsType:$secondaryDnsType,secondaryDnsServer:$secondaryDnsServer,secondaryBootstrapDnsServer:$secondaryBootstrapDnsServer,savedAt:$savedAt}' \
         > "$tmp" && mv "$tmp" "$PREVIOUS_FILE"
     chmod 600 "$PREVIOUS_FILE"
 }
 
+restore_optional_uci_value() {
+    local option="$1"
+    local value="$2"
+
+    if [ -n "$value" ]; then
+        uci set "podkop.settings.$option=$value"
+    else
+        uci -q delete "podkop.settings.$option" 2> /dev/null || true
+    fi
+}
+
 restore_previous_dns() {
-    local dns_type dns_server bootstrap_dns_server
+    local dns_type dns_server bootstrap_dns_server failover_enabled active_slot
+    local secondary_dns_type secondary_dns_server secondary_bootstrap_dns_server
 
     [ -s "$PREVIOUS_FILE" ] || return 1
     dns_type="$(jq -r '.dnsType // empty' "$PREVIOUS_FILE")"
     dns_server="$(jq -r '.dnsServer // empty' "$PREVIOUS_FILE")"
     bootstrap_dns_server="$(jq -r '.bootstrapDnsServer // empty' "$PREVIOUS_FILE")"
+    failover_enabled="$(jq -r '.failoverEnabled // empty' "$PREVIOUS_FILE")"
+    active_slot="$(jq -r '.activeSlot // empty' "$PREVIOUS_FILE")"
+    secondary_dns_type="$(jq -r '.secondaryDnsType // empty' "$PREVIOUS_FILE")"
+    secondary_dns_server="$(jq -r '.secondaryDnsServer // empty' "$PREVIOUS_FILE")"
+    secondary_bootstrap_dns_server="$(jq -r '.secondaryBootstrapDnsServer // empty' "$PREVIOUS_FILE")"
     [ -n "$dns_type" ] && [ -n "$dns_server" ] && [ -n "$bootstrap_dns_server" ] || return 1
 
     uci set "podkop.settings.dns_type=$dns_type"
     uci set "podkop.settings.dns_server=$dns_server"
     uci set "podkop.settings.bootstrap_dns_server=$bootstrap_dns_server"
+    restore_optional_uci_value "dns_failover_enabled" "$failover_enabled"
+    restore_optional_uci_value "dns_failover_active_slot" "$active_slot"
+    restore_optional_uci_value "secondary_dns_type" "$secondary_dns_type"
+    restore_optional_uci_value "secondary_dns_server" "$secondary_dns_server"
+    restore_optional_uci_value "secondary_bootstrap_dns_server" "$secondary_bootstrap_dns_server"
     uci commit podkop
 }
 
@@ -1044,7 +1279,10 @@ bootstrap_is_allowed() {
 
     file="$(mktemp)"
     write_bootstrap_candidates "$file"
-    if awk -F '|' -v server="$wanted" '$3 == server { found = 1 } END { exit !found }' "$file"; then
+    if awk -F '|' -v server="$wanted" '
+        $3 == server && ($4 == "unfiltered" || $4 == "privacy") { found = 1 }
+        END { exit !found }
+    ' "$file"; then
         rm -f "$file"
         return 0
     fi
@@ -1061,15 +1299,21 @@ write_apply_final() {
     local bootstrap="$6"
     local rolled_back="$7"
     local operation="${8:-apply}"
+    local secondary_protocol="${9:-}"
+    local secondary_provider="${10:-}"
+    local secondary_dns_server="${11:-}"
+    local secondary_bootstrap="${12:-}"
     local final_file
 
     final_file="$(mktemp)"
     jq -cn \
         --arg state "$state" --arg operation "$operation" --arg message "$message" --arg protocol "$protocol" \
         --arg provider "$provider" --arg dnsServer "$dns_server" --arg bootstrapDnsServer "$bootstrap" \
+        --arg secondaryProtocol "$secondary_protocol" --arg secondaryProvider "$secondary_provider" \
+        --arg secondaryDnsServer "$secondary_dns_server" --arg secondaryBootstrapDnsServer "$secondary_bootstrap" \
         --arg updatedAt "$(updated_at)" --argjson pid "$$" --argjson rolledBack "$rolled_back" \
         --argjson backupAvailable "$( [ -s "$PREVIOUS_FILE" ] && echo true || echo false )" \
-        '{state:$state,action:"completed",operation:$operation,message:$message,progress:100,completed:1,total:1,pid:$pid,updatedAt:$updatedAt,applied:{protocol:$protocol,provider:$provider,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer},rolledBack:$rolledBack,backupAvailable:$backupAvailable}' \
+        '{state:$state,action:"completed",operation:$operation,message:$message,progress:100,completed:1,total:1,pid:$pid,updatedAt:$updatedAt,applied:{protocol:$protocol,provider:$provider,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer,failoverEnabled:($secondaryDnsServer != ""),secondary:(if $secondaryDnsServer == "" then null else {protocol:$secondaryProtocol,provider:$secondaryProvider,dnsServer:$secondaryDnsServer,bootstrapDnsServer:$secondaryBootstrapDnsServer} end)},rolledBack:$rolledBack,backupAvailable:$backupAvailable}' \
         > "$final_file"
     write_final_status "$final_file"
     rm -f "$final_file"
@@ -1079,9 +1323,19 @@ run_apply() {
     local protocol="$1"
     local candidate_id="$2"
     local bootstrap="$3"
+    local expected_dns_server="$4"
+    local secondary_protocol="${5:-}"
+    local secondary_candidate_id="${6:-}"
+    local secondary_bootstrap="${7:-}"
+    local expected_secondary_dns_server="${8:-}"
     local line provider dns_server host resolved
+    local secondary_line secondary_provider secondary_dns_server secondary_host secondary_resolved
 
     trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+    if [ -d /tmp/podkop-dns-failover/switch.lock ]; then
+        write_apply_final "error" "failover_switch_in_progress" "$protocol" "" "" "$bootstrap" false
+        return 1
+    fi
     line="$(lookup_main_candidate "$protocol" "$candidate_id" || true)"
     if [ -z "$line" ] || ! bootstrap_is_allowed "$bootstrap"; then
         write_apply_final "error" "invalid_recommendation" "$protocol" "" "" "$bootstrap" false
@@ -1089,6 +1343,10 @@ run_apply() {
     fi
     provider="$(printf '%s\n' "$line" | cut -d '|' -f 2)"
     dns_server="$(printf '%s\n' "$line" | cut -d '|' -f 3)"
+    if [ -z "$expected_dns_server" ] || [ "$dns_server" != "$expected_dns_server" ]; then
+        write_apply_final "error" "stale_candidate" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+        return 1
+    fi
     host="$(candidate_host "$dns_server")"
     if ! is_ipv4 "$host"; then
         resolved="$(resolve_host "$bootstrap" "$host")"
@@ -1096,6 +1354,37 @@ run_apply() {
             write_apply_final "error" "bootstrap_incompatible" "$protocol" "$provider" "$dns_server" "$bootstrap" false
             return 1
         fi
+    fi
+
+    if [ -n "$secondary_protocol$secondary_candidate_id$secondary_bootstrap$expected_secondary_dns_server" ]; then
+        if [ -z "$secondary_protocol" ] || [ -z "$secondary_candidate_id" ] || [ -z "$secondary_bootstrap" ] || [ -z "$expected_secondary_dns_server" ]; then
+            write_apply_final "error" "secondary_arguments_required" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+            return 1
+        fi
+        secondary_line="$(lookup_main_candidate "$secondary_protocol" "$secondary_candidate_id" || true)"
+        if [ -z "$secondary_line" ] || ! bootstrap_is_allowed "$secondary_bootstrap"; then
+            write_apply_final "error" "invalid_secondary_recommendation" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+            return 1
+        fi
+        secondary_provider="$(printf '%s\n' "$secondary_line" | cut -d '|' -f 2)"
+        secondary_dns_server="$(printf '%s\n' "$secondary_line" | cut -d '|' -f 3)"
+        if [ "$secondary_dns_server" != "$expected_secondary_dns_server" ] || [ "$secondary_dns_server" = "$dns_server" ] || [ "$secondary_provider" = "$provider" ]; then
+            write_apply_final "error" "stale_secondary_candidate" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+            return 1
+        fi
+        secondary_host="$(candidate_host "$secondary_dns_server")"
+        if ! is_ipv4 "$secondary_host"; then
+            secondary_resolved="$(resolve_host "$secondary_bootstrap" "$secondary_host")"
+            if [ -z "$secondary_resolved" ]; then
+                write_apply_final "error" "secondary_bootstrap_incompatible" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+                return 1
+            fi
+        fi
+    elif [ "$(uci -q get podkop.settings.dns_failover_enabled 2> /dev/null || echo 0)" = "1" ]; then
+        secondary_protocol="$(uci -q get podkop.settings.secondary_dns_type 2> /dev/null || true)"
+        secondary_dns_server="$(uci -q get podkop.settings.secondary_dns_server 2> /dev/null || true)"
+        secondary_bootstrap="$(uci -q get podkop.settings.secondary_bootstrap_dns_server 2> /dev/null || true)"
+        secondary_provider="Configured secondary DNS"
     fi
 
     write_status "running" "apply" "saving_previous_dns" 10 0 1 "$$"
@@ -1107,13 +1396,22 @@ run_apply() {
     uci set "podkop.settings.dns_type=$protocol"
     uci set "podkop.settings.dns_server=$dns_server"
     uci set "podkop.settings.bootstrap_dns_server=$bootstrap"
+    uci set "podkop.settings.dns_failover_active_slot=primary"
+    if [ -n "$secondary_dns_server" ]; then
+        uci set "podkop.settings.dns_failover_enabled=1"
+        uci set "podkop.settings.secondary_dns_type=$secondary_protocol"
+        uci set "podkop.settings.secondary_dns_server=$secondary_dns_server"
+        uci set "podkop.settings.secondary_bootstrap_dns_server=$secondary_bootstrap"
+    fi
     uci commit podkop
 
     write_status "running" "apply" "restarting_podkop" 45 0 1 "$$"
     if restart_podkop; then
         write_status "running" "apply" "validating_dns" 80 0 1 "$$"
         if validate_podkop_dns; then
-            write_apply_final "success" "apply_complete" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+            [ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover restart > /dev/null 2>&1 || true
+            write_apply_final "success" "apply_complete" "$protocol" "$provider" "$dns_server" "$bootstrap" false "apply" \
+                "$secondary_protocol" "$secondary_provider" "$secondary_dns_server" "$secondary_bootstrap"
             return 0
         fi
     fi
@@ -1121,6 +1419,7 @@ run_apply() {
     write_status "running" "apply" "rolling_back" 90 0 1 "$$"
     if restore_previous_dns; then
         restart_podkop > /dev/null 2>&1 || true
+        [ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover restart > /dev/null 2>&1 || true
         write_apply_final "error" "apply_failed_rolled_back" "$protocol" "$provider" "$dns_server" "$bootstrap" true
     else
         write_apply_final "error" "apply_failed_rollback_failed" "$protocol" "$provider" "$dns_server" "$bootstrap" false
@@ -1129,7 +1428,8 @@ run_apply() {
 }
 
 run_rollback() {
-    local previous_protocol previous_provider previous_dns previous_bootstrap
+    local previous_protocol previous_provider previous_dns previous_bootstrap previous_failover
+    local previous_secondary_protocol previous_secondary_dns previous_secondary_bootstrap
 
     trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
     [ -s "$PREVIOUS_FILE" ] || {
@@ -1139,13 +1439,24 @@ run_rollback() {
     previous_protocol="$(jq -r '.dnsType // empty' "$PREVIOUS_FILE")"
     previous_dns="$(jq -r '.dnsServer // empty' "$PREVIOUS_FILE")"
     previous_bootstrap="$(jq -r '.bootstrapDnsServer // empty' "$PREVIOUS_FILE")"
+    previous_failover="$(jq -r '.failoverEnabled // "0"' "$PREVIOUS_FILE")"
+    previous_secondary_protocol="$(jq -r '.secondaryDnsType // empty' "$PREVIOUS_FILE")"
+    previous_secondary_dns="$(jq -r '.secondaryDnsServer // empty' "$PREVIOUS_FILE")"
+    previous_secondary_bootstrap="$(jq -r '.secondaryBootstrapDnsServer // empty' "$PREVIOUS_FILE")"
+    if [ "$previous_failover" != "1" ]; then
+        previous_secondary_protocol=""
+        previous_secondary_dns=""
+        previous_secondary_bootstrap=""
+    fi
     previous_provider="Previous DNS"
 
     write_status "running" "rollback" "rolling_back" 25 0 1 "$$"
     if restore_previous_dns && restart_podkop; then
+        [ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover restart > /dev/null 2>&1 || true
         write_status "running" "rollback" "validating_dns" 80 0 1 "$$"
         if validate_podkop_dns; then
-            write_apply_final "success" "rollback_complete" "$previous_protocol" "$previous_provider" "$previous_dns" "$previous_bootstrap" false "rollback"
+            write_apply_final "success" "rollback_complete" "$previous_protocol" "$previous_provider" "$previous_dns" "$previous_bootstrap" false "rollback" \
+                "$previous_secondary_protocol" "Previous secondary DNS" "$previous_secondary_dns" "$previous_secondary_bootstrap"
             return 0
         fi
     fi
@@ -1201,7 +1512,12 @@ show_status() {
     local state pid tmp backup_available
 
     if [ ! -s "$STATUS_FILE" ]; then
-        echo '{"state":"idle","action":"","message":"idle","progress":0,"completed":0,"total":0,"pid":0}'
+        if [ -s "$LAST_BENCHMARK_FILE" ]; then
+            jq -cn --slurpfile lastBenchmark "$LAST_BENCHMARK_FILE" \
+                '{state:"idle",action:"",message:"idle",progress:0,completed:0,total:0,pid:0,lastBenchmark:($lastBenchmark[0] // null)}'
+        else
+            echo '{"state":"idle","action":"","message":"idle","progress":0,"completed":0,"total":0,"pid":0}'
+        fi
         return 0
     fi
     state="$(jq -r '.state // ""' "$STATUS_FILE" 2> /dev/null || true)"
@@ -1213,7 +1529,12 @@ show_status() {
     fi
     backup_available=false
     [ -s "$PREVIOUS_FILE" ] && backup_available=true
-    jq --argjson backupAvailable "$backup_available" '.backupAvailable = $backupAvailable' "$STATUS_FILE"
+    if [ -s "$LAST_BENCHMARK_FILE" ]; then
+        jq --argjson backupAvailable "$backup_available" --slurpfile lastBenchmark "$LAST_BENCHMARK_FILE" \
+            '.backupAvailable = $backupAvailable | .lastBenchmark = ($lastBenchmark[0] // null)' "$STATUS_FILE"
+    else
+        jq --argjson backupAvailable "$backup_available" '.backupAvailable = $backupAvailable' "$STATUS_FILE"
+    fi
 }
 
 show_help() {
@@ -1222,7 +1543,8 @@ Usage: podkop-dns-optimizer <command>
 
 Commands:
   benchmark_start [udp|doh|dot]
-  apply_start <protocol> <candidate_id> <bootstrap_ipv4>
+  apply_start <protocol> <candidate_id> <bootstrap_ipv4> <expected_dns_server> [secondary_protocol secondary_candidate_id secondary_bootstrap_ipv4 expected_secondary_dns_server]
+  probe_pair <primary|secondary>
   rollback_start
   status
   version
@@ -1234,11 +1556,17 @@ case "${1:-}" in
         start_worker "benchmark" "${2:-udp}"
         ;;
     apply_start)
-        [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] || {
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] && [ -n "${5:-}" ] || {
             echo '{"success":false,"error":"arguments_required"}'
             exit 1
         }
-        start_worker "apply" "$2" "$3" "$4"
+        start_worker "apply" "$2" "$3" "$4" "$5" "${6:-}" "${7:-}" "${8:-}" "${9:-}"
+        ;;
+    probe_pair)
+        case "${2:-}" in
+            primary|secondary) probe_configured_pair "$2" ;;
+            *) echo '{"success":false,"error":"invalid_slot"}'; exit 1 ;;
+        esac
         ;;
     rollback_start)
         start_worker "rollback"
@@ -1254,7 +1582,7 @@ case "${1:-}" in
         shift 2
         case "$action" in
             benchmark) run_benchmark "${1:-udp}" ;;
-            apply) run_apply "${1:-}" "${2:-}" "${3:-}" ;;
+            apply) run_apply "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;;
             rollback) run_rollback ;;
             *) rm -rf "$LOCK_DIR"; exit 1 ;;
         esac

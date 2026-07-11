@@ -1,0 +1,426 @@
+#!/bin/ash
+
+VERSION="20260711-dns-failover-v2"
+OPTIMIZER="/usr/bin/podkop-dns-optimizer"
+STATE_DIR="/tmp/podkop-dns-failover"
+STATUS_FILE="$STATE_DIR/status.json"
+FAILURE_FILE="$STATE_DIR/failures"
+WATCH_LOCK="$STATE_DIR/watch.lock"
+SWITCH_LOCK="$STATE_DIR/switch.lock"
+
+updated_at() {
+    date -Iseconds 2> /dev/null || date
+}
+
+ensure_state_dir() {
+    mkdir -p "$STATE_DIR"
+    chmod 700 "$STATE_DIR" 2> /dev/null || true
+}
+
+normalize_slot() {
+    case "$1" in
+        primary|secondary) printf '%s\n' "$1" ;;
+        *) return 1 ;;
+    esac
+}
+
+active_slot() {
+    local slot
+
+    slot="$(uci -q get podkop.settings.dns_failover_active_slot 2> /dev/null || true)"
+    normalize_slot "$slot" 2> /dev/null || printf 'primary\n'
+}
+
+other_slot() {
+    case "$1" in
+        primary) printf 'secondary\n' ;;
+        secondary) printf 'primary\n' ;;
+        *) return 1 ;;
+    esac
+}
+
+failover_enabled() {
+    [ "$(uci -q get podkop.settings.dns_failover_enabled 2> /dev/null || echo 0)" = "1" ]
+}
+
+failure_threshold() {
+    local value
+
+    value="$(uci -q get podkop.settings.dns_failover_failure_threshold 2> /dev/null || echo 2)"
+    case "$value" in
+        ''|*[!0-9]*) value=2 ;;
+    esac
+    [ "$value" -ge 1 ] 2> /dev/null || value=2
+    [ "$value" -le 10 ] 2> /dev/null || value=10
+    printf '%s\n' "$value"
+}
+
+check_interval() {
+    local value
+
+    value="$(uci -q get podkop.settings.dns_failover_check_interval 2> /dev/null || echo 30)"
+    case "$value" in
+        ''|*[!0-9]*) value=30 ;;
+    esac
+    [ "$value" -ge 10 ] 2> /dev/null || value=10
+    [ "$value" -le 3600 ] 2> /dev/null || value=3600
+    printf '%s\n' "$value"
+}
+
+read_failure_count() {
+    local value
+
+    value="$(cat "$FAILURE_FILE" 2> /dev/null || echo 0)"
+    case "$value" in
+        ''|*[!0-9]*) value=0 ;;
+    esac
+    printf '%s\n' "$value"
+}
+
+write_failure_count() {
+    local value="$1"
+    local tmp
+
+    ensure_state_dir
+    tmp="$FAILURE_FILE.tmp.$$"
+    printf '%s\n' "$value" > "$tmp" && mv "$tmp" "$FAILURE_FILE"
+    chmod 600 "$FAILURE_FILE" 2> /dev/null || true
+}
+
+write_status() {
+    local state="$1"
+    local slot="$2"
+    local failures="$3"
+    local probe_success="$4"
+    local action="$5"
+    local message="$6"
+    local tmp
+
+    ensure_state_dir
+    tmp="$STATUS_FILE.tmp.$$"
+    jq -cn \
+        --arg state "$state" \
+        --arg activeSlot "$slot" \
+        --arg action "$action" \
+        --arg message "$message" \
+        --arg updatedAt "$(updated_at)" \
+        --argjson failureCount "${failures:-0}" \
+        --argjson lastProbeSuccess "${probe_success:-null}" \
+        '{state:$state,activeSlot:$activeSlot,failureCount:$failureCount,lastProbeSuccess:$lastProbeSuccess,action:$action,message:$message,updatedAt:$updatedAt}' \
+        > "$tmp" && mv "$tmp" "$STATUS_FILE"
+    chmod 600 "$STATUS_FILE" 2> /dev/null || true
+}
+
+probe_slot() {
+    local slot="$1"
+    local output rc json_success
+
+    normalize_slot "$slot" > /dev/null || return 2
+    [ -x "$OPTIMIZER" ] || return 1
+
+    # Contract: probe_pair returns 0 only when the complete DNS pair is usable.
+    # A JSON {"success":false} result is also treated as a failure for safety.
+    output="$(mktemp)"
+    chmod 600 "$output" 2> /dev/null || true
+    "$OPTIMIZER" probe_pair "$slot" > "$output" 2> /dev/null
+    rc=$?
+    if [ "$rc" -eq 0 ] && [ -s "$output" ]; then
+        json_success="$(jq -r 'if type == "object" and has("success") then .success else empty end' "$output" 2> /dev/null || true)"
+        [ "$json_success" = "false" ] && rc=1
+    fi
+    rm -f "$output"
+    return "$rc"
+}
+
+podkop_operation_running() {
+    local optimizer_state
+
+    ps w 2> /dev/null | grep -Eq '[p]odkop (start|restart|reload)' && return 0
+    optimizer_state="$($OPTIMIZER status 2> /dev/null | jq -r '.state // ""' 2> /dev/null || true)"
+    [ "$optimizer_state" = "running" ]
+}
+
+run_with_timeout() {
+    local timeout_seconds="$1"
+    shift
+    local pid watchdog rc
+
+    "$@" &
+    pid="$!"
+    (
+        sleep "$timeout_seconds"
+        kill "$pid" 2> /dev/null || true
+        sleep 1
+        kill -9 "$pid" 2> /dev/null || true
+    ) > /dev/null 2>&1 &
+    watchdog="$!"
+    wait "$pid" 2> /dev/null
+    rc="$?"
+    kill -9 "$watchdog" 2> /dev/null || true
+    [ "$rc" -eq 143 ] && return 124
+    return "$rc"
+}
+
+reload_podkop() {
+    run_with_timeout 90 env PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 \
+        /usr/bin/podkop reload > /tmp/podkop-dns-failover-reload.log 2>&1
+}
+
+sing_box_config_path() {
+    local path
+
+    path="$(uci -q get sing-box.main.conffile 2> /dev/null || true)"
+    [ -n "$path" ] || path="/etc/sing-box/config.json"
+    printf '%s\n' "$path"
+}
+
+validate_runtime_once() {
+    local config_path output
+
+    config_path="$(sing_box_config_path)"
+    [ -s "$config_path" ] || return 1
+    sing-box check -c "$config_path" > /dev/null 2>&1 || return 1
+    /etc/init.d/sing-box status > /dev/null 2>&1 || return 1
+    output="$(dig @127.0.0.42 fakeip.podkop.fyi A +timeout=2 +tries=1 +short 2> /dev/null || true)"
+    printf '%s\n' "$output" | grep -Eq '^198\.(18|19)\.'
+}
+
+wait_for_runtime() {
+    local attempt=1
+
+    while [ "$attempt" -le 15 ]; do
+        validate_runtime_once && return 0
+        sleep 1
+        attempt=$((attempt + 1))
+    done
+    return 1
+}
+
+acquire_lock() {
+    local directory="$1"
+    local holder
+
+    ensure_state_dir
+    if mkdir "$directory" 2> /dev/null; then
+        printf '%s\n' "$$" > "$directory/pid"
+        return 0
+    fi
+
+    holder="$(cat "$directory/pid" 2> /dev/null || true)"
+    case "$holder" in
+        ''|*[!0-9]*) holder=0 ;;
+    esac
+    if [ "$holder" -gt 0 ] && kill -0 "$holder" 2> /dev/null; then
+        return 1
+    fi
+    rm -f "$directory/pid"
+    rmdir "$directory" 2> /dev/null || return 1
+    mkdir "$directory" 2> /dev/null || return 1
+    printf '%s\n' "$$" > "$directory/pid"
+}
+
+release_lock() {
+    local directory="$1"
+
+    rm -f "$directory/pid"
+    rmdir "$directory" 2> /dev/null || true
+}
+
+acquire_switch_lock() {
+    acquire_lock "$SWITCH_LOCK"
+}
+
+release_switch_lock() {
+    release_lock "$SWITCH_LOCK"
+}
+
+set_active_slot() {
+    local slot="$1"
+
+    uci -q set "podkop.settings.dns_failover_active_slot=$slot" || return 1
+    uci -q commit podkop
+}
+
+switch_to_slot() {
+    local target="$1"
+    local reason="${2:-manual}"
+    local previous failures rollback_ok
+
+    normalize_slot "$target" > /dev/null || return 2
+    acquire_switch_lock || {
+        write_status "busy" "$(active_slot)" "$(read_failure_count)" null "$reason" "switch_in_progress"
+        return 3
+    }
+
+    previous="$(active_slot)"
+    failures="$(read_failure_count)"
+    if [ "$target" = "$previous" ]; then
+        if wait_for_runtime; then
+            write_failure_count 0
+            write_status "healthy" "$target" 0 true "$reason" "already_active"
+            release_switch_lock
+            return 0
+        fi
+        write_status "error" "$target" "$failures" false "$reason" "active_runtime_invalid"
+        release_switch_lock
+        return 1
+    fi
+
+    if ! probe_slot "$target"; then
+        write_status "degraded" "$previous" "$failures" false "$reason" "target_slot_unavailable"
+        release_switch_lock
+        return 1
+    fi
+
+    write_status "switching" "$previous" "$failures" false "$reason" "applying_other_slot"
+    if ! set_active_slot "$target" || ! reload_podkop || ! wait_for_runtime; then
+        rollback_ok=false
+        if set_active_slot "$previous" && reload_podkop && wait_for_runtime; then
+            rollback_ok=true
+        fi
+        if [ "$rollback_ok" = true ]; then
+            write_status "degraded" "$previous" "$failures" false "$reason" "switch_failed_rolled_back"
+        else
+            write_status "error" "$previous" "$failures" false "$reason" "switch_and_rollback_failed"
+        fi
+        logger -t podkop-dns-failover "DNS slot switch failed; previous slot restored=$rollback_ok"
+        release_switch_lock
+        return 1
+    fi
+
+    write_failure_count 0
+    write_status "healthy" "$target" 0 true "$reason" "slot_switched"
+    logger -t podkop-dns-failover "DNS failover switched active slot to $target"
+    release_switch_lock
+    return 0
+}
+
+run_probe_command() {
+    local slot="${1:-$(active_slot)}"
+    local failures
+
+    normalize_slot "$slot" > /dev/null || return 2
+    failures="$(read_failure_count)"
+    if probe_slot "$slot"; then
+        write_status "healthy" "$slot" "$failures" true "probe" "probe_succeeded"
+        return 0
+    fi
+    write_status "degraded" "$slot" "$failures" false "probe" "probe_failed"
+    return 1
+}
+
+cleanup_watch_lock() {
+    release_lock "$WATCH_LOCK"
+}
+
+watch_forever() {
+    local slot alternate failures threshold interval
+
+    ensure_state_dir
+    acquire_lock "$WATCH_LOCK" || {
+        write_status "busy" "$(active_slot)" "$(read_failure_count)" null "watch" "watch_already_running"
+        return 3
+    }
+    trap 'cleanup_watch_lock; exit 0' INT TERM
+    trap 'cleanup_watch_lock' EXIT
+
+    write_failure_count 0
+    while true; do
+        if ! failover_enabled; then
+            write_failure_count 0
+            write_status "disabled" "$(active_slot)" 0 null "watch" "failover_disabled"
+            sleep 60
+            continue
+        fi
+
+        slot="$(active_slot)"
+        threshold="$(failure_threshold)"
+        interval="$(check_interval)"
+        failures="$(read_failure_count)"
+        if podkop_operation_running; then
+            write_status "waiting" "$slot" "$failures" null "watch" "podkop_operation_running"
+            sleep "$interval"
+            continue
+        fi
+        if probe_slot "$slot"; then
+            [ "$failures" -eq 0 ] || write_failure_count 0
+            write_status "healthy" "$slot" 0 true "watch" "active_slot_healthy"
+        else
+            failures=$((failures + 1))
+            [ "$failures" -le "$threshold" ] || failures="$threshold"
+            write_failure_count "$failures"
+            write_status "degraded" "$slot" "$failures" false "watch" "active_slot_probe_failed"
+            if [ "$failures" -ge "$threshold" ]; then
+                alternate="$(other_slot "$slot")"
+                if probe_slot "$alternate"; then
+                    switch_to_slot "$alternate" "automatic" || true
+                else
+                    write_status "degraded" "$slot" "$failures" false "watch" "both_slots_unavailable"
+                fi
+            fi
+        fi
+        sleep "$interval"
+    done
+}
+
+show_status() {
+    local slot failures enabled
+
+    slot="$(active_slot)"
+    failures="$(read_failure_count)"
+    enabled="$(failover_enabled && echo true || echo false)"
+    if [ -s "$STATUS_FILE" ]; then
+        jq --arg activeSlot "$slot" --argjson enabled "$enabled" \
+            '.activeSlot = $activeSlot | .enabled = $enabled' "$STATUS_FILE"
+    else
+        jq -cn \
+            --arg activeSlot "$slot" \
+            --argjson enabled "$enabled" \
+            --argjson failureCount "$failures" \
+            '{state:(if $enabled then "idle" else "disabled" end),activeSlot:$activeSlot,failureCount:$failureCount,lastProbeSuccess:null,action:"",message:"idle",enabled:$enabled}'
+    fi
+}
+
+show_help() {
+    cat <<'EOF'
+Usage: podkop-dns-failover <command>
+
+Commands:
+  version
+  status
+  probe [primary|secondary]
+  switch <primary|secondary>
+  watch
+EOF
+}
+
+case "${1:-}" in
+    version)
+        printf '%s\n' "$VERSION"
+        ;;
+    status)
+        show_status
+        ;;
+    probe)
+        run_probe_command "${2:-}"
+        ;;
+    switch)
+        normalize_slot "${2:-}" > /dev/null || {
+            echo '{"success":false,"error":"slot_required"}'
+            exit 2
+        }
+        if switch_to_slot "$2" "manual"; then
+            echo '{"success":true}'
+        else
+            echo '{"success":false,"error":"switch_failed"}'
+            exit 1
+        fi
+        ;;
+    watch)
+        watch_forever
+        ;;
+    *)
+        show_help
+        exit 1
+        ;;
+esac

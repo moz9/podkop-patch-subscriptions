@@ -13,8 +13,14 @@ const dnsOptimizerState = {
   protocolOption: null,
   dnsServerOption: null,
   bootstrapDnsServerOption: null,
+  failoverEnabledOption: null,
+  secondaryProtocolOption: null,
+  secondaryDnsServerOption: null,
+  secondaryBootstrapDnsServerOption: null,
   pollTimer: null,
   syncedOperation: null,
+  historyOpen: false,
+  applyingCandidateKey: null,
 };
 
 function injectDnsOptimizerStyles() {
@@ -106,10 +112,10 @@ function injectDnsOptimizerStyles() {
       width: 100%;
       min-width: 720px;
       border-collapse: collapse;
-      table-layout: fixed;
+      table-layout: auto;
     }
     .pdk-dns-optimizer__table--main {
-      min-width: 800px;
+      min-width: 860px;
     }
     .pdk-dns-optimizer__table th,
     .pdk-dns-optimizer__table td {
@@ -121,16 +127,16 @@ function injectDnsOptimizerStyles() {
       word-break: normal;
     }
     .pdk-dns-optimizer__table th {
-      white-space: nowrap;
-      overflow-wrap: normal;
-      word-break: keep-all;
+      white-space: nowrap !important;
+      overflow-wrap: normal !important;
+      word-break: normal !important;
+      hyphens: none;
     }
-    .pdk-dns-optimizer__table--main th:nth-child(1) { width: 19%; }
-    .pdk-dns-optimizer__table--main th:nth-child(2) { width: 13%; }
-    .pdk-dns-optimizer__table--main th:nth-child(3) { width: 14%; }
-    .pdk-dns-optimizer__table--main th:nth-child(4) { width: 8%; }
-    .pdk-dns-optimizer__table--main th:nth-child(5) { width: 25%; }
-    .pdk-dns-optimizer__table--main th:nth-child(6) { width: 21%; }
+    .pdk-dns-optimizer__table--main th:nth-child(1) { width: 25%; }
+    .pdk-dns-optimizer__table--main th:nth-child(2) { width: 12%; }
+    .pdk-dns-optimizer__table--main th:nth-child(3) { width: 15%; }
+    .pdk-dns-optimizer__table--main th:nth-child(4) { width: 25%; }
+    .pdk-dns-optimizer__table--main th:nth-child(5) { width: 23%; }
     .pdk-dns-optimizer__metric-line + .pdk-dns-optimizer__metric-line {
       margin-top: 2px;
     }
@@ -171,15 +177,41 @@ function injectDnsOptimizerStyles() {
     .pdk-dns-optimizer__row--recommended {
       background: rgba(46, 189, 133, 0.08);
     }
-    .pdk-dns-optimizer__row--current td:first-child::after {
-      content: "Текущий";
+    .pdk-dns-optimizer__badge {
       display: inline-block;
-      margin-left: 6px;
+      margin: 4px 6px 0 0;
       padding: 1px 5px;
-      border: 1px solid rgba(95, 157, 247, 0.6);
+      border: 1px solid rgba(127, 127, 127, 0.35);
       border-radius: 4px;
-      color: #79adf8;
       font-size: 11px;
+    }
+    .pdk-dns-optimizer__badge--current {
+      color: #79adf8;
+      border-color: rgba(95, 157, 247, 0.6);
+    }
+    .pdk-dns-optimizer__badge--comparison {
+      color: #e6a23c;
+      border-color: rgba(230, 162, 60, 0.55);
+    }
+    .pdk-dns-optimizer__endpoint + .pdk-dns-optimizer__endpoint {
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px dashed rgba(127, 127, 127, 0.22);
+    }
+    .pdk-dns-optimizer__row-action {
+      margin-top: 7px;
+      max-width: 100%;
+      white-space: normal;
+    }
+    .pdk-dns-optimizer__history {
+      margin-top: 10px;
+      border: 1px solid rgba(127, 127, 127, 0.22);
+      border-radius: 6px;
+      padding: 0 10px 10px;
+    }
+    .pdk-dns-optimizer__history > summary {
+      padding: 9px 0;
+      font-weight: 700;
     }
     .pdk-dns-optimizer__ok { color: #2ebd85; }
     .pdk-dns-optimizer__warn { color: #e6a23c; }
@@ -232,7 +264,7 @@ function injectDnsOptimizerStyles() {
 }
 
 function protocolLabel(protocol) {
-  return ({ udp: "UDP", doh: "DoH", dot: "DoT" })[protocol] || protocol;
+  return { udp: "UDP", doh: "DoH", dot: "DoT" }[protocol] || protocol;
 }
 
 function profileLabel(profile) {
@@ -254,20 +286,43 @@ function optimizerMessage(status) {
     starting: "Запускаем проверку DNS…",
     benchmarking_bootstrap: "Проверяем bootstrap DNS…",
     benchmarking_main: "Проверяем основные DNS-серверы…",
-    benchmark_complete: "Подбор завершён. Рекомендация рассчитана по стабильности, задержке и совместимости пары.",
-    no_reliable_dns: "Ни одна пара не прошла все проверки. Настройки не изменены.",
-    saving_previous_dns: "Сохраняем предыдущие DNS-настройки для быстрого отката…",
+    benchmark_complete:
+      "Подбор завершён. Рекомендация рассчитана по стабильности, задержке и совместимости пары.",
+    no_reliable_dns:
+      "Ни одна пара не прошла все проверки. Настройки не изменены.",
+    no_universal_pair:
+      "Ни одна известная публичная нефильтрующая пара не прошла все проверки. DNS провайдера и пользовательские адреса показаны только для сравнения.",
+    saving_previous_dns:
+      "Сохраняем предыдущие DNS-настройки для быстрого отката…",
     restarting_podkop: "Устанавливаем DNS и перезапускаем Podkop…",
     validating_dns: "Проверяем sing-box, DNS, FakeIP и dnsmasq…",
     rolling_back: "Проверка не пройдена. Автоматически возвращаем прежние DNS…",
-    apply_complete: "DNS установлен и полностью проверен. Поля обновлены без перезагрузки страницы.",
-    apply_failed_rolled_back: "Новая пара не прошла проверку. Прежние DNS автоматически восстановлены.",
-    apply_failed_rollback_failed: "Не удалось применить DNS и автоматический откат завершился ошибкой.",
-    bootstrap_incompatible: "Выбранный bootstrap DNS не разрешает адрес основного DNS.",
-    invalid_recommendation: "Результат подбора устарел. Запустите проверку ещё раз.",
+    apply_complete:
+      "DNS установлен и полностью проверен. Поля обновлены без перезагрузки страницы.",
+    apply_failed_rolled_back:
+      "Новая пара не прошла проверку. Прежние DNS автоматически восстановлены.",
+    apply_failed_rollback_failed:
+      "Не удалось применить DNS и автоматический откат завершился ошибкой.",
+    bootstrap_incompatible:
+      "Выбранный bootstrap DNS не разрешает адрес основного DNS.",
+    invalid_recommendation:
+      "Результат подбора устарел. Запустите проверку ещё раз.",
+    stale_candidate:
+      "Адрес этой строки изменился после проверки. Для безопасности запустите проверку ещё раз.",
+    secondary_arguments_required:
+      "Резервная DNS-пара задана не полностью. Применение отменено.",
+    invalid_secondary_recommendation:
+      "Результат резервной пары устарел. Запустите проверку ещё раз.",
+    stale_secondary_candidate:
+      "Адрес резервной пары изменился после проверки. Запустите проверку ещё раз.",
+    secondary_bootstrap_incompatible:
+      "Bootstrap резервной пары не разрешает адрес её DoH/DoT-сервера.",
+    failover_switch_in_progress:
+      "Сейчас завершается автоматическое переключение DNS. Повторите действие через несколько секунд.",
     backup_failed: "Не удалось сохранить прежние DNS. Применение отменено.",
     no_previous_dns: "Нет сохранённых DNS для отката.",
-    rollback_complete: "Предыдущие DNS восстановлены и проверены. Поля обновлены без перезагрузки страницы.",
+    rollback_complete:
+      "Предыдущие DNS восстановлены и проверены. Поля обновлены без перезагрузки страницы.",
     rollback_failed: "Не удалось восстановить предыдущие DNS.",
     worker_start_failed: "Не удалось запустить фоновую проверку DNS.",
     worker_stopped: "Фоновая проверка неожиданно остановилась.",
@@ -280,7 +335,9 @@ async function callDnsOptimizer(args) {
   const response = await fs.exec(DNS_OPTIMIZER_COMMAND, args);
   const stdout = (response?.stdout || "").trim();
   if (!stdout) {
-    throw new Error((response?.stderr || "Команда не вернула результат").trim());
+    throw new Error(
+      (response?.stderr || "Команда не вернула результат").trim(),
+    );
   }
 
   try {
@@ -301,6 +358,65 @@ function renderActionButton(text, className, disabled, onClick) {
     },
     text,
   );
+}
+
+function isUniversalProfile(profile) {
+  return profile === "unfiltered" || profile === "privacy";
+}
+
+function isComparisonOnly(result) {
+  return (
+    !isUniversalProfile(result?.profile) ||
+    result?.bootstrapUniversalEligible !== true
+  );
+}
+
+function benchmarkSnapshot(status) {
+  if (Array.isArray(status?.results) && status.results.length) {
+    return status;
+  }
+  if (
+    Array.isArray(status?.lastBenchmark?.results) &&
+    status.lastBenchmark.results.length
+  ) {
+    return status.lastBenchmark;
+  }
+  return null;
+}
+
+function currentDnsPair() {
+  return {
+    protocol: uci.get("podkop", "settings", "dns_type") || "udp",
+    dnsServer: uci.get("podkop", "settings", "dns_server") || "",
+    bootstrapDnsServer:
+      uci.get("podkop", "settings", "bootstrap_dns_server") || "",
+  };
+}
+
+function isCurrentPair(result) {
+  const current = currentDnsPair();
+  return (
+    current.protocol === result?.protocol &&
+    current.dnsServer === result?.dnsServer &&
+    current.bootstrapDnsServer === result?.bootstrapDnsServer
+  );
+}
+
+function formatBenchmarkTime(value) {
+  if (!value) {
+    return "";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleString("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 function resultClass(result) {
@@ -350,6 +466,12 @@ function resultVerdict(result) {
     )
   ) {
     return "Недоступен выбранный сервис";
+  }
+  if (
+    result.reliable &&
+    (result.profile === "isp" || result.profile === "custom")
+  ) {
+    return "Стабильно в этом тесте, только для сравнения";
   }
   if (result.reliable && result.universalEligible === false) {
     return "Стабильно, но DNS с фильтрацией";
@@ -446,7 +568,9 @@ function communityResultTitle(item) {
     details.push(`не разрешаются: ${item.failures.join(", ")}`);
   }
   if (Array.isArray(item.unstable) && item.unstable.length) {
-    details.push(`один из двух запросов не прошёл: ${item.unstable.join(", ")}`);
+    details.push(
+      `один из двух запросов не прошёл: ${item.unstable.join(", ")}`,
+    );
   }
   return details.length
     ? details.join("; ")
@@ -530,16 +654,45 @@ function recommendationExplanation(status) {
 }
 
 function renderRecommendation(status) {
-  const result = status.recommendation;
-  if (!result) {
+  const result = status?.recommendation;
+  const secondary = status?.secondaryRecommendation;
+  if (
+    !result ||
+    result.universalEligible !== true ||
+    result.bootstrapUniversalEligible !== true
+  ) {
     return E("div");
   }
 
   return E("div", { class: "pdk-dns-optimizer__recommendation" }, [
-    E("strong", {}, `Рекомендуется: ${result.provider} (${protocolLabel(result.protocol)})`),
+    E("strong", {}, "Рекомендуются две независимые DNS-пары"),
     E("div", { class: "pdk-dns-optimizer__pair" }, [
-      E("span", {}, [E("b", {}, "Основной: "), result.dnsServer]),
-      E("span", {}, [E("b", {}, "Bootstrap: "), `${result.bootstrapProvider} (${result.bootstrapDnsServer})`]),
+      E("span", {}, [
+        E("b", {}, "Предпочтительная: "),
+        `${result.provider} ${result.dnsServer} (${protocolLabel(result.protocol)})`,
+      ]),
+      E("span", {}, [
+        E("b", {}, "Её bootstrap: "),
+        `${result.bootstrapProvider} (${result.bootstrapDnsServer})`,
+      ]),
+      ...(secondary
+        ? [
+            E("span", {}, [
+              E("b", {}, "Резервная: "),
+              `${secondary.provider} ${secondary.dnsServer} (${protocolLabel(secondary.protocol)})`,
+            ]),
+            E("span", {}, [
+              E("b", {}, "Её bootstrap: "),
+              `${secondary.bootstrapProvider} (${secondary.bootstrapDnsServer})`,
+            ]),
+          ]
+        : [
+            E(
+              "span",
+              { class: "pdk-dns-optimizer__warn" },
+              "Независимая резервная пара в этом тесте не найдена.",
+            ),
+          ]),
     ]),
     E(
       "div",
@@ -549,32 +702,83 @@ function renderRecommendation(status) {
   ]);
 }
 
-function renderMainResults(status) {
-  const results = Array.isArray(status.results) ? status.results : [];
+function renderMainResults(status, running) {
+  const results = Array.isArray(status?.results) ? status.results : [];
   if (!results.length) {
     return E("div");
   }
 
   const rows = results.map((result) => {
     const classes = [];
-    if (status.recommendation?.id === result.id) {
+    const current = isCurrentPair(result);
+    const comparisonOnly = isComparisonOnly(result);
+    const recommended =
+      status.recommendation?.id === result.id &&
+      status.recommendation?.bootstrapDnsServer === result.bootstrapDnsServer;
+    if (recommended) {
       classes.push("pdk-dns-optimizer__row--recommended");
     }
-    if (status.current?.dnsServer === result.dnsServer) {
+    if (current) {
       classes.push("pdk-dns-optimizer__row--current");
     }
 
     return E("tr", { class: classes.join(" ") }, [
-      E("td", { "data-label": "DNS" }, [
-        E("b", {}, result.provider),
-        E("div", { class: "pdk-dns-optimizer__detail" }, result.dnsServer),
+      E("td", { "data-label": "Пара DNS" }, [
+        E("div", { class: "pdk-dns-optimizer__endpoint" }, [
+          E("b", {}, result.provider),
+          E("div", { class: "pdk-dns-optimizer__detail" }, result.dnsServer),
+        ]),
+        E("div", { class: "pdk-dns-optimizer__endpoint" }, [
+          E("b", {}, `Bootstrap: ${result.bootstrapProvider || "—"}`),
+          E(
+            "div",
+            { class: "pdk-dns-optimizer__detail" },
+            result.bootstrapDnsServer || "—",
+          ),
+        ]),
+        E(
+          "span",
+          { class: "pdk-dns-optimizer__badge" },
+          protocolLabel(result.protocol),
+        ),
+        ...(current
+          ? [
+              E(
+                "span",
+                {
+                  class:
+                    "pdk-dns-optimizer__badge pdk-dns-optimizer__badge--current",
+                },
+                "Текущая пара",
+              ),
+            ]
+          : []),
+        ...(comparisonOnly
+          ? [
+              E(
+                "span",
+                {
+                  class:
+                    "pdk-dns-optimizer__badge pdk-dns-optimizer__badge--comparison",
+                },
+                "Только для сравнения",
+              ),
+            ]
+          : []),
       ]),
       E("td", { "data-label": "Надёжность", class: resultClass(result) }, [
-        E("b", {}, `${result.successRate}%`),
+        E("b", {}, `Основной: ${result.successRate}%`),
         E(
           "div",
           { class: "pdk-dns-optimizer__detail" },
           `${result.successCount}/${result.totalQueries}`,
+        ),
+        E(
+          "div",
+          { class: "pdk-dns-optimizer__detail" },
+          Number.isFinite(result.bootstrapSuccessRate)
+            ? `Bootstrap: ${result.bootstrapSuccessRate}%`
+            : "Bootstrap: —",
         ),
       ]),
       E("td", { "data-label": "Задержка" }, [
@@ -588,35 +792,105 @@ function renderMainResults(status) {
           { class: "pdk-dns-optimizer__metric-line" },
           `P90: ${Number.isFinite(result.p90Ms) ? `${result.p90Ms} мс` : "—"}`,
         ),
+        E(
+          "div",
+          { class: "pdk-dns-optimizer__metric-line" },
+          `IQR: ${result.jitterMs || result.reliable ? `${result.jitterMs} мс` : "—"}`,
+        ),
+        E(
+          "div",
+          { class: "pdk-dns-optimizer__detail" },
+          Number.isFinite(result.bootstrapP90Ms)
+            ? `Bootstrap P90: ${result.bootstrapP90Ms} мс`
+            : `Bootstrap: ${result.bootstrapMedianMs || 0} мс`,
+        ),
       ]),
+      E("td", { "data-label": "Проверки" }, renderChecks(result)),
       E(
         "td",
-        { "data-label": "IQR" },
-        result.jitterMs || result.reliable ? `${result.jitterMs} мс` : "—",
+        { "data-label": "Оценка и действие", class: resultClass(result) },
+        [
+          E("div", {}, resultVerdict(result)),
+          E(
+            "div",
+            { class: "pdk-dns-optimizer__detail" },
+            profileLabel(result.profile),
+          ),
+          E(
+            "div",
+            { class: "pdk-dns-optimizer__row-action" },
+            renderActionButton(
+              current ? "Установлена" : "Установить пару",
+              comparisonOnly ? "cbi-button-neutral" : "cbi-button-apply",
+              running || current || result.reliable !== true,
+              () => applyDnsResult(result, pickSecondaryFor(status, result)),
+            ),
+          ),
+        ],
       ),
-      E("td", { "data-label": "Проверки" }, renderChecks(result)),
-      E("td", { "data-label": "Оценка", class: resultClass(result) }, [
-        E("div", {}, resultVerdict(result)),
-        E("div", { class: "pdk-dns-optimizer__detail" }, profileLabel(result.profile)),
-      ]),
     ]);
   });
 
   return E("div", { class: "pdk-dns-optimizer__table-wrap" }, [
-    E("table", { class: "pdk-dns-optimizer__table pdk-dns-optimizer__table--main" }, [
-      E("thead", {}, [
-        E("tr", {}, [
-          E("th", {}, "DNS"),
-          E("th", {}, "Надёжность"),
-          E("th", {}, "Задержка"),
-          E("th", {}, "IQR"),
-          E("th", {}, "Проверки"),
-          E("th", {}, "Оценка"),
+    E(
+      "table",
+      { class: "pdk-dns-optimizer__table pdk-dns-optimizer__table--main" },
+      [
+        E("thead", {}, [
+          E("tr", {}, [
+            E("th", {}, "Пара DNS"),
+            E("th", {}, "Надёжность"),
+            E("th", {}, "Задержка"),
+            E("th", {}, "Проверки"),
+            E("th", {}, "Оценка и действие"),
+          ]),
         ]),
-      ]),
-      E("tbody", {}, rows),
-    ]),
+        E("tbody", {}, rows),
+      ],
+    ),
   ]);
+}
+
+function pickSecondaryFor(status, primary) {
+  const candidates = [
+    status?.recommendation,
+    status?.secondaryRecommendation,
+    ...(Array.isArray(status?.results) ? status.results : []),
+  ];
+  return (
+    candidates.find(
+      (candidate) =>
+        candidate &&
+        candidate.id !== primary?.id &&
+        candidate.dnsServer !== primary?.dnsServer &&
+        candidate.provider !== primary?.provider &&
+        candidate.reliable === true &&
+        candidate.universalEligible === true &&
+        candidate.bootstrapUniversalEligible === true,
+    ) || null
+  );
+}
+
+function renderBenchmarkHistory(status, running) {
+  if (!status) {
+    return E("div");
+  }
+  const label = `${running ? "Предыдущая" : "Последняя"} проверка · ${protocolLabel(status.protocol)}${status.updatedAt ? ` · ${formatBenchmarkTime(status.updatedAt)}` : ""}`;
+  return E(
+    "details",
+    {
+      class: "pdk-dns-optimizer__history",
+      open: dnsOptimizerState.historyOpen || undefined,
+      toggle: (event) => {
+        dnsOptimizerState.historyOpen = Boolean(event.currentTarget?.open);
+      },
+    },
+    [
+      E("summary", {}, label),
+      renderMainResults(status, running),
+      renderBootstrapResults(status),
+    ],
+  );
 }
 
 function renderBootstrapResults(status) {
@@ -650,9 +924,25 @@ function renderBootstrapResults(status) {
               E("td", {}, result.provider),
               E("td", {}, result.server),
               E("td", { class: resultClass(result) }, `${result.successRate}%`),
-              E("td", {}, Number.isFinite(result.medianMs) ? `${result.medianMs} мс` : "—"),
-              E("td", {}, Number.isFinite(result.p90Ms) ? `${result.p90Ms} мс` : "—"),
-              E("td", {}, result.jitterMs || result.reliable ? `${result.jitterMs} мс` : "—"),
+              E(
+                "td",
+                {},
+                Number.isFinite(result.medianMs)
+                  ? `${result.medianMs} мс`
+                  : "—",
+              ),
+              E(
+                "td",
+                {},
+                Number.isFinite(result.p90Ms) ? `${result.p90Ms} мс` : "—",
+              ),
+              E(
+                "td",
+                {},
+                result.jitterMs || result.reliable
+                  ? `${result.jitterMs} мс`
+                  : "—",
+              ),
               E("td", {}, profileLabel(result.profile)),
             ]),
           ),
@@ -662,7 +952,7 @@ function renderBootstrapResults(status) {
   ]);
 }
 
-function syncAppliedDnsToForm(status) {
+async function syncAppliedDnsToForm(status) {
   const operation = status?.operation || status?.action;
   const applied = status?.applied;
   if (
@@ -670,31 +960,87 @@ function syncAppliedDnsToForm(status) {
     !["apply", "rollback"].includes(operation) ||
     !applied
   ) {
-    return;
+    return false;
   }
 
   const operationKey = `${operation}:${status.updatedAt || ""}`;
   if (dnsOptimizerState.syncedOperation === operationKey) {
-    return;
+    return false;
   }
 
-  const values = [
-    [dnsOptimizerState.protocolOption, applied.protocol],
-    [dnsOptimizerState.dnsServerOption, applied.dnsServer],
-    [dnsOptimizerState.bootstrapDnsServerOption, applied.bootstrapDnsServer],
+  const fields = [
+    {
+      option: dnsOptimizerState.protocolOption,
+      name: "dns_type",
+      applied: applied.protocol,
+    },
+    {
+      option: dnsOptimizerState.dnsServerOption,
+      name: "dns_server",
+      applied: applied.dnsServer,
+    },
+    {
+      option: dnsOptimizerState.bootstrapDnsServerOption,
+      name: "bootstrap_dns_server",
+      applied: applied.bootstrapDnsServer,
+    },
+    {
+      option: dnsOptimizerState.failoverEnabledOption,
+      name: "dns_failover_enabled",
+      applied: applied.failoverEnabled ? "1" : "0",
+    },
+    {
+      option: dnsOptimizerState.secondaryProtocolOption,
+      name: "secondary_dns_type",
+      applied: applied.secondary?.protocol || "",
+    },
+    {
+      option: dnsOptimizerState.secondaryDnsServerOption,
+      name: "secondary_dns_server",
+      applied: applied.secondary?.dnsServer || "",
+    },
+    {
+      option: dnsOptimizerState.secondaryBootstrapDnsServerOption,
+      name: "secondary_bootstrap_dns_server",
+      applied: applied.secondary?.bootstrapDnsServer || "",
+    },
   ];
-
-  values.forEach(([option, value]) => {
-    if (!option || !value) {
-      return;
-    }
-    try {
-      option.getUIElement("settings")?.setValue(value);
-    } catch (_error) {
-      // The status remains visible even if a third-party theme replaced a control.
-    }
-  });
   dnsOptimizerState.syncedOperation = operationKey;
+  const before = fields.map((field) => ({
+    ...field,
+    formValue: field.option?.formvalue("settings"),
+    cachedValue: uci.get("podkop", "settings", field.name),
+  }));
+  const hasManualChanges = before
+    .filter((field) =>
+      ["dns_type", "dns_server", "bootstrap_dns_server"].includes(field.name),
+    )
+    .some(
+      (field) =>
+        String(field.formValue ?? "") !== String(field.cachedValue ?? ""),
+    );
+
+  try {
+    uci.unload("podkop");
+    await uci.load("podkop");
+    before.forEach((field) => {
+      const value = hasManualChanges
+        ? field.formValue
+        : uci.get("podkop", "settings", field.name) || field.applied;
+      if (!field.option || value == null || value === "") {
+        return;
+      }
+      try {
+        field.option.getUIElement("settings")?.setValue(value);
+      } catch (_error) {
+        // The status remains visible even if a third-party theme replaced a control.
+      }
+    });
+    return true;
+  } catch (_error) {
+    dnsOptimizerState.syncedOperation = null;
+    return false;
+  }
 }
 
 function renderDnsOptimizer() {
@@ -705,8 +1051,20 @@ function renderDnsOptimizer() {
     progress: 0,
   };
   const running = status.state === "running";
-  const changing = running && (status.action === "apply" || status.action === "rollback");
-  const recommendation = status.recommendation;
+  const changing =
+    running && (status.action === "apply" || status.action === "rollback");
+  const benchmark = benchmarkSnapshot(status);
+  const recommendation =
+    benchmark?.recommendation?.universalEligible === true &&
+    benchmark?.recommendation?.bootstrapUniversalEligible === true
+      ? benchmark.recommendation
+      : null;
+  const secondaryRecommendation =
+    benchmark?.secondaryRecommendation?.universalEligible === true &&
+    benchmark?.secondaryRecommendation?.bootstrapUniversalEligible === true
+      ? benchmark.secondaryRecommendation
+      : null;
+  const benchmarkRunning = running && status.action === "benchmark";
 
   if (changing) {
     document.body.classList.add("pdk-dns-action-running");
@@ -725,12 +1083,17 @@ function renderDnsOptimizer() {
         ),
       ]),
       E("div", { class: "pdk-dns-optimizer__actions" }, [
-        renderActionButton("Проверить DNS", "cbi-button-action", running, startDnsBenchmark),
+        renderActionButton(
+          "Проверить DNS",
+          "cbi-button-action",
+          running,
+          startDnsBenchmark,
+        ),
         renderActionButton(
           "Установить",
           "cbi-button-apply",
-          running || !recommendation,
-          applyRecommendedDns,
+          running || !recommendation || !secondaryRecommendation,
+          () => applyDnsResult(recommendation, secondaryRecommendation),
         ),
         renderActionButton(
           "Откатить",
@@ -742,11 +1105,12 @@ function renderDnsOptimizer() {
     ]),
     E("div", { class: "pdk-dns-optimizer__status" }, optimizerMessage(status)),
     E("div", { class: "pdk-dns-optimizer__progress" }, [
-      E("span", { style: `width: ${Math.max(0, Math.min(100, status.progress || 0))}%` }),
+      E("span", {
+        style: `width: ${Math.max(0, Math.min(100, status.progress || 0))}%`,
+      }),
     ]),
-    renderRecommendation(status),
-    renderMainResults(status),
-    renderBootstrapResults(status),
+    renderRecommendation(benchmark),
+    renderBenchmarkHistory(benchmark, benchmarkRunning),
   ]);
 
   return node;
@@ -787,7 +1151,10 @@ async function refreshDnsOptimizerStatus() {
       error: error.message,
     };
   }
-  syncAppliedDnsToForm(dnsOptimizerState.status);
+  await syncAppliedDnsToForm(dnsOptimizerState.status);
+  if (dnsOptimizerState.status.state !== "running") {
+    dnsOptimizerState.applyingCandidateKey = null;
+  }
   updateDnsOptimizerNode();
 
   if (dnsOptimizerState.status.state === "running") {
@@ -808,7 +1175,9 @@ async function startDnsBenchmark() {
     action: "benchmark",
     message: "starting",
     progress: 0,
+    lastBenchmark: benchmarkSnapshot(dnsOptimizerState.status),
   };
+  dnsOptimizerState.historyOpen = true;
   updateDnsOptimizerNode();
   scheduleDnsOptimizerRefresh(250);
 
@@ -826,32 +1195,44 @@ async function startDnsBenchmark() {
   }
 }
 
-async function applyRecommendedDns() {
-  const recommendation = dnsOptimizerState.status?.recommendation;
-  if (!recommendation) {
+async function applyDnsResult(result, secondaryResult = null) {
+  if (!result || dnsOptimizerState.status?.state === "running") {
     return;
   }
+  const candidateKey = `${result.protocol}:${result.id}:${result.dnsServer}:${result.bootstrapDnsServer}:${secondaryResult?.id || "single"}`;
+  dnsOptimizerState.applyingCandidateKey = candidateKey;
   dnsOptimizerState.status = {
     state: "running",
     action: "apply",
     message: "saving_previous_dns",
     progress: 5,
+    lastBenchmark: benchmarkSnapshot(dnsOptimizerState.status),
   };
   updateDnsOptimizerNode();
   scheduleDnsOptimizerRefresh(250);
 
   try {
-    const result = await callDnsOptimizer([
+    const args = [
       "apply_start",
-      recommendation.protocol,
-      recommendation.id,
-      recommendation.bootstrapDnsServer,
-    ]);
-    if (!result.success) {
-      if (result.error === "busy") {
+      result.protocol,
+      result.id,
+      result.bootstrapDnsServer,
+      result.dnsServer,
+    ];
+    if (secondaryResult) {
+      args.push(
+        secondaryResult.protocol,
+        secondaryResult.id,
+        secondaryResult.bootstrapDnsServer,
+        secondaryResult.dnsServer,
+      );
+    }
+    const response = await callDnsOptimizer(args);
+    if (!response.success) {
+      if (response.error === "busy") {
         return;
       }
-      throw new Error(result.error || "start_failed");
+      throw new Error(response.error || "start_failed");
     }
     scheduleDnsOptimizerRefresh(250);
   } catch (_error) {
@@ -860,11 +1241,13 @@ async function applyRecommendedDns() {
 }
 
 async function rollbackDns() {
+  const lastBenchmark = benchmarkSnapshot(dnsOptimizerState.status);
   dnsOptimizerState.status = {
     state: "running",
     action: "rollback",
     message: "rolling_back",
     progress: 5,
+    lastBenchmark,
   };
   updateDnsOptimizerNode();
   scheduleDnsOptimizerRefresh(250);
@@ -883,6 +1266,11 @@ async function rollbackDns() {
   }
 }
 
+function writePrimaryDnsOption(sectionId, value) {
+  uci.set("podkop", sectionId, this.option, value);
+  uci.set("podkop", sectionId, "dns_failover_active_slot", "primary");
+}
+
 function createSettingsContent(section) {
   let o = section.option(
     form.ListValue,
@@ -896,6 +1284,7 @@ function createSettingsContent(section) {
   o.default = "udp";
   o.rmempty = false;
   dnsOptimizerState.protocolOption = o;
+  o.write = writePrimaryDnsOption;
 
   o = section.option(
     form.Value,
@@ -909,6 +1298,7 @@ function createSettingsContent(section) {
   o.default = "8.8.8.8";
   o.rmempty = false;
   dnsOptimizerState.dnsServerOption = o;
+  o.write = writePrimaryDnsOption;
   o.validate = function (section_id, value) {
     const validation = main.validateDNS(value);
 
@@ -933,6 +1323,7 @@ function createSettingsContent(section) {
   o.default = "77.88.8.8";
   o.rmempty = false;
   dnsOptimizerState.bootstrapDnsServerOption = o;
+  o.write = writePrimaryDnsOption;
   o.validate = function (section_id, value) {
     const validation = main.validateDNS(value);
 
@@ -942,6 +1333,177 @@ function createSettingsContent(section) {
 
     return validation.message;
   };
+
+  o = section.option(
+    form.Flag,
+    "dns_failover_enabled",
+    "Автоматический резервный DNS",
+    "Хранит две полные пары DNS. После двух последовательных отказов активной пары Podkop проверит резервную, переключится на неё и повторно проверит sing-box и FakeIP. Автоматического возврата к основной паре нет, чтобы исключить постоянные переключения.",
+  );
+  o.default = "0";
+  o.rmempty = false;
+  dnsOptimizerState.failoverEnabledOption = o;
+
+  o = section.option(form.DummyValue, "_dns_failover_active", "Сейчас активна");
+  o.depends("dns_failover_enabled", "1");
+  o.cfgvalue = function (sectionId) {
+    return uci.get("podkop", sectionId, "dns_failover_active_slot") ===
+      "secondary"
+      ? "Резервная пара"
+      : "Предпочтительная пара";
+  };
+
+  o = section.option(
+    form.ListValue,
+    "secondary_dns_type",
+    "Протокол резервного DNS",
+  );
+  o.value("doh", _("DNS over HTTPS (DoH)"));
+  o.value("dot", _("DNS over TLS (DoT)"));
+  o.value("udp", _("UDP (Unprotected DNS)"));
+  o.default = "udp";
+  o.rmempty = false;
+  o.depends("dns_failover_enabled", "1");
+  dnsOptimizerState.secondaryProtocolOption = o;
+
+  o = section.option(
+    form.Value,
+    "secondary_dns_server",
+    "Резервный DNS-сервер",
+    "Независимый основной DNS, который будет активирован только после подтверждённого отказа первой пары.",
+  );
+  Object.entries(main.DNS_SERVER_OPTIONS).forEach(([key, label]) => {
+    o.value(key, _(label));
+  });
+  o.rmempty = false;
+  o.depends("dns_failover_enabled", "1");
+  dnsOptimizerState.secondaryDnsServerOption = o;
+  o.validate = function (section_id, value) {
+    const validation = main.validateDNS(value);
+    return validation.valid ? true : validation.message;
+  };
+
+  o = section.option(
+    form.Value,
+    "secondary_bootstrap_dns_server",
+    "Bootstrap резервной пары",
+    "Bootstrap DNS для резервного DoH/DoT. Лучше выбирать другого провайдера, чем у первой пары.",
+  );
+  Object.entries(main.BOOTSTRAP_DNS_SERVER_OPTIONS).forEach(([key, label]) => {
+    o.value(key, _(label));
+  });
+  o.default = "1.1.1.1";
+  o.rmempty = false;
+  o.depends("dns_failover_enabled", "1");
+  dnsOptimizerState.secondaryBootstrapDnsServerOption = o;
+  o.validate = function (section_id, value) {
+    const validation = main.validateDNS(value);
+    return validation.valid ? true : validation.message;
+  };
+
+  o = section.option(
+    form.MultiValue,
+    "dns_optimizer_candidates",
+    "DNS для проверки",
+    "Выберите основной каталог для теста. Меньше кандидатов — быстрее и точнее сравнение. Пользовательские и WAN DNS не становятся автоматической рекомендацией.",
+  );
+  [
+    ["cloudflare", "Cloudflare"],
+    ["google", "Google"],
+    ["quad9", "Quad9 Secure"],
+    ["quad9_ecs", "Quad9 Secure ECS"],
+    ["yandex", "Yandex Basic"],
+    ["adguard_unfiltered", "AdGuard Unfiltered"],
+    ["controld_unfiltered", "Control D Unfiltered"],
+    ["mullvad", "Mullvad"],
+  ].forEach(([value, label]) => o.value(value, label));
+  o.default = [
+    "cloudflare",
+    "google",
+    "yandex",
+    "adguard_unfiltered",
+    "controld_unfiltered",
+    "mullvad",
+  ];
+  o.rmempty = false;
+
+  o = section.option(
+    form.MultiValue,
+    "dns_optimizer_bootstrap_candidates",
+    "Bootstrap DNS для проверки",
+    "Выберите bootstrap-кандидатов. В универсальную пару входят только публичные нефильтрующие адреса.",
+  );
+  [
+    ["cloudflare_1", "Cloudflare — 1.1.1.1"],
+    ["cloudflare_2", "Cloudflare — 1.0.0.1"],
+    ["google_1", "Google — 8.8.8.8"],
+    ["google_2", "Google — 8.8.4.4"],
+    ["yandex_1", "Yandex — 77.88.8.8"],
+    ["yandex_2", "Yandex — 77.88.8.1"],
+    ["quad9_1", "Quad9 Secure — 9.9.9.9"],
+    ["quad9_ecs", "Quad9 Secure ECS — 9.9.9.11"],
+    ["adguard_unfiltered", "AdGuard Unfiltered — 94.140.14.140"],
+    ["controld_unfiltered", "Control D Unfiltered — 76.76.2.0"],
+  ].forEach(([value, label]) => o.value(value, label));
+  o.default = [
+    "cloudflare_1",
+    "cloudflare_2",
+    "google_1",
+    "google_2",
+    "yandex_1",
+    "yandex_2",
+    "adguard_unfiltered",
+    "controld_unfiltered",
+  ];
+  o.rmempty = false;
+
+  o = section.option(
+    form.Flag,
+    "dns_optimizer_include_current",
+    "Сравнивать текущую пару",
+    "Добавляет текущие основной и bootstrap DNS в таблицу только для сравнения.",
+  );
+  o.default = "1";
+  o.rmempty = false;
+
+  o = section.option(
+    form.Flag,
+    "dns_optimizer_include_wan",
+    "Сравнивать DNS провайдера",
+    "Добавляет полученные от WAN DNS в UDP-тест. Они никогда не выбираются как универсальная рекомендация.",
+  );
+  o.default = "0";
+  o.rmempty = false;
+
+  const customDnsOptions = [
+    ["udp", "dns_optimizer_custom_udp", "Свои DNS для UDP"],
+    ["doh", "dns_optimizer_custom_doh", "Свои DNS для DoH"],
+    ["dot", "dns_optimizer_custom_dot", "Свои DNS для DoT"],
+  ];
+  customDnsOptions.forEach(([protocol, optionName, label]) => {
+    const customOption = section.option(
+      form.DynamicList,
+      optionName,
+      label,
+      "Адреса сохраняются в настройках и появляются в тесте как варианты только для сравнения и ручной установки.",
+    );
+    customOption.depends("dns_type", protocol);
+    customOption.rmempty = true;
+    customOption.placeholder =
+      protocol === "udp"
+        ? "1.2.3.4"
+        : protocol === "doh"
+          ? "dns.example/dns-query"
+          : "dns.example";
+    customOption.validate = function (section_id, value) {
+      if (!value) {
+        return true;
+      }
+      const validation =
+        protocol === "udp" ? main.validateIPV4(value) : main.validateDNS(value);
+      return validation.valid ? true : validation.message;
+    };
+  });
 
   o = section.option(form.DummyValue, "_dns_optimizer");
   o.rawhtml = true;
@@ -1041,9 +1603,7 @@ function createSettingsContent(section) {
     }
 
     // Reject lan*
-    if (
-        value.startsWith("lan")
-    ) {
+    if (value.startsWith("lan")) {
       return false;
     }
 
@@ -1137,7 +1697,9 @@ function createSettingsContent(section) {
     form.Flag,
     "enable_yacd_wan_access",
     _("Enable YACD WAN Access"),
-    _("Allows access to YACD from the WAN. Make sure to open the appropriate port in your firewall."),
+    _(
+      "Allows access to YACD from the WAN. Make sure to open the appropriate port in your firewall.",
+    ),
   );
   o.depends("enable_yacd", "1");
   o.default = "0";
@@ -1147,7 +1709,9 @@ function createSettingsContent(section) {
     form.Value,
     "yacd_secret_key",
     _("YACD Secret Key"),
-    _("Secret key for authenticating remote access to YACD when WAN access is enabled."),
+    _(
+      "Secret key for authenticating remote access to YACD when WAN access is enabled.",
+    ),
   );
   o.depends("enable_yacd_wan_access", "1");
   o.rmempty = false;
@@ -1204,7 +1768,11 @@ function createSettingsContent(section) {
 
     for (const secName in sections) {
       const sec = sections[secName];
-      if (sec[".type"] === "section" && sec['connection_type'] !== 'block' && sec['connection_type'] !== 'exclusion') {
+      if (
+        sec[".type"] === "section" &&
+        sec["connection_type"] !== "block" &&
+        sec["connection_type"] !== "exclusion"
+      ) {
         this.keylist.push(secName);
         this.vallist.push(secName);
       }
@@ -1275,9 +1843,7 @@ function createSettingsContent(section) {
     form.ListValue,
     "log_level",
     _("Log Level"),
-    _(
-      "Select the log level for sing-box",
-    ),
+    _("Select the log level for sing-box"),
   );
   o.value("trace", "Trace");
   o.value("debug", "Debug");

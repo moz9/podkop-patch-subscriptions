@@ -14,7 +14,7 @@ V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260711-community-dns-v1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260711-dns-failover-v2"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -24,7 +24,11 @@ LMO_FILE="podkop.ru.lmo.base64"
 SUBSCRIPTIONS_FILE="subscriptions.js"
 SETTINGS_JS_FILE="settings.js"
 DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
-DNS_OPTIMIZER_VERSION="20260711-dns-optimizer-v6"
+DNS_OPTIMIZER_VERSION="20260711-dns-optimizer-v8"
+DNS_FAILOVER_FILE="podkop-dns-failover"
+DNS_FAILOVER_INIT_FILE="podkop-dns-failover.init"
+DNS_FAILOVER_VERSION="20260711-dns-failover-v2"
+DNS_FAILOVER_UPGRADE_FILE="podkop-dns-failover-upgrade.sh"
 UPDATE_MANAGER_FILE="podkop-update-manager"
 UPDATE_MANAGER_VERSION="20260710-update-manager-v1"
 UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
@@ -35,7 +39,10 @@ RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podko
 RUNTIME_FILES="
 usr/bin/podkop
 usr/bin/podkop-dns-optimizer
+usr/bin/podkop-dns-failover
 usr/bin/podkop-update-manager
+etc/init.d/podkop-dns-failover
+etc/rc.d/S100podkop-dns-failover
 usr/lib/podkop/helpers.sh
 usr/lib/podkop/sing_box_config_facade.sh
 usr/share/rpcd/acl.d/luci-app-podkop.json
@@ -317,6 +324,7 @@ restore_missing_persistent_paths() {
 restore_runtime() {
 	restore_done=1
 	log "Restoring backup..."
+	[ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover stop >/dev/null 2>&1 || true
 	for rel in $RUNTIME_FILES; do
 		dst="/$rel"
 		src="$backup_dir/$rel"
@@ -332,6 +340,7 @@ restore_runtime() {
 	rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 	/etc/init.d/rpcd restart >/dev/null 2>&1 || true
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
+	[ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover restart >/dev/null 2>&1 || true
 }
 
 restore_if_needed() {
@@ -418,6 +427,11 @@ luci_assets_current() {
 		cmp -s /www/luci-static/resources/view/podkop/settings.js "$tmp_dir/$SETTINGS_JS_FILE" &&
 		[ -x /usr/bin/podkop-dns-optimizer ] &&
 		cmp -s /usr/bin/podkop-dns-optimizer "$tmp_dir/$DNS_OPTIMIZER_FILE" &&
+		[ -x /usr/bin/podkop-dns-failover ] &&
+		cmp -s /usr/bin/podkop-dns-failover "$tmp_dir/$DNS_FAILOVER_FILE" &&
+		[ -x /etc/init.d/podkop-dns-failover ] &&
+		cmp -s /etc/init.d/podkop-dns-failover "$tmp_dir/$DNS_FAILOVER_INIT_FILE" &&
+		grep -q '^load_active_dns_settings() {' /usr/bin/podkop 2>/dev/null &&
 		[ -x /usr/bin/podkop-update-manager ] &&
 		cmp -s /usr/bin/podkop-update-manager "$tmp_dir/$UPDATE_MANAGER_FILE" &&
 		jq -e '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] == ["exec"]' /usr/share/rpcd/acl.d/luci-app-podkop.json >/dev/null 2>&1 &&
@@ -824,6 +838,9 @@ download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
 download "$RAW_BASE/$SECTION_JS_FILE" "$tmp_dir/$SECTION_JS_FILE"
 download "$RAW_BASE/$SETTINGS_JS_FILE" "$tmp_dir/$SETTINGS_JS_FILE"
 download "$RAW_BASE/$DNS_OPTIMIZER_FILE" "$tmp_dir/$DNS_OPTIMIZER_FILE"
+download "$RAW_BASE/$DNS_FAILOVER_FILE" "$tmp_dir/$DNS_FAILOVER_FILE"
+download "$RAW_BASE/$DNS_FAILOVER_INIT_FILE" "$tmp_dir/$DNS_FAILOVER_INIT_FILE"
+download "$RAW_BASE/$DNS_FAILOVER_UPGRADE_FILE" "$tmp_dir/$DNS_FAILOVER_UPGRADE_FILE"
 download "$RAW_BASE/$UPDATE_MANAGER_FILE" "$tmp_dir/$UPDATE_MANAGER_FILE"
 
 if [ "${PODKOP_PATCH_FORCE:-0}" != "1" ] && has_install_marker && has_latest_subscription_backend && luci_assets_current; then
@@ -908,6 +925,12 @@ if ! grep -q '^subscription_patch_update_check() {' /usr/bin/podkop 2>/dev/null 
 	fi
 fi
 
+if ! grep -q '^load_active_dns_settings() {' /usr/bin/podkop 2>/dev/null; then
+	if ! sh "$tmp_dir/$DNS_FAILOVER_UPGRADE_FILE"; then
+		abort_with_restore "DNS failover runtime upgrade failed"
+	fi
+fi
+
 for runtime_file in /usr/bin/podkop /usr/lib/podkop/helpers.sh; do
 	if [ -f "$runtime_file" ]; then
 		sed -i 's/wget -T 30 -t 1 /wget -T 30 /g' "$runtime_file"
@@ -987,12 +1010,14 @@ BENCHMARK_HELPERS_EOF
 	cat "$tmp_dir/podkop.benchmark" > /usr/bin/podkop
 fi
 
-mkdir -p /www/luci-static/resources/view/podkop
+mkdir -p /www/luci-static/resources/view/podkop /etc/init.d
 cp "$tmp_dir/$MAIN_JS_FILE" /www/luci-static/resources/view/podkop/main.js
 cp "$tmp_dir/$SECTION_JS_FILE" /www/luci-static/resources/view/podkop/section.js
 cp "$tmp_dir/$SUBSCRIPTIONS_FILE" /www/luci-static/resources/view/podkop/subscriptions.js
 cp "$tmp_dir/$SETTINGS_JS_FILE" /www/luci-static/resources/view/podkop/settings.js
 cp "$tmp_dir/$DNS_OPTIMIZER_FILE" /usr/bin/podkop-dns-optimizer
+cp "$tmp_dir/$DNS_FAILOVER_FILE" /usr/bin/podkop-dns-failover
+cp "$tmp_dir/$DNS_FAILOVER_INIT_FILE" /etc/init.d/podkop-dns-failover
 cp "$tmp_dir/$UPDATE_MANAGER_FILE" /usr/bin/podkop-update-manager
 ensure_dns_optimizer_acl
 
@@ -1004,6 +1029,8 @@ cp "$tmp_dir/$LMO_DECODED_FILE" /usr/lib/lua/luci/i18n/podkop.ru.lmo || abort_wi
 
 chmod 755 /usr/bin/podkop
 chmod 755 /usr/bin/podkop-dns-optimizer
+chmod 755 /usr/bin/podkop-dns-failover
+chmod 755 /etc/init.d/podkop-dns-failover
 chmod 755 /usr/bin/podkop-update-manager
 [ -f /usr/lib/podkop/sing_box_config_facade.sh ] && chmod 644 /usr/lib/podkop/sing_box_config_facade.sh
 [ -f /www/luci-static/resources/view/podkop/main.js ] && chmod 644 /www/luci-static/resources/view/podkop/main.js
@@ -1023,12 +1050,20 @@ if ! ash -n /usr/bin/podkop-dns-optimizer; then
 	abort_with_restore "DNS optimizer syntax check failed"
 fi
 
+if ! ash -n /usr/bin/podkop-dns-failover || ! ash -n /etc/init.d/podkop-dns-failover; then
+	abort_with_restore "DNS failover syntax check failed"
+fi
+
 if ! ash -n /usr/bin/podkop-update-manager; then
 	abort_with_restore "update manager syntax check failed"
 fi
 
 if [ "$(/usr/bin/podkop-dns-optimizer version 2>/dev/null || true)" != "$DNS_OPTIMIZER_VERSION" ]; then
 	abort_with_restore "DNS optimizer version check failed"
+fi
+
+if [ "$(/usr/bin/podkop-dns-failover version 2>/dev/null || true)" != "$DNS_FAILOVER_VERSION" ]; then
+	abort_with_restore "DNS failover version check failed"
 fi
 
 if [ "$(/usr/bin/podkop-update-manager version 2>/dev/null || true)" != "$UPDATE_MANAGER_VERSION" ]; then
@@ -1063,6 +1098,9 @@ if command -v sing-box >/dev/null 2>&1 && [ -f /etc/sing-box/config.json ]; then
 		abort_with_restore "sing-box config check failed"
 	fi
 fi
+
+/etc/init.d/podkop-dns-failover enable >/dev/null 2>&1 || abort_with_restore "failed to enable DNS failover service"
+/etc/init.d/podkop-dns-failover restart >/dev/null 2>&1 || abort_with_restore "failed to restart DNS failover service"
 
 /etc/init.d/rpcd restart >/dev/null 2>&1 || true
 /etc/init.d/uhttpd restart >/dev/null 2>&1 || true
