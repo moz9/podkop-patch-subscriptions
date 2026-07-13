@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260711-dns-optimizer-v8"
+VERSION="20260713-dns-optimizer-v9"
 STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
 STATUS_FILE="$STATE_DIR/status.json"
 LOG_FILE="$STATE_DIR/worker.log"
@@ -373,12 +373,12 @@ write_community_service_probes() {
         hdrezka)
             printf '%s\n' \
                 'community|hdrezka|hdrezka.ag' \
-                'community|hdrezka|voidboost.cc'
+                'community|hdrezka|hdrezka.me'
             ;;
         tiktok)
             printf '%s\n' \
                 'community|tiktok|tiktok.com' \
-                'community|tiktok|tiktokcdn.com'
+                'community|tiktok|tiktokv.com'
             ;;
         google_ai)
             printf '%s\n' \

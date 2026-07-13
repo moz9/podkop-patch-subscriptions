@@ -1,0 +1,39 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.invalid>
+Date: Mon, 13 Jul 2026 20:40:00 +0500
+Subject: [PATCH] Fix DNS community probe domains
+
+---
+ podkop/files/usr/bin/podkop-dns-optimizer | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/podkop/files/usr/bin/podkop-dns-optimizer b/podkop/files/usr/bin/podkop-dns-optimizer
+index 7c362c7..48fdb82 100755
+--- a/podkop/files/usr/bin/podkop-dns-optimizer
++++ b/podkop/files/usr/bin/podkop-dns-optimizer
+@@ -1,6 +1,6 @@
+ #!/bin/ash
+ 
+-VERSION="20260711-dns-optimizer-v8"
++VERSION="20260713-dns-optimizer-v9"
+ STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
+ STATUS_FILE="$STATE_DIR/status.json"
+ LOG_FILE="$STATE_DIR/worker.log"
+@@ -373,12 +373,12 @@ write_community_service_probes() {
+         hdrezka)
+             printf '%s\n' \
+                 'community|hdrezka|hdrezka.ag' \
+-                'community|hdrezka|voidboost.cc'
++                'community|hdrezka|hdrezka.me'
+             ;;
+         tiktok)
+             printf '%s\n' \
+                 'community|tiktok|tiktok.com' \
+-                'community|tiktok|tiktokcdn.com'
++                'community|tiktok|tiktokv.com'
+             ;;
+         google_ai)
+             printf '%s\n' \
+-- 
+2.50.1.windows.1
+

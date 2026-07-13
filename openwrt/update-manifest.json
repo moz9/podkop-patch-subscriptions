@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "patchVersion": "20260711-dns-failover-v2",
+  "patchVersion": "20260713-dns-probes-v1",
   "supportedPodkopVersions": [
     "0.7.19",
     "0.7.20",
     "0.7.21"
   ],
   "recommendedPodkopVersion": "0.7.21",
-  "publishedAt": "2026-07-11T22:15:00+05:00"
+  "publishedAt": "2026-07-13T20:40:00+05:00"
 }
