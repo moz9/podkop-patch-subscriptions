@@ -14,7 +14,7 @@ V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260713-dns-probes-v1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260715-safe-install-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -776,10 +776,13 @@ update_official_podkop_if_requested() {
 	fi
 
 	if [ "${PODKOP_PATCH_FORCE_PODKOP_UPDATE:-0}" != "1" ] &&
-		version_ge "$current_version" "$target_version"; then
-		podkop_version_supported "$current_version" ||
-			fail "installed Podkop $current_version is not supported by this patch; supported versions: $PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS"
-		log "Official Podkop is already $current_version; target is $target_version. Skipping official update."
+		[ -n "$current_version" ] && podkop_version_supported "$current_version"; then
+		if version_ge "$current_version" "$target_version"; then
+			log "Official Podkop is already $current_version; target is $target_version. Skipping official update."
+		else
+			log "Installed Podkop $current_version is supported by this patch; keeping it instead of performing a risky automatic package upgrade to $target_version."
+			log "Use the update center after installation, or set PODKOP_PATCH_FORCE_PODKOP_UPDATE=1 to request an explicit official Podkop upgrade."
+		fi
 		return 0
 	fi
 
