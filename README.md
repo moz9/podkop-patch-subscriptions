@@ -11,7 +11,7 @@
 Выполнять уже внутри SSH-сессии на роутере:
 
 ```sh
-u=https://cdn.jsdelivr.net/gh/moz9/podkop-patch-subscriptions@main/i;f=/tmp/podkop-i;wget --no-check-certificate -O $f $u&&sh $f
+u=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i;f=/tmp/podkop-i;wget --no-check-certificate -O $f $u&&sh $f
 ```
 
 Это одна универсальная команда для первой установки и последующих обновлений.
@@ -26,10 +26,10 @@ u=https://cdn.jsdelivr.net/gh/moz9/podkop-patch-subscriptions@main/i;f=/tmp/podk
 - если патч `Микс` уже актуален, завершает работу с `PODKOP_PATCH_NOOP=1`;
 - сохраняет настройки Podkop, подписки, кеш подписок и исключённые конфиги.
 
-Если CDN недоступен, запасной вариант через `raw.githubusercontent.com`:
+Если `raw.githubusercontent.com` недоступен, запасной вариант через CDN. После свежей публикации CDN может некоторое время отдавать предыдущую версию установщика:
 
 ```sh
-u=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i;f=/tmp/podkop-i;wget --no-check-certificate -O $f $u&&sh $f
+u=https://fastly.jsdelivr.net/gh/moz9/podkop-patch-subscriptions@main/i;f=/tmp/podkop-i;wget --no-check-certificate -O $f $u&&sh $f
 ```
 
 Если на роутере сломан DNS, но прямой HTTPS до GitHub доступен:
