@@ -1,0 +1,526 @@
+From 71f366be390cb1dd2267dc066e76e486745bd32c Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.invalid>
+Date: Fri, 17 Jul 2026 15:56:40 +0500
+Subject: [PATCH] Simplify DNS recommendation choice
+
+---
+ .../resources/view/podkop/settings.js         | 367 +++++++++++++++---
+ 1 file changed, 307 insertions(+), 60 deletions(-)
+
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
+index cb2d46e..d8a1d96 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
+@@ -93,11 +93,82 @@ function injectDnsOptimizerStyles() {
+       transition: width 180ms ease;
+     }
+     .pdk-dns-optimizer__recommendation {
+-      border-left: 3px solid #2ebd85;
+-      padding: 8px 10px;
++      border: 1px solid rgba(46, 189, 133, 0.45);
++      border-left: 4px solid #2ebd85;
++      border-radius: 6px;
++      padding: 12px;
+       margin: 10px 0;
+       background: rgba(46, 189, 133, 0.08);
+     }
++    .pdk-dns-optimizer__recommendation-header {
++      display: flex;
++      justify-content: space-between;
++      align-items: flex-start;
++      gap: 12px;
++      flex-wrap: wrap;
++      margin-bottom: 10px;
++    }
++    .pdk-dns-optimizer__recommendation-title {
++      font-size: 16px;
++      font-weight: 700;
++    }
++    .pdk-dns-optimizer__recommendation-grid {
++      display: grid;
++      grid-template-columns: repeat(2, minmax(0, 1fr));
++      gap: 10px;
++    }
++    .pdk-dns-optimizer__recommendation-card {
++      min-width: 0;
++      padding: 10px;
++      border: 1px solid rgba(127, 127, 127, 0.25);
++      border-radius: 6px;
++      background: rgba(15, 23, 42, 0.18);
++    }
++    .pdk-dns-optimizer__recommendation-card--primary {
++      border-color: rgba(46, 189, 133, 0.55);
++    }
++    .pdk-dns-optimizer__recommendation-role {
++      color: var(--text-color-secondary, #a8b3c7);
++      font-size: 11px;
++      font-weight: 700;
++      letter-spacing: 0.04em;
++      text-transform: uppercase;
++    }
++    .pdk-dns-optimizer__recommendation-endpoint {
++      margin-top: 5px;
++      font-size: 15px;
++      font-weight: 700;
++      overflow-wrap: anywhere;
++    }
++    .pdk-dns-optimizer__recommendation-bootstrap {
++      margin-top: 5px;
++      overflow-wrap: anywhere;
++    }
++    .pdk-dns-optimizer__recommendation-metrics {
++      display: flex;
++      flex-wrap: wrap;
++      gap: 5px;
++      margin-top: 8px;
++    }
++    .pdk-dns-optimizer__recommendation-metric {
++      padding: 2px 6px;
++      border-radius: 999px;
++      background: rgba(127, 127, 127, 0.13);
++      font-size: 11px;
++    }
++    .pdk-dns-optimizer__recommendation-actions {
++      display: flex;
++      align-items: center;
++      gap: 10px;
++      flex-wrap: wrap;
++      margin-top: 12px;
++    }
++    .pdk-dns-optimizer__recommendation-actions .cbi-button {
++      min-height: 34px;
++      padding-left: 16px;
++      padding-right: 16px;
++      font-weight: 700;
++    }
+     .pdk-dns-optimizer__pair {
+       margin-top: 4px;
+     }
+@@ -194,6 +265,14 @@ function injectDnsOptimizerStyles() {
+       color: #e6a23c;
+       border-color: rgba(230, 162, 60, 0.55);
+     }
++    .pdk-dns-optimizer__badge--recommended {
++      color: #2ebd85;
++      border-color: rgba(46, 189, 133, 0.65);
++    }
++    .pdk-dns-optimizer__badge--secondary {
++      color: #79adf8;
++      border-color: rgba(95, 157, 247, 0.6);
++    }
+     .pdk-dns-optimizer__endpoint + .pdk-dns-optimizer__endpoint {
+       margin-top: 6px;
+       padding-top: 6px;
+@@ -227,6 +306,13 @@ function injectDnsOptimizerStyles() {
+       .pdk-dns-optimizer { padding: 10px; }
+       .pdk-dns-optimizer__actions { width: 100%; }
+       .pdk-dns-optimizer__actions button { flex: 1 1 88px; }
++      .pdk-dns-optimizer__recommendation-grid {
++        grid-template-columns: minmax(0, 1fr);
++      }
++      .pdk-dns-optimizer__recommendation-actions,
++      .pdk-dns-optimizer__recommendation-actions .cbi-button {
++        width: 100%;
++      }
+       .pdk-dns-optimizer__table--main {
+         display: block;
+         min-width: 0;
+@@ -315,7 +401,7 @@ function optimizerMessage(status) {
+     benchmarking_main_doh: "Проверяем DNS по DoH…",
+     benchmarking_main_dot: "Проверяем DNS по DoT…",
+     benchmark_complete:
+-      "Подбор завершён. Рекомендация рассчитана по стабильности, задержке и совместимости пары.",
++      "Подбор завершён. Лучший доступный комплект уже выбран.",
+     no_reliable_dns:
+       "Ни одна пара не прошла все проверки. Настройки не изменены.",
+     no_universal_pair:
+@@ -681,9 +767,96 @@ function recommendationExplanation(status) {
+   return `Уверенность в преимуществе: ${confidence}%.`;
+ }
+ 
+-function renderRecommendation(status) {
++function recommendationSetConfigured(primary, secondary) {
++  if (!primary || !secondary) {
++    return false;
++  }
++  return (
++    String(uci.get("podkop", "settings", "dns_type") || "") ===
++      String(primary.protocol || "") &&
++    String(uci.get("podkop", "settings", "dns_server") || "") ===
++      String(primary.dnsServer || "") &&
++    String(uci.get("podkop", "settings", "bootstrap_dns_server") || "") ===
++      String(primary.bootstrapDnsServer || "") &&
++    String(uci.get("podkop", "settings", "dns_failover_enabled") || "0") ===
++      "1" &&
++    String(uci.get("podkop", "settings", "secondary_dns_type") || "") ===
++      String(secondary.protocol || "") &&
++    String(uci.get("podkop", "settings", "secondary_dns_server") || "") ===
++      String(secondary.dnsServer || "") &&
++    String(
++      uci.get("podkop", "settings", "secondary_bootstrap_dns_server") || "",
++    ) === String(secondary.bootstrapDnsServer || "")
++  );
++}
++
++function recommendationSetInstalled(primary, secondary) {
++  return (
++    recommendationSetConfigured(primary, secondary) &&
++    String(
++      uci.get("podkop", "settings", "dns_failover_active_slot") || "primary",
++    ) !== "secondary"
++  );
++}
++
++function renderRecommendationPair(result, primary) {
++  const testedServices = Number(result.communityTested || 0);
++  const passedServices = Number(result.communityPassed || 0);
++  const serviceMetric = testedServices
++    ? `Сервисы ${passedServices}/${testedServices}`
++    : `База ${compatibilityLabel(result)}`;
++
++  return E(
++    "div",
++    {
++      class: `pdk-dns-optimizer__recommendation-card${
++        primary ? " pdk-dns-optimizer__recommendation-card--primary" : ""
++      }`,
++    },
++    [
++      E(
++        "div",
++        { class: "pdk-dns-optimizer__recommendation-role" },
++        primary
++          ? "1 · Основная — используется первой"
++          : "2 · Резервная — включится после двух отказов",
++      ),
++      E("div", { class: "pdk-dns-optimizer__recommendation-endpoint" }, [
++        `${result.provider} · ${result.dnsServer}`,
++        E(
++          "span",
++          { class: "pdk-dns-optimizer__badge" },
++          protocolLabel(result.protocol),
++        ),
++      ]),
++      E(
++        "div",
++        { class: "pdk-dns-optimizer__recommendation-bootstrap" },
++        `Bootstrap: ${result.bootstrapProvider || "DNS"} · ${result.bootstrapDnsServer}`,
++      ),
++      E("div", { class: "pdk-dns-optimizer__recommendation-metrics" }, [
++        E(
++          "span",
++          { class: "pdk-dns-optimizer__recommendation-metric" },
++          `Надёжность ${result.successRate}%`,
++        ),
++        E(
++          "span",
++          { class: "pdk-dns-optimizer__recommendation-metric" },
++          serviceMetric,
++        ),
++        E(
++          "span",
++          { class: "pdk-dns-optimizer__recommendation-metric" },
++          `P90 ${result.p90Ms} мс`,
++        ),
++      ]),
++    ],
++  );
++}
++
++function renderRecommendation(status, running) {
+   const result = status?.recommendation;
+-  const secondary = status?.secondaryRecommendation;
+   if (
+     !result ||
+     result.universalEligible !== true ||
+@@ -692,41 +865,80 @@ function renderRecommendation(status) {
+     return E("div");
+   }
+ 
++  const secondary = pickSecondaryFor(status, result);
++  const configured = recommendationSetConfigured(result, secondary);
++  const installed = recommendationSetInstalled(result, secondary);
++  const reserveActive = configured && !installed;
++  const canInstall = Boolean(secondary);
++
+   return E("div", { class: "pdk-dns-optimizer__recommendation" }, [
+-    E("strong", {}, "Рекомендуются две независимые DNS-пары"),
+-    E("div", { class: "pdk-dns-optimizer__pair" }, [
+-      E("span", {}, [
+-        E("b", {}, "Предпочтительная: "),
+-        `${result.provider} ${result.dnsServer} (${protocolLabel(result.protocol)})`,
+-      ]),
+-      E("span", {}, [
+-        E("b", {}, "Её bootstrap: "),
+-        `${result.bootstrapProvider} (${result.bootstrapDnsServer})`,
++    E("div", { class: "pdk-dns-optimizer__recommendation-header" }, [
++      E("div", {}, [
++        E(
++          "div",
++          { class: "pdk-dns-optimizer__recommendation-title" },
++          "Лучший безопасный комплект найден",
++        ),
++        E(
++          "div",
++          { class: "pdk-dns-optimizer__detail" },
++          "Подбор уже сделал выбор — сравнивать строки таблицы вручную не нужно.",
++        ),
+       ]),
++      E(
++        "span",
++        {
++          class:
++            "pdk-dns-optimizer__badge pdk-dns-optimizer__badge--recommended",
++        },
++        "Рекомендуется",
++      ),
++    ]),
++    E("div", { class: "pdk-dns-optimizer__recommendation-grid" }, [
++      renderRecommendationPair(result, true),
+       ...(secondary
+-        ? [
+-            E("span", {}, [
+-              E("b", {}, "Резервная: "),
+-              `${secondary.provider} ${secondary.dnsServer} (${protocolLabel(secondary.protocol)})`,
+-            ]),
+-            E("span", {}, [
+-              E("b", {}, "Её bootstrap: "),
+-              `${secondary.bootstrapProvider} (${secondary.bootstrapDnsServer})`,
+-            ]),
+-          ]
++        ? [renderRecommendationPair(secondary, false)]
+         : [
+             E(
+-              "span",
+-              { class: "pdk-dns-optimizer__warn" },
+-              "Независимая резервная пара в этом тесте не найдена.",
++              "div",
++              {
++                class:
++                  "pdk-dns-optimizer__recommendation-card pdk-dns-optimizer__warn",
++              },
++              "Независимая резервная связка не найдена. Измените набор проверяемых DNS и повторите подбор.",
+             ),
+           ]),
+     ]),
+     E(
+       "div",
+       { class: "pdk-dns-optimizer__detail" },
+-      `Базовая совместимость ${compatibilityLabel(result)}, стабильно в обоих проходах ${result.compatibilityStable || 0}/${result.compatibilityTotal || 0}; ${result.successCount}/${result.totalQueries} успешных запросов, медиана ${result.medianMs} мс, P90 ${result.p90Ms} мс, IQR ${result.jitterMs} мс; bootstrap ${result.bootstrapMedianMs} мс. ${communityRecommendationText(result)} NXDOMAIN не подменяется. ${profileLabel(result.profile)}. ${recommendationExplanation(status)}`,
++      canInstall
++        ? `Podkop начнёт с основной связки и автоматически перейдёт на резервную после двух подтверждённых отказов. Возврат на первую связку выполняется вручную. ${communityRecommendationText(result)} ${recommendationExplanation(status)}`
++        : "Без независимой резервной связки автоматическая установка отключена.",
+     ),
++    E("div", { class: "pdk-dns-optimizer__recommendation-actions" }, [
++      renderActionButton(
++        installed
++          ? "Рекомендуемый комплект уже установлен"
++          : reserveActive
++            ? "Вернуть основную связку"
++            : "Установить этот комплект",
++        "cbi-button-apply",
++        running || !canInstall || installed,
++        () => applyDnsResult(result, secondary),
++      ),
++      E(
++        "span",
++        { class: "pdk-dns-optimizer__detail" },
++        installed
++          ? "Обе связки уже совпадают с настройками Podkop."
++          : reserveActive
++            ? "Комплект уже установлен, но сейчас активна резервная связка. Кнопка повторно проверит и включит основную."
++            : canInstall
++              ? "Обе связки сохранятся и будут проверены автоматически. При ошибке сработает откат."
++              : "Добавьте больше независимых DNS-кандидатов и повторите тест.",
++      ),
++    ]),
+   ]);
+ }
+ 
+@@ -736,19 +948,30 @@ function renderMainResults(status, running) {
+     return E("div");
+   }
+ 
++  const recommendedSecondary = status?.recommendation
++    ? pickSecondaryFor(status, status.recommendation)
++    : null;
+   const rows = results.map((result) => {
+     const classes = [];
+-    const current = isCurrentPair(result);
++    const currentPrimary = isCurrentPair(result);
+     const comparisonOnly = isComparisonOnly(result);
++    const rowSecondary = pickSecondaryFor(status, result);
++    const rowConfigured = recommendationSetConfigured(result, rowSecondary);
++    const rowSetInstalled = recommendationSetInstalled(result, rowSecondary);
+     const recommended =
+       status.recommendation?.protocol === result.protocol &&
+       status.recommendation?.id === result.id &&
+       status.recommendation?.dnsServer === result.dnsServer &&
+       status.recommendation?.bootstrapDnsServer === result.bootstrapDnsServer;
++    const secondaryRecommended =
++      recommendedSecondary?.protocol === result.protocol &&
++      recommendedSecondary?.id === result.id &&
++      recommendedSecondary?.dnsServer === result.dnsServer &&
++      recommendedSecondary?.bootstrapDnsServer === result.bootstrapDnsServer;
+     if (recommended) {
+       classes.push("pdk-dns-optimizer__row--recommended");
+     }
+-    if (current) {
++    if (currentPrimary) {
+       classes.push("pdk-dns-optimizer__row--current");
+     }
+ 
+@@ -771,7 +994,31 @@ function renderMainResults(status, running) {
+           { class: "pdk-dns-optimizer__badge" },
+           protocolLabel(result.protocol),
+         ),
+-        ...(current
++        ...(recommended
++          ? [
++              E(
++                "span",
++                {
++                  class:
++                    "pdk-dns-optimizer__badge pdk-dns-optimizer__badge--recommended",
++                },
++                "Лучший",
++              ),
++            ]
++          : []),
++        ...(secondaryRecommended
++          ? [
++              E(
++                "span",
++                {
++                  class:
++                    "pdk-dns-optimizer__badge pdk-dns-optimizer__badge--secondary",
++                },
++                "Резервный",
++              ),
++            ]
++          : []),
++        ...(currentPrimary
+           ? [
+               E(
+                 "span",
+@@ -779,7 +1026,7 @@ function renderMainResults(status, running) {
+                   class:
+                     "pdk-dns-optimizer__badge pdk-dns-optimizer__badge--current",
+                 },
+-                "Текущая пара",
++                "Настроена как основная",
+               ),
+             ]
+           : []),
+@@ -846,16 +1093,31 @@ function renderMainResults(status, running) {
+             { class: "pdk-dns-optimizer__detail" },
+             profileLabel(result.profile),
+           ),
+-          E(
+-            "div",
+-            { class: "pdk-dns-optimizer__row-action" },
++          E("div", { class: "pdk-dns-optimizer__row-action" }, [
+             renderActionButton(
+-              current ? "Установлена" : "Установить пару",
++              rowSetInstalled
++                ? "Установлена"
++                : rowConfigured
++                  ? "Вернуть основную"
++                  : "Установить вручную",
+               comparisonOnly ? "cbi-button-neutral" : "cbi-button-apply",
+-              running || current || result.reliable !== true,
+-              () => applyDnsResult(result, pickSecondaryFor(status, result)),
++              running ||
++                rowSetInstalled ||
++                comparisonOnly ||
++                result.reliable !== true ||
++                !rowSecondary,
++              () => applyDnsResult(result, rowSecondary),
+             ),
+-          ),
++            ...(!comparisonOnly && rowSecondary
++              ? [
++                  E(
++                    "div",
++                    { class: "pdk-dns-optimizer__detail" },
++                    `Резерв: ${rowSecondary.provider} · ${rowSecondary.dnsServer} (${protocolLabel(rowSecondary.protocol)}); bootstrap ${rowSecondary.bootstrapProvider || "DNS"} · ${rowSecondary.bootstrapDnsServer}`,
++                  ),
++                ]
++              : []),
++          ]),
+         ],
+       ),
+     ]);
+@@ -911,7 +1173,8 @@ function renderBenchmarkHistory(status, running) {
+   if (!status) {
+     return E("div");
+   }
+-  const label = `${running ? "Предыдущая" : "Последняя"} проверка · ${benchmarkProtocolLabel(status)}${status.updatedAt ? ` · ${formatBenchmarkTime(status.updatedAt)}` : ""}`;
++  const resultCount = Array.isArray(status.results) ? status.results.length : 0;
++  const label = `${running ? "Предыдущие подробные результаты" : "Подробные результаты"} · ${resultCount} вариантов · ${benchmarkProtocolLabel(status)}${status.updatedAt ? ` · ${formatBenchmarkTime(status.updatedAt)}` : ""}`;
+   return E(
+     "details",
+     {
+@@ -1090,16 +1353,6 @@ function renderDnsOptimizer() {
+   const changing =
+     running && (status.action === "apply" || status.action === "rollback");
+   const benchmark = benchmarkSnapshot(status);
+-  const recommendation =
+-    benchmark?.recommendation?.universalEligible === true &&
+-    benchmark?.recommendation?.bootstrapUniversalEligible === true
+-      ? benchmark.recommendation
+-      : null;
+-  const secondaryRecommendation =
+-    benchmark?.secondaryRecommendation?.universalEligible === true &&
+-    benchmark?.secondaryRecommendation?.bootstrapUniversalEligible === true
+-      ? benchmark.secondaryRecommendation
+-      : null;
+   const benchmarkRunning = running && status.action === "benchmark";
+ 
+   if (changing) {
+@@ -1115,22 +1368,16 @@ function renderDnsOptimizer() {
+         E(
+           "div",
+           { class: "pdk-dns-optimizer__description" },
+-          "Проверяет стабильность, отсутствие подмены, базовые сервисы и выбранные списки сообщества Podkop — например YouTube, Telegram и Meta. Скорость учитывается только после этих проверок.",
++          "Сам проверяет стабильность, отсутствие подмены и выбранные сервисы Podkop, затем предлагает один готовый комплект из основной и резервной DNS-связок.",
+         ),
+       ]),
+       E("div", { class: "pdk-dns-optimizer__actions" }, [
+         renderActionButton(
+-          "Проверить DNS",
++          "Подобрать лучший DNS",
+           "cbi-button-action",
+           running,
+           startDnsBenchmark,
+         ),
+-        renderActionButton(
+-          "Установить",
+-          "cbi-button-apply",
+-          running || !recommendation || !secondaryRecommendation,
+-          () => applyDnsResult(recommendation, secondaryRecommendation),
+-        ),
+         renderActionButton(
+           "Откатить",
+           "cbi-button-reset",
+@@ -1145,7 +1392,7 @@ function renderDnsOptimizer() {
+         style: `width: ${Math.max(0, Math.min(100, status.progress || 0))}%`,
+       }),
+     ]),
+-    renderRecommendation(benchmark),
++    renderRecommendation(benchmark, running),
+     renderBenchmarkHistory(benchmark, benchmarkRunning),
+   ]);
+ 
+@@ -1224,7 +1471,7 @@ async function startDnsBenchmark() {
+     progress: 0,
+     lastBenchmark: benchmarkSnapshot(dnsOptimizerState.status),
+   };
+-  dnsOptimizerState.historyOpen = true;
++  dnsOptimizerState.historyOpen = false;
+   updateDnsOptimizerNode();
+   scheduleDnsOptimizerRefresh(250);
+ 
+-- 
+2.54.0.windows.1
+
