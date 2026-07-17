@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260713-dns-optimizer-v9"
+VERSION="20260717-dns-optimizer-v10"
 STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
 STATUS_FILE="$STATE_DIR/status.json"
 LOG_FILE="$STATE_DIR/worker.log"
@@ -977,28 +977,69 @@ benchmark_main_candidate() {
     rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
 }
 
-run_benchmark() {
-    local protocol="$1"
-    local main_file bootstrap_file bootstrap_jsonl bootstrap_json main_jsonl final_file
-    local total completed line id provider value profile result recommendation secondary_recommendation ranking confidence recommendation_reason current_candidate state message current_dns current_bootstrap current_pair active_slot
+normalize_benchmark_protocols() {
+    local requested="${1:-auto}"
+    local candidate_protocol protocols
 
-    case "$protocol" in
-        udp|doh|dot) ;;
-        *)
-            write_status "error" "benchmark" "invalid_protocol" 0 0 0 "$$"
-            return 1
-            ;;
-    esac
+    [ "$requested" = "auto" ] && requested="udp,doh,dot"
+    requested="$(printf '%s\n' "$requested" | tr ',' ' ')"
+    protocols=""
+    for candidate_protocol in $requested; do
+        case "$candidate_protocol" in
+            udp|doh|dot) ;;
+            *) return 1 ;;
+        esac
+        case " $protocols " in
+            *" $candidate_protocol "*) ;;
+            *) protocols="$protocols $candidate_protocol" ;;
+        esac
+    done
+    protocols="${protocols# }"
+    [ -n "$protocols" ] || return 1
+    printf '%s\n' "$protocols"
+}
+
+run_benchmark() {
+    local requested_protocols="$1"
+    local protocols protocol_count scope_protocol protocols_json candidate_protocol candidate_file
+    local main_file bootstrap_file bootstrap_jsonl bootstrap_json main_jsonl final_file
+    local total completed line id provider value profile result recommendation secondary_recommendation ranking confidence recommendation_reason current_candidate state message current_protocol current_dns current_bootstrap current_pair active_slot
+
+    protocols="$(normalize_benchmark_protocols "$requested_protocols" || true)"
+    if [ -z "$protocols" ]; then
+        write_status "error" "benchmark" "invalid_protocol" 0 0 0 "$$"
+        return 1
+    fi
+    set -- $protocols
+    protocol_count="$#"
+    if [ "$protocol_count" -gt 1 ]; then
+        scope_protocol="auto"
+    else
+        scope_protocol="$1"
+    fi
+    protocols_json="$(printf '%s\n' $protocols | jq -Rsc 'split("\n") | map(select(length > 0))')"
 
     main_file="$(mktemp)"
+    candidate_file="$(mktemp)"
     bootstrap_file="$(mktemp)"
     bootstrap_jsonl="$(mktemp)"
     bootstrap_json="$(mktemp)"
     main_jsonl="$(mktemp)"
     final_file="$(mktemp)"
-    trap "rm -f '$main_file' '$bootstrap_file' '$bootstrap_jsonl' '$bootstrap_json' '$main_jsonl' '$final_file'; rm -rf '$LOCK_DIR'" EXIT INT TERM
+    trap "rm -f '$main_file' '$candidate_file' '$bootstrap_file' '$bootstrap_jsonl' '$bootstrap_json' '$main_jsonl' '$final_file'; rm -rf '$LOCK_DIR'" EXIT INT TERM
 
-    write_main_candidates "$protocol" "$main_file" || return 1
+    : > "$main_file"
+    for candidate_protocol in $protocols; do
+        write_main_candidates "$candidate_protocol" "$candidate_file" || continue
+        while IFS='|' read -r id provider value profile; do
+            [ -n "$id" ] || continue
+            printf '%s|%s|%s|%s|%s\n' "$candidate_protocol" "$id" "$provider" "$value" "$profile" >> "$main_file"
+        done < "$candidate_file"
+    done
+    if [ ! -s "$main_file" ]; then
+        write_status "error" "benchmark" "no_candidates" 100 0 0 "$$"
+        return 1
+    fi
     write_bootstrap_candidates "$bootstrap_file"
     total=$(( $(wc -l < "$main_file") + $(wc -l < "$bootstrap_file") ))
     completed=0
@@ -1012,15 +1053,16 @@ run_benchmark() {
     done < "$bootstrap_file"
     jq -s 'sort_by(.score) | reverse' "$bootstrap_jsonl" > "$bootstrap_json"
 
-    while IFS='|' read -r id provider value profile; do
+    while IFS='|' read -r candidate_protocol id provider value profile; do
         [ -n "$id" ] || continue
-        benchmark_main_candidate "$protocol" "$id" "$provider" "$value" "$profile" "$bootstrap_json" >> "$main_jsonl"
+        benchmark_main_candidate "$candidate_protocol" "$id" "$provider" "$value" "$profile" "$bootstrap_json" >> "$main_jsonl"
         completed=$((completed + 1))
-        write_status "running" "benchmark" "benchmarking_main" $((completed * 100 / total)) "$completed" "$total" "$$"
+        write_status "running" "benchmark" "benchmarking_main_$candidate_protocol" $((completed * 100 / total)) "$completed" "$total" "$$"
     done < "$main_file"
 
     active_slot="$(configured_active_slot)"
     current_pair="$(read_configured_pair "$active_slot" || true)"
+    current_protocol="$(printf '%s\n' "$current_pair" | cut -d '|' -f 1)"
     current_dns="$(printf '%s\n' "$current_pair" | cut -d '|' -f 2)"
     current_bootstrap="$(printf '%s\n' "$current_pair" | cut -d '|' -f 3)"
     ranking="$(jq -s '
@@ -1052,10 +1094,11 @@ run_benchmark() {
     ')"
     recommendation_reason="clear_winner"
     if [ "$confidence" -lt 35 ] && [ "$recommendation" != "null" ]; then
-        current_candidate="$(printf '%s\n' "$ranking" | jq -c --arg current "$current_dns" --arg currentBootstrap "$current_bootstrap" '
+        current_candidate="$(printf '%s\n' "$ranking" | jq -c --arg currentProtocol "$current_protocol" --arg current "$current_dns" --arg currentBootstrap "$current_bootstrap" '
             .[0] as $best
             | (map(select(
-                .dnsServer == $current
+                .protocol == $currentProtocol
+                and .dnsServer == $current
                 and .bootstrapDnsServer == $currentBootstrap
                 and .universalEligible == true
                 and .bootstrapUniversalEligible == true
@@ -1096,12 +1139,13 @@ run_benchmark() {
         recommendation_reason="no_universal_pair"
     fi
     jq -cn \
-        --arg state "$state" --arg action "benchmark" --arg message "$message" --arg protocol "$protocol" \
+        --arg state "$state" --arg action "benchmark" --arg message "$message" --arg protocol "$scope_protocol" --arg currentProtocol "$current_protocol" \
         --arg updatedAt "$(updated_at)" --arg currentDnsServer "$current_dns" --arg currentBootstrapDnsServer "$current_bootstrap" --arg activeSlot "$active_slot" \
-        --arg recommendationReason "$recommendation_reason" --arg methodVersion "dual-failover-v1" \
+        --arg recommendationReason "$recommendation_reason" --arg methodVersion "cross-protocol-v1" \
+        --argjson testedProtocols "$protocols_json" --argjson completed "$completed" --argjson total "$total" \
         --argjson pid "$$" --argjson recommendation "$recommendation" --argjson secondaryRecommendation "$secondary_recommendation" --argjson recommendationConfidence "$confidence" \
         --slurpfile results "$main_jsonl" --slurpfile bootstrapResults "$bootstrap_json" \
-        '{state:$state,action:$action,message:$message,protocol:$protocol,progress:100,completed:($results | length),total:($results | length),pid:$pid,updatedAt:$updatedAt,methodVersion:$methodVersion,current:{dnsServer:$currentDnsServer,bootstrapDnsServer:$currentBootstrapDnsServer},recommendation:$recommendation,secondaryRecommendation:$secondaryRecommendation,recommendationConfidence:$recommendationConfidence,recommendationReason:$recommendationReason,activeSlot:$activeSlot,results:($results | sort_by(.score) | reverse),bootstrapResults:($bootstrapResults[0] // [])}' \
+        '{state:$state,action:$action,message:$message,protocol:$protocol,protocols:$testedProtocols,progress:100,completed:$completed,total:$total,pid:$pid,updatedAt:$updatedAt,methodVersion:$methodVersion,current:{protocol:$currentProtocol,dnsServer:$currentDnsServer,bootstrapDnsServer:$currentBootstrapDnsServer},recommendation:$recommendation,secondaryRecommendation:$secondaryRecommendation,recommendationConfidence:$recommendationConfidence,recommendationReason:$recommendationReason,activeSlot:$activeSlot,results:($results | sort_by(.score) | reverse),bootstrapResults:($bootstrapResults[0] // [])}' \
         > "$final_file"
     save_last_benchmark "$final_file" || true
     write_final_status "$final_file"
@@ -1542,7 +1586,7 @@ show_help() {
 Usage: podkop-dns-optimizer <command>
 
 Commands:
-  benchmark_start [udp|doh|dot]
+  benchmark_start [auto|udp|doh|dot|udp,doh|udp,dot|doh,dot]
   apply_start <protocol> <candidate_id> <bootstrap_ipv4> <expected_dns_server> [secondary_protocol secondary_candidate_id secondary_bootstrap_ipv4 expected_secondary_dns_server]
   probe_pair <primary|secondary>
   rollback_start
@@ -1553,7 +1597,7 @@ EOF
 
 case "${1:-}" in
     benchmark_start)
-        start_worker "benchmark" "${2:-udp}"
+        start_worker "benchmark" "${2:-auto}"
         ;;
     apply_start)
         [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] && [ -n "${5:-}" ] || {
@@ -1581,7 +1625,7 @@ case "${1:-}" in
         action="${2:-}"
         shift 2
         case "$action" in
-            benchmark) run_benchmark "${1:-udp}" ;;
+            benchmark) run_benchmark "${1:-auto}" ;;
             apply) run_apply "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;;
             rollback) run_rollback ;;
             *) rm -rf "$LOCK_DIR"; exit 1 ;;

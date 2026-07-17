@@ -11,6 +11,7 @@ const dnsOptimizerState = {
   node: null,
   status: null,
   protocolOption: null,
+  benchmarkProtocolsOption: null,
   dnsServerOption: null,
   bootstrapDnsServerOption: null,
   failoverEnabledOption: null,
@@ -264,7 +265,31 @@ function injectDnsOptimizerStyles() {
 }
 
 function protocolLabel(protocol) {
-  return { udp: "UDP", doh: "DoH", dot: "DoT" }[protocol] || protocol;
+  return (
+    { auto: "Авто", udp: "UDP", doh: "DoH", dot: "DoT" }[protocol] || protocol
+  );
+}
+
+function normalizeProtocolSelection(value) {
+  const values = Array.isArray(value)
+    ? value
+    : String(value || "")
+        .split(/[\s,]+/)
+        .filter(Boolean);
+  const selected = new Set(values);
+  if (selected.has("auto")) {
+    return ["udp", "doh", "dot"];
+  }
+  return ["udp", "doh", "dot"].filter((protocol) => selected.has(protocol));
+}
+
+function benchmarkProtocolLabel(status) {
+  const protocols = normalizeProtocolSelection(
+    status?.protocols || status?.protocol,
+  );
+  return protocols.length
+    ? protocols.map(protocolLabel).join(" · ")
+    : protocolLabel(status?.protocol || "auto");
 }
 
 function profileLabel(profile) {
@@ -286,6 +311,9 @@ function optimizerMessage(status) {
     starting: "Запускаем проверку DNS…",
     benchmarking_bootstrap: "Проверяем bootstrap DNS…",
     benchmarking_main: "Проверяем основные DNS-серверы…",
+    benchmarking_main_udp: "Проверяем DNS по UDP…",
+    benchmarking_main_doh: "Проверяем DNS по DoH…",
+    benchmarking_main_dot: "Проверяем DNS по DoT…",
     benchmark_complete:
       "Подбор завершён. Рекомендация рассчитана по стабильности, задержке и совместимости пары.",
     no_reliable_dns:
@@ -713,7 +741,9 @@ function renderMainResults(status, running) {
     const current = isCurrentPair(result);
     const comparisonOnly = isComparisonOnly(result);
     const recommended =
+      status.recommendation?.protocol === result.protocol &&
       status.recommendation?.id === result.id &&
+      status.recommendation?.dnsServer === result.dnsServer &&
       status.recommendation?.bootstrapDnsServer === result.bootstrapDnsServer;
     if (recommended) {
       classes.push("pdk-dns-optimizer__row--recommended");
@@ -857,17 +887,23 @@ function pickSecondaryFor(status, primary) {
     status?.secondaryRecommendation,
     ...(Array.isArray(status?.results) ? status.results : []),
   ];
+  const eligible = candidates.filter(
+    (candidate) =>
+      candidate &&
+      candidate.id !== primary?.id &&
+      candidate.dnsServer !== primary?.dnsServer &&
+      candidate.provider !== primary?.provider &&
+      candidate.reliable === true &&
+      candidate.universalEligible === true &&
+      candidate.bootstrapUniversalEligible === true,
+  );
   return (
-    candidates.find(
+    eligible.find(
       (candidate) =>
-        candidate &&
-        candidate.id !== primary?.id &&
-        candidate.dnsServer !== primary?.dnsServer &&
-        candidate.provider !== primary?.provider &&
-        candidate.reliable === true &&
-        candidate.universalEligible === true &&
-        candidate.bootstrapUniversalEligible === true,
-    ) || null
+        candidate.bootstrapDnsServer !== primary?.bootstrapDnsServer,
+    ) ||
+    eligible[0] ||
+    null
   );
 }
 
@@ -875,7 +911,7 @@ function renderBenchmarkHistory(status, running) {
   if (!status) {
     return E("div");
   }
-  const label = `${running ? "Предыдущая" : "Последняя"} проверка · ${protocolLabel(status.protocol)}${status.updatedAt ? ` · ${formatBenchmarkTime(status.updatedAt)}` : ""}`;
+  const label = `${running ? "Предыдущая" : "Последняя"} проверка · ${benchmarkProtocolLabel(status)}${status.updatedAt ? ` · ${formatBenchmarkTime(status.updatedAt)}` : ""}`;
   return E(
     "details",
     {
@@ -1166,14 +1202,25 @@ async function refreshDnsOptimizerStatus() {
 }
 
 async function startDnsBenchmark() {
-  const protocol =
-    dnsOptimizerState.protocolOption?.formvalue("settings") ||
-    uci.get("podkop", "settings", "dns_type") ||
-    "udp";
+  const protocols = normalizeProtocolSelection(
+    dnsOptimizerState.benchmarkProtocolsOption?.formvalue("settings") ||
+      uci.get("podkop", "settings", "dns_optimizer_protocols") || [
+        "udp",
+        "doh",
+        "dot",
+      ],
+  );
+  const selectedProtocols = protocols.length
+    ? protocols
+    : ["udp", "doh", "dot"];
+  const protocolArgument =
+    selectedProtocols.length === 3 ? "auto" : selectedProtocols.join(",");
   dnsOptimizerState.status = {
     state: "running",
     action: "benchmark",
     message: "starting",
+    protocol: selectedProtocols.length > 1 ? "auto" : selectedProtocols[0],
+    protocols: selectedProtocols,
     progress: 0,
     lastBenchmark: benchmarkSnapshot(dnsOptimizerState.status),
   };
@@ -1182,7 +1229,10 @@ async function startDnsBenchmark() {
   scheduleDnsOptimizerRefresh(250);
 
   try {
-    const result = await callDnsOptimizer(["benchmark_start", protocol]);
+    const result = await callDnsOptimizer([
+      "benchmark_start",
+      protocolArgument,
+    ]);
     if (!result.success) {
       if (result.error === "busy") {
         return;
@@ -1403,6 +1453,25 @@ function createSettingsContent(section) {
 
   o = section.option(
     form.MultiValue,
+    "dns_optimizer_protocols",
+    "Режимы для проверки",
+    "По умолчанию один тест последовательно сравнивает UDP, DoH и DoT и выбирает лучшую полную связку. Оставьте один или два режима, если нужна более быстрая проверка.",
+  );
+  o.value("udp", "UDP");
+  o.value("doh", "DoH");
+  o.value("dot", "DoT");
+  o.default = ["udp", "doh", "dot"];
+  o.rmempty = false;
+  o.cfgvalue = function (sectionId) {
+    const value = uci.get("podkop", sectionId, "dns_optimizer_protocols");
+    return value == null || (Array.isArray(value) && !value.length)
+      ? ["udp", "doh", "dot"]
+      : value;
+  };
+  dnsOptimizerState.benchmarkProtocolsOption = o;
+
+  o = section.option(
+    form.MultiValue,
     "dns_optimizer_candidates",
     "DNS для проверки",
     "Выберите основной каталог для теста. Меньше кандидатов — быстрее и точнее сравнение. Пользовательские и WAN DNS не становятся автоматической рекомендацией.",
@@ -1487,7 +1556,10 @@ function createSettingsContent(section) {
       label,
       "Адреса сохраняются в настройках и появляются в тесте как варианты только для сравнения и ручной установки.",
     );
-    customOption.depends("dns_type", protocol);
+    customOption.depends({
+      dns_optimizer_protocols: protocol,
+      "!contains": true,
+    });
     customOption.rmempty = true;
     customOption.placeholder =
       protocol === "udp"
