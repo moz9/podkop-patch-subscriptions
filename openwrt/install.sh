@@ -7,6 +7,10 @@ PODKOP_OFFICIAL_INSTALL_URL="${PODKOP_OFFICIAL_INSTALL_URL:-https://raw.githubus
 PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-0.7.21}"
 PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS="${PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS:-0.7.19 0.7.20 0.7.21}"
 PODKOP_PATCH_LATEST_RELEASE_URL="${PODKOP_PATCH_LATEST_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/latest}"
+PODKOP_PATCH_UPDATE_PODKOP_WAS_SET=0
+[ "${PODKOP_PATCH_UPDATE_PODKOP+x}" = x ] && PODKOP_PATCH_UPDATE_PODKOP_WAS_SET=1
+PODKOP_PATCH_FORCE_PODKOP_UPDATE_WAS_SET=0
+[ "${PODKOP_PATCH_FORCE_PODKOP_UPDATE+x}" = x ] && PODKOP_PATCH_FORCE_PODKOP_UPDATE_WAS_SET=1
 PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
@@ -14,7 +18,7 @@ V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260717-dns-decision-ui-v1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260720-update-center-force-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -30,7 +34,7 @@ DNS_FAILOVER_INIT_FILE="podkop-dns-failover.init"
 DNS_FAILOVER_VERSION="20260711-dns-failover-v2"
 DNS_FAILOVER_UPGRADE_FILE="podkop-dns-failover-upgrade.sh"
 UPDATE_MANAGER_FILE="podkop-update-manager"
-UPDATE_MANAGER_VERSION="20260710-update-manager-v1"
+UPDATE_MANAGER_VERSION="20260720-update-manager-v2"
 UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
@@ -746,8 +750,25 @@ latest_official_podkop_version() {
 	return 1
 }
 
+update_manager_v1_requested_podkop_upgrade() {
+	state_dir="/tmp/podkop-update-manager"
+	[ "$PODKOP_PATCH_UPDATE_PODKOP_WAS_SET" = "1" ] || return 1
+	[ "$PODKOP_PATCH_UPDATE_PODKOP" = "1" ] || return 1
+	[ "$PODKOP_PATCH_FORCE_PODKOP_UPDATE_WAS_SET" = "0" ] || return 1
+	[ "$0" = "$state_dir/installer.sh" ] || return 1
+	[ -r "$state_dir/lock/pid" ] || return 1
+	[ "$(cat "$state_dir/lock/pid" 2>/dev/null)" = "$PPID" ] || return 1
+	jq -e '.updateMode == "podkop_and_patch" and .podkopUpdateAvailable == true and .canUpdate == true' \
+		"$state_dir/details.json" >/dev/null 2>&1
+}
+
 update_official_podkop_if_requested() {
 	[ "${PODKOP_PATCH_UPDATE_PODKOP:-1}" = "1" ] || return 0
+	force_podkop_update="${PODKOP_PATCH_FORCE_PODKOP_UPDATE:-0}"
+	if [ "$force_podkop_update" != "1" ] && update_manager_v1_requested_podkop_upgrade; then
+		force_podkop_update=1
+		log "Continuing the combined update requested by the installed update center."
+	fi
 
 	current_version="$(current_podkop_version)"
 	if [ -x /usr/bin/podkop ] && ! is_semver "$current_version"; then
@@ -775,7 +796,7 @@ update_official_podkop_if_requested() {
 		log "Could not detect a newer official Podkop release; target is $target_version."
 	fi
 
-	if [ "${PODKOP_PATCH_FORCE_PODKOP_UPDATE:-0}" != "1" ] &&
+	if [ "$force_podkop_update" != "1" ] &&
 		[ -n "$current_version" ] && podkop_version_supported "$current_version"; then
 		if version_ge "$current_version" "$target_version"; then
 			log "Official Podkop is already $current_version; target is $target_version. Skipping official update."
