@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.invalid>
+Date: Mon, 20 Jul 2026 17:58:41 +0700
+Subject: [PATCH] Force Podkop update in combined mode
+
+---
+ podkop/files/usr/bin/podkop-update-manager | 10 ++++++++--
+ 1 file changed, 8 insertions(+), 2 deletions(-)
+
+diff --git a/podkop/files/usr/bin/podkop-update-manager b/podkop/files/usr/bin/podkop-update-manager
+index f8e4319..1475d4a 100755
+--- a/podkop/files/usr/bin/podkop-update-manager
++++ b/podkop/files/usr/bin/podkop-update-manager
+@@ -1,6 +1,6 @@
+ #!/bin/ash
+ 
+-VERSION="20260710-update-manager-v1"
++VERSION="20260720-update-manager-v2"
+ STATE_DIR="/tmp/podkop-update-manager"
+ STATUS_FILE="$STATE_DIR/status.json"
+ DETAILS_FILE="$STATE_DIR/details.json"
+@@ -241,6 +241,7 @@ perform_check() {
+ 
+ perform_update() {
+     local mode can_update installer expected_podkop expected_patch current_podkop current_patch cache_buster
++    local force_podkop_update
+ 
+     perform_check 0 || return 1
+     mode="$(jq -r '.updateMode // "none"' "$DETAILS_FILE")"
+@@ -265,7 +266,12 @@ perform_update() {
+     fi
+ 
+     log_line "Starting transactional update in mode: $mode."
+-    if ! run_with_timeout 900 env PODKOP_PATCH_UPDATE_PODKOP=1 sh "$installer"; then
++    force_podkop_update=0
++    [ "$mode" = "podkop_and_patch" ] && force_podkop_update=1
++    if ! run_with_timeout 900 env \
++        PODKOP_PATCH_UPDATE_PODKOP=1 \
++        PODKOP_PATCH_FORCE_PODKOP_UPDATE="$force_podkop_update" \
++        sh "$installer"; then
+         log_line "Installer returned an error. Existing backup and rollback rules remain active."
+         write_status "error" "install_failed"
+         return 1
+-- 
+2.53.0.windows.1
+
