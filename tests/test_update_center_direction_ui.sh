@@ -5,7 +5,7 @@ repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 node - "$repo_root/openwrt/main.js" <<'NODE'
 const fs = require("fs");
-const source = fs.readFileSync(process.argv[2], "utf8");
+const source = fs.readFileSync(process.argv[2], "utf8").replace(/\r\n/g, "\n");
 const match = source.match(
   /function versionValue\([\s\S]*?\n}\nfunction renderUpdateCenter/,
 );
