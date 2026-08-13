@@ -1,0 +1,598 @@
+From 414fd195f9850b9a25ffc74e290f76ac2313f4c0 Mon Sep 17 00:00:00 2001
+From: Codex 0044 <codex@example.invalid>
+Date: Thu, 13 Aug 2026 23:41:50 +0700
+Subject: [PATCH] Fix FakeIP diagnostic truth and unavailable states
+
+---
+ fe-app-podkop/locales/podkop.pot              |  20 ++
+ fe-app-podkop/locales/podkop.ru.po            |  15 ++
+ .../tabs/diagnostic/checks/runFakeIPCheck.ts  |  95 +++++++--
+ .../diagnostic/tests/runFakeIPCheck.test.ts   | 189 ++++++++++++++++++
+ fe-app-podkop/src/podkop/types.ts             |   2 +
+ .../luci-static/resources/view/podkop/main.js |  49 +++--
+ luci-app-podkop/po/ru/podkop.po               |  15 ++
+ luci-app-podkop/po/templates/podkop.pot       |  20 ++
+ podkop/files/usr/bin/podkop                   |  38 ++--
+ 9 files changed, 385 insertions(+), 58 deletions(-)
+ create mode 100644 fe-app-podkop/src/podkop/tabs/diagnostic/tests/runFakeIPCheck.test.ts
+
+diff --git a/fe-app-podkop/locales/podkop.pot b/fe-app-podkop/locales/podkop.pot
+index 952202f..523016c 100644
+--- a/fe-app-podkop/locales/podkop.pot
++++ b/fe-app-podkop/locales/podkop.pot
+@@ -1555,3 +1555,23 @@ msgstr ""
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\settings.js:127
+ msgid "You can select Output Network Interface, by default autodetect"
+ msgstr ""
++
++#: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts
++msgid "Browser FakeIP probe is unavailable"
++msgstr ""
++
++#: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts
++msgid "Browser uses another DNS (normal over remote access or with Secure DNS enabled)"
++msgstr ""
++
++#: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts
++msgid "Proxy routing probe is unavailable"
++msgstr ""
++
++#: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts
++msgid "Router DNS did not return an answer"
++msgstr ""
++
++#: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts
++msgid "Router FakeIP probe is unavailable"
++msgstr ""
+diff --git a/fe-app-podkop/locales/podkop.ru.po b/fe-app-podkop/locales/podkop.ru.po
+index 0c4065f..7eeba3f 100644
+--- a/fe-app-podkop/locales/podkop.ru.po
++++ b/fe-app-podkop/locales/podkop.ru.po
+@@ -1096,3 +1096,18 @@ msgstr "Секретный ключ YACD"
+
+ msgid "You can select Output Network Interface, by default autodetect"
+ msgstr "Вы можете выбрать выходной сетевой интерфейс, по умолчанию он определяется автоматически."
++
++msgid "Browser FakeIP probe is unavailable"
++msgstr "Проверка FakeIP в браузере недоступна"
++
++msgid "Browser uses another DNS (normal over remote access or with Secure DNS enabled)"
++msgstr "Браузер использует другой DNS (это нормально при удалённом доступе или включённом безопасном DNS)"
++
++msgid "Proxy routing probe is unavailable"
++msgstr "Проверка маршрутизации через прокси недоступна"
++
++msgid "Router DNS did not return an answer"
++msgstr "DNS роутера не вернул ответ"
++
++msgid "Router FakeIP probe is unavailable"
++msgstr "Проверка FakeIP на роутере недоступна"
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/checks/runFakeIPCheck.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/checks/runFakeIPCheck.ts
+index ebfc729..75bafbb 100644
+--- a/fe-app-podkop/src/podkop/tabs/diagnostic/checks/runFakeIPCheck.ts
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/checks/runFakeIPCheck.ts
+@@ -5,6 +5,26 @@ import { IDiagnosticsChecksItem } from '../../../services';
+ import { updateCheckStore } from './updateCheckStore';
+ import { getMeta } from '../helpers/getMeta';
+
++function hasFakeIPStatus(value: unknown): value is { fakeip: boolean } {
++  return (
++    typeof value === 'object' &&
++    value !== null &&
++    typeof (value as { fakeip?: unknown }).fakeip === 'boolean'
++  );
++}
++
++function getComparableIP(value: unknown): string {
++  if (typeof value !== 'object' || value === null) return '';
++  const IP = (value as { IP?: unknown }).IP;
++  return typeof IP === 'string' ? IP.trim() : '';
++}
++
++function getDnsAvailability(value: unknown): boolean | undefined {
++  if (typeof value !== 'object' || value === null) return undefined;
++  const dnsAvailable = (value as { dnsAvailable?: unknown }).dnsAvailable;
++  return typeof dnsAvailable === 'boolean' ? dnsAvailable : undefined;
++}
++
+ export async function runFakeIPCheck() {
+   const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.FAKEIP;
+
+@@ -17,23 +37,42 @@ export async function runFakeIPCheck() {
+     items: [],
+   });
+
+-  const routerFakeIPResponse = await PodkopShellMethods.checkFakeIP();
+-  const checkFakeIPResponse = await RemoteFakeIPMethods.getFakeIpCheck();
+-  const checkIPResponse = await RemoteFakeIPMethods.getIpCheck();
++  const [routerFakeIPResponse, checkFakeIPResponse, checkIPResponse] =
++    await Promise.all([
++      PodkopShellMethods.checkFakeIP(),
++      RemoteFakeIPMethods.getFakeIpCheck(),
++      RemoteFakeIPMethods.getIpCheck(),
++    ]);
++
++  const routerProbeAvailable =
++    routerFakeIPResponse.success && hasFakeIPStatus(routerFakeIPResponse.data);
++  const routerDnsAvailable = routerFakeIPResponse.success
++    ? getDnsAvailability(routerFakeIPResponse.data)
++    : undefined;
++  const browserProbeAvailable =
++    checkFakeIPResponse.success && hasFakeIPStatus(checkFakeIPResponse.data);
++  const browserIP = checkFakeIPResponse.success
++    ? getComparableIP(checkFakeIPResponse.data)
++    : '';
++  const proxyIP = checkIPResponse.success
++    ? getComparableIP(checkIPResponse.data)
++    : '';
++  const ipProbeAvailable = Boolean(browserIP && proxyIP);
+
+   const checks = {
+-    router: routerFakeIPResponse.success && routerFakeIPResponse.data.fakeip,
++    router: routerProbeAvailable && routerFakeIPResponse.data.fakeip === true,
+     browserFakeIP:
+-      checkFakeIPResponse.success && checkFakeIPResponse.data.fakeip,
++      browserProbeAvailable && checkFakeIPResponse.data.fakeip === true,
+     differentIP:
+-      checkFakeIPResponse.success &&
+-      checkIPResponse.success &&
+-      checkFakeIPResponse.data.IP !== checkIPResponse.data.IP,
++      browserProbeAvailable &&
++      checkFakeIPResponse.data.fakeip === true &&
++      ipProbeAvailable &&
++      browserIP !== proxyIP,
+   };
+
+-  const allGood = checks.router || checks.browserFakeIP || checks.differentIP;
++  const allGood = checks.router && checks.browserFakeIP && checks.differentIP;
+   const atLeastOneGood =
+-    checks.router && checks.browserFakeIP && checks.differentIP;
++    checks.router || checks.browserFakeIP || checks.differentIP;
+
+   const { state, description } = getMeta({ atLeastOneGood, allGood });
+
+@@ -46,24 +85,38 @@ export async function runFakeIPCheck() {
+     items: [
+       {
+         state: checks.router ? 'success' : 'warning',
+-        key: checks.router
+-          ? _('Router DNS is routed through sing-box')
+-          : _('Router DNS is not routed through sing-box'),
++        key: !routerProbeAvailable
++          ? _('Router FakeIP probe is unavailable')
++          : routerDnsAvailable === false
++            ? _('Router DNS did not return an answer')
++            : checks.router
++              ? _('Router DNS is routed through sing-box')
++              : _('Router DNS is not routed through sing-box'),
+         value: '',
+       },
+       {
+-        state: checks.browserFakeIP ? 'success' : 'error',
+-        key: checks.browserFakeIP
+-          ? _('Browser is using FakeIP correctly')
+-          : _('Browser is not using FakeIP'),
++        state: checks.browserFakeIP ? 'success' : 'warning',
++        key: !browserProbeAvailable
++          ? _('Browser FakeIP probe is unavailable')
++          : checks.browserFakeIP
++            ? _('Browser is using FakeIP correctly')
++            : _(
++                'Browser uses another DNS (normal over remote access or with Secure DNS enabled)',
++              ),
+         value: '',
+       },
+       ...insertIf<IDiagnosticsChecksItem>(checks.browserFakeIP, [
+         {
+-          state: checks.differentIP ? 'success' : 'error',
+-          key: checks.differentIP
+-            ? _('Proxy traffic is routed via FakeIP')
+-            : _('Proxy traffic is not routed via FakeIP'),
++          state: !ipProbeAvailable
++            ? 'warning'
++            : checks.differentIP
++              ? 'success'
++              : 'error',
++          key: !ipProbeAvailable
++            ? _('Proxy routing probe is unavailable')
++            : checks.differentIP
++              ? _('Proxy traffic is routed via FakeIP')
++              : _('Proxy traffic is not routed via FakeIP'),
+           value: '',
+         },
+       ]),
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/tests/runFakeIPCheck.test.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/tests/runFakeIPCheck.test.ts
+new file mode 100644
+index 0000000..7da6570
+--- /dev/null
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/tests/runFakeIPCheck.test.ts
+@@ -0,0 +1,189 @@
++import { beforeEach, describe, expect, it, vi } from 'vitest';
++import { runFakeIPCheck } from '../checks/runFakeIPCheck';
++
++const { podkopShellMethods, remoteFakeIPMethods, updateCheckStore } =
++  vi.hoisted(() => ({
++    podkopShellMethods: { checkFakeIP: vi.fn() },
++    remoteFakeIPMethods: {
++      getFakeIpCheck: vi.fn(),
++      getIpCheck: vi.fn(),
++    },
++    updateCheckStore: vi.fn(),
++  }));
++
++vi.mock('../checks/updateCheckStore', () => ({ updateCheckStore }));
++vi.mock('../../../methods', () => ({
++  PodkopShellMethods: podkopShellMethods,
++  RemoteFakeIPMethods: remoteFakeIPMethods,
++}));
++vi.mock('../../../services', () => ({}));
++
++function getFakeIPCheck() {
++  const calls = updateCheckStore.mock.calls;
++  const check = calls.at(-1)?.[0];
++
++  if (!check) throw new Error('FakeIP diagnostic result is missing');
++  return check;
++}
++
++function mockRouterFakeIP(fakeip: boolean) {
++  podkopShellMethods.checkFakeIP.mockResolvedValue({
++    success: true,
++    data: { fakeip, IP: '203.0.113.10' },
++  });
++}
++
++function mockBrowserFakeIP(fakeip: boolean, IP = '203.0.113.10') {
++  remoteFakeIPMethods.getFakeIpCheck.mockResolvedValue({
++    success: true,
++    data: { fakeip, IP },
++  });
++}
++
++function mockBrowserIP(IP = '198.51.100.20') {
++  remoteFakeIPMethods.getIpCheck.mockResolvedValue({
++    success: true,
++    data: { fakeip: false, IP },
++  });
++}
++
++describe('runFakeIPCheck', () => {
++  beforeEach(() => {
++    podkopShellMethods.checkFakeIP.mockReset();
++    remoteFakeIPMethods.getFakeIpCheck.mockReset();
++    remoteFakeIPMethods.getIpCheck.mockReset();
++    updateCheckStore.mockReset();
++  });
++
++  it('reports success only when every FakeIP check succeeds', async () => {
++    mockRouterFakeIP(true);
++    mockBrowserFakeIP(true);
++    mockBrowserIP();
++
++    await runFakeIPCheck();
++
++    expect(getFakeIPCheck().state).toBe('success');
++  });
++
++  it('starts all independent probes without waiting for an earlier probe', async () => {
++    let releaseRouterProbe: (() => void) | undefined;
++    podkopShellMethods.checkFakeIP.mockReturnValue(
++      new Promise((resolve) => {
++        releaseRouterProbe = () =>
++          resolve({
++            success: true,
++            data: { fakeip: true, IP: '203.0.113.10' },
++          });
++      }),
++    );
++    mockBrowserFakeIP(true);
++    mockBrowserIP();
++
++    const checkPromise = runFakeIPCheck();
++    await Promise.resolve();
++
++    expect(remoteFakeIPMethods.getFakeIpCheck).toHaveBeenCalledOnce();
++    expect(remoteFakeIPMethods.getIpCheck).toHaveBeenCalledOnce();
++
++    releaseRouterProbe?.();
++    await checkPromise;
++  });
++
++  it('reports a warning when the router passes but the browser probe is unavailable', async () => {
++    mockRouterFakeIP(true);
++    remoteFakeIPMethods.getFakeIpCheck.mockResolvedValue({
++      success: false,
++      message: 'request timed out with private details',
++    });
++    remoteFakeIPMethods.getIpCheck.mockResolvedValue({
++      success: false,
++      message: 'request timed out with private details',
++    });
++
++    await runFakeIPCheck();
++
++    const check = getFakeIPCheck();
++    expect(check.state).toBe('warning');
++    expect(check.items[1]).toEqual({
++      state: 'warning',
++      key: 'Browser FakeIP probe is unavailable',
++      value: '',
++    });
++    expect(JSON.stringify(check)).not.toContain('private details');
++  });
++
++  it('explains a valid fakeip=false response without treating it as a transport failure', async () => {
++    mockRouterFakeIP(true);
++    mockBrowserFakeIP(false);
++    mockBrowserIP('203.0.113.10');
++
++    await runFakeIPCheck();
++
++    const check = getFakeIPCheck();
++    expect(check.state).toBe('warning');
++    expect(check.items[1]).toEqual({
++      state: 'warning',
++      key: 'Browser uses another DNS (normal over remote access or with Secure DNS enabled)',
++      value: '',
++    });
++  });
++
++  it('does not report a routing failure when the comparison IP probe is unavailable', async () => {
++    mockRouterFakeIP(true);
++    mockBrowserFakeIP(true);
++    remoteFakeIPMethods.getIpCheck.mockResolvedValue({
++      success: false,
++      message: 'request timed out with private details',
++    });
++
++    await runFakeIPCheck();
++
++    const check = getFakeIPCheck();
++    expect(check.state).toBe('warning');
++    expect(check.items[2]).toEqual({
++      state: 'warning',
++      key: 'Proxy routing probe is unavailable',
++      value: '',
++    });
++    expect(JSON.stringify(check)).not.toContain('private details');
++  });
++
++  it('does not claim DNS bypass when the router response is invalid', async () => {
++    podkopShellMethods.checkFakeIP.mockResolvedValue({
++      success: true,
++      data: null,
++    });
++    mockBrowserFakeIP(true);
++    mockBrowserIP();
++
++    await expect(runFakeIPCheck()).resolves.toBeUndefined();
++
++    expect(getFakeIPCheck().items[0]).toEqual({
++      state: 'warning',
++      key: 'Router FakeIP probe is unavailable',
++      value: '',
++    });
++  });
++
++  it('distinguishes a valid empty router DNS result from an unavailable probe', async () => {
++    podkopShellMethods.checkFakeIP.mockResolvedValue({
++      success: true,
++      data: {
++        fakeip: false,
++        IP: '',
++        dnsAvailable: false,
++        dnsAddress: '',
++      },
++    });
++    mockBrowserFakeIP(true);
++    mockBrowserIP();
++
++    await runFakeIPCheck();
++
++    expect(getFakeIPCheck().items[0]).toEqual({
++      state: 'warning',
++      key: 'Router DNS did not return an answer',
++      value: '',
++    });
++  });
++});
+diff --git a/fe-app-podkop/src/podkop/types.ts b/fe-app-podkop/src/podkop/types.ts
+index f297d5c..7105c0b 100644
+--- a/fe-app-podkop/src/podkop/types.ts
++++ b/fe-app-podkop/src/podkop/types.ts
+@@ -331,6 +331,8 @@ export namespace Podkop {
+   export interface FakeIPCheckResult {
+     fakeip: boolean;
+     IP: string;
++    dnsAvailable?: boolean;
++    dnsAddress?: string;
+   }
+
+   export interface GetStatus {
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index 23e5bb5..617a11e 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -2975,6 +2975,19 @@ async function runNftCheck() {
+ }
+
+ // src/podkop/tabs/diagnostic/checks/runFakeIPCheck.ts
++function hasFakeIPStatus(value) {
++  return typeof value === "object" && value !== null && typeof value.fakeip === "boolean";
++}
++function getComparableIP(value) {
++  if (typeof value !== "object" || value === null) return "";
++  const IP = value.IP;
++  return typeof IP === "string" ? IP.trim() : "";
++}
++function getDnsAvailability(value) {
++  if (typeof value !== "object" || value === null) return void 0;
++  const dnsAvailable = value.dnsAvailable;
++  return typeof dnsAvailable === "boolean" ? dnsAvailable : void 0;
++}
+ async function runFakeIPCheck() {
+   const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.FAKEIP;
+   updateCheckStore({
+@@ -2985,16 +2998,24 @@ async function runFakeIPCheck() {
+     state: "loading",
+     items: []
+   });
+-  const routerFakeIPResponse = await PodkopShellMethods.checkFakeIP();
+-  const checkFakeIPResponse = await RemoteFakeIPMethods.getFakeIpCheck();
+-  const checkIPResponse = await RemoteFakeIPMethods.getIpCheck();
++  const [routerFakeIPResponse, checkFakeIPResponse, checkIPResponse] = await Promise.all([
++    PodkopShellMethods.checkFakeIP(),
++    RemoteFakeIPMethods.getFakeIpCheck(),
++    RemoteFakeIPMethods.getIpCheck()
++  ]);
++  const routerProbeAvailable = routerFakeIPResponse.success && hasFakeIPStatus(routerFakeIPResponse.data);
++  const routerDnsAvailable = routerFakeIPResponse.success ? getDnsAvailability(routerFakeIPResponse.data) : void 0;
++  const browserProbeAvailable = checkFakeIPResponse.success && hasFakeIPStatus(checkFakeIPResponse.data);
++  const browserIP = checkFakeIPResponse.success ? getComparableIP(checkFakeIPResponse.data) : "";
++  const proxyIP = checkIPResponse.success ? getComparableIP(checkIPResponse.data) : "";
++  const ipProbeAvailable = Boolean(browserIP && proxyIP);
+   const checks = {
+-    router: routerFakeIPResponse.success && routerFakeIPResponse.data.fakeip,
+-    browserFakeIP: checkFakeIPResponse.success && checkFakeIPResponse.data.fakeip,
+-    differentIP: checkFakeIPResponse.success && checkIPResponse.success && checkFakeIPResponse.data.IP !== checkIPResponse.data.IP
++    router: routerProbeAvailable && routerFakeIPResponse.data.fakeip === true,
++    browserFakeIP: browserProbeAvailable && checkFakeIPResponse.data.fakeip === true,
++    differentIP: browserProbeAvailable && checkFakeIPResponse.data.fakeip === true && ipProbeAvailable && browserIP !== proxyIP
+   };
+-  const allGood = checks.router || checks.browserFakeIP || checks.differentIP;
+-  const atLeastOneGood = checks.router && checks.browserFakeIP && checks.differentIP;
++  const allGood = checks.router && checks.browserFakeIP && checks.differentIP;
++  const atLeastOneGood = checks.router || checks.browserFakeIP || checks.differentIP;
+   const { state, description } = getMeta({ atLeastOneGood, allGood });
+   updateCheckStore({
+     order,
+@@ -3005,18 +3026,20 @@ async function runFakeIPCheck() {
+     items: [
+       {
+         state: checks.router ? "success" : "warning",
+-        key: checks.router ? _("Router DNS is routed through sing-box") : _("Router DNS is not routed through sing-box"),
++        key: !routerProbeAvailable ? _("Router FakeIP probe is unavailable") : routerDnsAvailable === false ? _("Router DNS did not return an answer") : checks.router ? _("Router DNS is routed through sing-box") : _("Router DNS is not routed through sing-box"),
+         value: ""
+       },
+       {
+-        state: checks.browserFakeIP ? "success" : "error",
+-        key: checks.browserFakeIP ? _("Browser is using FakeIP correctly") : _("Browser is not using FakeIP"),
++        state: checks.browserFakeIP ? "success" : "warning",
++        key: !browserProbeAvailable ? _("Browser FakeIP probe is unavailable") : checks.browserFakeIP ? _("Browser is using FakeIP correctly") : _(
++          "Browser uses another DNS (normal over remote access or with Secure DNS enabled)"
++        ),
+         value: ""
+       },
+       ...insertIf(checks.browserFakeIP, [
+         {
+-          state: checks.differentIP ? "success" : "error",
+-          key: checks.differentIP ? _("Proxy traffic is routed via FakeIP") : _("Proxy traffic is not routed via FakeIP"),
++          state: !ipProbeAvailable ? "warning" : checks.differentIP ? "success" : "error",
++          key: !ipProbeAvailable ? _("Proxy routing probe is unavailable") : checks.differentIP ? _("Proxy traffic is routed via FakeIP") : _("Proxy traffic is not routed via FakeIP"),
+           value: ""
+         }
+       ])
+diff --git a/luci-app-podkop/po/ru/podkop.po b/luci-app-podkop/po/ru/podkop.po
+index 0c4065f..7eeba3f 100644
+--- a/luci-app-podkop/po/ru/podkop.po
++++ b/luci-app-podkop/po/ru/podkop.po
+@@ -1096,3 +1096,18 @@ msgstr "Секретный ключ YACD"
+
+ msgid "You can select Output Network Interface, by default autodetect"
+ msgstr "Вы можете выбрать выходной сетевой интерфейс, по умолчанию он определяется автоматически."
++
++msgid "Browser FakeIP probe is unavailable"
++msgstr "Проверка FakeIP в браузере недоступна"
++
++msgid "Browser uses another DNS (normal over remote access or with Secure DNS enabled)"
++msgstr "Браузер использует другой DNS (это нормально при удалённом доступе или включённом безопасном DNS)"
++
++msgid "Proxy routing probe is unavailable"
++msgstr "Проверка маршрутизации через прокси недоступна"
++
++msgid "Router DNS did not return an answer"
++msgstr "DNS роутера не вернул ответ"
++
++msgid "Router FakeIP probe is unavailable"
++msgstr "Проверка FakeIP на роутере недоступна"
+diff --git a/luci-app-podkop/po/templates/podkop.pot b/luci-app-podkop/po/templates/podkop.pot
+index 952202f..523016c 100644
+--- a/luci-app-podkop/po/templates/podkop.pot
++++ b/luci-app-podkop/po/templates/podkop.pot
+@@ -1555,3 +1555,23 @@ msgstr ""
+ #: ..\luci-app-podkop\htdocs\luci-static\resources\view\podkop\settings.js:127
+ msgid "You can select Output Network Interface, by default autodetect"
+ msgstr ""
++
++#: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts
++msgid "Browser FakeIP probe is unavailable"
++msgstr ""
++
++#: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts
++msgid "Browser uses another DNS (normal over remote access or with Secure DNS enabled)"
++msgstr ""
++
++#: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts
++msgid "Proxy routing probe is unavailable"
++msgstr ""
++
++#: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts
++msgid "Router DNS did not return an answer"
++msgstr ""
++
++#: src\podkop\tabs\diagnostic\checks\runFakeIPCheck.ts
++msgid "Router FakeIP probe is unavailable"
++msgstr ""
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index 81429d8..b61755e 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -4736,34 +4736,24 @@ check_sing_box() {
+ }
+
+ check_fakeip() {
+-    local response_file curl_meta http_code remote_ip fakeip_address body fakeip_status proxy_ip fakeip_timeout fakeip_route_check_v3
++    local fakeip_address router_fakeip dns_available fakeip_route_check_v3 fakeip_router_dns_truth_v4
+
+     fakeip_route_check_v3=1
++    fakeip_router_dns_truth_v4=1
+     FAKEIP_TEST_DOMAIN="${FAKEIP_TEST_DOMAIN:-fakeip.podkop.fyi}"
+-    fakeip_timeout="${PODKOP_FAKEIP_CHECK_TIMEOUT:-8}"
+-    response_file="$(mktemp)"
+-    curl_meta=$(curl -m "$fakeip_timeout" -s -o "$response_file" -w "%{http_code} %{remote_ip}" "https://$FAKEIP_TEST_DOMAIN/check" 2> /dev/null)
+-    body="$(cat "$response_file" 2> /dev/null)"
+-    rm -f "$response_file"
+-
+-    if [ -n "$body" ] && echo "$body" | jq -e . > /dev/null 2>&1; then
+-        fakeip_status="$(echo "$body" | jq -r '.fakeip // false')"
+-        if [ "$fakeip_status" = "true" ]; then
+-            echo "$body" | jq .
+-            return
+-        fi
+-
+-        http_code="${curl_meta%% *}"
+-        remote_ip="${curl_meta#* }"
+-        fakeip_address="$(dig +short @127.0.0.42 "$FAKEIP_TEST_DOMAIN" 2> /dev/null | head -n 1)"
+-        if [ "$http_code" = "200" ] && echo "$remote_ip" | grep -q "^198\.18\." && echo "$fakeip_address" | grep -q "^198\.18\."; then
+-            proxy_ip="$(echo "$body" | jq -r '.IP // empty')"
+-            printf '{"fakeip":true,"IP":"%s"}\n' "$proxy_ip" | jq .
+-            return
+-        fi
++    fakeip_address="$(dig +short @127.0.0.1 "$FAKEIP_TEST_DOMAIN" 2> /dev/null | head -n 1 || true)"
++    router_fakeip=false
++    dns_available=false
++    [ -z "$fakeip_address" ] || dns_available=true
++    case "$fakeip_address" in
++    198.18.* | 198.19.*)
++        router_fakeip=true
++        ;;
++    esac
+
+-        echo "$body" | jq .
+-    fi
++    jq -n --argjson fakeip "$router_fakeip" --argjson dnsAvailable "$dns_available" \
++        --arg dnsAddress "$fakeip_address" \
++        '{fakeip: $fakeip, IP: "", dnsAddress: $dnsAddress, dnsAvailable: $dnsAvailable}'
+ }
+
+ #######################################

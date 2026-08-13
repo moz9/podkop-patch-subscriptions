@@ -117,7 +117,14 @@ for required in \
     www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v2/subscriptions.js \
     www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v2/settings.js \
     www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v2/dashboard.js \
-    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v2/diagnostic.js; do
+    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v2/diagnostic.js \
+    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/main.js \
+    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/podkop.js \
+    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/section.js \
+    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/subscriptions.js \
+    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/settings.js \
+    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/dashboard.js \
+    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/diagnostic.js; do
     printf '%s\n' "$RUNTIME_FILES" | grep -Fxq "$required" ||
         fail_test "backup/rollback inventory omits $required"
 done

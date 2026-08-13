@@ -50,6 +50,13 @@ installer_dns_failover_version="$(normalize i | sed -n 's/^DNS_FAILOVER_VERSION=
 manifest_patch="$(jq -r '.patchVersion' openwrt/update-manifest.json)"
 manifest_recommended="$(jq -r '.recommendedPodkopVersion' openwrt/update-manifest.json)"
 manifest_supported="$(jq -r '.supportedPodkopVersions | join(" ")' openwrt/update-manifest.json)"
+expected_patch_version="20260813-reliability-responsive-v4"
+
+if [ "$manifest_patch" != "$expected_patch_version" ]; then
+    printf 'FAIL: release must publish the FakeIP diagnostics fix as %s, got %s\n' \
+        "$expected_patch_version" "$manifest_patch" >&2
+    exit 1
+fi
 
 if [ -z "$manager_version" ] || [ "$manager_version" != "$installer_manager_version" ]; then
     printf 'FAIL: update manager version mismatch: manager=%s installer=%s\n' \

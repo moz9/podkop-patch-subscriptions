@@ -17,6 +17,7 @@ const cases = [
   [["20260813-reliability-responsive-v1", "20260720-update-center-force-v1", false], "20260813-reliability-responsive-v1"],
   [["20260720-update-center-force-v1", "20260813-reliability-responsive-v1", true], "20260720-update-center-force-v1 → 20260813-reliability-responsive-v1"],
   [["20260813-reliability-responsive-v2", "20260813-reliability-responsive-v3", true], "20260813-reliability-responsive-v2 → 20260813-reliability-responsive-v3"],
+  [["20260813-reliability-responsive-v3", "20260813-reliability-responsive-v4", true], "20260813-reliability-responsive-v3 → 20260813-reliability-responsive-v4"],
   [["0.7.21", "0.7.21", false], "0.7.21"],
 ];
 for (const [args, expected] of cases) {
