@@ -280,16 +280,16 @@ fi
 grep -q '^VERSION="20260813-dns-optimizer-v15"$' openwrt/podkop-dns-optimizer ||
     fail_test 'DNS optimizer version was not bumped to v15'
 for installer in i openwrt/install.sh; do
-    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260813-reliability-responsive-v3"$' "$installer" ||
-        fail_test "$installer patch marker was not bumped to v3"
+    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260813-reliability-responsive-v4"$' "$installer" ||
+        fail_test "$installer patch marker was not bumped to v4"
     grep -q '^DNS_OPTIMIZER_VERSION="20260813-dns-optimizer-v15"$' "$installer" ||
         fail_test "$installer DNS optimizer version was not bumped to v15"
-    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20260813_reliability_responsive_v3"$' "$installer" ||
-        fail_test "$installer LuCI namespace was not bumped to v3"
+    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20260813_reliability_responsive_v4"$' "$installer" ||
+        fail_test "$installer LuCI namespace was not bumped to v4"
 done
 
-[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20260813-reliability-responsive-v3' ] ||
-    fail_test 'update manifest patch version was not bumped to v3'
+[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20260813-reliability-responsive-v4' ] ||
+    fail_test 'update manifest patch version was not bumped to v4'
 
 cmp -s i openwrt/install.sh ||
     fail_test 'unified installer copies differ'

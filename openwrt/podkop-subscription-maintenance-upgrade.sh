@@ -27,40 +27,30 @@ if grep -q 'sing_box_cf_proxy_domain "$config" "$SB_TPROXY_INBOUND_TAG" "$FAKEIP
 	rm -f "$tmp"
 fi
 
-if ! grep -q "fakeip_route_check_v3" "$target" 2>/dev/null; then
+if ! grep -q "fakeip_router_dns_truth_v4=1" "$target" 2>/dev/null; then
 	awk '
 	BEGIN { in_check_fakeip = 0 }
 
 	$0 == "check_fakeip() {" {
 		print "check_fakeip() {"
-		print "    local response_file curl_meta http_code remote_ip fakeip_address body fakeip_status proxy_ip fakeip_timeout fakeip_route_check_v3"
+		print "    local fakeip_address router_fakeip dns_available fakeip_route_check_v3 fakeip_router_dns_truth_v4"
 		print ""
 		print "    fakeip_route_check_v3=1"
+		print "    fakeip_router_dns_truth_v4=1"
 		print "    FAKEIP_TEST_DOMAIN=\"${FAKEIP_TEST_DOMAIN:-fakeip.podkop.fyi}\""
-		print "    fakeip_timeout=\"${PODKOP_FAKEIP_CHECK_TIMEOUT:-8}\""
-		print "    response_file=\"$(mktemp)\""
-		print "    curl_meta=$(curl -m \"$fakeip_timeout\" -s -o \"$response_file\" -w \"%{http_code} %{remote_ip}\" \"https://$FAKEIP_TEST_DOMAIN/check\" 2> /dev/null)"
-		print "    body=\"$(cat \"$response_file\" 2> /dev/null)\""
-		print "    rm -f \"$response_file\""
+		print "    fakeip_address=\"$(dig +short @127.0.0.1 \"$FAKEIP_TEST_DOMAIN\" 2> /dev/null | head -n 1 || true)\""
+		print "    router_fakeip=false"
+		print "    dns_available=false"
+		print "    [ -z \"$fakeip_address\" ] || dns_available=true"
+		print "    case \"$fakeip_address\" in"
+		print "    198.18.* | 198.19.*)"
+		print "        router_fakeip=true"
+		print "        ;;"
+		print "    esac"
 		print ""
-		print "    if [ -n \"$body\" ] && echo \"$body\" | jq -e . > /dev/null 2>&1; then"
-		print "        fakeip_status=\"$(echo \"$body\" | jq -r '\''.fakeip // false'\'')\""
-		print "        if [ \"$fakeip_status\" = \"true\" ]; then"
-		print "            echo \"$body\" | jq ."
-		print "            return"
-		print "        fi"
-		print ""
-		print "        http_code=\"${curl_meta%% *}\""
-		print "        remote_ip=\"${curl_meta#* }\""
-		print "        fakeip_address=\"$(dig +short @127.0.0.42 \"$FAKEIP_TEST_DOMAIN\" 2> /dev/null | head -n 1)\""
-		print "        if [ \"$http_code\" = \"200\" ] && echo \"$remote_ip\" | grep -q \"^198\\.18\\.\" && echo \"$fakeip_address\" | grep -q \"^198\\.18\\.\"; then"
-		print "            proxy_ip=\"$(echo \"$body\" | jq -r '\''.IP // empty'\'')\""
-		print "            printf '\''{\"fakeip\":true,\"IP\":\"%s\"}\\n'\'' \"$proxy_ip\" | jq ."
-		print "            return"
-		print "        fi"
-		print ""
-		print "        echo \"$body\" | jq ."
-		print "    fi"
+		print "    jq -n --argjson fakeip \"$router_fakeip\" --argjson dnsAvailable \"$dns_available\" \\"
+		print "        --arg dnsAddress \"$fakeip_address\" \\"
+		print "        '\''{fakeip: $fakeip, IP: \"\", dnsAddress: $dnsAddress, dnsAvailable: $dnsAvailable}'\''"
 		print "}"
 		in_check_fakeip = 1
 		next

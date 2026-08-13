@@ -4736,34 +4736,24 @@ check_sing_box() {
 }
 
 check_fakeip() {
-    local response_file curl_meta http_code remote_ip fakeip_address body fakeip_status proxy_ip fakeip_timeout fakeip_route_check_v3
+    local fakeip_address router_fakeip dns_available fakeip_route_check_v3 fakeip_router_dns_truth_v4
 
     fakeip_route_check_v3=1
+    fakeip_router_dns_truth_v4=1
     FAKEIP_TEST_DOMAIN="${FAKEIP_TEST_DOMAIN:-fakeip.podkop.fyi}"
-    fakeip_timeout="${PODKOP_FAKEIP_CHECK_TIMEOUT:-8}"
-    response_file="$(mktemp)"
-    curl_meta=$(curl -m "$fakeip_timeout" -s -o "$response_file" -w "%{http_code} %{remote_ip}" "https://$FAKEIP_TEST_DOMAIN/check" 2> /dev/null)
-    body="$(cat "$response_file" 2> /dev/null)"
-    rm -f "$response_file"
+    fakeip_address="$(dig +short @127.0.0.1 "$FAKEIP_TEST_DOMAIN" 2> /dev/null | head -n 1 || true)"
+    router_fakeip=false
+    dns_available=false
+    [ -z "$fakeip_address" ] || dns_available=true
+    case "$fakeip_address" in
+    198.18.* | 198.19.*)
+        router_fakeip=true
+        ;;
+    esac
 
-    if [ -n "$body" ] && echo "$body" | jq -e . > /dev/null 2>&1; then
-        fakeip_status="$(echo "$body" | jq -r '.fakeip // false')"
-        if [ "$fakeip_status" = "true" ]; then
-            echo "$body" | jq .
-            return
-        fi
-
-        http_code="${curl_meta%% *}"
-        remote_ip="${curl_meta#* }"
-        fakeip_address="$(dig +short @127.0.0.42 "$FAKEIP_TEST_DOMAIN" 2> /dev/null | head -n 1)"
-        if [ "$http_code" = "200" ] && echo "$remote_ip" | grep -q "^198\.18\." && echo "$fakeip_address" | grep -q "^198\.18\."; then
-            proxy_ip="$(echo "$body" | jq -r '.IP // empty')"
-            printf '{"fakeip":true,"IP":"%s"}\n' "$proxy_ip" | jq .
-            return
-        fi
-
-        echo "$body" | jq .
-    fi
+    jq -n --argjson fakeip "$router_fakeip" --argjson dnsAvailable "$dns_available" \
+        --arg dnsAddress "$fakeip_address" \
+        '{fakeip: $fakeip, IP: "", dnsAddress: $dnsAddress, dnsAvailable: $dnsAvailable}'
 }
 
 #######################################

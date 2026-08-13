@@ -19,7 +19,7 @@ CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260813-reliability-responsive-v3"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260813-reliability-responsive-v4"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -43,7 +43,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20260813_reliability_responsive_v3"
+LUCI_MODULE_NAMESPACE="podkop_patch_20260813_reliability_responsive_v4"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -94,6 +94,13 @@ www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/s
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/settings.js
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/dashboard.js
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/main.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/podkop.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/section.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/settings.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/dashboard.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -795,7 +802,7 @@ has_latest_subscription_backend() {
 		grep -q "Subscription download via service proxy failed; trying direct download" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription sources that could not be downloaded" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_noop_v1" /usr/bin/podkop 2>/dev/null &&
-		grep -q "fakeip_route_check_v3" /usr/bin/podkop 2>/dev/null &&
+		grep -q "fakeip_router_dns_truth_v4" /usr/bin/podkop 2>/dev/null &&
 		grep -q 'subscription_speedtest "$2" "$3"' /usr/bin/podkop 2>/dev/null &&
 		grep -q -- '--arg state "running" --arg message "speedtest_running"' /usr/bin/podkop 2>/dev/null &&
 		! grep -q "wget -T 30 -t" /usr/bin/podkop 2>/dev/null &&
