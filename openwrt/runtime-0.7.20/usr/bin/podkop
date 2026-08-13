@@ -1704,6 +1704,342 @@ set_subscription_links_enabled() {
     printf '{"success":true,"changed":%s,"reloaded":%s}\n' "$changed_count" "$reload_required"
 }
 
+# subscription_apply_v2 begin
+subscription_apply_v2_print_result() {
+    local success="$1"
+    local state="$2"
+    local phase="$3"
+    local error="$4"
+    local committed="$5"
+    local rolled_back="$6"
+    local changed="${7:-0}"
+    local reloaded="${8:-false}"
+
+    jq -cn \
+        --argjson success "$success" \
+        --arg state "$state" \
+        --arg phase "$phase" \
+        --arg error "$error" \
+        --argjson committed "$committed" \
+        --argjson rolledBack "$rolled_back" \
+        --argjson changed "$changed" \
+        --argjson reloaded "$reloaded" \
+        '{success:$success,state:$state,phase:$phase,error:$error,committed:$committed,rolledBack:$rolledBack,changed:$changed,reloaded:$reloaded}'
+}
+
+subscription_apply_v2_reload() {
+    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
+}
+
+subscription_apply_v2_cleanup() {
+    trap - INT TERM HUP
+    if [ -n "${SUBSCRIPTION_APPLY_V2_TMP:-}" ] && [ -d "$SUBSCRIPTION_APPLY_V2_TMP" ]; then
+        rm -rf "$SUBSCRIPTION_APPLY_V2_TMP"
+    fi
+    subscription_action_lock_release
+    SUBSCRIPTION_APPLY_V2_TMP=""
+    SUBSCRIPTION_APPLY_V2_COMMITTED=0
+    SUBSCRIPTION_APPLY_V2_STAGED=0
+}
+
+subscription_apply_v2_restore() {
+    local restore_tmp cache_was_present restore_ok
+
+    restore_ok=1
+    uci -q revert podkop > /dev/null 2>&1 || true
+
+    restore_tmp="${PODKOP_CONFIG}.subscription-apply-v2.$$"
+    if ! cp "$SUBSCRIPTION_APPLY_V2_TMP/podkop.config" "$restore_tmp" 2> /dev/null ||
+        ! mv "$restore_tmp" "$PODKOP_CONFIG" 2> /dev/null; then
+        rm -f "$restore_tmp"
+        restore_ok=0
+    fi
+
+    cache_was_present="$(cat "$SUBSCRIPTION_APPLY_V2_TMP/cache.present" 2> /dev/null || echo 0)"
+    case "$SUBSCRIPTION_CACHE_DIR" in
+    "" | "/")
+        restore_ok=0
+        ;;
+    *)
+        if ! rm -rf "$SUBSCRIPTION_CACHE_DIR" 2> /dev/null; then
+            restore_ok=0
+        elif [ "$cache_was_present" = "1" ]; then
+            if ! mkdir -p "$SUBSCRIPTION_CACHE_DIR" 2> /dev/null ||
+                ! cp -a "$SUBSCRIPTION_APPLY_V2_TMP/subscriptions/." "$SUBSCRIPTION_CACHE_DIR/" 2> /dev/null; then
+                restore_ok=0
+            fi
+        fi
+        ;;
+    esac
+
+    config_load "$PODKOP_CONFIG"
+    if ! subscription_apply_v2_reload; then
+        restore_ok=0
+    fi
+
+    [ "$restore_ok" -eq 1 ]
+}
+
+subscription_apply_v2_fail() {
+    local phase="$1"
+    local error="$2"
+    local committed="${3:-false}"
+    local state="error"
+    local rolled_back=false
+
+    if [ "$committed" = "true" ]; then
+        trap '' INT TERM HUP
+        if subscription_apply_v2_restore; then
+            state="rolled_back"
+            rolled_back=true
+        else
+            state="rollback_failed"
+        fi
+    fi
+
+    subscription_apply_v2_print_result false "$state" "$phase" "$error" "$committed" "$rolled_back" \
+        "${SUBSCRIPTION_APPLY_V2_CHANGED:-0}" false
+    subscription_apply_v2_cleanup
+    return 1
+}
+
+subscription_apply_v2_interrupted() {
+    local committed=false
+    local rolled_back=false
+    local state="error"
+
+    trap '' INT TERM HUP
+    if [ "${SUBSCRIPTION_APPLY_V2_COMMITTED:-0}" -eq 1 ]; then
+        committed=true
+        if subscription_apply_v2_restore > /dev/null 2>&1; then
+            state="rolled_back"
+            rolled_back=true
+        else
+            state="rollback_failed"
+        fi
+    elif [ "${SUBSCRIPTION_APPLY_V2_STAGED:-0}" -eq 1 ]; then
+        if uci -q revert podkop > /dev/null 2>&1; then
+            state="rolled_back"
+            rolled_back=true
+        else
+            state="rollback_failed"
+        fi
+    fi
+    subscription_apply_v2_print_result false "$state" interrupted interrupted \
+        "$committed" "$rolled_back" \
+        "${SUBSCRIPTION_APPLY_V2_CHANGED:-0}" false
+    subscription_apply_v2_cleanup
+    exit 130
+}
+
+set_subscription_sections_enabled() {
+    local payload="$1"
+    local payload_file sections_file section_json section changes_count items_cache_path
+    local excluded_ids_file proposed_ids_file tmp_ids_file link_id enabled_value was_excluded
+    local excluded_ids_json remaining_enabled_count validated_sections_file changed_count
+    local cache_was_present section_file
+
+    if ! subscription_action_lock_acquire "subscription_apply_v2"; then
+        subscription_apply_v2_print_result false error lock service_busy false false 0 false
+        return 1
+    fi
+
+    SUBSCRIPTION_APPLY_V2_TMP="$(mktemp -d /tmp/podkop-subscription-apply-v2.XXXXXX 2> /dev/null || true)"
+    SUBSCRIPTION_APPLY_V2_COMMITTED=0
+    SUBSCRIPTION_APPLY_V2_STAGED=0
+    SUBSCRIPTION_APPLY_V2_CHANGED=0
+    if [ -z "$SUBSCRIPTION_APPLY_V2_TMP" ] || [ ! -d "$SUBSCRIPTION_APPLY_V2_TMP" ]; then
+        subscription_apply_v2_print_result false error prepare temporary_directory_failed false false 0 false
+        subscription_apply_v2_cleanup
+        return 1
+    fi
+    trap 'subscription_apply_v2_interrupted' INT TERM HUP
+
+    payload_file="$SUBSCRIPTION_APPLY_V2_TMP/payload.json"
+    sections_file="$SUBSCRIPTION_APPLY_V2_TMP/sections.jsonl"
+    validated_sections_file="$SUBSCRIPTION_APPLY_V2_TMP/validated-sections"
+    : > "$validated_sections_file"
+
+    if ! printf '%s\n' "$payload" | jq -e '
+        select(
+            type == "object"
+            and (.sections | type == "array" and length > 0)
+            and all(.sections[];
+                type == "object"
+                and (.section | type == "string" and length > 0)
+                and (.changes | type == "array" and length > 0)
+                and all(.changes[];
+                    type == "object"
+                    and (.id | type == "string")
+                    and (.enabled | type == "boolean")
+                )
+                and (([.changes[].id] | length) == ([.changes[].id] | unique | length))
+            )
+            and (([.sections[].section] | length) == ([.sections[].section] | unique | length))
+        )
+    ' > "$payload_file" 2> /dev/null; then
+        subscription_apply_v2_fail validation invalid_payload false
+        return $?
+    fi
+    jq -c '.sections[]' "$payload_file" > "$sections_file" 2> /dev/null || {
+        subscription_apply_v2_fail validation invalid_payload false
+        return $?
+    }
+
+    changed_count=0
+    while IFS= read -r section_json || [ -n "$section_json" ]; do
+        section="$(printf '%s\n' "$section_json" | jq -r '.section')"
+        if ! validate_subscription_section_name "$section" ||
+            ! validate_subscription_urltest_section "$section"; then
+            subscription_apply_v2_fail validation section_is_not_subscription_urltest false
+            return $?
+        fi
+
+        items_cache_path="$(get_subscription_items_cache_path "$section")"
+        if [ ! -s "$items_cache_path" ] || ! jq -e 'type == "array"' "$items_cache_path" > /dev/null 2>&1; then
+            subscription_apply_v2_fail validation subscription_cache_missing false
+            return $?
+        fi
+
+        excluded_ids_file="$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.current"
+        proposed_ids_file="$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.proposed"
+        collect_subscription_excluded_ids "$section" "$excluded_ids_file"
+        cp "$excluded_ids_file" "$proposed_ids_file" || {
+            subscription_apply_v2_fail prepare temporary_write_failed false
+            return $?
+        }
+
+        printf '%s\n' "$section_json" | jq -r '.changes[] | [.id, (if .enabled then "1" else "0" end)] | @tsv' |
+            while IFS="$(printf '\t')" read -r link_id enabled_value; do
+                printf '%s\t%s\n' "$link_id" "$enabled_value"
+            done > "$SUBSCRIPTION_APPLY_V2_TMP/changes.$section" || {
+                subscription_apply_v2_fail validation invalid_payload false
+                return $?
+            }
+
+        changes_count=0
+        while IFS="$(printf '\t')" read -r link_id enabled_value || [ -n "$link_id" ]; do
+            [ -n "$link_id" ] || continue
+            if ! validate_subscription_link_id "$link_id"; then
+                subscription_apply_v2_fail validation invalid_link_id false
+                return $?
+            fi
+            if ! jq -e --arg id "$link_id" 'any(.[]; .id == $id and .supported == true)' \
+                "$items_cache_path" > /dev/null 2>&1; then
+                subscription_apply_v2_fail validation link_is_not_supported false
+                return $?
+            fi
+
+            if grep -Fxq "$link_id" "$proposed_ids_file" 2> /dev/null; then
+                was_excluded=1
+            else
+                was_excluded=0
+            fi
+            tmp_ids_file="$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.next"
+            grep -Fxv "$link_id" "$proposed_ids_file" > "$tmp_ids_file" 2> /dev/null || true
+            if [ "$enabled_value" -eq 0 ]; then
+                printf '%s\n' "$link_id" >> "$tmp_ids_file"
+            fi
+            awk '!seen[$0]++' "$tmp_ids_file" > "$proposed_ids_file"
+            rm -f "$tmp_ids_file"
+
+            if { [ "$enabled_value" -eq 0 ] && [ "$was_excluded" -eq 0 ]; } ||
+                { [ "$enabled_value" -eq 1 ] && [ "$was_excluded" -eq 1 ]; }; then
+                changes_count=$((changes_count + 1))
+            fi
+        done < "$SUBSCRIPTION_APPLY_V2_TMP/changes.$section"
+        changed_count=$((changed_count + changes_count))
+
+        excluded_ids_json="$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$proposed_ids_file")"
+        remaining_enabled_count="$(jq --argjson excludedIds "$excluded_ids_json" '
+            [.[] | select(.supported == true and (. as $item | ($excludedIds | index($item.id)) == null))] | length
+        ' "$items_cache_path" 2> /dev/null || echo 0)"
+        if [ "$remaining_enabled_count" -eq 0 ]; then
+            subscription_apply_v2_fail validation cannot_disable_last_enabled_link false
+            return $?
+        fi
+        printf '%s\n' "$section" >> "$validated_sections_file"
+    done < "$sections_file"
+
+    SUBSCRIPTION_APPLY_V2_CHANGED="$changed_count"
+    if [ "$changed_count" -eq 0 ]; then
+        subscription_apply_v2_print_result true no_changes complete "" false false 0 false
+        subscription_apply_v2_cleanup
+        return 0
+    fi
+
+    if ! cp "$PODKOP_CONFIG" "$SUBSCRIPTION_APPLY_V2_TMP/podkop.config" 2> /dev/null; then
+        subscription_apply_v2_fail backup config_backup_failed false
+        return $?
+    fi
+    cache_was_present=0
+    if [ -d "$SUBSCRIPTION_CACHE_DIR" ]; then
+        cache_was_present=1
+        mkdir "$SUBSCRIPTION_APPLY_V2_TMP/subscriptions" || {
+            subscription_apply_v2_fail backup cache_backup_failed false
+            return $?
+        }
+        if ! cp -a "$SUBSCRIPTION_CACHE_DIR/." "$SUBSCRIPTION_APPLY_V2_TMP/subscriptions/" 2> /dev/null; then
+            subscription_apply_v2_fail backup cache_backup_failed false
+            return $?
+        fi
+    fi
+    printf '%s\n' "$cache_was_present" > "$SUBSCRIPTION_APPLY_V2_TMP/cache.present"
+
+    SUBSCRIPTION_APPLY_V2_STAGED=1
+    while IFS= read -r section || [ -n "$section" ]; do
+        [ -n "$section" ] || continue
+        uci -q delete "podkop.$section.subscription_excluded_link_ids" > /dev/null 2>&1 || true
+        section_file="$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.proposed"
+        while IFS= read -r link_id || [ -n "$link_id" ]; do
+            [ -n "$link_id" ] || continue
+            if ! uci -q add_list "podkop.$section.subscription_excluded_link_ids=$link_id"; then
+                uci -q revert podkop > /dev/null 2>&1 || true
+                subscription_apply_v2_fail commit uci_stage_failed false
+                return $?
+            fi
+        done < "$section_file"
+    done < "$validated_sections_file"
+
+    SUBSCRIPTION_APPLY_V2_COMMITTED=1
+    if ! uci commit podkop; then
+        subscription_apply_v2_fail commit uci_commit_failed true
+        return $?
+    fi
+    SUBSCRIPTION_APPLY_V2_STAGED=0
+    config_load "$PODKOP_CONFIG"
+
+    while IFS= read -r section || [ -n "$section" ]; do
+        [ -n "$section" ] || continue
+        collect_subscription_excluded_ids "$section" "$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.committed"
+        if ! cmp -s "$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.proposed" \
+            "$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.committed"; then
+            subscription_apply_v2_fail verify committed_config_mismatch true
+            return $?
+        fi
+        if ! apply_subscription_exclusions_to_cached_links "$section"; then
+            subscription_apply_v2_fail cache subscription_cache_update_failed true
+            return $?
+        fi
+        items_cache_path="$(get_subscription_items_cache_path "$section")"
+        if [ ! -s "$(get_subscription_cache_path "$section")" ] ||
+            ! jq -e 'type == "array"' "$items_cache_path" > /dev/null 2>&1; then
+            subscription_apply_v2_fail verify subscription_cache_verification_failed true
+            return $?
+        fi
+    done < "$validated_sections_file"
+
+    if ! subscription_apply_v2_reload; then
+        subscription_apply_v2_fail reload reload_failed true
+        return $?
+    fi
+
+    subscription_apply_v2_print_result true success complete "" true false "$changed_count" true
+    subscription_apply_v2_cleanup
+    return 0
+}
+# subscription_apply_v2 end
+
 subscription_update_section_handler() {
     local section="$1"
     local connection_type proxy_config_type
@@ -2507,7 +2843,7 @@ if [ "$download_ok" -ne 1 ] || [ ! -s "$tmp" ]; then
     exit 1
 fi
 
-if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}" sh "$tmp"; then
+if run_with_timeout 900 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}" sh "$tmp"; then
     if grep -q "PODKOP_PATCH_NOOP=1" "$log_file" 2> /dev/null; then
         write_status "success" "patch_update_noop" "$(tail -n 20 "$log_file" 2> /dev/null)"
     else
@@ -2545,6 +2881,10 @@ subscription_action_lock_file() {
     echo "/tmp/podkop-subscription-action.lock"
 }
 
+subscription_action_lock_dir() {
+    echo "/tmp/podkop-subscription-action.lock.d"
+}
+
 subscription_action_lock_pid_alive() {
     local pid="$1"
 
@@ -2558,38 +2898,89 @@ subscription_action_lock_pid_alive() {
     [ -d "/proc/$pid" ]
 }
 
-subscription_action_lock_busy() {
+subscription_action_legacy_lock_busy() {
     local lock_file pid
 
     lock_file="$(subscription_action_lock_file)"
-    [ -s "$lock_file" ] || return 1
+    [ -e "$lock_file" ] || return 1
 
     pid="$(awk 'NR == 1 {print $1}' "$lock_file" 2> /dev/null)"
+    # An empty file can be the short creation-before-write window of a live
+    # pre-v2 process, so it is not safe to reclaim it as stale.
+    [ -n "$pid" ] || return 0
     if subscription_action_lock_pid_alive "$pid"; then
         return 0
     fi
 
-    rm -f "$lock_file"
+    rm -f "$lock_file" 2> /dev/null || return 0
     return 1
+}
+
+subscription_action_lock_busy() {
+    local lock_dir pid
+
+    lock_dir="$(subscription_action_lock_dir)"
+    if [ -d "$lock_dir" ]; then
+        pid="$(awk 'NR == 1 {print $1}' "$lock_dir/owner" 2> /dev/null)"
+        # Another process may have created the directory immediately before it
+        # writes the owner file. Treat that short ownerless window as busy;
+        # removing the directory here would break the atomic lock protocol.
+        [ -n "$pid" ] || return 0
+        if subscription_action_lock_pid_alive "$pid"; then
+            return 0
+        fi
+
+        rm -f "$lock_dir/owner"
+        rmdir "$lock_dir" 2> /dev/null || return 0
+    fi
+
+    # Honour a lock created by a process that started before the v2 upgrade.
+    subscription_action_legacy_lock_busy
 }
 
 subscription_action_lock_acquire() {
     local action="$1"
-    local lock_file
+    local lock_file lock_dir
 
-    lock_file="$(subscription_action_lock_file)"
     if subscription_action_lock_busy; then
         return 1
     fi
 
-    printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$lock_file"
+    lock_dir="$(subscription_action_lock_dir)"
+    mkdir "$lock_dir" 2> /dev/null || return 1
+    if ! printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$lock_dir/owner"; then
+        rmdir "$lock_dir" 2> /dev/null || true
+        return 1
+    fi
+
+    # Bridge the rolling-upgrade window in both directions: new processes use
+    # the atomic directory, while already-running old processes see this file.
+    if subscription_action_legacy_lock_busy; then
+        subscription_action_lock_release
+        return 1
+    fi
+    lock_file="$(subscription_action_lock_file)"
+    if ! (set -C; printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$lock_file") 2> /dev/null; then
+        subscription_action_lock_release
+        return 1
+    fi
 }
 
 subscription_action_lock_release() {
-    local lock_file pid
+    local lock_file lock_dir pid
 
+    lock_dir="$(subscription_action_lock_dir)"
+    if [ -d "$lock_dir" ]; then
+        pid="$(awk 'NR == 1 {print $1}' "$lock_dir/owner" 2> /dev/null)"
+        if [ "$pid" = "$$" ]; then
+            rm -f "$lock_dir/owner"
+            rmdir "$lock_dir" 2> /dev/null || true
+        fi
+    fi
+
+    # Release a legacy lock only when this process owns it.
     lock_file="$(subscription_action_lock_file)"
-    [ -s "$lock_file" ] || return 0
+    [ -e "$lock_file" ] || return 0
 
     pid="$(awk 'NR == 1 {print $1}' "$lock_file" 2> /dev/null)"
     [ "$pid" = "$$" ] && rm -f "$lock_file"
@@ -4870,6 +5261,8 @@ Available commands:
                             Enable or disable a subscription proxy item by id
     set_subscription_links_enabled
                             Enable or disable multiple subscription proxy items by id
+    set_subscription_sections_enabled
+                            Transactionally apply JSON changes for multiple sections
     show_config             Display current podkop configuration
     show_version            Show podkop version
     show_sing_box_config    Show sing-box configuration
@@ -4968,6 +5361,9 @@ set_subscription_link_enabled)
 set_subscription_links_enabled)
     shift
     set_subscription_links_enabled "$@"
+    ;;
+set_subscription_sections_enabled)
+    set_subscription_sections_enabled "$2"
     ;;
 show_config)
     show_config

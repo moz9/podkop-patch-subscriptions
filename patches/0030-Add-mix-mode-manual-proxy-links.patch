@@ -238,7 +238,7 @@ index e18fd73..1e4382e 100755
              i=1
              while IFS= read -r link || [ -n "$link" ]; do
                  [ -n "$link" ] || continue
-@@ -2725,10 +2788,10 @@ configure_outbound_handler() {
+@@ -2725,9 +2788,9 @@ configure_outbound_handler() {
                  fi
                  i=$((i + 1))
              done < "$links_file"

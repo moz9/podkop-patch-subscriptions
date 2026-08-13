@@ -18,7 +18,8 @@ V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
 CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260720-update-center-force-v1"
+APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260813-reliability-responsive-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -27,11 +28,14 @@ SECTION_JS_FILE="section.js"
 LMO_FILE="podkop.ru.lmo.base64"
 SUBSCRIPTIONS_FILE="subscriptions.js"
 SETTINGS_JS_FILE="settings.js"
+DASHBOARD_JS_FILE="dashboard.js"
+DIAGNOSTIC_JS_FILE="diagnostic.js"
+PODKOP_JS_FILE="podkop.js"
 DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
-DNS_OPTIMIZER_VERSION="20260717-dns-optimizer-v10"
+DNS_OPTIMIZER_VERSION="20260813-dns-optimizer-v12"
 DNS_FAILOVER_FILE="podkop-dns-failover"
 DNS_FAILOVER_INIT_FILE="podkop-dns-failover.init"
-DNS_FAILOVER_VERSION="20260711-dns-failover-v2"
+DNS_FAILOVER_VERSION="20260813-dns-failover-v3"
 DNS_FAILOVER_UPGRADE_FILE="podkop-dns-failover-upgrade.sh"
 UPDATE_MANAGER_FILE="podkop-update-manager"
 UPDATE_MANAGER_VERSION="20260720-update-manager-v2"
@@ -39,6 +43,12 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
+LUCI_MODULE_NAMESPACE="podkop_patch_20260813_reliability_responsive_v1"
+LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
+LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
+LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
+INSTALLER_ACTION_LOCK_FILE="${PODKOP_PATCH_ACTION_LOCK_FILE:-/tmp/podkop-subscription-action.lock}"
+INSTALLER_ACTION_LOCK_DIR="${PODKOP_PATCH_ACTION_LOCK_DIR:-/tmp/podkop-subscription-action.lock.d}"
 
 RUNTIME_FILES="
 usr/bin/podkop
@@ -46,15 +56,26 @@ usr/bin/podkop-dns-optimizer
 usr/bin/podkop-dns-failover
 usr/bin/podkop-update-manager
 etc/init.d/podkop-dns-failover
+etc/rc.d/K10podkop-dns-failover
 etc/rc.d/S100podkop-dns-failover
 usr/lib/podkop/helpers.sh
 usr/lib/podkop/sing_box_config_facade.sh
 usr/share/rpcd/acl.d/luci-app-podkop.json
+usr/share/luci/menu.d/luci-app-podkop.json
 www/luci-static/resources/view/podkop/main.js
 www/luci-static/resources/view/podkop/podkop.js
 www/luci-static/resources/view/podkop/section.js
 www/luci-static/resources/view/podkop/subscriptions.js
 www/luci-static/resources/view/podkop/settings.js
+www/luci-static/resources/view/podkop/dashboard.js
+www/luci-static/resources/view/podkop/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/main.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/podkop.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/section.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/settings.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/dashboard.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -172,9 +193,9 @@ install_prebuilt_0720_runtime() {
 	download "$RAW_BASE/$RUNTIME_0720_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.20"
 	download "$RAW_BASE/$RUNTIME_0720_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.20"
 
-	mkdir -p /usr/bin /www/luci-static/resources/view/podkop
+	mkdir -p /usr/bin "$LUCI_VIEW_ROOT/podkop"
 	cp "$tmp_dir/podkop.runtime-0.7.20" /usr/bin/podkop
-	cp "$tmp_dir/podkop.js.runtime-0.7.20" /www/luci-static/resources/view/podkop/podkop.js
+	cp "$tmp_dir/podkop.js.runtime-0.7.20" "$LUCI_VIEW_ROOT/podkop/podkop.js"
 }
 
 stop_stale_list_update_downloads() {
@@ -271,46 +292,70 @@ cleanup_old_backups() {
 }
 
 backup_runtime() {
-	restore_on_fail=1
-
-	if [ -n "${backup_dir:-}" ] && [ -d "$backup_dir" ]; then
+	if [ "${backup_complete:-0}" = "1" ] && [ -n "${backup_dir:-}" ] && [ -d "$backup_dir" ]; then
+		restore_on_fail=1
 		log "Backup already exists: $backup_dir"
 		return 0
 	fi
 
+	restore_on_fail=0
+	backup_complete=0
 	backup_dir="/root/podkop-patch-subscriptions-backup-$(date +%Y%m%d-%H%M%S)"
-	mkdir -p "$backup_dir"
+	if ! mkdir -p "$backup_dir"; then
+		backup_dir=""
+		fail "failed to create runtime backup"
+	fi
 
 	for rel in $RUNTIME_FILES; do
 		src="/$rel"
 		if [ -e "$src" ]; then
-			mkdir -p "$backup_dir/$(dirname "$rel")"
-			cp -a "$src" "$backup_dir/$rel"
+			if ! mkdir -p "$backup_dir/$(dirname "$rel")" ||
+				! cp -a "$src" "$backup_dir/$rel"; then
+				incomplete_backup="$backup_dir"
+				backup_dir=""
+				rm -rf "$incomplete_backup"
+				fail "failed to back up runtime path: /$rel"
+			fi
 		fi
 	done
 
 	for rel in $PERSISTENT_PATHS; do
 		src="/$rel"
 		if [ -e "$src" ]; then
-			mkdir -p "$backup_dir/$(dirname "$rel")"
-			cp -a "$src" "$backup_dir/$rel"
+			if ! mkdir -p "$backup_dir/$(dirname "$rel")" ||
+				! cp -a "$src" "$backup_dir/$rel"; then
+				incomplete_backup="$backup_dir"
+				backup_dir=""
+				rm -rf "$incomplete_backup"
+				fail "failed to back up persistent path: /$rel"
+			fi
 		fi
 	done
 
+	backup_complete=1
+	restore_done=0
+	restore_on_fail=1
 	log "Backup: $backup_dir"
 	log "Backup size: $(get_path_size "$backup_dir")"
 }
 
 restore_persistent_paths() {
+	persistent_restore_ok=1
 	for rel in $PERSISTENT_PATHS; do
 		dst="/$rel"
 		src="$backup_dir/$rel"
 		if [ -e "$src" ]; then
-			mkdir -p "$(dirname "$dst")"
-			rm -rf "$dst"
-			cp -a "$src" "$dst"
+			if ! mkdir -p "$(dirname "$dst")" ||
+				! rm -rf "$dst" ||
+				! cp -a "$src" "$dst"; then
+				persistent_restore_ok=0
+			fi
+		elif ! rm -rf "$dst"; then
+			persistent_restore_ok=0
 		fi
 	done
+
+	[ "$persistent_restore_ok" -eq 1 ]
 }
 
 restore_missing_persistent_paths() {
@@ -326,34 +371,147 @@ restore_missing_persistent_paths() {
 }
 
 restore_runtime() {
-	restore_done=1
+	runtime_restore_ok=1
 	log "Restoring backup..."
 	[ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover stop >/dev/null 2>&1 || true
 	for rel in $RUNTIME_FILES; do
 		dst="/$rel"
 		src="$backup_dir/$rel"
 		if [ -e "$src" ]; then
-			mkdir -p "$(dirname "$dst")"
-			cp -a "$src" "$dst"
-		else
-			rm -f "$dst"
+			if ! mkdir -p "$(dirname "$dst")" ||
+				! rm -rf "$dst" ||
+				! cp -a "$src" "$dst"; then
+				runtime_restore_ok=0
+			fi
+		elif ! rm -rf "$dst"; then
+			runtime_restore_ok=0
 		fi
 	done
-	restore_persistent_paths
+	restore_persistent_paths || runtime_restore_ok=0
 	rm -f /tmp/luci-indexcache
 	rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 	/etc/init.d/rpcd restart >/dev/null 2>&1 || true
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 	[ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover restart >/dev/null 2>&1 || true
+
+	if [ "$runtime_restore_ok" -eq 1 ]; then
+		restore_done=1
+		return 0
+	fi
+
+	log "ERROR: backup restoration was incomplete; retrying on installer exit"
+	return 1
 }
 
 restore_if_needed() {
 	if [ "${restore_on_fail:-0}" = "1" ] &&
+		[ "${backup_complete:-0}" = "1" ] &&
 		[ "${restore_done:-0}" != "1" ] &&
 		[ -n "${backup_dir:-}" ] &&
 		[ -d "$backup_dir" ]; then
 		restore_runtime
 	fi
+}
+
+installer_lock_pid_alive() {
+	pid="$1"
+
+	[ -n "$pid" ] || return 1
+	case "$pid" in
+	*[!0-9]*)
+		return 1
+		;;
+	esac
+
+	[ -d "/proc/$pid" ]
+}
+
+installer_legacy_lock_busy() {
+	[ -e "$INSTALLER_ACTION_LOCK_FILE" ] || return 1
+
+	pid="$(awk 'NR == 1 {print $1}' "$INSTALLER_ACTION_LOCK_FILE" 2>/dev/null)"
+	[ -n "$pid" ] || return 0
+	if installer_lock_pid_alive "$pid"; then
+		return 0
+	fi
+
+	rm -f "$INSTALLER_ACTION_LOCK_FILE" 2>/dev/null || return 0
+	return 1
+}
+
+installer_mutation_lock_busy() {
+	if [ -d "$INSTALLER_ACTION_LOCK_DIR" ]; then
+		pid="$(awk 'NR == 1 {print $1}' "$INSTALLER_ACTION_LOCK_DIR/owner" 2>/dev/null)"
+		[ -n "$pid" ] || return 0
+		if installer_lock_pid_alive "$pid"; then
+			return 0
+		fi
+
+		rm -f "$INSTALLER_ACTION_LOCK_DIR/owner"
+		rmdir "$INSTALLER_ACTION_LOCK_DIR" 2>/dev/null || return 0
+	fi
+
+	installer_legacy_lock_busy
+}
+
+installer_mutation_lock_acquire() {
+	if installer_mutation_lock_busy; then
+		return 1
+	fi
+
+	mkdir "$INSTALLER_ACTION_LOCK_DIR" 2>/dev/null || return 1
+	if ! printf '%s %s %s\n' "$$" installer "$(date +%s 2>/dev/null || date)" > "$INSTALLER_ACTION_LOCK_DIR/owner"; then
+		rmdir "$INSTALLER_ACTION_LOCK_DIR" 2>/dev/null || true
+		return 1
+	fi
+
+	if installer_legacy_lock_busy; then
+		installer_mutation_lock_release
+		return 1
+	fi
+	if ! (set -C; printf '%s %s %s\n' "$$" installer "$(date +%s 2>/dev/null || date)" > "$INSTALLER_ACTION_LOCK_FILE") 2>/dev/null; then
+		installer_mutation_lock_release
+		return 1
+	fi
+
+	installer_mutation_lock_owned=1
+}
+
+installer_mutation_lock_release() {
+	if [ -d "$INSTALLER_ACTION_LOCK_DIR" ]; then
+		pid="$(awk 'NR == 1 {print $1}' "$INSTALLER_ACTION_LOCK_DIR/owner" 2>/dev/null)"
+		if [ "$pid" = "$$" ]; then
+			rm -f "$INSTALLER_ACTION_LOCK_DIR/owner"
+			rmdir "$INSTALLER_ACTION_LOCK_DIR" 2>/dev/null || true
+		fi
+	fi
+
+	if [ -e "$INSTALLER_ACTION_LOCK_FILE" ]; then
+		pid="$(awk 'NR == 1 {print $1}' "$INSTALLER_ACTION_LOCK_FILE" 2>/dev/null)"
+		[ "$pid" = "$$" ] && rm -f "$INSTALLER_ACTION_LOCK_FILE"
+	fi
+	installer_mutation_lock_owned=0
+}
+
+installer_exit_handler() {
+	exit_status="$1"
+	trap - EXIT INT TERM HUP
+	set +e
+
+	if [ "$exit_status" -ne 0 ]; then
+		restore_if_needed
+	fi
+	installer_mutation_lock_release
+
+	if [ -n "${tmp_dir:-}" ]; then
+		rm -rf "$tmp_dir"
+	fi
+
+	exit "$exit_status"
+}
+
+installer_signal_handler() {
+	installer_exit_handler "$1"
 }
 
 abort_with_restore() {
@@ -363,17 +521,19 @@ abort_with_restore() {
 }
 
 has_latest_subscription_backend() {
-	grep -Fxq "# $INSTALL_MARKER" /usr/bin/podkop 2>/dev/null && return 0
-
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
 	[ "${count:-0}" -ge 3 ] &&
 		grep -q '^case "\$1" in' /usr/bin/podkop 2>/dev/null &&
 		grep -q "get_subscription_items_cached" /usr/bin/podkop 2>/dev/null &&
 		grep -q "set_subscription_links_enabled" /usr/bin/podkop 2>/dev/null &&
+		grep -q "set_subscription_sections_enabled" /usr/bin/podkop 2>/dev/null &&
+		grep -q '^set_subscription_sections_enabled)' /usr/bin/podkop 2>/dev/null &&
+		grep -q "subscription_apply_v2" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_update_json" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_speedtest" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_patch_update" /usr/bin/podkop 2>/dev/null &&
 		grep -q "get_subscription_patch_update_status" /usr/bin/podkop 2>/dev/null &&
+		grep -q 'run_with_timeout 900 env PODKOP_PATCH_VERSION=' /usr/bin/podkop 2>/dev/null &&
 		grep -q "restore_community_subnet_cache_v2" /usr/bin/podkop 2>/dev/null &&
 		grep -Fq 'reduce .[] as $item' /usr/bin/podkop 2>/dev/null &&
 		grep -q "raw.githubusercontent.com:443" /usr/lib/podkop/helpers.sh 2>/dev/null &&
@@ -418,17 +578,77 @@ decode_lmo_asset() {
 	tr -d '\r\n\t ' < "$tmp_dir/$LMO_FILE" | base64 -d > "$tmp_dir/$LMO_DECODED_FILE"
 }
 
+prepare_versioned_luci_assets() {
+	case "$LUCI_MODULE_NAMESPACE" in
+		"" | *[!A-Za-z0-9_]*)
+			return 1
+			;;
+	esac
+
+	versioned_tmp_dir="$tmp_dir/luci-versioned/$LUCI_MODULE_NAMESPACE"
+	rm -rf "$versioned_tmp_dir"
+	mkdir -p "$versioned_tmp_dir" || return 1
+
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+		[ -s "$tmp_dir/$asset" ] || return 1
+		sed "s/require view\\.podkop\\./require view.$LUCI_MODULE_NAMESPACE./g" \
+			"$tmp_dir/$asset" > "$versioned_tmp_dir/$asset" || return 1
+		[ -s "$versioned_tmp_dir/$asset" ] || return 1
+	done
+}
+
+base_luci_assets_current() {
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+		[ -f "$LUCI_VIEW_ROOT/podkop/$asset" ] || return 1
+		cmp -s "$LUCI_VIEW_ROOT/podkop/$asset" "$tmp_dir/$asset" || return 1
+	done
+}
+
+versioned_luci_assets_current() {
+	versioned_tmp_dir="$tmp_dir/luci-versioned/$LUCI_MODULE_NAMESPACE"
+	versioned_view_dir="$LUCI_VIEW_ROOT/$LUCI_MODULE_NAMESPACE"
+
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+		[ -f "$versioned_view_dir/$asset" ] || return 1
+		cmp -s "$versioned_view_dir/$asset" "$versioned_tmp_dir/$asset" || return 1
+	done
+
+	[ -f "$LUCI_MENU_FILE" ] || return 1
+	jq -e --arg path "$LUCI_MODULE_ENTRY" \
+		'.["admin/services/podkop"].action.type == "view" and .["admin/services/podkop"].action.path == $path' \
+		"$LUCI_MENU_FILE" >/dev/null 2>&1
+}
+
+install_versioned_luci_assets() {
+	versioned_tmp_dir="$tmp_dir/luci-versioned/$LUCI_MODULE_NAMESPACE"
+	versioned_view_dir="$LUCI_VIEW_ROOT/$LUCI_MODULE_NAMESPACE"
+	menu_tmp="$tmp_dir/luci-app-podkop.menu.json"
+
+	[ -f "$LUCI_MENU_FILE" ] || abort_with_restore "Podkop LuCI menu is missing"
+	mkdir -p "$LUCI_VIEW_ROOT/podkop" "$versioned_view_dir" "$(dirname "$LUCI_MENU_FILE")" ||
+		abort_with_restore "failed to create Podkop LuCI asset directories"
+
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+		cp "$tmp_dir/$asset" "$LUCI_VIEW_ROOT/podkop/$asset" ||
+			abort_with_restore "failed to install Podkop LuCI asset: $asset"
+		cp "$versioned_tmp_dir/$asset" "$versioned_view_dir/$asset" ||
+			abort_with_restore "failed to install versioned Podkop LuCI asset: $asset"
+		chmod 644 "$LUCI_VIEW_ROOT/podkop/$asset" "$versioned_view_dir/$asset"
+	done
+
+	jq --arg path "$LUCI_MODULE_ENTRY" \
+		'.["admin/services/podkop"].action = {"type":"view","path":$path}' \
+		"$LUCI_MENU_FILE" > "$menu_tmp" || abort_with_restore "failed to version Podkop LuCI menu"
+	jq -e . "$menu_tmp" >/dev/null 2>&1 || abort_with_restore "Podkop LuCI menu validation failed"
+	cp "$menu_tmp" "$LUCI_MENU_FILE" || abort_with_restore "failed to install Podkop LuCI menu"
+	chmod 644 "$LUCI_MENU_FILE"
+}
+
 luci_assets_current() {
 	decode_lmo_asset || return 1
 
-	[ -f /www/luci-static/resources/view/podkop/main.js ] &&
-		cmp -s /www/luci-static/resources/view/podkop/main.js "$tmp_dir/$MAIN_JS_FILE" &&
-		[ -f /www/luci-static/resources/view/podkop/section.js ] &&
-		cmp -s /www/luci-static/resources/view/podkop/section.js "$tmp_dir/$SECTION_JS_FILE" &&
-		[ -f /www/luci-static/resources/view/podkop/subscriptions.js ] &&
-		cmp -s /www/luci-static/resources/view/podkop/subscriptions.js "$tmp_dir/$SUBSCRIPTIONS_FILE" &&
-		[ -f /www/luci-static/resources/view/podkop/settings.js ] &&
-		cmp -s /www/luci-static/resources/view/podkop/settings.js "$tmp_dir/$SETTINGS_JS_FILE" &&
+	base_luci_assets_current &&
+		versioned_luci_assets_current &&
 		[ -x /usr/bin/podkop-dns-optimizer ] &&
 		cmp -s /usr/bin/podkop-dns-optimizer "$tmp_dir/$DNS_OPTIMIZER_FILE" &&
 		[ -x /usr/bin/podkop-dns-failover ] &&
@@ -498,6 +718,7 @@ Available commands:
     get_subscription_items_cached
     set_subscription_link_enabled
     set_subscription_links_enabled
+    set_subscription_sections_enabled
     show_config
     show_version
     show_sing_box_config
@@ -596,6 +817,9 @@ set_subscription_link_enabled)
 set_subscription_links_enabled)
     shift
     set_subscription_links_enabled "$@"
+    ;;
+set_subscription_sections_enabled)
+    set_subscription_sections_enabled "$2"
     ;;
 show_config)
     show_config
@@ -712,6 +936,23 @@ current_podkop_version() {
 	/usr/bin/podkop show_version 2>/dev/null | sed 's/^v//' || true
 }
 
+podkop_runtime_exists() {
+	[ -x /usr/bin/podkop ]
+}
+
+podkop_persistent_state_exists() {
+	[ -e /etc/config/podkop ] || [ -e /etc/podkop ]
+}
+
+run_official_podkop_installer() {
+	official_installer="$1"
+
+	# The official installer can ask first about removing https-dns-proxy and
+	# then about its optional Russian translation. Our own translation is
+	# installed below, so make the unified command deterministic without a TTY.
+	printf 'yes\nn\n' | sh "$official_installer"
+}
+
 download_optional() {
 	url="$1"
 	out="$2"
@@ -765,13 +1006,15 @@ update_manager_v1_requested_podkop_upgrade() {
 update_official_podkop_if_requested() {
 	[ "${PODKOP_PATCH_UPDATE_PODKOP:-1}" = "1" ] || return 0
 	force_podkop_update="${PODKOP_PATCH_FORCE_PODKOP_UPDATE:-0}"
+	podkop_was_installed=0
+	podkop_runtime_exists && podkop_was_installed=1
 	if [ "$force_podkop_update" != "1" ] && update_manager_v1_requested_podkop_upgrade; then
 		force_podkop_update=1
 		log "Continuing the combined update requested by the installed update center."
 	fi
 
 	current_version="$(current_podkop_version)"
-	if [ -x /usr/bin/podkop ] && ! is_semver "$current_version"; then
+	if podkop_runtime_exists && ! is_semver "$current_version"; then
 		fail "installed Podkop version is unknown ('$current_version'); automatic update is not supported because official Podkop may require interactive config migration"
 	fi
 
@@ -810,32 +1053,42 @@ update_official_podkop_if_requested() {
 	official_installer="$tmp_dir/podkop-official-install.sh"
 	download "$PODKOP_OFFICIAL_INSTALL_URL" "$official_installer"
 
-	if [ -x /usr/bin/podkop ] || [ -e /etc/config/podkop ] || [ -e /etc/podkop ]; then
+	if podkop_runtime_exists || podkop_persistent_state_exists; then
 		backup_runtime
 	fi
 
-	log "Updating official Podkop before applying Subscription URLTest patch."
-	if ! sh "$official_installer"; then
+	if [ "$podkop_was_installed" = "1" ]; then
+		log "Updating official Podkop before applying Subscription URLTest patch."
+	else
+		log "Installing official Podkop before applying Subscription URLTest patch."
+	fi
+	if ! run_official_podkop_installer "$official_installer"; then
 		if [ -n "${backup_dir:-}" ]; then
 			restore_runtime
 		fi
 
 		current_version="$(current_podkop_version)"
-		if version_ge "$current_version" "$target_version"; then
-			log "Official Podkop update failed, but installed version $current_version already meets target $target_version. Continuing with Subscription URLTest patch."
-			return 0
+		if [ "$podkop_was_installed" = "1" ]; then
+			if version_ge "$current_version" "$target_version"; then
+				restore_done=0
+				restore_on_fail=1
+				log "Official Podkop update failed, but installed version $current_version already meets target $target_version. Continuing with Subscription URLTest patch."
+				return 0
+			fi
+			fail "official Podkop update failed"
 		fi
 
-		fail "official Podkop update failed"
+		fail "official Podkop installation failed"
 	fi
 
-	[ -x /usr/bin/podkop ] || fail "Official Podkop installer finished, but /usr/bin/podkop is missing"
+	podkop_runtime_exists || fail "Official Podkop installer finished, but /usr/bin/podkop is missing"
 	current_version="$(current_podkop_version)"
 	if ! podkop_version_supported "$current_version"; then
 		if [ -n "${backup_dir:-}" ]; then
 			restore_runtime
+			fail "official Podkop installed unsupported version $current_version; runtime was restored"
 		fi
-		fail "official Podkop installed unsupported version $current_version; runtime was restored"
+		fail "official Podkop installed unsupported version $current_version; Subscription URLTest patch was not applied"
 	fi
 	if [ -n "${backup_dir:-}" ]; then
 		restore_missing_persistent_paths
@@ -844,13 +1097,20 @@ update_official_podkop_if_requested() {
 
 tmp_dir="$(mktemp -d)"
 backup_dir=""
+backup_complete=0
 restore_on_fail=0
 restore_done=0
 light_reload=0
-trap 'rm -rf "$tmp_dir"' EXIT
+installer_mutation_lock_owned=0
+trap 'installer_exit_handler "$?"' EXIT
+trap 'installer_signal_handler 130' INT
+trap 'installer_signal_handler 143' TERM
+trap 'installer_signal_handler 129' HUP
 
 command -v base64 >/dev/null 2>&1 || fail "base64 utility is required"
 command -v jq >/dev/null 2>&1 || fail "jq utility is required"
+
+installer_mutation_lock_acquire || fail "another Podkop change is already running; retry after it finishes"
 
 update_official_podkop_if_requested
 
@@ -861,11 +1121,17 @@ download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
 download "$RAW_BASE/$SECTION_JS_FILE" "$tmp_dir/$SECTION_JS_FILE"
 download "$RAW_BASE/$SETTINGS_JS_FILE" "$tmp_dir/$SETTINGS_JS_FILE"
+download "$RAW_BASE/$DASHBOARD_JS_FILE" "$tmp_dir/$DASHBOARD_JS_FILE"
+download "$RAW_BASE/$DIAGNOSTIC_JS_FILE" "$tmp_dir/$DIAGNOSTIC_JS_FILE"
+download "$RAW_BASE/$PODKOP_JS_FILE" "$tmp_dir/$PODKOP_JS_FILE"
 download "$RAW_BASE/$DNS_OPTIMIZER_FILE" "$tmp_dir/$DNS_OPTIMIZER_FILE"
 download "$RAW_BASE/$DNS_FAILOVER_FILE" "$tmp_dir/$DNS_FAILOVER_FILE"
 download "$RAW_BASE/$DNS_FAILOVER_INIT_FILE" "$tmp_dir/$DNS_FAILOVER_INIT_FILE"
 download "$RAW_BASE/$DNS_FAILOVER_UPGRADE_FILE" "$tmp_dir/$DNS_FAILOVER_UPGRADE_FILE"
+download "$RAW_BASE/$APPLY_V2_UPGRADE_FILE" "$tmp_dir/$APPLY_V2_UPGRADE_FILE"
 download "$RAW_BASE/$UPDATE_MANAGER_FILE" "$tmp_dir/$UPDATE_MANAGER_FILE"
+
+prepare_versioned_luci_assets || fail "failed to prepare versioned Podkop LuCI assets"
 
 if [ "${PODKOP_PATCH_FORCE:-0}" != "1" ] && has_install_marker && has_latest_subscription_backend && luci_assets_current; then
 	log "Subscription URLTest patch is already up to date; nothing to do."
@@ -880,7 +1146,7 @@ if has_latest_subscription_backend; then
 elif needs_prebuilt_0720_runtime; then
 	log "Installing Subscription URLTest runtime for Podkop 0.7.20."
 	backup_runtime
-	rm -f /www/luci-static/resources/view/podkop/subscriptions.js
+	rm -f "$LUCI_VIEW_ROOT/podkop/subscriptions.js"
 
 	if ! install_prebuilt_0720_runtime; then
 		abort_with_restore "runtime install failed"
@@ -926,7 +1192,7 @@ elif has_v0719_package_backend; then
 	fi
 else
 	backup_runtime
-	rm -f /www/luci-static/resources/view/podkop/subscriptions.js
+	rm -f "$LUCI_VIEW_ROOT/podkop/subscriptions.js"
 
 	if ! install_prebuilt_0720_runtime; then
 		abort_with_restore "runtime install failed"
@@ -955,6 +1221,17 @@ if ! grep -q '^load_active_dns_settings() {' /usr/bin/podkop 2>/dev/null; then
 	fi
 fi
 
+if ! grep -q '^set_subscription_sections_enabled() {' /usr/bin/podkop 2>/dev/null ||
+	! grep -q '^set_subscription_sections_enabled)' /usr/bin/podkop 2>/dev/null ||
+	! grep -q 'subscription_apply_v2' /usr/bin/podkop 2>/dev/null; then
+	apply_v2_source="$tmp_dir/podkop.subscription-apply-v2-source"
+	download "$RAW_BASE/$RUNTIME_0720_PODKOP_FILE" "$apply_v2_source"
+	if ! PODKOP_SUBSCRIPTION_APPLY_V2_SOURCE="$apply_v2_source" \
+		sh "$tmp_dir/$APPLY_V2_UPGRADE_FILE"; then
+		abort_with_restore "subscription apply v2 runtime upgrade failed"
+	fi
+fi
+
 for runtime_file in /usr/bin/podkop /usr/lib/podkop/helpers.sh; do
 	if [ -f "$runtime_file" ]; then
 		sed -i 's/wget -T 30 -t 1 /wget -T 30 /g' "$runtime_file"
@@ -962,8 +1239,20 @@ for runtime_file in /usr/bin/podkop /usr/lib/podkop/helpers.sh; do
 done
 
 if [ -f /usr/bin/podkop ]; then
+	sed -i 's/run_with_timeout 240 env PODKOP_PATCH_VERSION=/run_with_timeout 900 env PODKOP_PATCH_VERSION=/g' /usr/bin/podkop
+	grep -q 'run_with_timeout 900 env PODKOP_PATCH_VERSION=' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "subscription patch update timeout upgrade failed"
+fi
+
+if [ -f /usr/bin/podkop ]; then
 	sed -i 's#CLASH_URL="$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"#CLASH_URL="http://$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"#g' /usr/bin/podkop
 	ensure_podkop_dispatcher /usr/bin/podkop
+	grep -q '^set_subscription_sections_enabled() {' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "subscription apply v2 capability check failed"
+	grep -q '^set_subscription_sections_enabled)' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "subscription apply v2 dispatcher check failed"
+	grep -q 'subscription_apply_v2' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "subscription apply v2 marker check failed"
 	mark_latest_subscription_backend
 fi
 
@@ -1034,11 +1323,10 @@ BENCHMARK_HELPERS_EOF
 	cat "$tmp_dir/podkop.benchmark" > /usr/bin/podkop
 fi
 
-mkdir -p /www/luci-static/resources/view/podkop /etc/init.d
-cp "$tmp_dir/$MAIN_JS_FILE" /www/luci-static/resources/view/podkop/main.js
-cp "$tmp_dir/$SECTION_JS_FILE" /www/luci-static/resources/view/podkop/section.js
-cp "$tmp_dir/$SUBSCRIPTIONS_FILE" /www/luci-static/resources/view/podkop/subscriptions.js
-cp "$tmp_dir/$SETTINGS_JS_FILE" /www/luci-static/resources/view/podkop/settings.js
+mkdir -p "$LUCI_VIEW_ROOT/podkop" /etc/init.d
+install_versioned_luci_assets
+base_luci_assets_current && versioned_luci_assets_current ||
+	abort_with_restore "versioned Podkop LuCI asset verification failed"
 cp "$tmp_dir/$DNS_OPTIMIZER_FILE" /usr/bin/podkop-dns-optimizer
 cp "$tmp_dir/$DNS_FAILOVER_FILE" /usr/bin/podkop-dns-failover
 cp "$tmp_dir/$DNS_FAILOVER_INIT_FILE" /etc/init.d/podkop-dns-failover
@@ -1057,11 +1345,6 @@ chmod 755 /usr/bin/podkop-dns-failover
 chmod 755 /etc/init.d/podkop-dns-failover
 chmod 755 /usr/bin/podkop-update-manager
 [ -f /usr/lib/podkop/sing_box_config_facade.sh ] && chmod 644 /usr/lib/podkop/sing_box_config_facade.sh
-[ -f /www/luci-static/resources/view/podkop/main.js ] && chmod 644 /www/luci-static/resources/view/podkop/main.js
-[ -f /www/luci-static/resources/view/podkop/podkop.js ] && chmod 644 /www/luci-static/resources/view/podkop/podkop.js
-[ -f /www/luci-static/resources/view/podkop/section.js ] && chmod 644 /www/luci-static/resources/view/podkop/section.js
-[ -f /www/luci-static/resources/view/podkop/subscriptions.js ] && chmod 644 /www/luci-static/resources/view/podkop/subscriptions.js
-[ -f /www/luci-static/resources/view/podkop/settings.js ] && chmod 644 /www/luci-static/resources/view/podkop/settings.js
 chmod 644 /usr/lib/lua/luci/i18n/podkop.ru.lmo
 
 ensure_podkop_dispatcher /usr/bin/podkop
@@ -1129,6 +1412,7 @@ fi
 /etc/init.d/rpcd restart >/dev/null 2>&1 || true
 /etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 
+restore_on_fail=0
 log "Installed Subscription URLTest patch."
 log "Backup saved at: $backup_dir"
 cleanup_old_backups
