@@ -67,9 +67,13 @@ run_case() {
     if (
         tmp_dir="$case_root/tmp"
         backup_dir=""
+        persistent_backup_dir=""
+        rollback_dir=""
+        rollback_generation=""
         backup_complete=0
         restore_on_fail=0
         restore_done=0
+        transaction_phase="preflight"
         fixture_bin="$case_root/podkop"
         FRESH_BIN="$fixture_bin"
         FRESH_VERSION="$version"
@@ -91,6 +95,14 @@ run_case() {
 
         current_podkop_version() {
             "$fixture_bin" show_version 2>/dev/null | sed 's/^v//' || true
+        }
+
+        installed_package_version() {
+            printf '%s\n' "$FRESH_VERSION"
+        }
+
+        uci() {
+            return 0
         }
 
         latest_official_podkop_version() {
@@ -158,12 +170,67 @@ run_case() {
 run_case supported 0.7.21 success
 run_case unsupported 0.8.0 failure
 run_case failure 0.7.21 failure
+run_case stale 0.7.20 failure
+
+forced_stale_root="$test_root/forced-stale-update"
+mkdir -p "$forced_stale_root/tmp"
+if (
+    tmp_dir="$forced_stale_root/tmp"
+    backup_dir=""
+    persistent_backup_dir=""
+    rollback_dir=""
+    rollback_generation=""
+    backup_complete=0
+    restore_on_fail=0
+    restore_done=0
+    transaction_phase="preflight"
+    PODKOP_PATCH_UPDATE_PODKOP=1
+    PODKOP_PATCH_FORCE_PODKOP_UPDATE=1
+    PODKOP_PATCH_TARGET_PODKOP_VERSION=0.7.21
+
+    podkop_runtime_exists() { return 0; }
+    podkop_persistent_state_exists() { return 0; }
+    current_podkop_version() { printf '%s\n' 0.7.20; }
+    latest_official_podkop_version() { printf '%s\n' 0.7.21; }
+    update_manager_v1_requested_podkop_upgrade() { return 1; }
+    download() { : > "$2"; }
+    installed_package_version() {
+        printf '%s\n' 0.7.20
+    }
+    uci() { return 0; }
+    backup_persistent_paths() {
+        backup_dir="$forced_stale_root/persistent-backup"
+        persistent_backup_dir="$backup_dir"
+        mkdir -p "$backup_dir"
+        : > "$forced_stale_root/persistent-backup-called"
+    }
+    run_official_podkop_installer() {
+        : > "$forced_stale_root/official-called"
+        return 0
+    }
+    restore_runtime() {
+        : > "$forced_stale_root/restore-called"
+        restore_done=1
+    }
+    restore_missing_persistent_paths() { :; }
+
+    update_official_podkop_if_requested
+) > "$forced_stale_root/output" 2>&1; then
+    fail_test 'forced update accepted an older supported Podkop version after the official installer reported success'
+fi
+[ -e "$forced_stale_root/persistent-backup-called" ] &&
+    [ -e "$forced_stale_root/official-called" ] &&
+    [ ! -e "$forced_stale_root/restore-called" ] ||
+    fail_test 'forced stale-version update did not preserve config, invoke the installer, and avoid unsafe runtime rollback'
 
 grep -q 'official Podkop installed unsupported version 0.8.0' "$test_root/unsupported/output" &&
     grep -q 'Subscription URLTest patch was not applied' "$test_root/unsupported/output" ||
     fail_test 'unsupported fresh version did not report that the patch was withheld'
 grep -q 'official Podkop installation failed' "$test_root/failure/output" ||
     fail_test 'failed fresh official installation did not report an error'
+grep -q 'below target 0.7.21' "$test_root/stale/output" &&
+    grep -q 'Subscription URLTest patch was not applied' "$test_root/stale/output" ||
+    fail_test 'stale fresh Podkop version did not report that the target was missed and the patch was withheld'
 
 cmp -s "$repo_root/i" "$repo_root/openwrt/install.sh" ||
     fail_test 'root and OpenWrt installers are not byte-identical'

@@ -51,7 +51,8 @@ fi
 
 if ! grep -q 'APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"' i ||
     ! grep -q 'download "$RAW_BASE/$APPLY_V2_UPGRADE_FILE"' i ||
-    ! grep -q 'download "$RAW_BASE/$RUNTIME_0720_PODKOP_FILE" "$apply_v2_source"' i ||
+    ! grep -q 'download "$RAW_BASE/$RUNTIME_0720_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.20"' i ||
+    ! grep -q 'cp "$tmp_dir/podkop.runtime-0.7.20" "$apply_v2_source"' i ||
     ! grep -q 'PODKOP_SUBSCRIPTION_APPLY_V2_SOURCE="$apply_v2_source"' i ||
     ! grep -q 'sh "$tmp_dir/$APPLY_V2_UPGRADE_FILE"' i; then
     fail 'installer must download and run the apply v2 upgrade for existing routers'

@@ -49,6 +49,10 @@ LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
 INSTALLER_ACTION_LOCK_FILE="${PODKOP_PATCH_ACTION_LOCK_FILE:-/tmp/podkop-subscription-action.lock}"
 INSTALLER_ACTION_LOCK_DIR="${PODKOP_PATCH_ACTION_LOCK_DIR:-/tmp/podkop-subscription-action.lock.d}"
+BACKUP_ROOT="${PODKOP_PATCH_BACKUP_ROOT:-/root}"
+PODKOP_INIT_SCRIPT="${PODKOP_PATCH_PODKOP_INIT_SCRIPT:-/etc/init.d/podkop}"
+PODKOP_RUNTIME_BIN="${PODKOP_PATCH_PODKOP_RUNTIME_BIN:-/usr/bin/podkop}"
+DNS_FAILOVER_INIT_SCRIPT="${PODKOP_PATCH_DNS_FAILOVER_INIT_SCRIPT:-/etc/init.d/podkop-dns-failover}"
 
 RUNTIME_FILES="
 usr/bin/podkop
@@ -204,12 +208,34 @@ apply_runtime_patch() {
 }
 
 install_prebuilt_0720_runtime() {
-	download "$RAW_BASE/$RUNTIME_0720_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.20"
-	download "$RAW_BASE/$RUNTIME_0720_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.20"
-
 	mkdir -p /usr/bin "$LUCI_VIEW_ROOT/podkop"
 	cp "$tmp_dir/podkop.runtime-0.7.20" /usr/bin/podkop
 	cp "$tmp_dir/podkop.js.runtime-0.7.20" "$LUCI_VIEW_ROOT/podkop/podkop.js"
+}
+
+prefetch_patch_assets() {
+	download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
+	download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
+	download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
+	download "$RAW_BASE/$SECTION_JS_FILE" "$tmp_dir/$SECTION_JS_FILE"
+	download "$RAW_BASE/$SETTINGS_JS_FILE" "$tmp_dir/$SETTINGS_JS_FILE"
+	download "$RAW_BASE/$DASHBOARD_JS_FILE" "$tmp_dir/$DASHBOARD_JS_FILE"
+	download "$RAW_BASE/$DIAGNOSTIC_JS_FILE" "$tmp_dir/$DIAGNOSTIC_JS_FILE"
+	download "$RAW_BASE/$PODKOP_JS_FILE" "$tmp_dir/$PODKOP_JS_FILE"
+	download "$RAW_BASE/$DNS_OPTIMIZER_FILE" "$tmp_dir/$DNS_OPTIMIZER_FILE"
+	download "$RAW_BASE/$DNS_FAILOVER_FILE" "$tmp_dir/$DNS_FAILOVER_FILE"
+	download "$RAW_BASE/$DNS_FAILOVER_INIT_FILE" "$tmp_dir/$DNS_FAILOVER_INIT_FILE"
+	download "$RAW_BASE/$DNS_FAILOVER_UPGRADE_FILE" "$tmp_dir/$DNS_FAILOVER_UPGRADE_FILE"
+	download "$RAW_BASE/$APPLY_V2_UPGRADE_FILE" "$tmp_dir/$APPLY_V2_UPGRADE_FILE"
+	download "$RAW_BASE/$UPDATE_MANAGER_FILE" "$tmp_dir/$UPDATE_MANAGER_FILE"
+	download "$RAW_BASE/$UI_FIX_BACKEND_FILE" "$tmp_dir/$UI_FIX_BACKEND_FILE"
+	download "$RAW_BASE/$ACTIONS_UPGRADE_PATCH_FILE" "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"
+	download "$RAW_BASE/$LEGACY_UPGRADE_PATCH_FILE" "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"
+	download "$RAW_BASE/$V0719_PATCH_FILE" "$tmp_dir/$V0719_PATCH_FILE"
+	download "$RAW_BASE/$MAINTENANCE_UPGRADE_FILE" "$tmp_dir/$MAINTENANCE_UPGRADE_FILE"
+	download "$RAW_BASE/$UPDATE_CENTER_UPGRADE_FILE" "$tmp_dir/$UPDATE_CENTER_UPGRADE_FILE"
+	download "$RAW_BASE/$RUNTIME_0720_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.20"
+	download "$RAW_BASE/$RUNTIME_0720_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.20"
 }
 
 stop_stale_list_update_downloads() {
@@ -293,16 +319,20 @@ cleanup_old_backups() {
 		keep=1
 	fi
 
-	for dir in $(ls -1dt /root/podkop-patch-subscriptions-backup-* 2>/dev/null); do
+	for dir in $(ls -1dt "$BACKUP_ROOT"/podkop-patch-subscriptions-backup-* 2>/dev/null); do
 		[ -d "$dir" ] || continue
 		count=$((count + 1))
 		if [ "$count" -gt "$keep" ]; then
-			rm -rf "$dir"
-			log "Removed old backup: $dir"
+			if rm -rf "$dir"; then
+				log "Removed old backup: $dir"
+			else
+				log "WARNING: failed to remove old backup: $dir"
+			fi
 		fi
 	done
 
 	log "Keeping last $keep backup(s)."
+	return 0
 }
 
 dns_optimizer_candidate_set_matches() {
@@ -359,29 +389,51 @@ migrate_dns_optimizer_candidate_defaults() {
 	log "Migrated stock DNS optimizer selections to the v3 defaults."
 }
 
+ensure_backup_dir() {
+	[ -n "${backup_dir:-}" ] && [ -d "$backup_dir" ] && return 0
+
+	backup_dir="$(mktemp -d "$BACKUP_ROOT/podkop-patch-subscriptions-backup-$(date +%Y%m%d-%H%M%S)-XXXXXX")" || {
+		backup_dir=""
+		fail "failed to create a unique backup directory"
+	}
+}
+
+backup_persistent_paths() {
+	ensure_backup_dir
+	persistent_backup_dir="$backup_dir/pre-official-persistent"
+	[ ! -e "$persistent_backup_dir" ] || fail "pre-official persistent backup already exists"
+	mkdir "$persistent_backup_dir" || fail "failed to create pre-official persistent backup"
+
+	for rel in $PERSISTENT_PATHS; do
+		src="/$rel"
+		if [ -e "$src" ]; then
+			mkdir -p "$persistent_backup_dir/$(dirname "$rel")" &&
+				cp -a "$src" "$persistent_backup_dir/$rel" ||
+				fail "failed to back up persistent path before official Podkop update: /$rel"
+		fi
+	done
+	log "Persistent pre-update backup: $backup_dir"
+}
+
 backup_runtime() {
-	if [ "${backup_complete:-0}" = "1" ] && [ -n "${backup_dir:-}" ] && [ -d "$backup_dir" ]; then
-		restore_on_fail=1
-		log "Backup already exists: $backup_dir"
-		return 0
-	fi
+	[ "${transaction_phase:-}" = "prepatch" ] || fail "runtime backup is only allowed immediately before patch mutations"
+	[ "${backup_complete:-0}" != "1" ] || fail "patch rollback backup is already complete"
 
 	restore_on_fail=0
 	backup_complete=0
-	backup_dir="/root/podkop-patch-subscriptions-backup-$(date +%Y%m%d-%H%M%S)"
-	if ! mkdir -p "$backup_dir"; then
-		backup_dir=""
-		fail "failed to create runtime backup"
-	fi
+	rollback_generation="$(podkop_package_generation)" || fail "could not read Podkop package generation before patching"
+	ensure_backup_dir
+	rollback_dir="$backup_dir/patch-rollback"
+	rollback_tmp="$backup_dir/.patch-rollback.$$"
+	[ ! -e "$rollback_dir" ] && [ ! -e "$rollback_tmp" ] || fail "patch rollback backup already exists"
+	mkdir "$rollback_tmp" || fail "failed to create patch rollback backup"
 
 	for rel in $RUNTIME_FILES; do
 		src="/$rel"
 		if [ -e "$src" ]; then
-			if ! mkdir -p "$backup_dir/$(dirname "$rel")" ||
-				! cp -a "$src" "$backup_dir/$rel"; then
-				incomplete_backup="$backup_dir"
-				backup_dir=""
-				rm -rf "$incomplete_backup"
+			if ! mkdir -p "$rollback_tmp/$(dirname "$rel")" ||
+				! cp -a "$src" "$rollback_tmp/$rel"; then
+				rm -rf "$rollback_tmp"
 				fail "failed to back up runtime path: /$rel"
 			fi
 		fi
@@ -390,28 +442,42 @@ backup_runtime() {
 	for rel in $PERSISTENT_PATHS; do
 		src="/$rel"
 		if [ -e "$src" ]; then
-			if ! mkdir -p "$backup_dir/$(dirname "$rel")" ||
-				! cp -a "$src" "$backup_dir/$rel"; then
-				incomplete_backup="$backup_dir"
-				backup_dir=""
-				rm -rf "$incomplete_backup"
+			if ! mkdir -p "$rollback_tmp/$(dirname "$rel")" ||
+				! cp -a "$src" "$rollback_tmp/$rel"; then
+				rm -rf "$rollback_tmp"
 				fail "failed to back up persistent path: /$rel"
 			fi
 		fi
 	done
 
+	current_generation="$(podkop_package_generation)" || {
+		rm -rf "$rollback_tmp"
+		fail "could not verify Podkop package generation after backup"
+	}
+	[ "$current_generation" = "$rollback_generation" ] || {
+		rm -rf "$rollback_tmp"
+		fail "Podkop package generation changed while the patch backup was being created"
+	}
+	capture_patch_service_state
+	mv "$rollback_tmp" "$rollback_dir" || {
+		rm -rf "$rollback_tmp"
+		fail "failed to finalize patch rollback backup"
+	}
+
 	backup_complete=1
 	restore_done=0
 	restore_on_fail=1
+	transaction_phase="patching"
 	log "Backup: $backup_dir"
 	log "Backup size: $(get_path_size "$backup_dir")"
 }
 
 restore_persistent_paths() {
+	source_root="${1:-$rollback_dir}"
 	persistent_restore_ok=1
 	for rel in $PERSISTENT_PATHS; do
 		dst="/$rel"
-		src="$backup_dir/$rel"
+		src="$source_root/$rel"
 		if [ -e "$src" ]; then
 			if ! mkdir -p "$(dirname "$dst")" ||
 				! rm -rf "$dst" ||
@@ -427,24 +493,124 @@ restore_persistent_paths() {
 }
 
 restore_missing_persistent_paths() {
+	source_root="${1:-$persistent_backup_dir}"
+	[ -n "$source_root" ] && [ -d "$source_root" ] || return 0
+	persistent_restore_ok=1
 	for rel in $PERSISTENT_PATHS; do
 		dst="/$rel"
-		src="$backup_dir/$rel"
+		src="$source_root/$rel"
 		if [ -e "$src" ] && [ ! -e "$dst" ]; then
-			mkdir -p "$(dirname "$dst")"
-			cp -a "$src" "$dst"
-			log "Restored missing persistent path: /$rel"
+			if mkdir -p "$(dirname "$dst")" && cp -a "$src" "$dst"; then
+				log "Restored missing persistent path: /$rel"
+			else
+				persistent_restore_ok=0
+			fi
 		fi
 	done
+
+	[ "$persistent_restore_ok" -eq 1 ]
+}
+
+reject_official_podkop_result() {
+	rejection_message="$1"
+	if ! restore_missing_persistent_paths "$persistent_backup_dir"; then
+		fail "$rejection_message; restoring missing persistent Podkop state also failed${backup_dir:+; persistent backup: $backup_dir}"
+	fi
+	fail "$rejection_message${backup_dir:+; persistent backup: $backup_dir}"
+}
+
+query_service_running_state() {
+	service_name="$1"
+	command -v ubus >/dev/null 2>&1 && command -v jq >/dev/null 2>&1 || {
+		printf '%s\n' unknown
+		return 0
+	}
+	service_json="$(ubus call service list "{\"name\":\"$service_name\"}" 2>/dev/null)" || {
+		printf '%s\n' unknown
+		return 0
+	}
+	printf '%s\n' "$service_json" | jq -e --arg service "$service_name" \
+		'has($service) and (.[$service] | type == "object") and (
+			((.[$service].instances?) | type) == "null" or
+			(((.[$service].instances?) | type) == "object" and
+			 ((.[$service].instances | to_entries) | all(.[]; (.value | type) == "object" and (.value.running | type) == "boolean")))
+		)' >/dev/null 2>&1 || {
+		printf '%s\n' unknown
+		return 0
+	}
+	if printf '%s\n' "$service_json" | jq -e --arg service "$service_name" \
+		'([((.[$service].instances? // {}) | to_entries[]?) | .value.running == true] | any)' >/dev/null 2>&1; then
+		printf '%s\n' running
+	else
+		printf '%s\n' stopped
+	fi
+}
+
+capture_patch_service_state() {
+	if [ ! -x "$DNS_FAILOVER_INIT_SCRIPT" ]; then
+		dns_failover_service_state="absent"
+	else
+		dns_failover_service_state="$(query_service_running_state podkop-dns-failover)"
+	fi
+	case "$dns_failover_service_state" in
+		running | stopped | unknown | absent) ;;
+		*) dns_failover_service_state="unknown" ;;
+	esac
+}
+
+restart_podkop_after_restore() {
+	[ -x "$PODKOP_INIT_SCRIPT" ] || return 1
+	[ -x "$PODKOP_RUNTIME_BIN" ] || return 1
+	run_podkop_reload "PODKOP_SKIP_LIST_UPDATE=1 $PODKOP_RUNTIME_BIN restart"
+}
+
+restore_patch_service_state() {
+	service_restore_ok=1
+	restart_podkop_after_restore || service_restore_ok=0
+
+	case "${dns_failover_service_state:-unknown}" in
+	stopped)
+		[ ! -x "$DNS_FAILOVER_INIT_SCRIPT" ] || "$DNS_FAILOVER_INIT_SCRIPT" stop >/dev/null 2>&1 || service_restore_ok=0
+		;;
+	absent)
+		[ ! -e "$DNS_FAILOVER_INIT_SCRIPT" ] || service_restore_ok=0
+		;;
+	*)
+		if [ -x "$DNS_FAILOVER_INIT_SCRIPT" ]; then
+			"$DNS_FAILOVER_INIT_SCRIPT" restart >/dev/null 2>&1 || service_restore_ok=0
+		else
+			service_restore_ok=0
+		fi
+		;;
+	esac
+
+	[ "$service_restore_ok" -eq 1 ]
 }
 
 restore_runtime() {
+	[ "${transaction_phase:-}" = "patching" ] || {
+		log "ERROR: refusing runtime rollback outside the patching phase"
+		return 1
+	}
+	[ "${backup_complete:-0}" = "1" ] && [ -n "${rollback_dir:-}" ] && [ -d "$rollback_dir" ] || {
+		log "ERROR: refusing runtime rollback without a complete patch snapshot"
+		return 1
+	}
+	current_generation="$(podkop_package_generation)" || {
+		log "ERROR: refusing runtime rollback because Podkop package generation is unavailable"
+		return 1
+	}
+	[ "$current_generation" = "${rollback_generation:-}" ] || {
+		log "ERROR: refusing runtime rollback across Podkop package generations"
+		return 1
+	}
+
 	runtime_restore_ok=1
 	log "Restoring backup..."
-	[ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover stop >/dev/null 2>&1 || true
+	[ ! -x "$DNS_FAILOVER_INIT_SCRIPT" ] || "$DNS_FAILOVER_INIT_SCRIPT" stop >/dev/null 2>&1 || true
 	for rel in $RUNTIME_FILES; do
 		dst="/$rel"
-		src="$backup_dir/$rel"
+		src="$rollback_dir/$rel"
 		if [ -e "$src" ]; then
 			if ! mkdir -p "$(dirname "$dst")" ||
 				! rm -rf "$dst" ||
@@ -455,12 +621,14 @@ restore_runtime() {
 			runtime_restore_ok=0
 		fi
 	done
-	restore_persistent_paths || runtime_restore_ok=0
+	restore_persistent_paths "$rollback_dir" || runtime_restore_ok=0
 	rm -f /tmp/luci-indexcache
 	rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 	/etc/init.d/rpcd restart >/dev/null 2>&1 || true
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
-	[ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover restart >/dev/null 2>&1 || true
+	if [ "$runtime_restore_ok" -eq 1 ]; then
+		restore_patch_service_state || runtime_restore_ok=0
+	fi
 
 	if [ "$runtime_restore_ok" -eq 1 ]; then
 		restore_done=1
@@ -473,10 +641,11 @@ restore_runtime() {
 
 restore_if_needed() {
 	if [ "${restore_on_fail:-0}" = "1" ] &&
+		[ "${transaction_phase:-}" = "patching" ] &&
 		[ "${backup_complete:-0}" = "1" ] &&
 		[ "${restore_done:-0}" != "1" ] &&
-		[ -n "${backup_dir:-}" ] &&
-		[ -d "$backup_dir" ]; then
+		[ -n "${rollback_dir:-}" ] &&
+		[ -d "$rollback_dir" ]; then
 		restore_runtime
 	fi
 }
@@ -567,7 +736,12 @@ installer_exit_handler() {
 	set +e
 
 	if [ "$exit_status" -ne 0 ]; then
-		restore_if_needed
+		if [ "${transaction_phase:-}" = "official_update" ]; then
+			restore_missing_persistent_paths "${persistent_backup_dir:-}" ||
+				log "ERROR: restoring missing persistent Podkop state after interrupted official update failed${backup_dir:+; persistent backup: $backup_dir}"
+		else
+			restore_if_needed
+		fi
 	fi
 	installer_mutation_lock_release
 
@@ -583,7 +757,6 @@ installer_signal_handler() {
 }
 
 abort_with_restore() {
-	restore_on_fail=1
 	restore_if_needed
 	fail "$1"
 }
@@ -1004,6 +1177,78 @@ current_podkop_version() {
 	/usr/bin/podkop show_version 2>/dev/null | sed 's/^v//' || true
 }
 
+installed_package_version() {
+	pkg="$1"
+	if command -v apk >/dev/null 2>&1; then
+		apk info -e "$pkg" >/dev/null 2>&1 || return 1
+		apk list --installed --manifest 2>/dev/null | awk -v pkg="$pkg" '
+			$1 == pkg && NF >= 2 { print $2; found=1; exit }
+			END { if (!found) exit 1 }
+		'
+		return
+	fi
+	if command -v opkg >/dev/null 2>&1; then
+		opkg status "$pkg" 2>/dev/null | awk -v pkg="$pkg" '
+			$1 == "Package:" { match_pkg=($2 == pkg) }
+			match_pkg && $1 == "Version:" { version=$2 }
+			match_pkg && $1 == "Status:" && $NF == "installed" { installed=1 }
+			END { if (match_pkg && installed && version != "") print version; else exit 1 }
+		'
+		return
+	fi
+	return 1
+}
+
+package_version_core() {
+	package_version="$1"
+	package_version="${package_version#v}"
+	printf '%s\n' "${package_version%%-*}"
+}
+
+podkop_package_generation() {
+	podkop_package="$(installed_package_version podkop)" || return 1
+	luci_package="$(installed_package_version luci-app-podkop)" || return 1
+	if command -v apk >/dev/null 2>&1; then
+		package_manager="apk"
+	elif command -v opkg >/dev/null 2>&1; then
+		package_manager="opkg"
+	else
+		return 1
+	fi
+	printf '%s|podkop=%s|luci-app-podkop=%s\n' "$package_manager" "$podkop_package" "$luci_package"
+}
+
+podkop_packages_match_runtime() {
+	expected_version="$1"
+	podkop_package="$(installed_package_version podkop)" || return 1
+	luci_package="$(installed_package_version luci-app-podkop)" || return 1
+	podkop_package_core="$(package_version_core "$podkop_package")"
+	luci_package_core="$(package_version_core "$luci_package")"
+	[ "$podkop_package" = "$luci_package" ] &&
+		[ "$podkop_package_core" = "$expected_version" ] &&
+		[ "$luci_package_core" = "$expected_version" ]
+}
+
+podkop_config_exists() {
+	[ -e /etc/config/podkop ]
+}
+
+ensure_no_pending_uci_changes() {
+	command -v uci >/dev/null 2>&1 || return 1
+	pending_changes="$(uci changes 2>/dev/null)" || return 1
+	[ -z "$pending_changes" ]
+}
+
+ensure_no_pending_podkop_changes() {
+	command -v uci >/dev/null 2>&1 || return 1
+	if pending_changes="$(uci changes podkop 2>/dev/null)"; then
+		[ -z "$pending_changes" ]
+		return
+	fi
+	! podkop_config_exists
+	return
+}
+
 podkop_runtime_exists() {
 	[ -x /usr/bin/podkop ]
 }
@@ -1120,10 +1365,15 @@ update_official_podkop_if_requested() {
 
 	official_installer="$tmp_dir/podkop-official-install.sh"
 	download "$PODKOP_OFFICIAL_INSTALL_URL" "$official_installer"
+	ensure_no_pending_uci_changes ||
+		fail "the router has pending or unreadable UCI changes; apply or revert them before the official Podkop update"
+	ensure_no_pending_podkop_changes ||
+		fail "Podkop UCI state changed or became unreadable before the official update; apply or revert pending changes and retry"
 
-	if podkop_runtime_exists || podkop_persistent_state_exists; then
-		backup_runtime
+	if podkop_persistent_state_exists; then
+		backup_persistent_paths
 	fi
+	transaction_phase="official_update"
 
 	if [ "$podkop_was_installed" = "1" ]; then
 		log "Updating official Podkop before applying Subscription URLTest patch."
@@ -1131,43 +1381,37 @@ update_official_podkop_if_requested() {
 		log "Installing official Podkop before applying Subscription URLTest patch."
 	fi
 	if ! run_official_podkop_installer "$official_installer"; then
-		if [ -n "${backup_dir:-}" ]; then
-			restore_runtime
-		fi
-
-		current_version="$(current_podkop_version)"
 		if [ "$podkop_was_installed" = "1" ]; then
-			if version_ge "$current_version" "$target_version"; then
-				restore_done=0
-				restore_on_fail=1
-				log "Official Podkop update failed, but installed version $current_version already meets target $target_version. Continuing with Subscription URLTest patch."
-				return 0
-			fi
-			fail "official Podkop update failed"
+			reject_official_podkop_result "official Podkop update failed; package state may have changed, so the patch was not applied"
 		fi
 
-		fail "official Podkop installation failed"
+		reject_official_podkop_result "official Podkop installation failed; package state may be partial, so the patch was not applied"
 	fi
 
-	podkop_runtime_exists || fail "Official Podkop installer finished, but /usr/bin/podkop is missing"
+	podkop_runtime_exists || reject_official_podkop_result "Official Podkop installer finished, but /usr/bin/podkop is missing"
 	current_version="$(current_podkop_version)"
 	if ! podkop_version_supported "$current_version"; then
-		if [ -n "${backup_dir:-}" ]; then
-			restore_runtime
-			fail "official Podkop installed unsupported version $current_version; runtime was restored"
-		fi
-		fail "official Podkop installed unsupported version $current_version; Subscription URLTest patch was not applied"
+		reject_official_podkop_result "official Podkop installed unsupported version $current_version; Subscription URLTest patch was not applied"
 	fi
-	if [ -n "${backup_dir:-}" ]; then
-		restore_missing_persistent_paths
+	if ! version_ge "$current_version" "$target_version"; then
+		reject_official_podkop_result "official Podkop installer finished with version $current_version below target $target_version; Subscription URLTest patch was not applied"
 	fi
+	podkop_packages_match_runtime "$current_version" ||
+		reject_official_podkop_result "official Podkop installer did not install matching podkop and luci-app-podkop packages for version $current_version; Subscription URLTest patch was not applied"
+	restore_missing_persistent_paths "$persistent_backup_dir" ||
+		fail "official Podkop was installed, but restoring missing persistent Podkop state failed${backup_dir:+; persistent backup: $backup_dir}"
 }
 
 tmp_dir="$(mktemp -d)"
 backup_dir=""
+persistent_backup_dir=""
+rollback_dir=""
+rollback_generation=""
+dns_failover_service_state="unknown"
 backup_complete=0
 restore_on_fail=0
 restore_done=0
+transaction_phase="preflight"
 light_reload=0
 installer_mutation_lock_owned=0
 trap 'installer_exit_handler "$?"' EXIT
@@ -1180,30 +1424,25 @@ command -v jq >/dev/null 2>&1 || fail "jq utility is required"
 
 installer_mutation_lock_acquire || fail "another Podkop change is already running; retry after it finishes"
 
+ensure_no_pending_uci_changes || fail "the router has pending or unreadable UCI changes; apply or revert them before updating Podkop or the patch"
+ensure_no_pending_podkop_changes || fail "Podkop has pending UCI changes; apply or revert them before updating Podkop or the patch"
+require_patch
+prefetch_patch_assets
+prepare_versioned_luci_assets || fail "failed to prepare versioned Podkop LuCI assets"
 update_official_podkop_if_requested
+ensure_no_pending_uci_changes || fail "the router UCI state changed or became unreadable before patching; apply or revert pending changes and retry"
+ensure_no_pending_podkop_changes || fail "Podkop UCI state changed or became unreadable before patching; apply or revert pending changes and retry"
+transaction_phase="prepatch"
 
 [ -x /usr/bin/podkop ] || fail "Podkop is not installed at /usr/bin/podkop"
 
-download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
-download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
-download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
-download "$RAW_BASE/$SECTION_JS_FILE" "$tmp_dir/$SECTION_JS_FILE"
-download "$RAW_BASE/$SETTINGS_JS_FILE" "$tmp_dir/$SETTINGS_JS_FILE"
-download "$RAW_BASE/$DASHBOARD_JS_FILE" "$tmp_dir/$DASHBOARD_JS_FILE"
-download "$RAW_BASE/$DIAGNOSTIC_JS_FILE" "$tmp_dir/$DIAGNOSTIC_JS_FILE"
-download "$RAW_BASE/$PODKOP_JS_FILE" "$tmp_dir/$PODKOP_JS_FILE"
-download "$RAW_BASE/$DNS_OPTIMIZER_FILE" "$tmp_dir/$DNS_OPTIMIZER_FILE"
-download "$RAW_BASE/$DNS_FAILOVER_FILE" "$tmp_dir/$DNS_FAILOVER_FILE"
-download "$RAW_BASE/$DNS_FAILOVER_INIT_FILE" "$tmp_dir/$DNS_FAILOVER_INIT_FILE"
-download "$RAW_BASE/$DNS_FAILOVER_UPGRADE_FILE" "$tmp_dir/$DNS_FAILOVER_UPGRADE_FILE"
-download "$RAW_BASE/$APPLY_V2_UPGRADE_FILE" "$tmp_dir/$APPLY_V2_UPGRADE_FILE"
-download "$RAW_BASE/$UPDATE_MANAGER_FILE" "$tmp_dir/$UPDATE_MANAGER_FILE"
-
-prepare_versioned_luci_assets || fail "failed to prepare versioned Podkop LuCI assets"
-
 if [ "${PODKOP_PATCH_FORCE:-0}" != "1" ] && has_install_marker && has_latest_subscription_backend && luci_assets_current; then
+	transaction_phase="committed"
+	restore_on_fail=0
 	log "Subscription URLTest patch is already up to date; nothing to do."
 	log "PODKOP_PATCH_NOOP=1"
+	[ -z "$backup_dir" ] || log "Persistent backup saved at: $backup_dir"
+	cleanup_old_backups
 	exit 0
 fi
 
@@ -1228,31 +1467,24 @@ elif has_subscription_backend; then
 	backup_runtime
 	light_reload=1
 elif has_actions_subscription_backend; then
-	download "$RAW_BASE/$UI_FIX_BACKEND_FILE" "$tmp_dir/$UI_FIX_BACKEND_FILE"
 	backup_runtime
 
 	if ! sh "$tmp_dir/$UI_FIX_BACKEND_FILE"; then
 		abort_with_restore "runtime UI fix backend upgrade failed"
 	fi
 elif has_batch_subscription_backend; then
-	require_patch
-	download "$RAW_BASE/$ACTIONS_UPGRADE_PATCH_FILE" "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"
 	backup_runtime
 
 	if ! apply_runtime_patch "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"; then
 		abort_with_restore "runtime actions upgrade patch failed"
 	fi
 elif has_legacy_subscription_backend; then
-	require_patch
-	download "$RAW_BASE/$LEGACY_UPGRADE_PATCH_FILE" "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"
 	backup_runtime
 
 	if ! apply_runtime_patch "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"; then
 		abort_with_restore "runtime legacy upgrade patch failed"
 	fi
 elif has_v0719_package_backend; then
-	require_patch
-	download "$RAW_BASE/$V0719_PATCH_FILE" "$tmp_dir/$V0719_PATCH_FILE"
 	backup_runtime
 
 	if ! apply_runtime_patch "$tmp_dir/$V0719_PATCH_FILE"; then
@@ -1276,8 +1508,6 @@ case "$migration_status" in
 esac
 
 if { ! has_latest_subscription_backend || ! has_install_marker; } && has_subscription_backend; then
-	download "$RAW_BASE/$MAINTENANCE_UPGRADE_FILE" "$tmp_dir/$MAINTENANCE_UPGRADE_FILE"
-
 	if ! sh "$tmp_dir/$MAINTENANCE_UPGRADE_FILE"; then
 		abort_with_restore "runtime maintenance upgrade failed"
 	fi
@@ -1285,7 +1515,6 @@ fi
 
 if ! grep -q '^subscription_patch_update_check() {' /usr/bin/podkop 2>/dev/null ||
 	! grep -q '^get_subscription_patch_update_log() {' /usr/bin/podkop 2>/dev/null; then
-	download "$RAW_BASE/$UPDATE_CENTER_UPGRADE_FILE" "$tmp_dir/$UPDATE_CENTER_UPGRADE_FILE"
 	if ! sh "$tmp_dir/$UPDATE_CENTER_UPGRADE_FILE"; then
 		abort_with_restore "runtime update center upgrade failed"
 	fi
@@ -1301,7 +1530,7 @@ if ! grep -q '^set_subscription_sections_enabled() {' /usr/bin/podkop 2>/dev/nul
 	! grep -q '^set_subscription_sections_enabled)' /usr/bin/podkop 2>/dev/null ||
 	! grep -q 'subscription_apply_v2' /usr/bin/podkop 2>/dev/null; then
 	apply_v2_source="$tmp_dir/podkop.subscription-apply-v2-source"
-	download "$RAW_BASE/$RUNTIME_0720_PODKOP_FILE" "$apply_v2_source"
+	cp "$tmp_dir/podkop.runtime-0.7.20" "$apply_v2_source" || abort_with_restore "failed to prepare subscription apply v2 source"
 	if ! PODKOP_SUBSCRIPTION_APPLY_V2_SOURCE="$apply_v2_source" \
 		sh "$tmp_dir/$APPLY_V2_UPGRADE_FILE"; then
 		abort_with_restore "subscription apply v2 runtime upgrade failed"
@@ -1329,7 +1558,7 @@ if [ -f /usr/bin/podkop ]; then
 		abort_with_restore "subscription apply v2 dispatcher check failed"
 	grep -q 'subscription_apply_v2' /usr/bin/podkop 2>/dev/null ||
 		abort_with_restore "subscription apply v2 marker check failed"
-	mark_latest_subscription_backend
+	mark_latest_subscription_backend || abort_with_restore "failed to write subscription patch release marker"
 fi
 
 if grep -q "get_subscription_benchmark_bytes" /usr/bin/podkop 2>/dev/null &&
@@ -1457,6 +1686,8 @@ if [ -z "$(/usr/bin/podkop show_version 2>/dev/null)" ]; then
 	abort_with_restore "podkop command dispatcher check failed"
 fi
 
+has_install_marker || abort_with_restore "subscription patch release marker verification failed"
+
 if [ -f /usr/lib/podkop/sing_box_config_facade.sh ] && ! ash -n /usr/lib/podkop/sing_box_config_facade.sh; then
 	abort_with_restore "sing-box facade syntax check failed"
 fi
@@ -1488,6 +1719,7 @@ fi
 /etc/init.d/rpcd restart >/dev/null 2>&1 || true
 /etc/init.d/uhttpd restart >/dev/null 2>&1 || true
 
+transaction_phase="committed"
 restore_on_fail=0
 log "Installed Subscription URLTest patch."
 log "Backup saved at: $backup_dir"
