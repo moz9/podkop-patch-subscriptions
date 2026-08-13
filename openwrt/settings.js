@@ -22,9 +22,28 @@ const NORMAL_DNS_OPTIMIZER_CANDIDATES = [
 const DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES = [
   "cloudflare",
   "google",
-  "adguard_unfiltered",
   "controld_unfiltered",
-  "mullvad",
+];
+const BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES = [
+  ["cloudflare_1", "Cloudflare — 1.1.1.1"],
+  ["cloudflare_2", "Cloudflare — 1.0.0.1"],
+  ["google_1", "Google — 8.8.8.8"],
+  ["google_2", "Google — 8.8.4.4"],
+  ["yandex_1", "Yandex — 77.88.8.8"],
+  ["yandex_2", "Yandex — 77.88.8.1"],
+  ["quad9_1", "Quad9 Secure — 9.9.9.9"],
+  ["quad9_ecs", "Quad9 Secure ECS — 9.9.9.11"],
+  ["adguard_unfiltered", "AdGuard Unfiltered — 94.140.14.140"],
+  ["controld_unfiltered", "Control D Unfiltered — 76.76.2.0"],
+];
+const DEFAULT_BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES = [
+  "cloudflare_1",
+  "cloudflare_2",
+  "google_1",
+  "google_2",
+  "yandex_1",
+  "yandex_2",
+  "controld_unfiltered",
 ];
 const dnsOptimizerState = {
   node: null,
@@ -349,6 +368,16 @@ function injectDnsOptimizerStyles() {
       min-width: 0;
       max-width: 100%;
       flex: 0 1 auto;
+    }
+    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple] > ul > li > form,
+    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple] > ul > li > form,
+    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple] > ul > li > form {
+      display: none;
+    }
+    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple][open] > ul.dropdown > li > form,
+    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple][open] > ul.dropdown > li > form,
+    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple][open] > ul.dropdown > li > form {
+      display: inline-block;
     }
     /* DNS optimizer MultiValue intrinsic containment end */
     @media (max-width: 800px) {
@@ -1902,28 +1931,10 @@ function createSettingsContent(section) {
     "Bootstrap DNS для проверки",
     "Выберите bootstrap-кандидатов. В универсальную пару входят только публичные нефильтрующие адреса.",
   );
-  [
-    ["cloudflare_1", "Cloudflare — 1.1.1.1"],
-    ["cloudflare_2", "Cloudflare — 1.0.0.1"],
-    ["google_1", "Google — 8.8.8.8"],
-    ["google_2", "Google — 8.8.4.4"],
-    ["yandex_1", "Yandex — 77.88.8.8"],
-    ["yandex_2", "Yandex — 77.88.8.1"],
-    ["quad9_1", "Quad9 Secure — 9.9.9.9"],
-    ["quad9_ecs", "Quad9 Secure ECS — 9.9.9.11"],
-    ["adguard_unfiltered", "AdGuard Unfiltered — 94.140.14.140"],
-    ["controld_unfiltered", "Control D Unfiltered — 76.76.2.0"],
-  ].forEach(([value, label]) => o.value(value, label));
-  o.default = [
-    "cloudflare_1",
-    "cloudflare_2",
-    "google_1",
-    "google_2",
-    "yandex_1",
-    "yandex_2",
-    "adguard_unfiltered",
-    "controld_unfiltered",
-  ];
+  BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES.forEach(([value, label]) =>
+    o.value(value, label),
+  );
+  o.default = DEFAULT_BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES;
   o.rmempty = false;
 
   o = section.option(

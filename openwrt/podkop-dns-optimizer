@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260813-dns-optimizer-v13"
+VERSION="20260813-dns-optimizer-v15"
 STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
 STATUS_FILE="$STATE_DIR/status.json"
 LOG_FILE="$STATE_DIR/worker.log"
@@ -190,10 +190,10 @@ filter_selected_candidates() {
     if [ -z "$selected" ]; then
         case "$option" in
             dns_optimizer_candidates)
-                selected="cloudflare google adguard_unfiltered controld_unfiltered mullvad"
+                selected="cloudflare google controld_unfiltered"
                 ;;
             dns_optimizer_bootstrap_candidates)
-                selected="cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 adguard_unfiltered controld_unfiltered"
+                selected="cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 controld_unfiltered"
                 ;;
             *) return 0 ;;
         esac
@@ -610,11 +610,13 @@ candidate_is_primary_eligible() {
     local id="$1"
     local provider="${2:-}"
     local value="${3:-}"
-    local host
+    local host normalized_id normalized_provider
 
-    host="$(candidate_host "$value")"
-    case "$id|$provider|$host" in
-        yandex*\|*|*\|Yandex\|*|*\|Yandex\ *\|*|*\|*\|77.88.8.*|*\|*\|*.dns.yandex.net|*\|*\|dns.yandex.*)
+    normalized_id="$(printf '%s' "$id" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    normalized_provider="$(printf '%s' "$provider" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    host="$(candidate_host "$value" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    case "$normalized_id|$normalized_provider|$host" in
+        yandex*\|*|*\|yandex\|*|*\|yandex\ *\|*|*\|*\|77.88.8.*|*\|*\|*.dns.yandex.net|*\|*\|dns.yandex.*)
             return 1
             ;;
         *)

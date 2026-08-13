@@ -87,6 +87,17 @@ if ! printf '%s\n' "$dns_multivalue_css" | grep -q 'width: 100%' ||
     fail 'DNS optimizer MultiValue controls must defeat Proton2025 intrinsic-width overflow'
 fi
 
+if ! printf '%s\n' "$dns_multivalue_css" |
+    grep -Fq '.cbi-dropdown[multiple] > ul > li > form' ||
+    ! printf '%s\n' "$dns_multivalue_css" |
+        grep -Fq '.cbi-dropdown[multiple][open] > ul.dropdown > li > form' ||
+    ! printf '%s\n' "$dns_multivalue_css" |
+        grep -q 'display: none' ||
+    ! printf '%s\n' "$dns_multivalue_css" |
+        grep -Eq 'display: (block|inline-block)'; then
+    fail 'DNS optimizer MultiValue must hide stale summary checkboxes and show them only in the open menu'
+fi
+
 if sed -n '/#view \.cbi-page-actions \.cbi-button {/,/^    }/p' openwrt/main.js \
     | grep -Eq 'flex:[[:space:]]*1 1 [0-9]+px'; then
     fail 'LuCI action buttons must not use a pixel flex-basis that becomes height in Proton2025 column layout'

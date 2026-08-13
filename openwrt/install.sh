@@ -19,7 +19,7 @@ CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260813-reliability-responsive-v2"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260813-reliability-responsive-v3"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -32,7 +32,7 @@ DASHBOARD_JS_FILE="dashboard.js"
 DIAGNOSTIC_JS_FILE="diagnostic.js"
 PODKOP_JS_FILE="podkop.js"
 DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
-DNS_OPTIMIZER_VERSION="20260813-dns-optimizer-v13"
+DNS_OPTIMIZER_VERSION="20260813-dns-optimizer-v15"
 DNS_FAILOVER_FILE="podkop-dns-failover"
 DNS_FAILOVER_INIT_FILE="podkop-dns-failover.init"
 DNS_FAILOVER_VERSION="20260813-dns-failover-v3"
@@ -43,7 +43,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20260813_reliability_responsive_v2"
+LUCI_MODULE_NAMESPACE="podkop_patch_20260813_reliability_responsive_v3"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -83,6 +83,13 @@ www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v2/s
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v2/settings.js
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v2/dashboard.js
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v2/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/main.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/podkop.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/section.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/settings.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/dashboard.js
+www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v3/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -296,6 +303,60 @@ cleanup_old_backups() {
 	done
 
 	log "Keeping last $keep backup(s)."
+}
+
+dns_optimizer_candidate_set_matches() {
+	local actual="$1"
+	local expected="$2"
+	local actual_sorted expected_sorted
+
+	actual_sorted="$(printf '%s\n' "$actual" | awk '{ for (i = 1; i <= NF; i++) print $i }' | LC_ALL=C sort)"
+	expected_sorted="$(printf '%s\n' "$expected" | awk '{ for (i = 1; i <= NF; i++) print $i }' | LC_ALL=C sort)"
+
+	[ -n "$actual_sorted" ] && [ "$actual_sorted" = "$expected_sorted" ]
+}
+
+migrate_dns_optimizer_candidate_defaults() {
+	local old_v1_normal="cloudflare google yandex adguard_unfiltered controld_unfiltered mullvad"
+	local old_v2_normal="cloudflare google adguard_unfiltered controld_unfiltered mullvad"
+	local old_bootstrap="cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 adguard_unfiltered controld_unfiltered"
+	local new_normal="cloudflare google controld_unfiltered"
+	local new_bootstrap="cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 controld_unfiltered"
+	local current_normal current_bootstrap changed pending_changes
+
+	pending_changes="$(uci changes podkop 2>/dev/null || true)"
+	if [ -n "$pending_changes" ]; then
+		log "ERROR: Podkop has pending UCI changes; refusing DNS default migration without committing or discarding them."
+		return 2
+	fi
+
+	current_normal="$(uci -q get podkop.settings.dns_optimizer_candidates 2>/dev/null || true)"
+	current_bootstrap="$(uci -q get podkop.settings.dns_optimizer_bootstrap_candidates 2>/dev/null || true)"
+	changed=0
+
+	if dns_optimizer_candidate_set_matches "$current_normal" "$old_v1_normal" ||
+		dns_optimizer_candidate_set_matches "$current_normal" "$old_v2_normal"; then
+		if ! uci set "podkop.settings.dns_optimizer_candidates=$new_normal"; then
+			uci revert podkop >/dev/null 2>&1 || true
+			return 1
+		fi
+		changed=1
+	fi
+
+	if dns_optimizer_candidate_set_matches "$current_bootstrap" "$old_bootstrap"; then
+		if ! uci set "podkop.settings.dns_optimizer_bootstrap_candidates=$new_bootstrap"; then
+			uci revert podkop >/dev/null 2>&1 || true
+			return 1
+		fi
+		changed=1
+	fi
+
+	[ "$changed" -eq 1 ] || return 0
+	if ! uci commit podkop; then
+		uci revert podkop >/dev/null 2>&1 || true
+		return 1
+	fi
+	log "Migrated stock DNS optimizer selections to the v3 defaults."
 }
 
 backup_runtime() {
@@ -1205,6 +1266,14 @@ else
 		abort_with_restore "runtime install failed"
 	fi
 fi
+
+migration_status=0
+migrate_dns_optimizer_candidate_defaults || migration_status=$?
+case "$migration_status" in
+	0) ;;
+	2) abort_with_restore "Podkop has pending UCI changes; apply or revert them before updating the patch" ;;
+	*) abort_with_restore "failed to migrate stock DNS optimizer selections" ;;
+esac
 
 if { ! has_latest_subscription_backend || ! has_install_marker; } && has_subscription_backend; then
 	download "$RAW_BASE/$MAINTENANCE_UPGRADE_FILE" "$tmp_dir/$MAINTENANCE_UPGRADE_FILE"

@@ -1,0 +1,138 @@
+From 2e5a4246a5c612b0c5c39f54f3d7fb90729f5eb8 Mon Sep 17 00:00:00 2001
+From: Codex 0043 <codex@example.invalid>
+Date: Thu, 13 Aug 2026 16:16:43 +0700
+Subject: [PATCH] Fix DNS MultiValue state and defaults
+
+---
+ .../resources/view/podkop/settings.js         | 59 +++++++++++--------
+ podkop/files/usr/bin/podkop-dns-optimizer     | 16 ++---
+ 2 files changed, 44 insertions(+), 31 deletions(-)
+
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
+index a2cfa69..d98f677 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
+@@ -22,9 +22,28 @@ const NORMAL_DNS_OPTIMIZER_CANDIDATES = [
+ const DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES = [
+   "cloudflare",
+   "google",
+-  "adguard_unfiltered",
+   "controld_unfiltered",
+-  "mullvad",
++];
++const BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES = [
++  ["cloudflare_1", "Cloudflare — 1.1.1.1"],
++  ["cloudflare_2", "Cloudflare — 1.0.0.1"],
++  ["google_1", "Google — 8.8.8.8"],
++  ["google_2", "Google — 8.8.4.4"],
++  ["yandex_1", "Yandex — 77.88.8.8"],
++  ["yandex_2", "Yandex — 77.88.8.1"],
++  ["quad9_1", "Quad9 Secure — 9.9.9.9"],
++  ["quad9_ecs", "Quad9 Secure ECS — 9.9.9.11"],
++  ["adguard_unfiltered", "AdGuard Unfiltered — 94.140.14.140"],
++  ["controld_unfiltered", "Control D Unfiltered — 76.76.2.0"],
++];
++const DEFAULT_BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES = [
++  "cloudflare_1",
++  "cloudflare_2",
++  "google_1",
++  "google_2",
++  "yandex_1",
++  "yandex_2",
++  "controld_unfiltered",
+ ];
+ const dnsOptimizerState = {
+   node: null,
+@@ -350,6 +369,16 @@ function injectDnsOptimizerStyles() {
+       max-width: 100%;
+       flex: 0 1 auto;
+     }
++    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple] > ul > li > form,
++    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple] > ul > li > form,
++    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple] > ul > li > form {
++      display: none;
++    }
++    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple][open] > ul.dropdown > li > form,
++    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple][open] > ul.dropdown > li > form,
++    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple][open] > ul.dropdown > li > form {
++      display: inline-block;
++    }
+     /* DNS optimizer MultiValue intrinsic containment end */
+     @media (max-width: 800px) {
+       .pdk-dns-optimizer { padding: 10px; }
+@@ -1902,28 +1931,10 @@ function createSettingsContent(section) {
+     "Bootstrap DNS для проверки",
+     "Выберите bootstrap-кандидатов. В универсальную пару входят только публичные нефильтрующие адреса.",
+   );
+-  [
+-    ["cloudflare_1", "Cloudflare — 1.1.1.1"],
+-    ["cloudflare_2", "Cloudflare — 1.0.0.1"],
+-    ["google_1", "Google — 8.8.8.8"],
+-    ["google_2", "Google — 8.8.4.4"],
+-    ["yandex_1", "Yandex — 77.88.8.8"],
+-    ["yandex_2", "Yandex — 77.88.8.1"],
+-    ["quad9_1", "Quad9 Secure — 9.9.9.9"],
+-    ["quad9_ecs", "Quad9 Secure ECS — 9.9.9.11"],
+-    ["adguard_unfiltered", "AdGuard Unfiltered — 94.140.14.140"],
+-    ["controld_unfiltered", "Control D Unfiltered — 76.76.2.0"],
+-  ].forEach(([value, label]) => o.value(value, label));
+-  o.default = [
+-    "cloudflare_1",
+-    "cloudflare_2",
+-    "google_1",
+-    "google_2",
+-    "yandex_1",
+-    "yandex_2",
+-    "adguard_unfiltered",
+-    "controld_unfiltered",
+-  ];
++  BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES.forEach(([value, label]) =>
++    o.value(value, label),
++  );
++  o.default = DEFAULT_BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES;
+   o.rmempty = false;
+
+   o = section.option(
+diff --git a/podkop/files/usr/bin/podkop-dns-optimizer b/podkop/files/usr/bin/podkop-dns-optimizer
+index 1610e71..001cabb 100755
+--- a/podkop/files/usr/bin/podkop-dns-optimizer
++++ b/podkop/files/usr/bin/podkop-dns-optimizer
+@@ -1,6 +1,6 @@
+ #!/bin/ash
+
+-VERSION="20260813-dns-optimizer-v13"
++VERSION="20260813-dns-optimizer-v15"
+ STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
+ STATUS_FILE="$STATE_DIR/status.json"
+ LOG_FILE="$STATE_DIR/worker.log"
+@@ -190,10 +190,10 @@ filter_selected_candidates() {
+     if [ -z "$selected" ]; then
+         case "$option" in
+             dns_optimizer_candidates)
+-                selected="cloudflare google adguard_unfiltered controld_unfiltered mullvad"
++                selected="cloudflare google controld_unfiltered"
+                 ;;
+             dns_optimizer_bootstrap_candidates)
+-                selected="cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 adguard_unfiltered controld_unfiltered"
++                selected="cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 controld_unfiltered"
+                 ;;
+             *) return 0 ;;
+         esac
+@@ -610,11 +610,13 @@ candidate_is_primary_eligible() {
+     local id="$1"
+     local provider="${2:-}"
+     local value="${3:-}"
+-    local host
++    local host normalized_id normalized_provider
+
+-    host="$(candidate_host "$value")"
+-    case "$id|$provider|$host" in
+-        yandex*\|*|*\|Yandex\|*|*\|Yandex\ *\|*|*\|*\|77.88.8.*|*\|*\|*.dns.yandex.net|*\|*\|dns.yandex.*)
++    normalized_id="$(printf '%s' "$id" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
++    normalized_provider="$(printf '%s' "$provider" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
++    host="$(candidate_host "$value" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
++    case "$normalized_id|$normalized_provider|$host" in
++        yandex*\|*|*\|yandex\|*|*\|yandex\ *\|*|*\|*\|77.88.8.*|*\|*\|*.dns.yandex.net|*\|*\|dns.yandex.*)
+             return 1
+             ;;
+         *)

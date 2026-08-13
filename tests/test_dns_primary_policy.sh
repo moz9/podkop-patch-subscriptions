@@ -19,6 +19,10 @@ awk '/^query_status\(\) \{/ { exit } { sub(/\r$/, ""); print }' \
 for candidate in \
     'yandex|Yandex Basic|77.88.8.8' \
     'yandex|Yandex Basic|common.dot.dns.yandex.net' \
+    'YANDEX|Custom provider|1.1.1.1' \
+    'custom|YANDEX BASIC|1.1.1.1' \
+    'saved_custom_doh_1|Saved custom DNS 1|COMMON.DOT.DNS.YANDEX.NET' \
+    'configured_secondary|Configured secondary DNS|COMMON.DOT.DNS.YANDEX.NET' \
     'saved_custom_udp_1|Saved custom DNS 1|77.88.8.88' \
     'current|Current DNS|77.88.8.1'; do
     old_ifs="$IFS"
@@ -50,6 +54,7 @@ uci() {
     case "$*" in
         *podkop.settings.dns_optimizer_candidates) printf '%s\n' 'cloudflare google yandex' ;;
         *podkop.settings.dns_optimizer_custom_udp) printf '%s\n' '77.88.8.8 1.1.1.1' ;;
+        *podkop.settings.dns_optimizer_custom_doh) printf '%s\n' 'COMMON.DOT.DNS.YANDEX.NET 1.1.1.1' ;;
         *podkop.settings.dns_optimizer_include_current) printf '%s\n' 1 ;;
         *podkop.settings.dns_type) printf '%s\n' udp ;;
         *podkop.settings.dns_server) printf '%s\n' 77.88.8.1 ;;
@@ -70,6 +75,15 @@ if grep -Eiq '(^|\|)(yandex|77\.88\.8\.(8|1)|common\.dot\.dns\.yandex\.net)(\||$
 fi
 if ! grep -q '^cloudflare|' "$main_candidates"; then
     fail 'normal non-Yandex candidates were unexpectedly removed'
+fi
+
+custom_doh_candidates="$test_root/custom-doh-candidates"
+write_main_candidates doh "$custom_doh_candidates"
+if grep -Eiq '\|([^|]*\.)?dns\.yandex\.(net|ru)(/[^|]*)?\|' "$custom_doh_candidates"; then
+    fail 'uppercase saved custom Yandex hostname leaked into normal DNS candidates'
+fi
+if ! grep -q '^cloudflare|' "$custom_doh_candidates"; then
+    fail 'normal DoH candidates were unexpectedly removed with uppercase custom filtering'
 fi
 
 bootstrap_candidates="$test_root/bootstrap-candidates"
@@ -110,6 +124,32 @@ fi
 if sed -n '/^const NORMAL_DNS_OPTIMIZER_CANDIDATES = \[/,/^\];/p; /^const DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES = \[/,/^\];/p' openwrt/settings.js |
     grep -Eqi '"yandex'; then
     fail 'normal DNS selector/default must not offer Yandex'
+fi
+
+extract_js_array() {
+    local name="$1"
+    sed -n "/^const $name = \[/,/^\];/p" openwrt/settings.js |
+        sed -n 's/^[[:space:]]*"\([^"]*\)",[[:space:]]*$/\1/p' |
+        paste -sd ' ' -
+}
+
+if [ "$(extract_js_array DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES)" != \
+    'cloudflare google controld_unfiltered' ]; then
+    fail 'fresh normal DNS defaults must omit AdGuard Unfiltered and Mullvad while retaining them as manual choices'
+fi
+
+if [ "$(extract_js_array DEFAULT_BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES)" != \
+    'cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 controld_unfiltered' ]; then
+    fail 'fresh bootstrap DNS defaults must omit AdGuard Unfiltered while retaining it as a manual choice'
+fi
+
+if ! sed -n '/^const NORMAL_DNS_OPTIMIZER_CANDIDATES = \[/,/^\];/p' openwrt/settings.js |
+    grep -q '"adguard_unfiltered"' ||
+    ! sed -n '/^const NORMAL_DNS_OPTIMIZER_CANDIDATES = \[/,/^\];/p' openwrt/settings.js |
+        grep -q '"mullvad"' ||
+    ! sed -n '/^const BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES = \[/,/^\];/p' openwrt/settings.js |
+        grep -q '"adguard_unfiltered"'; then
+    fail 'AdGuard Unfiltered and Mullvad must remain available for explicit manual selection'
 fi
 
 if ! sed -n '/^function pickSecondaryFor(status, primary) {/,/^}/p' openwrt/settings.js |

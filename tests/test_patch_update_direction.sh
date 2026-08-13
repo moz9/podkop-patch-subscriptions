@@ -37,6 +37,8 @@ expect_update '20260720-update-center-force-v1' '20260813-reliability-responsive
 expect_no_update '20260813-reliability-responsive-v1' '20260720-update-center-force-v1'
 expect_update '20260813-reliability-responsive-v1' '20260813-reliability-responsive-v2'
 expect_no_update '20260813-reliability-responsive-v2' '20260813-reliability-responsive-v1'
+expect_update '20260813-reliability-responsive-v2' '20260813-reliability-responsive-v3'
+expect_no_update '20260813-reliability-responsive-v3' '20260813-reliability-responsive-v2'
 expect_update 'legacy-marker' '20260813-reliability-responsive-v1'
 expect_no_update '20260813-reliability-responsive-v1' 'legacy-marker'
 expect_update 'legacy-marker-v1' 'legacy-marker-v2'
