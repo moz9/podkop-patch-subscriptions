@@ -7,6 +7,44 @@
 "require view.podkop.main as main";
 
 const DNS_OPTIMIZER_COMMAND = "/usr/bin/podkop-dns-optimizer";
+const DNS_PRIMARY_POLICY = {
+  yandex: { primaryEligible: false },
+};
+const NORMAL_DNS_OPTIMIZER_CANDIDATES = [
+  ["cloudflare", "Cloudflare"],
+  ["google", "Google"],
+  ["quad9", "Quad9 Secure"],
+  ["quad9_ecs", "Quad9 Secure ECS"],
+  ["adguard_unfiltered", "AdGuard Unfiltered"],
+  ["controld_unfiltered", "Control D Unfiltered"],
+  ["mullvad", "Mullvad"],
+];
+const DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES = [
+  "cloudflare",
+  "google",
+  "controld_unfiltered",
+];
+const BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES = [
+  ["cloudflare_1", "Cloudflare — 1.1.1.1"],
+  ["cloudflare_2", "Cloudflare — 1.0.0.1"],
+  ["google_1", "Google — 8.8.8.8"],
+  ["google_2", "Google — 8.8.4.4"],
+  ["yandex_1", "Yandex — 77.88.8.8"],
+  ["yandex_2", "Yandex — 77.88.8.1"],
+  ["quad9_1", "Quad9 Secure — 9.9.9.9"],
+  ["quad9_ecs", "Quad9 Secure ECS — 9.9.9.11"],
+  ["adguard_unfiltered", "AdGuard Unfiltered — 94.140.14.140"],
+  ["controld_unfiltered", "Control D Unfiltered — 76.76.2.0"],
+];
+const DEFAULT_BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES = [
+  "cloudflare_1",
+  "cloudflare_2",
+  "google_1",
+  "google_2",
+  "yandex_1",
+  "yandex_2",
+  "controld_unfiltered",
+];
 const dnsOptimizerState = {
   node: null,
   status: null,
@@ -302,43 +340,101 @@ function injectDnsOptimizerStyles() {
       pointer-events: none;
       opacity: 0.55;
     }
-    @media (max-width: 720px) {
+    /* DNS optimizer MultiValue intrinsic containment */
+    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-value-field,
+    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-value-field,
+    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-value-field {
+      min-width: 0;
+      max-width: 100%;
+    }
+    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple],
+    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple],
+    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple] {
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+    }
+    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple] > ul:not(.dropdown),
+    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple] > ul:not(.dropdown),
+    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple] > ul:not(.dropdown) {
+      min-width: 0;
+      max-width: 100%;
+      flex-wrap: wrap;
+    }
+    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple] > ul:not(.dropdown) > li[display],
+    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple] > ul:not(.dropdown) > li[display],
+    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple] > ul:not(.dropdown) > li[display] {
+      min-width: 0;
+      max-width: 100%;
+      flex: 0 1 auto;
+    }
+    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple] > ul > li > form,
+    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple] > ul > li > form,
+    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple] > ul > li > form {
+      display: none;
+    }
+    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple][open] > ul.dropdown > li > form,
+    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple][open] > ul.dropdown > li > form,
+    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple][open] > ul.dropdown > li > form {
+      display: inline-block;
+    }
+    /* DNS optimizer MultiValue intrinsic containment end */
+    @media (max-width: 800px) {
       .pdk-dns-optimizer { padding: 10px; }
       .pdk-dns-optimizer__actions { width: 100%; }
-      .pdk-dns-optimizer__actions button { flex: 1 1 88px; }
+      .pdk-dns-optimizer__actions button {
+        flex: 1 1 100%;
+        min-height: 44px;
+      }
       .pdk-dns-optimizer__recommendation-grid {
         grid-template-columns: minmax(0, 1fr);
       }
       .pdk-dns-optimizer__recommendation-actions,
       .pdk-dns-optimizer__recommendation-actions .cbi-button {
         width: 100%;
+        min-height: 44px;
       }
-      .pdk-dns-optimizer__table--main {
+      .pdk-dns-optimizer__table-wrap {
+        overflow-x: visible;
+      }
+      .pdk-dns-optimizer__table--main,
+      .pdk-dns-optimizer__table--bootstrap {
         display: block;
+        width: 100%;
         min-width: 0;
       }
-      .pdk-dns-optimizer__table--main thead {
+      .pdk-dns-optimizer__table--main thead,
+      .pdk-dns-optimizer__table--bootstrap thead {
         display: none;
       }
       .pdk-dns-optimizer__table--main tbody,
       .pdk-dns-optimizer__table--main tr,
-      .pdk-dns-optimizer__table--main td {
+      .pdk-dns-optimizer__table--main td,
+      .pdk-dns-optimizer__table--bootstrap tbody,
+      .pdk-dns-optimizer__table--bootstrap tr,
+      .pdk-dns-optimizer__table--bootstrap td {
         display: block;
         width: auto;
       }
-      .pdk-dns-optimizer__table--main tr {
+      .pdk-dns-optimizer__table--main tr,
+      .pdk-dns-optimizer__table--bootstrap tr {
+        box-sizing: border-box;
         padding: 8px;
         margin-bottom: 10px;
         border: 1px solid rgba(127, 127, 127, 0.22);
         border-radius: 6px;
       }
-      .pdk-dns-optimizer__table--main td {
+      .pdk-dns-optimizer__table--main td,
+      .pdk-dns-optimizer__table--bootstrap td {
         display: grid;
         grid-template-columns: minmax(92px, 34%) minmax(0, 1fr);
         gap: 8px;
         padding: 6px 2px;
+        overflow-wrap: anywhere;
       }
-      .pdk-dns-optimizer__table--main td::before {
+      .pdk-dns-optimizer__table--main td::before,
+      .pdk-dns-optimizer__table--bootstrap td::before {
         content: attr(data-label);
         color: var(--text-color-secondary, #a8b3c7);
         font-size: 11px;
@@ -423,6 +519,10 @@ function optimizerMessage(status) {
       "Результат подбора устарел. Запустите проверку ещё раз.",
     stale_candidate:
       "Адрес этой строки изменился после проверки. Для безопасности запустите проверку ещё раз.",
+    primary_dns_not_allowed:
+      "Yandex DNS можно использовать только как bootstrap DNS.",
+    secondary_dns_not_allowed:
+      "Yandex DNS нельзя установить как резервный upstream. Он доступен только для bootstrap.",
     secondary_arguments_required:
       "Резервная DNS-пара задана не полностью. Применение отменено.",
     invalid_secondary_recommendation:
@@ -478,8 +578,49 @@ function isUniversalProfile(profile) {
   return profile === "unfiltered" || profile === "privacy";
 }
 
+function dnsEndpointHost(value) {
+  const withoutScheme = String(value || "")
+    .trim()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
+  const authority = withoutScheme.split("/")[0];
+  if (authority.startsWith("[")) {
+    return authority.slice(1, authority.indexOf("]")).toLowerCase();
+  }
+  return authority.replace(/:\d+$/, "").toLowerCase();
+}
+
+function candidateIsPrimaryEligible(candidate) {
+  if (!candidate) {
+    return false;
+  }
+
+  const endpoint = dnsEndpointHost(candidate.dnsServer);
+  const candidateId = String(candidate.id || "").toLowerCase();
+  const provider = String(candidate.provider || "").toLowerCase();
+  const policy =
+    DNS_PRIMARY_POLICY[candidateId] ||
+    (candidateId === "yandex" ||
+    candidateId.startsWith("yandex_") ||
+    provider === "yandex" ||
+    provider.startsWith("yandex ")
+      ? DNS_PRIMARY_POLICY.yandex
+      : null) ||
+    (/^77\.88\.8\.\d+$/.test(endpoint) ||
+    endpoint.endsWith(".dns.yandex.net") ||
+    endpoint === "dns.yandex.net" ||
+    endpoint.endsWith(".dns.yandex.ru") ||
+    endpoint === "dns.yandex.ru"
+      ? DNS_PRIMARY_POLICY.yandex
+      : null);
+  if (policy?.primaryEligible === false) {
+    return false;
+  }
+  return candidate.primaryEligible !== false;
+}
+
 function isComparisonOnly(result) {
   return (
+    !candidateIsPrimaryEligible(result) ||
     !isUniversalProfile(result?.profile) ||
     result?.bootstrapUniversalEligible !== true
   );
@@ -566,6 +707,9 @@ function resultVerdict(result) {
   const communityResults = Array.isArray(result.communityResults)
     ? result.communityResults
     : [];
+  if (result.reliable && !candidateIsPrimaryEligible(result)) {
+    return "Стабильно, доступно только как резервный DNS";
+  }
   if (
     Number(result.compatibilityPassed || 0) <
       Number(result.compatibilityTotal || 0) ||
@@ -859,6 +1003,7 @@ function renderRecommendation(status, running) {
   const result = status?.recommendation;
   if (
     !result ||
+    !candidateIsPrimaryEligible(result) ||
     result.universalEligible !== true ||
     result.bootstrapUniversalEligible !== true
   ) {
@@ -943,7 +1088,9 @@ function renderRecommendation(status, running) {
 }
 
 function renderMainResults(status, running) {
-  const results = Array.isArray(status?.results) ? status.results : [];
+  const results = Array.isArray(status?.results)
+    ? status.results.filter(candidateIsPrimaryEligible)
+    : [];
   if (!results.length) {
     return E("div");
   }
@@ -959,6 +1106,7 @@ function renderMainResults(status, running) {
     const rowConfigured = recommendationSetConfigured(result, rowSecondary);
     const rowSetInstalled = recommendationSetInstalled(result, rowSecondary);
     const recommended =
+      candidateIsPrimaryEligible(result) &&
       status.recommendation?.protocol === result.protocol &&
       status.recommendation?.id === result.id &&
       status.recommendation?.dnsServer === result.dnsServer &&
@@ -1038,7 +1186,9 @@ function renderMainResults(status, running) {
                   class:
                     "pdk-dns-optimizer__badge pdk-dns-optimizer__badge--comparison",
                 },
-                "Только для сравнения",
+                candidateIsPrimaryEligible(result)
+                  ? "Только для сравнения"
+                  : "Только для резерва",
               ),
             ]
           : []),
@@ -1155,6 +1305,7 @@ function pickSecondaryFor(status, primary) {
       candidate.id !== primary?.id &&
       candidate.dnsServer !== primary?.dnsServer &&
       candidate.provider !== primary?.provider &&
+      candidateIsPrimaryEligible(candidate) &&
       candidate.reliable === true &&
       candidate.universalEligible === true &&
       candidate.bootstrapUniversalEligible === true,
@@ -1203,50 +1354,65 @@ function renderBootstrapResults(status) {
   return E("details", {}, [
     E("summary", {}, `Результаты bootstrap DNS (${results.length})`),
     E("div", { class: "pdk-dns-optimizer__table-wrap" }, [
-      E("table", { class: "pdk-dns-optimizer__table" }, [
-        E("thead", {}, [
-          E("tr", {}, [
-            E("th", {}, "Bootstrap DNS"),
-            E("th", {}, "Адрес"),
-            E("th", {}, "Успех"),
-            E("th", {}, "Медиана"),
-            E("th", {}, "P90"),
-            E("th", {}, "Разброс IQR"),
-            E("th", {}, "Тип"),
-          ]),
-        ]),
-        E(
-          "tbody",
-          {},
-          results.map((result) =>
+      E(
+        "table",
+        {
+          class:
+            "pdk-dns-optimizer__table pdk-dns-optimizer__table--bootstrap",
+        },
+        [
+          E("thead", {}, [
             E("tr", {}, [
-              E("td", {}, result.provider),
-              E("td", {}, result.server),
-              E("td", { class: resultClass(result) }, `${result.successRate}%`),
-              E(
-                "td",
-                {},
-                Number.isFinite(result.medianMs)
-                  ? `${result.medianMs} мс`
-                  : "—",
-              ),
-              E(
-                "td",
-                {},
-                Number.isFinite(result.p90Ms) ? `${result.p90Ms} мс` : "—",
-              ),
-              E(
-                "td",
-                {},
-                result.jitterMs || result.reliable
-                  ? `${result.jitterMs} мс`
-                  : "—",
-              ),
-              E("td", {}, profileLabel(result.profile)),
+              E("th", {}, "Bootstrap DNS"),
+              E("th", {}, "Адрес"),
+              E("th", {}, "Успех"),
+              E("th", {}, "Медиана"),
+              E("th", {}, "P90"),
+              E("th", {}, "Разброс IQR"),
+              E("th", {}, "Тип"),
             ]),
+          ]),
+          E(
+            "tbody",
+            {},
+            results.map((result) =>
+              E("tr", {}, [
+                E("td", { "data-label": "Bootstrap DNS" }, result.provider),
+                E("td", { "data-label": "Адрес" }, result.server),
+                E(
+                  "td",
+                  { "data-label": "Успех", class: resultClass(result) },
+                  `${result.successRate}%`,
+                ),
+                E(
+                  "td",
+                  { "data-label": "Медиана" },
+                  Number.isFinite(result.medianMs)
+                    ? `${result.medianMs} мс`
+                    : "—",
+                ),
+                E(
+                  "td",
+                  { "data-label": "P90" },
+                  Number.isFinite(result.p90Ms) ? `${result.p90Ms} мс` : "—",
+                ),
+                E(
+                  "td",
+                  { "data-label": "Разброс IQR" },
+                  result.jitterMs || result.reliable
+                    ? `${result.jitterMs} мс`
+                    : "—",
+                ),
+                E(
+                  "td",
+                  { "data-label": "Тип" },
+                  profileLabel(result.profile),
+                ),
+              ]),
+            ),
           ),
-        ),
-      ]),
+        ],
+      ),
     ]),
   ]);
 }
@@ -1493,7 +1659,12 @@ async function startDnsBenchmark() {
 }
 
 async function applyDnsResult(result, secondaryResult = null) {
-  if (!result || dnsOptimizerState.status?.state === "running") {
+  if (
+    !result ||
+    !candidateIsPrimaryEligible(result) ||
+    (secondaryResult && !candidateIsPrimaryEligible(secondaryResult)) ||
+    dnsOptimizerState.status?.state === "running"
+  ) {
     return;
   }
   const candidateKey = `${result.protocol}:${result.id}:${result.dnsServer}:${result.bootstrapDnsServer}:${secondaryResult?.id || "single"}`;
@@ -1597,6 +1768,9 @@ function createSettingsContent(section) {
   dnsOptimizerState.dnsServerOption = o;
   o.write = writePrimaryDnsOption;
   o.validate = function (section_id, value) {
+    if (!candidateIsPrimaryEligible({ dnsServer: value })) {
+      return "Yandex DNS можно использовать только как bootstrap DNS.";
+    }
     const validation = main.validateDNS(value);
 
     if (validation.valid) {
@@ -1676,6 +1850,9 @@ function createSettingsContent(section) {
   o.depends("dns_failover_enabled", "1");
   dnsOptimizerState.secondaryDnsServerOption = o;
   o.validate = function (section_id, value) {
+    if (!candidateIsPrimaryEligible({ dnsServer: value })) {
+      return "Yandex DNS можно использовать только как bootstrap DNS.";
+    }
     const validation = main.validateDNS(value);
     return validation.valid ? true : validation.message;
   };
@@ -1723,25 +1900,30 @@ function createSettingsContent(section) {
     "DNS для проверки",
     "Выберите основной каталог для теста. Меньше кандидатов — быстрее и точнее сравнение. Пользовательские и WAN DNS не становятся автоматической рекомендацией.",
   );
-  [
-    ["cloudflare", "Cloudflare"],
-    ["google", "Google"],
-    ["quad9", "Quad9 Secure"],
-    ["quad9_ecs", "Quad9 Secure ECS"],
-    ["yandex", "Yandex Basic"],
-    ["adguard_unfiltered", "AdGuard Unfiltered"],
-    ["controld_unfiltered", "Control D Unfiltered"],
-    ["mullvad", "Mullvad"],
-  ].forEach(([value, label]) => o.value(value, label));
-  o.default = [
-    "cloudflare",
-    "google",
-    "yandex",
-    "adguard_unfiltered",
-    "controld_unfiltered",
-    "mullvad",
-  ];
+  NORMAL_DNS_OPTIMIZER_CANDIDATES.forEach(([value, label]) =>
+    o.value(value, label),
+  );
+  o.default = DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES;
   o.rmempty = false;
+  o.cfgvalue = function (sectionId) {
+    const configured = uci.get(
+      "podkop",
+      sectionId,
+      "dns_optimizer_candidates",
+    );
+    const selected = Array.isArray(configured)
+      ? configured
+      : String(configured || "")
+          .split(/\s+/)
+          .filter(Boolean);
+    const allowed = new Set(
+      NORMAL_DNS_OPTIMIZER_CANDIDATES.map(([value]) => value),
+    );
+    const filtered = selected.filter((value) => allowed.has(value));
+    return filtered.length
+      ? filtered
+      : DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES;
+  };
 
   o = section.option(
     form.MultiValue,
@@ -1749,28 +1931,10 @@ function createSettingsContent(section) {
     "Bootstrap DNS для проверки",
     "Выберите bootstrap-кандидатов. В универсальную пару входят только публичные нефильтрующие адреса.",
   );
-  [
-    ["cloudflare_1", "Cloudflare — 1.1.1.1"],
-    ["cloudflare_2", "Cloudflare — 1.0.0.1"],
-    ["google_1", "Google — 8.8.8.8"],
-    ["google_2", "Google — 8.8.4.4"],
-    ["yandex_1", "Yandex — 77.88.8.8"],
-    ["yandex_2", "Yandex — 77.88.8.1"],
-    ["quad9_1", "Quad9 Secure — 9.9.9.9"],
-    ["quad9_ecs", "Quad9 Secure ECS — 9.9.9.11"],
-    ["adguard_unfiltered", "AdGuard Unfiltered — 94.140.14.140"],
-    ["controld_unfiltered", "Control D Unfiltered — 76.76.2.0"],
-  ].forEach(([value, label]) => o.value(value, label));
-  o.default = [
-    "cloudflare_1",
-    "cloudflare_2",
-    "google_1",
-    "google_2",
-    "yandex_1",
-    "yandex_2",
-    "adguard_unfiltered",
-    "controld_unfiltered",
-  ];
+  BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES.forEach(([value, label]) =>
+    o.value(value, label),
+  );
+  o.default = DEFAULT_BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES;
   o.rmempty = false;
 
   o = section.option(

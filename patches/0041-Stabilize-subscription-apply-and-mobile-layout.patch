@@ -1,0 +1,2462 @@
+From da9cbe56464efc520501091a95144365c94d983f Mon Sep 17 00:00:00 2001
+From: Codex <codex@example.invalid>
+Date: Thu, 13 Aug 2026 13:02:32 +0700
+Subject: [PATCH] Stabilize subscription apply and mobile layout
+
+---
+ .../src/helpers/executeShellCommand.ts        |   2 +-
+ .../src/partials/button/renderButton.ts       |   1 +
+ fe-app-podkop/src/partials/button/styles.ts   |  12 +
+ fe-app-podkop/src/partials/modal/styles.ts    |  18 +-
+ .../podkop/methods/shell/callBaseMethod.ts    |  12 +-
+ .../src/podkop/methods/shell/index.ts         |  18 +
+ .../tabs/dashboard/partials/renderSections.ts |   1 +
+ .../src/podkop/tabs/dashboard/styles.ts       |  20 +-
+ .../src/podkop/tabs/diagnostic/styles.ts      |  48 +-
+ .../tabs/subscriptions/initController.ts      | 108 ++--
+ .../partials/renderSubscriptionSections.ts    |  75 ++-
+ .../src/podkop/tabs/subscriptions/styles.ts   |  70 ++-
+ fe-app-podkop/src/podkop/types.ts             |   5 +
+ fe-app-podkop/src/styles.ts                   |  48 +-
+ fe-app-podkop/tsup.config.ts                  |   3 +-
+ .../luci-static/resources/view/podkop/main.js | Bin 200479 -> 206882 bytes
+ .../resources/view/podkop/settings.js         | 190 ++++--
+ podkop/files/usr/bin/podkop                   | 540 +++++++++++++++---
+ podkop/files/usr/bin/podkop-dns-failover      | 104 +++-
+ podkop/files/usr/bin/podkop-dns-optimizer     | 143 ++++-
+ 20 files changed, 1185 insertions(+), 233 deletions(-)
+ mode change 100644 => 100755 podkop/files/usr/bin/podkop-dns-optimizer
+
+diff --git a/fe-app-podkop/src/helpers/executeShellCommand.ts b/fe-app-podkop/src/helpers/executeShellCommand.ts
+index 4fc1547..58f3a3a 100644
+--- a/fe-app-podkop/src/helpers/executeShellCommand.ts
++++ b/fe-app-podkop/src/helpers/executeShellCommand.ts
+@@ -19,7 +19,7 @@ export async function executeShellCommand({
+   timeout = COMMAND_TIMEOUT,
+ }: ExecuteShellCommandParams): Promise<ExecuteShellCommandResponse> {
+   try {
+-    return withTimeout(
++    return await withTimeout(
+       fs.exec(command, args),
+       timeout,
+       [command, ...args].join(' '),
+diff --git a/fe-app-podkop/src/partials/button/renderButton.ts b/fe-app-podkop/src/partials/button/renderButton.ts
+index 46b0e45..cb1b3cf 100644
+--- a/fe-app-podkop/src/partials/button/renderButton.ts
++++ b/fe-app-podkop/src/partials/button/renderButton.ts
+@@ -71,6 +71,7 @@ export function renderButton({
+   return E(
+     'button',
+     {
++      type: 'button',
+       class: getClass(),
+       disabled: getDisabled(),
+       title: title || text,
+diff --git a/fe-app-podkop/src/partials/button/styles.ts b/fe-app-podkop/src/partials/button/styles.ts
+index 9e02455..2605a30 100644
+--- a/fe-app-podkop/src/partials/button/styles.ts
++++ b/fe-app-podkop/src/partials/button/styles.ts
+@@ -42,4 +42,16 @@ export const styles = `
+     width: 16px;
+     height: 16px;
+ }
++
++@media (max-width: 800px) {
++    .pdk-partial-button {
++        min-height: 44px;
++    }
++
++    .pdk-partial-button--icon-only {
++        min-width: 44px;
++        width: 44px;
++        min-height: 44px;
++    }
++}
+ `;
+diff --git a/fe-app-podkop/src/partials/modal/styles.ts b/fe-app-podkop/src/partials/modal/styles.ts
+index 929e5ec..b9813a4 100644
+--- a/fe-app-podkop/src/partials/modal/styles.ts
++++ b/fe-app-podkop/src/partials/modal/styles.ts
+@@ -5,16 +5,30 @@ export const styles = `
+
+ .pdk-partial-modal__content {
+     max-height: 70vh;
+-    overflow: scroll;
++    max-height: 70dvh;
++    max-width: 100%;
++    overflow: auto;
++    overflow-wrap: anywhere;
++    white-space: pre-wrap;
++    box-sizing: border-box;
+     border-radius: 4px;
+ }
+
+ .pdk-partial-modal__footer {
+     display: flex;
+     justify-content: flex-end;
++    flex-wrap: wrap;
++    gap: 10px;
+ }
+
+ .pdk-partial-modal__footer button {
+-    margin-left: 10px;
++    margin-left: 0;
++}
++
++@media (max-width: 800px) {
++    .pdk-partial-modal__footer button {
++        flex: 1 1 100%;
++        min-height: 44px;
++    }
+ }
+ `;
+diff --git a/fe-app-podkop/src/podkop/methods/shell/callBaseMethod.ts b/fe-app-podkop/src/podkop/methods/shell/callBaseMethod.ts
+index 5e77eb0..39723ff 100644
+--- a/fe-app-podkop/src/podkop/methods/shell/callBaseMethod.ts
++++ b/fe-app-podkop/src/podkop/methods/shell/callBaseMethod.ts
+@@ -13,22 +13,26 @@ export async function callBaseMethod<T>(
+     timeout,
+   });
+
+-  if (response.stdout) {
++  const stdout = (response.stdout || '').trim();
++
++  if (stdout) {
+     try {
+       return {
+         success: true,
+-        data: JSON.parse(response.stdout) as T,
++        data: JSON.parse(stdout) as T,
+       };
+     } catch (_e) {
+       return {
+         success: true,
+-        data: response.stdout as T,
++        data: stdout as T,
+       };
+     }
+   }
+
+   return {
+     success: false,
+-    error: '',
++    error:
++      (response.stderr || '').trim() ||
++      (response.code ? `Command failed (${response.code})` : ''),
+   };
+ }
+diff --git a/fe-app-podkop/src/podkop/methods/shell/index.ts b/fe-app-podkop/src/podkop/methods/shell/index.ts
+index 310e91d..41533f0 100644
+--- a/fe-app-podkop/src/podkop/methods/shell/index.ts
++++ b/fe-app-podkop/src/podkop/methods/shell/index.ts
+@@ -189,4 +189,22 @@ export const PodkopShellMethods = {
+       '/usr/bin/podkop',
+       60000,
+     ),
++  setSubscriptionSectionsEnabled: async (
++    changesBySection: Record<
++      string,
++      Array<{ id: string; enabled: boolean }>
++    >,
++  ) =>
++    callBaseMethod<Podkop.SetSubscriptionLinksEnabledResult>(
++      Podkop.AvailableMethods.SET_SUBSCRIPTION_SECTIONS_ENABLED,
++      [
++        JSON.stringify({
++          sections: Object.entries(changesBySection).map(
++            ([section, changes]) => ({ section, changes }),
++          ),
++        }),
++      ],
++      '/usr/bin/podkop',
++      300000,
++    ),
+ };
+diff --git a/fe-app-podkop/src/podkop/tabs/dashboard/partials/renderSections.ts b/fe-app-podkop/src/podkop/tabs/dashboard/partials/renderSections.ts
+index ddaea70..4c4e9de 100644
+--- a/fe-app-podkop/src/podkop/tabs/dashboard/partials/renderSections.ts
++++ b/fe-app-podkop/src/podkop/tabs/dashboard/partials/renderSections.ts
+@@ -108,6 +108,7 @@ export function renderDefaultState({
+         : E(
+             'button',
+             {
++              type: 'button',
+               class: 'btn dashboard-sections-grid-item-test-latency',
+               click: () => testLatency(),
+             },
+diff --git a/fe-app-podkop/src/podkop/tabs/dashboard/styles.ts b/fe-app-podkop/src/podkop/tabs/dashboard/styles.ts
+index 32066e5..c1232a1 100644
+--- a/fe-app-podkop/src/podkop/tabs/dashboard/styles.ts
++++ b/fe-app-podkop/src/podkop/tabs/dashboard/styles.ts
+@@ -11,5 +11,6 @@ export const styles = `
+ .pdk_dashboard-page {
+     width: 100%;
++    min-width: 0;
+     --dashboard-grid-columns: 4;
+ }
+
+@@ -19,10 +20,16 @@ export const styles = `
+     }
+ }
+
++@media (max-width: 520px) {
++    .pdk_dashboard-page {
++        --dashboard-grid-columns: 1;
++    }
++}
++
+ .pdk_dashboard-page__widgets-section {
+     margin-top: 10px;
+     display: grid;
+-    grid-template-columns: repeat(var(--dashboard-grid-columns), 1fr);
++    grid-template-columns: repeat(var(--dashboard-grid-columns), minmax(0, 1fr));
+     grid-gap: 10px;
+ }
+
+@@ -30,6 +37,8 @@ export const styles = `
+     border: 2px var(--background-color-low, lightgray) solid;
+     border-radius: 4px;
+     padding: 10px;
++    min-width: 0;
++    overflow-wrap: anywhere;
+ }
+
+ .pdk_dashboard-page__widgets-section__item__title {}
+@@ -53,12 +62,15 @@ export const styles = `
+     border: 2px var(--background-color-low, lightgray) solid;
+     border-radius: 4px;
+     padding: 10px;
++    min-width: 0;
+ }
+
+ .pdk_dashboard-page__outbound-section__title-section {
+     display: flex;
+     align-items: center;
+     justify-content: space-between;
++    flex-wrap: wrap;
++    gap: 8px;
+ }
+
+ .pdk_dashboard-page__outbound-section__title-section__title {
+@@ -69,7 +81,7 @@ export const styles = `
+ .pdk_dashboard-page__outbound-grid {
+     margin-top: 5px;
+     display: grid;
+-    grid-template-columns: repeat(var(--dashboard-grid-columns), 1fr);
++    grid-template-columns: repeat(var(--dashboard-grid-columns), minmax(0, 1fr));
+     grid-gap: 10px;
+ }
+
+@@ -78,6 +90,8 @@ export const styles = `
+     border-radius: 4px;
+     padding: 10px;
+     transition: border 0.2s ease;
++    min-width: 0;
++    overflow-wrap: anywhere;
+ }
+
+ .pdk_dashboard-page__outbound-grid__item--selectable {
+@@ -97,6 +111,8 @@ export const styles = `
+     align-items: center;
+     justify-content: space-between;
+     margin-top: 10px;
++    flex-wrap: wrap;
++    gap: 6px;
+ }
+
+ .pdk_dashboard-page__outbound-grid__item__type {}
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/styles.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/styles.ts
+index 901d80f..c4cc420 100644
+--- a/fe-app-podkop/src/podkop/tabs/diagnostic/styles.ts
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/styles.ts
+@@ -11,9 +11,10 @@ export const styles = `
+
+ .pdk_diagnostic-page {
+     display: grid;
+-    grid-template-columns: 2fr 1fr;
++    grid-template-columns: minmax(0, 2fr) minmax(0, 1fr);
+     grid-column-gap: 10px;
+     align-items: start;
++    min-width: 0;
+ }
+
+ @media (max-width: 800px) {
+@@ -26,6 +27,7 @@ export const styles = `
+     display: grid;
+     grid-template-columns: 1fr;
+     grid-row-gap: 10px;
++    min-width: 0;
+ }
+
+ .pdk_diagnostic-page__right-bar__wiki {
+@@ -36,6 +38,7 @@ export const styles = `
+     display: grid;
+     grid-template-columns: auto;
+     grid-row-gap: 10px;
++    min-width: 0;
+ }
+
+ .pdk_diagnostic-page__right-bar__wiki--warning {
+@@ -47,11 +50,15 @@ export const styles = `
+
+ .pdk_diagnostic-page__right-bar__wiki__content {
+     display: grid;
+-    grid-template-columns: 1fr 5fr;
++    grid-template-columns: auto minmax(0, 1fr);
+     grid-column-gap: 10px;
++    min-width: 0;
+ }
+
+-.pdk_diagnostic-page__right-bar__wiki__texts {}
++.pdk_diagnostic-page__right-bar__wiki__texts {
++    min-width: 0;
++    overflow-wrap: anywhere;
++}
+
+ .pdk_diagnostic-page__right-bar__actions {
+     border: 2px var(--background-color-low, lightgray) solid;
+@@ -61,7 +68,7 @@ export const styles = `
+     display: grid;
+     grid-template-columns: auto;
+     grid-row-gap: 10px;
+-
++    min-width: 0;
+ }
+
+ .pdk_diagnostic-page__right-bar__system-info {
+@@ -72,6 +79,7 @@ export const styles = `
+     display: grid;
+     grid-template-columns: auto;
+     grid-row-gap: 10px;
++    min-width: 0;
+ }
+
+ .pdk_diagnostic-page__right-bar__system-info__title {
+@@ -80,8 +88,14 @@ export const styles = `
+
+ .pdk_diagnostic-page__right-bar__system-info__row {
+     display: grid;
+-    grid-template-columns: auto 1fr;
++    grid-template-columns: auto minmax(0, 1fr);
+     grid-column-gap: 5px;
++    min-width: 0;
++    overflow-wrap: anywhere;
++}
++
++.pdk_diagnostic-page__right-bar__system-info__row > * {
++    min-width: 0;
+ }
+
+ .pdk_diagnostic-page__right-bar__system-info__row__tag {
+@@ -154,6 +168,7 @@ export const styles = `
+     display: grid;
+     grid-template-columns: 1fr;
+     grid-row-gap: 10px;
++    min-width: 0;
+ }
+
+ .pdk_diagnostic-page__run_check_wrapper {}
+@@ -173,7 +188,7 @@ export const styles = `
+     border-radius: 4px;
+
+     display: grid;
+-    grid-template-columns: 24px 1fr;
++    grid-template-columns: 24px minmax(0, 1fr);
+     grid-column-gap: 10px;
+     align-items: center;
+     padding: 10px;
+@@ -202,7 +217,10 @@ export const styles = `
+
+ .pdk_diagnostic_alert__icon {}
+
+-.pdk_diagnostic_alert__content {}
++.pdk_diagnostic_alert__content {
++    min-width: 0;
++    overflow-wrap: anywhere;
++}
+
+ .pdk_diagnostic_alert__title {
+     display: block;
+@@ -216,8 +234,10 @@ export const styles = `
+
+ .pdk_diagnostic_alert__summary__item {
+     display: grid;
+-    grid-template-columns: 16px auto 1fr;
++    grid-template-columns: 16px auto minmax(0, 1fr);
+     grid-column-gap: 10px;
++    min-width: 0;
++    overflow-wrap: anywhere;
+ }
+
+ .pdk_diagnostic_alert__summary__item--error {
+@@ -236,4 +256,16 @@ export const styles = `
+     width: 16px;
+     height: 16px;
+ }
++
++@media (max-width: 800px) {
++    .pdk_diagnostic-page__right-bar__actions .pdk-partial-button,
++    .pdk_diagnostic-page__right-bar__wiki .pdk-partial-button {
++        width: 100%;
++    }
++
++    .pdk_diagnostic-page__right-bar__system-info__row {
++        grid-template-columns: minmax(0, 1fr);
++        row-gap: 2px;
++    }
++}
+ `;
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+index 974176e..9c9edd5 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/initController.ts
+@@ -16,6 +16,7 @@ type SubscriptionItemsAction = 'none' | 'refresh' | 'ping' | 'speed' | 'patch';
+ type SubscriptionItemsActionStatus = 'idle' | 'running' | 'success' | 'error';
+
+ let speedtestRunToken = 0;
++let subscriptionsLifecycleRegistered = false;
+
+ function getRowId(sectionCode: string, itemId: string) {
+   return `${sectionCode}:${itemId}`;
+@@ -71,6 +72,17 @@ function canRunServiceAction() {
+   );
+ }
+
++function canRefreshSubscriptions() {
++  const widget = store.get().subscriptionItemsWidget;
++
++  return (
++    !widget.loading &&
++    !widget.applying &&
++    !isActionRunning() &&
++    (widget.failed || getPendingCount(widget.pendingChanges) === 0)
++  );
++}
++
+ function setActionState({
+   action,
+   actionStatus,
+@@ -119,10 +131,16 @@ async function fetchSubscriptionItems(
+           section['.name'],
+         );
+
++        if (!items.success || !Array.isArray(items.data)) {
++          throw new Error(
++            items.success ? 'invalid_subscription_items' : items.error,
++          );
++        }
++
+         return {
+           code: section['.name'],
+           displayName: section['.name'],
+-          items: items.success ? items.data : [],
++          items: items.data,
+         };
+       }),
+     );
+@@ -262,15 +280,18 @@ async function handleApply() {
+   try {
+     const changesBySection = getChangesBySection(pendingChanges);
+
+-    for (const [sectionCode, changes] of Object.entries(changesBySection)) {
+-      const result = await PodkopShellMethods.setSubscriptionLinksEnabled(
+-        sectionCode,
+-        changes,
+-      );
++    const result = await PodkopShellMethods.setSubscriptionSectionsEnabled(
++      changesBySection,
++    );
+
+-      if (!result.success || !result.data.success) {
+-        throw new Error(result.success ? result.data.error : result.error);
+-      }
++    if (!result.success || !result.data || result.data.success !== true) {
++      throw new Error(
++        result.success && result.data?.state === 'rollback_failed'
++          ? 'rollback_failed'
++          : result.success
++            ? result.data?.error
++            : result.error,
++      );
+     }
+
+     showToast(_('Saved!'), 'success');
+@@ -278,20 +299,16 @@ async function handleApply() {
+   } catch (error) {
+     logger.error('[SUBSCRIPTIONS]', 'failed to apply subscription changes');
+     logger.error('[SUBSCRIPTIONS]', error);
+-    showToast(_('Failed to save!'), 'error');
+-
+-    store.set({
+-      subscriptionItemsWidget: {
+-        ...store.get().subscriptionItemsWidget,
+-        applying: false,
+-        status: 'error',
+-      },
+-    });
++    showToast(
++      getSubscriptionActionErrorMessage(error, _('Failed to save!')),
++      'error',
++    );
++    await fetchSubscriptionItems('error');
+   }
+ }
+
+ async function handleRefreshSubscriptions() {
+-  if (!canRunServiceAction()) {
++  if (!canRefreshSubscriptions()) {
+     return;
+   }
+
+@@ -665,6 +682,10 @@ function getSubscriptionActionErrorMessage(
+       return _('Podkop selector is not ready. Try again in a minute.');
+     case 'reload_failed':
+       return _('Podkop reload failed. Changes were not applied.');
++    case 'rollback_failed':
++      return _(
++        'Podkop reload failed and automatic rollback could not be verified. Check the service and configuration before retrying.',
++      );
+     case 'subscription_cache_missing':
+       return _('Subscription cache is missing. Refresh subscriptions first.');
+     case 'subscription_items_load_failed':
+@@ -887,27 +908,38 @@ function onPageUnmount() {
+   store.reset(['subscriptionItemsWidget']);
+ }
+
+-function registerLifecycleListeners() {
+-  store.subscribe((next, prev, diff) => {
+-    if (
+-      diff.tabService &&
+-      next.tabService.current !== prev.tabService.current
+-    ) {
+-      logger.debug(
+-        '[SUBSCRIPTIONS]',
+-        'active tab diff event, active tab:',
+-        diff.tabService.current,
+-      );
+-      const isSubscriptionsVisible =
+-        next.tabService.current === 'subscriptions';
+-
+-      if (isSubscriptionsVisible) {
+-        return onPageMount();
+-      }
++function onSubscriptionTabChange(
++  next: StoreType,
++  prev: StoreType,
++  diff: Partial<StoreType>,
++) {
++  if (
++    diff.tabService &&
++    next.tabService.current !== prev.tabService.current
++  ) {
++    logger.debug(
++      '[SUBSCRIPTIONS]',
++      'active tab diff event, active tab:',
++      diff.tabService.current,
++    );
++    const isSubscriptionsVisible =
++      next.tabService.current === 'subscriptions';
+
+-      return onPageUnmount();
++    if (isSubscriptionsVisible) {
++      return onPageMount();
+     }
+-  });
++
++    return onPageUnmount();
++  }
++}
++
++function registerLifecycleListeners() {
++  if (subscriptionsLifecycleRegistered) {
++    return;
++  }
++
++  store.subscribe(onSubscriptionTabChange);
++  subscriptionsLifecycleRegistered = true;
+ }
+
+ export async function initController(): Promise<void> {
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
+index c747c5d..d10a4c2 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/partials/renderSubscriptionSections.ts
+@@ -251,7 +251,7 @@ function getToolbarMessage({
+   }
+
+   if (status === 'error') {
+-    return _('Failed to apply changes. Podkop was not changed.');
++    return _('Failed to save!');
+   }
+
+   if (pendingCount > 0) {
+@@ -328,6 +328,11 @@ function renderToolbar({
+   const speedRunning = action === 'speed' && actionRunning;
+   const canRunAction = !loading && !failed && !applying && !actionRunning;
+   const canRunSubscriptionAction = canRunAction && pendingCount === 0;
++  const canRefresh =
++    !loading &&
++    !applying &&
++    !actionRunning &&
++    (failed || pendingCount === 0);
+   const canRunPatchAction =
+     !loading && !applying && !actionRunning && pendingCount === 0;
+   const canApply =
+@@ -367,7 +372,7 @@ function renderToolbar({
+           hideText: true,
+           onClick: onRefresh,
+           loading: action === 'refresh' && actionRunning,
+-          disabled: !canRunSubscriptionAction,
++          disabled: !canRefresh,
+         }),
+         renderButton({
+           text: _('Ping'),
+@@ -496,25 +501,59 @@ function renderRow({
+         .join(' '),
+     },
+     [
+-      E('td', { class: 'pdk_subscriptions-page__toggle-cell' }, [
+-        E('input', {
+-          type: 'checkbox',
+-          checked: effectiveEnabled ? 'checked' : undefined,
+-          disabled: disabled ? 'disabled' : undefined,
+-          change: (event: Event) => {
+-            const target = event.target as HTMLInputElement;
+-            onToggle(section.code, item, target.checked);
+-          },
+-        }),
+-      ]),
+-      E('td', {}, getItemName(item, index)),
+-      E('td', {}, (item.protocol || _('Unknown')).toUpperCase()),
+-      E('td', {}, item.transport || _('Default')),
+-      E('td', {}, renderLatency()),
+-      E('td', {}, renderSpeed()),
+       E(
+         'td',
+         {
++          class: 'pdk_subscriptions-page__toggle-cell',
++          'data-label': _('On'),
++          'data-title': _('On'),
++        },
++        [
++          E('label', { class: 'pdk_subscriptions-page__toggle-target' }, [
++            E('input', {
++              type: 'checkbox',
++              checked: effectiveEnabled ? 'checked' : undefined,
++              disabled: disabled ? 'disabled' : undefined,
++              title: `${_('On')}: ${getItemName(item, index)}`,
++              'aria-label': `${_('On')}: ${getItemName(item, index)}`,
++              change: (event: Event) => {
++                const target = event.target as HTMLInputElement;
++                onToggle(section.code, item, target.checked);
++              },
++            }),
++          ]),
++        ],
++      ),
++      E(
++        'td',
++        { 'data-label': _('Config'), 'data-title': _('Config') },
++        getItemName(item, index),
++      ),
++      E(
++        'td',
++        { 'data-label': _('Protocol'), 'data-title': _('Protocol') },
++        (item.protocol || _('Unknown')).toUpperCase(),
++      ),
++      E(
++        'td',
++        { 'data-label': _('Transport'), 'data-title': _('Transport') },
++        item.transport || _('Default'),
++      ),
++      E(
++        'td',
++        { 'data-label': _('Ping'), 'data-title': _('Ping') },
++        renderLatency(),
++      ),
++      E(
++        'td',
++        { 'data-label': _('Speed'), 'data-title': _('Speed') },
++        renderSpeed(),
++      ),
++      E(
++        'td',
++        {
++          'data-label': _('Status'),
++          'data-title': _('Status'),
+           class: `pdk_subscriptions-page__status ${getStatusClass({
+             item,
+             pending,
+diff --git a/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts b/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
+index f425f7f..eaa3c3d 100644
+--- a/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
++++ b/fe-app-podkop/src/podkop/tabs/subscriptions/styles.ts
+@@ -193,6 +193,15 @@ export const styles = `
+     width: 58px;
+ }
+
++.pdk_subscriptions-page__toggle-target {
++    display: inline-flex;
++    align-items: center;
++    justify-content: center;
++    min-width: 44px;
++    min-height: 44px;
++    cursor: pointer;
++}
++
+ .pdk_subscriptions-page__table th:nth-child(1),
+ .pdk_subscriptions-page__table td:nth-child(1) {
+     width: 58px;
+@@ -264,7 +273,7 @@ export const styles = `
+     padding: 10px;
+ }
+
+-@media (max-width: 720px) {
++@media (max-width: 800px) {
+     .pdk_subscriptions-page__toolbar {
+         align-items: flex-start;
+         flex-direction: column;
+@@ -278,14 +287,73 @@ export const styles = `
+         width: 100%;
+     }
+
++    .pdk_subscriptions-page__toolbar-actions .btn {
++        min-height: 44px;
++    }
++
+     .pdk_subscriptions-page__source-header {
+         align-items: flex-start;
+         flex-wrap: wrap;
++        min-height: 44px;
+     }
+
+     .pdk_subscriptions-page__source-summary {
+         flex-basis: 100%;
+         padding-left: 14px;
+     }
++
++    .pdk_subscriptions-page__table-wrap {
++        overflow-x: visible;
++    }
++
++    .pdk_subscriptions-page__table {
++        display: block;
++        min-width: 0;
++        table-layout: auto;
++    }
++
++    .pdk_subscriptions-page__table thead {
++        display: none;
++    }
++
++    .pdk_subscriptions-page__table tbody {
++        display: grid;
++        grid-template-columns: minmax(0, 1fr);
++        gap: 8px;
++        padding: 8px;
++    }
++
++    .pdk_subscriptions-page__table tr {
++        display: grid;
++        grid-template-columns: minmax(0, 1fr);
++        min-width: 0;
++        border: 1px var(--background-color-low, lightgray) solid;
++        border-radius: 4px;
++        padding: 6px 8px;
++    }
++
++    .pdk_subscriptions-page__table td {
++        display: grid;
++        grid-template-columns: minmax(86px, 34%) minmax(0, 1fr);
++        gap: 8px;
++        width: auto !important;
++        min-width: 0;
++        padding: 6px 0;
++        white-space: normal;
++        overflow: visible;
++        text-overflow: clip;
++        overflow-wrap: anywhere;
++    }
++
++    .pdk_subscriptions-page__table td::before {
++        content: attr(data-label);
++        color: var(--text-color-medium);
++        font-size: 0.85em;
++        font-weight: 700;
++    }
++
++    .pdk_subscriptions-page__toggle-cell {
++        align-items: center;
++    }
+ }
+ `;
+diff --git a/fe-app-podkop/src/podkop/types.ts b/fe-app-podkop/src/podkop/types.ts
+index 1911503..f297d5c 100644
+--- a/fe-app-podkop/src/podkop/types.ts
++++ b/fe-app-podkop/src/podkop/types.ts
+@@ -80,6 +80,7 @@ export namespace Podkop {
+     GET_SUBSCRIPTION_ITEMS_CACHED = 'get_subscription_items_cached',
+     SET_SUBSCRIPTION_LINK_ENABLED = 'set_subscription_link_enabled',
+     SET_SUBSCRIPTION_LINKS_ENABLED = 'set_subscription_links_enabled',
++    SET_SUBSCRIPTION_SECTIONS_ENABLED = 'set_subscription_sections_enabled',
+   }
+
+   export enum AvailableClashAPIMethods {
+@@ -134,6 +135,10 @@ export namespace Podkop {
+
+   export interface SetSubscriptionLinksEnabledResult {
+     success: boolean;
++    state?: string;
++    phase?: string;
++    committed?: boolean;
++    rolledBack?: boolean;
+     changed?: number;
+     reloaded?: number;
+     error?: string;
+diff --git a/fe-app-podkop/src/styles.ts b/fe-app-podkop/src/styles.ts
+index 3d33901..d085b07 100644
+--- a/fe-app-podkop/src/styles.ts
++++ b/fe-app-podkop/src/styles.ts
+@@ -82,6 +82,7 @@ ${PartialStyles}
+     gap: 10px;
+     z-index: 9999;
+     font-family: system-ui, sans-serif;
++    max-width: calc(100vw - 24px);
+ }
+
+ .toast {
+@@ -93,8 +94,10 @@ ${PartialStyles}
+     color: #fff;
+     font-size: 14px;
+     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+-    min-width: 220px;
+-    max-width: 340px;
++    min-width: min(220px, calc(100vw - 24px));
++    max-width: calc(100vw - 24px);
++    box-sizing: border-box;
++    overflow-wrap: anywhere;
+     text-align: center;
+ }
+
+@@ -110,4 +113,45 @@ ${PartialStyles}
+     opacity: 1;
+     transform: translateY(0);
+ }
++
++@media (max-width: 800px) {
++    #view .cbi-tabmenu {
++        max-width: 100%;
++        overflow-x: auto;
++        scrollbar-width: thin;
++    }
++
++    #view .cbi-value,
++    #view .cbi-value-field {
++        min-width: 0;
++        max-width: 100%;
++    }
++
++    #view input:not([type="checkbox"]):not([type="radio"]),
++    #view select,
++    #view textarea {
++        max-width: 100%;
++        box-sizing: border-box;
++    }
++
++    #view .cbi-page-actions {
++        display: flex;
++        flex-wrap: wrap;
++        justify-content: flex-end;
++        gap: 8px;
++        max-width: 100%;
++        overflow: visible;
++    }
++
++    #view .cbi-page-actions .cbi-button {
++        flex: 1 1 auto;
++        min-width: min(120px, 100%);
++        min-height: 44px;
++        margin: 0;
++    }
++
++    #cbi-podkop-section > .cbi-section-remove {
++        margin-bottom: 0;
++    }
++}
+ `;
+diff --git a/fe-app-podkop/tsup.config.ts b/fe-app-podkop/tsup.config.ts
+index 6caf479..2e34da2 100644
+--- a/fe-app-podkop/tsup.config.ts
++++ b/fe-app-podkop/tsup.config.ts
+@@ -11,7 +11,7 @@ export default defineConfig({
+     clean: false,
+     sourcemap: false,
+     banner: {
+-        js: `// This file is autogenerated, please don't change manually \n"use strict";`,
++        js: `// This file is autogenerated, please don't change manually\n"use strict";`,
+     },
+     esbuildOptions(options) {
+         options.legalComments = 'none';
+@@ -29,6 +29,7 @@ export default defineConfig({
+             }
+         );
+
++        code = code.replace(/[ \t]+$/gm, '');
+         fs.writeFileSync(file, code, 'utf8');
+         console.log(`✅ Patched LuCI build: ${file}`);
+     },
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index 3c877df9ab4a60ab908cc59da3956cdd7a74186e..bd4f46639138e92eee57d19a99cf7299eb275236 100644
+GIT binary patch
+delta 5153
+zcmai2eQ;FO6`yy2Bm@$m2?P>IZZ;vjjl1h6CJ{G=5F#+PXi|dmrG>Y<cQ>zW-rK%?
+zn~=s79Aq5-sGwUpI^+1!I@Pgu#6ekUYX{ru)NxwBMlGlX@uNc(XoXg1YNz(x_uhUb
+zizYKk_TF=U=i{Dp?(gK`hvxqDwYdkopSkwb+Rl)!B}|qu!+O$WJxn%uB2G)(=PccJ
+z8*{nbKGRS~WOsKtV`_xSsTJ#nQv23zDY1o8=PK({^Gj!?D%RI+D?s3e!3q$>r<_Dc
+z4|CSbcJ}KdBZ?Mg5k-yhFq4}nvStX8N%u|`U@p`<q}n5E*2C=7*@2d_p|$;+t{=E@
+zDE0h6LurDCOjXy8bPb-UPW6SV<RN<@u~t)pgc)E;Vq6O`IW(+jQJz>c?g*s%HnpXq
+z;RUNRa68uC*tcfG+Uq>zD`VTOpNxHbXy8T)iJ@vyH8L(wILnMViW33!-Up4{z7ZuZ
+zXEzy>w>ttJ=4igv&3aZbc_MQ%yMbqRL3Qb*+d7@P`+M~>uHv0X%K5$f@D2@JM;<%-
+z`v5*COVzliNm`7(AHcT|o1{Ayt{&lGRbldovfDeRhRxvs>ukqAHA($a8_sW*9;_Tu
+zHQJQ@9@Z8y-1wqfx-!MiEy9_tl8!4*5zy(gP=*J(pca24OY>5XoUchWoS&6WEtd`f
+zHVKJXC(IU`KHMowLpb<Xn2BFpO$To7g32^)fK)`!YvS;tLiok0gCCctdOw<*eyLS@
+zK*HlIBnzqmkH}IZZO%{M>yhs9;t3Bd$D3EeB5@OpobV2FH9BktSVu>Ew@60DCd<Vy
+z?AuCl@f?um46@wah!ajgatFkrqKlWoN48D+@n#X*jPk4f;n87RdtS)f{Ql+kqCU!v
+zNK7B2oJ*Q|;hJ~MP~x<qjgJj;gX4>zKvh}X;MO`m`YzO?|05{J$}cI}Z)}q`W7lb@
+zpV{V*@5U9|rGVteH$C7+|8}W)rEnz@<GTZ_O?+n!5bKxmrhKw|XEz=WNek0^w@dpw
+zL~1Qc&pIeQQ98SvHBXp)w>g<UhSHgzEF%afYuYJm1Y&*?J?eo@J2T$)z?<0|sltOt
+zr3Lu@3A)oayl||@MoIcPAIy=ktqYdm;~uCJDOf2IEdTIaKSkj6_n;=5Jk2)r@du<*
+zT<xC<y%gPTQ`eesaXV<()dkf;(E@y=9cC3~qy<_(+tA0@D%Q#-gvzR{E%kUjEtRED
+zwZpuUoF_-Gf%vp!r+E0V!6VI0|1tnN6q??IPd_D9V0RC^leNZjJ6Cy4`0CH4GJOAM
+zQbqcfRj@%4>EDT~kJ35IWs%|~c2`2>N~(<SuB6bt_#P}QwTpm><wjiHPBE+YLY=Gd
+z#_U8Cxk1i)qaqF4@eh}v36J}vIq8>s;n{hm31yTwy4<L&rzi|;gxTre4ZsbvN_d1i
+z@-QyF34Hak)26AF$GH}!me{W+HF`aIdYIpxmTrO{%*-5kWgB#)f3+1ZmgB7&<+Upc
+z4A0&SbvHz#G42iVSj=VnBn)HB6;@2e8&iTj<_fSKvTHzdxu*-5su|-sf%4Sr|Efy;
+z^L%BA%Q}irhrv^3Dn^u>E{6VN)EqtwQxZs=)Gy<(3O93DSt~SJPyx2HdBV{)8K64A
+z!L_isY;va)?{gX~p7-@4`#D^JPjT?#TO6*%6;HwZ8PuK-k4X&AUqe^BC<?W!r+e71
+zYY{a{UOHQOzGb%9WHtmiuojk-Ixh@XM4@TjbjU$NH}#MnD+-$1%!8#j{mi~)xIY5(
+zz6pGjp=iVr46`VD-fkW|J`sV20^p${R#PSw#T>LY^5B?3dB=?nipjOmxNJX}^a_Y@
+z6agNJa~>{=?Cea3wl)fYeZA9ibI4T8WP*U5>&PW=-W_Iz(*7tsw!|~47%Y(tCPIc9
+z7nCKjL5=Xxcqqm<@~E0H=~W055sN6X1W&)Q7ydT0CZuQ^?E)OiKZu9#h8~png9~q=
+zAC)paYn1RlyFBsmOW-MSYVsHR;n^7-g1R-TCLc-o63I}AClZ2=HTD^XGVW6o)^FL~
+z7iH*n(_4zSKMA$#^Bg1wSb)&WT&gyz#MJPPe7AO3QZC|cwm30C-N5s&LQATrry{j(
+zZ#^Eo3j#BRqV$J%LCYL`>miVF?|m@OGljfm2-Q^XW?6+-z6`BQI6@sN88dwXG3#F=
+z^(50sa%|fNwcE08IHH*-w6x?O?j@o}nPv4em!ZdEK_#?nhaFWH(bef|0frAh081Ns
+zeU_W#w4=cK=xB9!<Io}ayu|*9U;P?d-PCf{*__wZnbUi->EyCbyDWM9(IM*ieGfu2
+zw%iZR3yY+K?8ehCQMWyCKYZR?ma!XsFTj#LS;t+2dU%%}C;MW$k|o@Ndkd~IqL^xk
+zo(J1y7SfZkFw=CC1vw*9qefI7_Obq99@@psVNMj*7*#`@=uDV|MH@>R1fgqmAfg+b
+z)R@M&s+C85wi{HV7hZtc^t~^@eYG{ZmY>g?lwiL_&heGEsY`Eakgl(c>Cq@Rd|@6;
+zM&)umc>)^naTz@LmJCa0&^&_QISHHa(UTOHKc0lTlze{$UOEZY(j?ZM0AI66`TVpj
+zR&63|H5*N`m(s>6%pjL9W1BSseG?#+ua$GpfK-K_v=Tk`zXRriCUS<}Jo{O4XlhtZ
+z#AC`hRf!f;HSWc@EOlVz7OAXNbQ8hirjb>#nBk%puf>;JrFslpfEDSZpTZR-c+NwF
+zeceCk!Sil}(sboTD3QdUWq8kNsH)B&=Y!zjMQFj_YEXfVm!R+KWlHgI97^%vCFsR1
+z7wJx}`#a395wIEV>m^b;swPyLy#(?K9Jm0p>L;>!nDsjt(?h##YJ&HifkhVAH^t0G
+zEMT05Qkz9*K}zd5<!uolP1ka&O6COh@VFy}d#`aAQP<@dk;R5qW@ZZENL&dEW)onv
+znpIv>W=zAZE{18jBAEOdyxk8=@!gNbpmdSg*`5nfS~?A6ivzN<E56&quIgAmm2T(A
+z+jLW%1Q7+y8r2c;G%K2!7t^W&he!qUcjKKG!Br<VGFO(pFz4iFXQ66&D5l19x-+6v
+zrx@#o$+NPyfK&Jr*_)=mK(Dm8M$<Ip9KEwDiTc6+KA`v<KMNI>F%gpXCe$DD0Q37+
+zcJdL&n8pw70J`w|pTc~UFA<ry$o8Kv!ILG8!jHUJETqIjGR;GyW6aCiX;yTnlmCHo
+zsgJ@ex3|+UMN{`Q8ONfp#j!@TLp1v?zDz8-@!)1@89x6dJSGTy<DRBbm5(uBD5z59
+z2S>P;%*)<9U4`RY7M<!SH$@6Ji8xsO*~l~ob6C~vC^=(5p2kt7C6?qiKPgzIRWEgO
+zYVY<<SqZymN*Hq{6(FlxoXV1(1$nzU9_Kx-ka!S+`fk^)?)+s#39CA-<*QHd82w`=
+ze??53ioq2!WSP(}zKVtg_q+#7Md+6oSYt&tu0*+4vHk^=$awVr)ljoUpotOL$yhOc
+zI~jFAmKI{ecB$O*TF6bWtfF=Z(aiNsshMvu%rZ5YG);OS?XU|htU3kNTg6|LotaA&
+ziP~l-s<;IwH8Vo_joWs|+M#(z)u?dnCC3>2%fG>I)z*l$?+xl?z(`Ikz4gEF@Qhi?
+On4+5LFTMhK-v0rvtV*%~
+
+delta 1437
+zcmZ`(drVtZ7|;1GYfGUmkd~*jryc8K^uY=^)*82Ez(^#xiE|Ia<I>);x^i#5_l_}v
+zO=2`^m=ddg%QA-S`G+ytLY6a)i_c_<OB}|;;2$%P&1};UanYz@G2S9DOy>FPe2?FE
+zzSr-Zn#>(LnL838^kU?PdQ&1!J+h#rBvBCp>E?!(><7|#!|oN*Uk!EObmCL@Nb$tQ
+zZIC@-+wqkZjDzXsmXfspRsF=??&M1o(?4AcXHo6o4iB;7doH3!)6bBP@4HATaxU^5
+z?(`8Gj=6~iaUEHWHzKeOulR_ITOXJ4S04#xj6*oO1+sC(P0HDThm69qY{9t-V#lru
+z(t<aG#F3ty*1zi`H<#d(8EpkC3y`w}4Swxvt|aJ3xt+Y8C-n+)JSiOvQza@($s}$k
+zTq&OEAW!3G?W72YJBhWZhnKq(qCY9b)i7OOnd*xe2aTN(eEv0JW3!#)<!WqCf}Xwk
+z4jI?yQX?(zSA{-xkW#jBl+3)X55;AgDdwA6D8l9tJc_5=h#U8AgFL(xf>Hdk4hnF(
+z1`2Vw3O;-wvLn@CB6<x=YgXWO%N}+NJ_fgNCIoBH{xLD(GaFXm3vlyBFyZ!EP!_tO
+zz5mEEv;Zr^U}L8?g5^Ox19pBy^4RPq*h7{e3n>@j;ULLnZ)^bxaC|cqV|^XW{KsV>
+zikqFUhbF?R8sR&On@^>ZhiG&kFLnz`fNqy!`=t~;$SYKo)J1(P;KU2fU}bA|!?UZ{
+z_iYf(!rmw}vfeJZXXKn}3>_l)a-u>q>7;``+G@mh5$rf5YUPZJ5JrC&81b&CEzU^^
+z9QcI<UYwJl7Qbei;pDKkIU6n!lR=F+eYAhjhgVWiQt0&=Gn+|iy+?cGUkml5b6#0}
+z#2ZkhovD-{Z{-!i<9(=SLKS)fs?3WTTV$0E4A2gbvrdTf2a>Au;SgC6V}jhotAZFk
+z^gm%UKG}lYk`jcN$BTz$ZL}};KtcM#kE>Xp0!K?&)ls;W#qPfa=Q%W&YmDkZh?OV@
+zqESIn=q8%UObNtzm8W6a+QzOTxN^$ll1x2Ojo2z}RfMRTki@N0Oz<tur;SSS^oh7b
+z=cWBxW00Q$AKFfX<?*J3xL>Ik`L3jv(qhjjT^VCpxj5@Z*&8vU<1&=sCsW`=`v=<X
+z&nZ}+zWS{hb;pSryUxH39J7EaPvLt7htun$PC=F>*@@E#N$fwS%~?DS6#q7Y4QI|m
+zIc}Q(H>*4c*0pT@8k{P{U4AIV)EzKj)IpA6)oqPsYXi`M<F}zvM``9y!?D{?$Z3^f
+zTM)|7eh0GC-PiN6<_=i#HytU%C(DVMx$c6RkDKm80oykZ6*|L)kjD26Y>wmXI5`VC
+z_9@|X1Ur7$fI*H6<2m3c{_+CoapVs$<7JMk#a%Yegika=F3#NrGpoqvhIH(@g)@+{
+nP$ptzp+P--pZ{PYrtS;Vs%lM(JMy{D*&Z8rf@AZ=oZIpbJNVQd
+
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
+index d8a1d96..a1ab857 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
+@@ -7,6 +7,9 @@
+ "require view.podkop.main as main";
+
+ const DNS_OPTIMIZER_COMMAND = "/usr/bin/podkop-dns-optimizer";
++const DNS_PRIMARY_POLICY = {
++  yandex: { primaryEligible: false },
++};
+ const dnsOptimizerState = {
+   node: null,
+   status: null,
+@@ -302,43 +305,61 @@ function injectDnsOptimizerStyles() {
+       pointer-events: none;
+       opacity: 0.55;
+     }
+-    @media (max-width: 720px) {
++    @media (max-width: 800px) {
+       .pdk-dns-optimizer { padding: 10px; }
+       .pdk-dns-optimizer__actions { width: 100%; }
+-      .pdk-dns-optimizer__actions button { flex: 1 1 88px; }
++      .pdk-dns-optimizer__actions button {
++        flex: 1 1 100%;
++        min-height: 44px;
++      }
+       .pdk-dns-optimizer__recommendation-grid {
+         grid-template-columns: minmax(0, 1fr);
+       }
+       .pdk-dns-optimizer__recommendation-actions,
+       .pdk-dns-optimizer__recommendation-actions .cbi-button {
+         width: 100%;
++        min-height: 44px;
++      }
++      .pdk-dns-optimizer__table-wrap {
++        overflow-x: visible;
+       }
+-      .pdk-dns-optimizer__table--main {
++      .pdk-dns-optimizer__table--main,
++      .pdk-dns-optimizer__table--bootstrap {
+         display: block;
++        width: 100%;
+         min-width: 0;
+       }
+-      .pdk-dns-optimizer__table--main thead {
++      .pdk-dns-optimizer__table--main thead,
++      .pdk-dns-optimizer__table--bootstrap thead {
+         display: none;
+       }
+       .pdk-dns-optimizer__table--main tbody,
+       .pdk-dns-optimizer__table--main tr,
+-      .pdk-dns-optimizer__table--main td {
++      .pdk-dns-optimizer__table--main td,
++      .pdk-dns-optimizer__table--bootstrap tbody,
++      .pdk-dns-optimizer__table--bootstrap tr,
++      .pdk-dns-optimizer__table--bootstrap td {
+         display: block;
+         width: auto;
+       }
+-      .pdk-dns-optimizer__table--main tr {
++      .pdk-dns-optimizer__table--main tr,
++      .pdk-dns-optimizer__table--bootstrap tr {
++        box-sizing: border-box;
+         padding: 8px;
+         margin-bottom: 10px;
+         border: 1px solid rgba(127, 127, 127, 0.22);
+         border-radius: 6px;
+       }
+-      .pdk-dns-optimizer__table--main td {
++      .pdk-dns-optimizer__table--main td,
++      .pdk-dns-optimizer__table--bootstrap td {
+         display: grid;
+         grid-template-columns: minmax(92px, 34%) minmax(0, 1fr);
+         gap: 8px;
+         padding: 6px 2px;
++        overflow-wrap: anywhere;
+       }
+-      .pdk-dns-optimizer__table--main td::before {
++      .pdk-dns-optimizer__table--main td::before,
++      .pdk-dns-optimizer__table--bootstrap td::before {
+         content: attr(data-label);
+         color: var(--text-color-secondary, #a8b3c7);
+         font-size: 11px;
+@@ -423,6 +444,8 @@ function optimizerMessage(status) {
+       "Результат подбора устарел. Запустите проверку ещё раз.",
+     stale_candidate:
+       "Адрес этой строки изменился после проверки. Для безопасности запустите проверку ещё раз.",
++    primary_dns_not_allowed:
++      "Yandex нельзя установить как основной DNS. Он остаётся доступен для bootstrap и резервной пары.",
+     secondary_arguments_required:
+       "Резервная DNS-пара задана не полностью. Применение отменено.",
+     invalid_secondary_recommendation:
+@@ -478,8 +501,47 @@ function isUniversalProfile(profile) {
+   return profile === "unfiltered" || profile === "privacy";
+ }
+
++function dnsEndpointHost(value) {
++  const withoutScheme = String(value || "")
++    .trim()
++    .replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
++  const authority = withoutScheme.split("/")[0];
++  if (authority.startsWith("[")) {
++    return authority.slice(1, authority.indexOf("]")).toLowerCase();
++  }
++  return authority.replace(/:\d+$/, "").toLowerCase();
++}
++
++function candidateIsPrimaryEligible(candidate) {
++  if (!candidate) {
++    return false;
++  }
++  if (typeof candidate.primaryEligible === "boolean") {
++    return candidate.primaryEligible !== false;
++  }
++
++  const endpoint = dnsEndpointHost(candidate.dnsServer);
++  const candidateId = String(candidate.id || "").toLowerCase();
++  const provider = String(candidate.provider || "").toLowerCase();
++  const policy =
++    DNS_PRIMARY_POLICY[candidateId] ||
++    (candidateId === "yandex" ||
++    candidateId.startsWith("yandex_") ||
++    provider === "yandex" ||
++    provider.startsWith("yandex ")
++      ? DNS_PRIMARY_POLICY.yandex
++      : null) ||
++    (["77.88.8.8", "77.88.8.1", "common.dot.dns.yandex.net"].includes(
++      endpoint,
++    )
++      ? DNS_PRIMARY_POLICY.yandex
++      : null);
++  return policy?.primaryEligible !== false;
++}
++
+ function isComparisonOnly(result) {
+   return (
++    !candidateIsPrimaryEligible(result) ||
+     !isUniversalProfile(result?.profile) ||
+     result?.bootstrapUniversalEligible !== true
+   );
+@@ -566,6 +628,9 @@ function resultVerdict(result) {
+   const communityResults = Array.isArray(result.communityResults)
+     ? result.communityResults
+     : [];
++  if (result.reliable && !candidateIsPrimaryEligible(result)) {
++    return "Стабильно, доступно только как резервный DNS";
++  }
+   if (
+     Number(result.compatibilityPassed || 0) <
+       Number(result.compatibilityTotal || 0) ||
+@@ -859,6 +924,7 @@ function renderRecommendation(status, running) {
+   const result = status?.recommendation;
+   if (
+     !result ||
++    !candidateIsPrimaryEligible(result) ||
+     result.universalEligible !== true ||
+     result.bootstrapUniversalEligible !== true
+   ) {
+@@ -959,6 +1025,7 @@ function renderMainResults(status, running) {
+     const rowConfigured = recommendationSetConfigured(result, rowSecondary);
+     const rowSetInstalled = recommendationSetInstalled(result, rowSecondary);
+     const recommended =
++      candidateIsPrimaryEligible(result) &&
+       status.recommendation?.protocol === result.protocol &&
+       status.recommendation?.id === result.id &&
+       status.recommendation?.dnsServer === result.dnsServer &&
+@@ -1038,7 +1105,9 @@ function renderMainResults(status, running) {
+                   class:
+                     "pdk-dns-optimizer__badge pdk-dns-optimizer__badge--comparison",
+                 },
+-                "Только для сравнения",
++                candidateIsPrimaryEligible(result)
++                  ? "Только для сравнения"
++                  : "Только для резерва",
+               ),
+             ]
+           : []),
+@@ -1203,50 +1272,65 @@ function renderBootstrapResults(status) {
+   return E("details", {}, [
+     E("summary", {}, `Результаты bootstrap DNS (${results.length})`),
+     E("div", { class: "pdk-dns-optimizer__table-wrap" }, [
+-      E("table", { class: "pdk-dns-optimizer__table" }, [
+-        E("thead", {}, [
+-          E("tr", {}, [
+-            E("th", {}, "Bootstrap DNS"),
+-            E("th", {}, "Адрес"),
+-            E("th", {}, "Успех"),
+-            E("th", {}, "Медиана"),
+-            E("th", {}, "P90"),
+-            E("th", {}, "Разброс IQR"),
+-            E("th", {}, "Тип"),
+-          ]),
+-        ]),
+-        E(
+-          "tbody",
+-          {},
+-          results.map((result) =>
++      E(
++        "table",
++        {
++          class:
++            "pdk-dns-optimizer__table pdk-dns-optimizer__table--bootstrap",
++        },
++        [
++          E("thead", {}, [
+             E("tr", {}, [
+-              E("td", {}, result.provider),
+-              E("td", {}, result.server),
+-              E("td", { class: resultClass(result) }, `${result.successRate}%`),
+-              E(
+-                "td",
+-                {},
+-                Number.isFinite(result.medianMs)
+-                  ? `${result.medianMs} мс`
+-                  : "—",
+-              ),
+-              E(
+-                "td",
+-                {},
+-                Number.isFinite(result.p90Ms) ? `${result.p90Ms} мс` : "—",
+-              ),
+-              E(
+-                "td",
+-                {},
+-                result.jitterMs || result.reliable
+-                  ? `${result.jitterMs} мс`
+-                  : "—",
+-              ),
+-              E("td", {}, profileLabel(result.profile)),
++              E("th", {}, "Bootstrap DNS"),
++              E("th", {}, "Адрес"),
++              E("th", {}, "Успех"),
++              E("th", {}, "Медиана"),
++              E("th", {}, "P90"),
++              E("th", {}, "Разброс IQR"),
++              E("th", {}, "Тип"),
+             ]),
++          ]),
++          E(
++            "tbody",
++            {},
++            results.map((result) =>
++              E("tr", {}, [
++                E("td", { "data-label": "Bootstrap DNS" }, result.provider),
++                E("td", { "data-label": "Адрес" }, result.server),
++                E(
++                  "td",
++                  { "data-label": "Успех", class: resultClass(result) },
++                  `${result.successRate}%`,
++                ),
++                E(
++                  "td",
++                  { "data-label": "Медиана" },
++                  Number.isFinite(result.medianMs)
++                    ? `${result.medianMs} мс`
++                    : "—",
++                ),
++                E(
++                  "td",
++                  { "data-label": "P90" },
++                  Number.isFinite(result.p90Ms) ? `${result.p90Ms} мс` : "—",
++                ),
++                E(
++                  "td",
++                  { "data-label": "Разброс IQR" },
++                  result.jitterMs || result.reliable
++                    ? `${result.jitterMs} мс`
++                    : "—",
++                ),
++                E(
++                  "td",
++                  { "data-label": "Тип" },
++                  profileLabel(result.profile),
++                ),
++              ]),
++            ),
+           ),
+-        ),
+-      ]),
++        ],
++      ),
+     ]),
+   ]);
+ }
+@@ -1493,7 +1577,11 @@ async function startDnsBenchmark() {
+ }
+
+ async function applyDnsResult(result, secondaryResult = null) {
+-  if (!result || dnsOptimizerState.status?.state === "running") {
++  if (
++    !result ||
++    !candidateIsPrimaryEligible(result) ||
++    dnsOptimizerState.status?.state === "running"
++  ) {
+     return;
+   }
+   const candidateKey = `${result.protocol}:${result.id}:${result.dnsServer}:${result.bootstrapDnsServer}:${secondaryResult?.id || "single"}`;
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index da42008..81429d8 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -1165,7 +1165,6 @@ download_subscription_to_file() {
+
+     return 1
+ }
+-
+ refresh_subscription_cache() {
+     local section="$1"
+     local subscription_url cache_path all_cache_path skipped_cache_path items_cache_path tmpfile links_file \
+@@ -1261,6 +1260,7 @@ refresh_subscription_cache() {
+         source_index=$((source_index + 1))
+     done < "$urls_file"
+
++
+     awk '!seen[$0]++' "$merged_links_file" > "$deduped_links_file"
+     awk '!seen[$0]++' "$merged_all_links_file" > "$deduped_all_links_file"
+     jq -c -s 'reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end) | .[]' \
+@@ -1704,6 +1704,342 @@ set_subscription_links_enabled() {
+     printf '{"success":true,"changed":%s,"reloaded":%s}\n' "$changed_count" "$reload_required"
+ }
+
++# subscription_apply_v2 begin
++subscription_apply_v2_print_result() {
++    local success="$1"
++    local state="$2"
++    local phase="$3"
++    local error="$4"
++    local committed="$5"
++    local rolled_back="$6"
++    local changed="${7:-0}"
++    local reloaded="${8:-false}"
++
++    jq -cn \
++        --argjson success "$success" \
++        --arg state "$state" \
++        --arg phase "$phase" \
++        --arg error "$error" \
++        --argjson committed "$committed" \
++        --argjson rolledBack "$rolled_back" \
++        --argjson changed "$changed" \
++        --argjson reloaded "$reloaded" \
++        '{success:$success,state:$state,phase:$phase,error:$error,committed:$committed,rolledBack:$rolledBack,changed:$changed,reloaded:$reloaded}'
++}
++
++subscription_apply_v2_reload() {
++    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
++}
++
++subscription_apply_v2_cleanup() {
++    trap - INT TERM HUP
++    if [ -n "${SUBSCRIPTION_APPLY_V2_TMP:-}" ] && [ -d "$SUBSCRIPTION_APPLY_V2_TMP" ]; then
++        rm -rf "$SUBSCRIPTION_APPLY_V2_TMP"
++    fi
++    subscription_action_lock_release
++    SUBSCRIPTION_APPLY_V2_TMP=""
++    SUBSCRIPTION_APPLY_V2_COMMITTED=0
++    SUBSCRIPTION_APPLY_V2_STAGED=0
++}
++
++subscription_apply_v2_restore() {
++    local restore_tmp cache_was_present restore_ok
++
++    restore_ok=1
++    uci -q revert podkop > /dev/null 2>&1 || true
++
++    restore_tmp="${PODKOP_CONFIG}.subscription-apply-v2.$$"
++    if ! cp "$SUBSCRIPTION_APPLY_V2_TMP/podkop.config" "$restore_tmp" 2> /dev/null ||
++        ! mv "$restore_tmp" "$PODKOP_CONFIG" 2> /dev/null; then
++        rm -f "$restore_tmp"
++        restore_ok=0
++    fi
++
++    cache_was_present="$(cat "$SUBSCRIPTION_APPLY_V2_TMP/cache.present" 2> /dev/null || echo 0)"
++    case "$SUBSCRIPTION_CACHE_DIR" in
++    "" | "/")
++        restore_ok=0
++        ;;
++    *)
++        if ! rm -rf "$SUBSCRIPTION_CACHE_DIR" 2> /dev/null; then
++            restore_ok=0
++        elif [ "$cache_was_present" = "1" ]; then
++            if ! mkdir -p "$SUBSCRIPTION_CACHE_DIR" 2> /dev/null ||
++                ! cp -a "$SUBSCRIPTION_APPLY_V2_TMP/subscriptions/." "$SUBSCRIPTION_CACHE_DIR/" 2> /dev/null; then
++                restore_ok=0
++            fi
++        fi
++        ;;
++    esac
++
++    config_load "$PODKOP_CONFIG"
++    if ! subscription_apply_v2_reload; then
++        restore_ok=0
++    fi
++
++    [ "$restore_ok" -eq 1 ]
++}
++
++subscription_apply_v2_fail() {
++    local phase="$1"
++    local error="$2"
++    local committed="${3:-false}"
++    local state="error"
++    local rolled_back=false
++
++    if [ "$committed" = "true" ]; then
++        trap '' INT TERM HUP
++        if subscription_apply_v2_restore; then
++            state="rolled_back"
++            rolled_back=true
++        else
++            state="rollback_failed"
++        fi
++    fi
++
++    subscription_apply_v2_print_result false "$state" "$phase" "$error" "$committed" "$rolled_back" \
++        "${SUBSCRIPTION_APPLY_V2_CHANGED:-0}" false
++    subscription_apply_v2_cleanup
++    return 1
++}
++
++subscription_apply_v2_interrupted() {
++    local committed=false
++    local rolled_back=false
++    local state="error"
++
++    trap '' INT TERM HUP
++    if [ "${SUBSCRIPTION_APPLY_V2_COMMITTED:-0}" -eq 1 ]; then
++        committed=true
++        if subscription_apply_v2_restore > /dev/null 2>&1; then
++            state="rolled_back"
++            rolled_back=true
++        else
++            state="rollback_failed"
++        fi
++    elif [ "${SUBSCRIPTION_APPLY_V2_STAGED:-0}" -eq 1 ]; then
++        if uci -q revert podkop > /dev/null 2>&1; then
++            state="rolled_back"
++            rolled_back=true
++        else
++            state="rollback_failed"
++        fi
++    fi
++    subscription_apply_v2_print_result false "$state" interrupted interrupted \
++        "$committed" "$rolled_back" \
++        "${SUBSCRIPTION_APPLY_V2_CHANGED:-0}" false
++    subscription_apply_v2_cleanup
++    exit 130
++}
++
++set_subscription_sections_enabled() {
++    local payload="$1"
++    local payload_file sections_file section_json section changes_count items_cache_path
++    local excluded_ids_file proposed_ids_file tmp_ids_file link_id enabled_value was_excluded
++    local excluded_ids_json remaining_enabled_count validated_sections_file changed_count
++    local cache_was_present section_file
++
++    if ! subscription_action_lock_acquire "subscription_apply_v2"; then
++        subscription_apply_v2_print_result false error lock service_busy false false 0 false
++        return 1
++    fi
++
++    SUBSCRIPTION_APPLY_V2_TMP="$(mktemp -d /tmp/podkop-subscription-apply-v2.XXXXXX 2> /dev/null || true)"
++    SUBSCRIPTION_APPLY_V2_COMMITTED=0
++    SUBSCRIPTION_APPLY_V2_STAGED=0
++    SUBSCRIPTION_APPLY_V2_CHANGED=0
++    if [ -z "$SUBSCRIPTION_APPLY_V2_TMP" ] || [ ! -d "$SUBSCRIPTION_APPLY_V2_TMP" ]; then
++        subscription_apply_v2_print_result false error prepare temporary_directory_failed false false 0 false
++        subscription_apply_v2_cleanup
++        return 1
++    fi
++    trap 'subscription_apply_v2_interrupted' INT TERM HUP
++
++    payload_file="$SUBSCRIPTION_APPLY_V2_TMP/payload.json"
++    sections_file="$SUBSCRIPTION_APPLY_V2_TMP/sections.jsonl"
++    validated_sections_file="$SUBSCRIPTION_APPLY_V2_TMP/validated-sections"
++    : > "$validated_sections_file"
++
++    if ! printf '%s\n' "$payload" | jq -e '
++        select(
++            type == "object"
++            and (.sections | type == "array" and length > 0)
++            and all(.sections[];
++                type == "object"
++                and (.section | type == "string" and length > 0)
++                and (.changes | type == "array" and length > 0)
++                and all(.changes[];
++                    type == "object"
++                    and (.id | type == "string")
++                    and (.enabled | type == "boolean")
++                )
++                and (([.changes[].id] | length) == ([.changes[].id] | unique | length))
++            )
++            and (([.sections[].section] | length) == ([.sections[].section] | unique | length))
++        )
++    ' > "$payload_file" 2> /dev/null; then
++        subscription_apply_v2_fail validation invalid_payload false
++        return $?
++    fi
++    jq -c '.sections[]' "$payload_file" > "$sections_file" 2> /dev/null || {
++        subscription_apply_v2_fail validation invalid_payload false
++        return $?
++    }
++
++    changed_count=0
++    while IFS= read -r section_json || [ -n "$section_json" ]; do
++        section="$(printf '%s\n' "$section_json" | jq -r '.section')"
++        if ! validate_subscription_section_name "$section" ||
++            ! validate_subscription_urltest_section "$section"; then
++            subscription_apply_v2_fail validation section_is_not_subscription_urltest false
++            return $?
++        fi
++
++        items_cache_path="$(get_subscription_items_cache_path "$section")"
++        if [ ! -s "$items_cache_path" ] || ! jq -e 'type == "array"' "$items_cache_path" > /dev/null 2>&1; then
++            subscription_apply_v2_fail validation subscription_cache_missing false
++            return $?
++        fi
++
++        excluded_ids_file="$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.current"
++        proposed_ids_file="$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.proposed"
++        collect_subscription_excluded_ids "$section" "$excluded_ids_file"
++        cp "$excluded_ids_file" "$proposed_ids_file" || {
++            subscription_apply_v2_fail prepare temporary_write_failed false
++            return $?
++        }
++
++        printf '%s\n' "$section_json" | jq -r '.changes[] | [.id, (if .enabled then "1" else "0" end)] | @tsv' |
++            while IFS="$(printf '\t')" read -r link_id enabled_value; do
++                printf '%s\t%s\n' "$link_id" "$enabled_value"
++            done > "$SUBSCRIPTION_APPLY_V2_TMP/changes.$section" || {
++                subscription_apply_v2_fail validation invalid_payload false
++                return $?
++            }
++
++        changes_count=0
++        while IFS="$(printf '\t')" read -r link_id enabled_value || [ -n "$link_id" ]; do
++            [ -n "$link_id" ] || continue
++            if ! validate_subscription_link_id "$link_id"; then
++                subscription_apply_v2_fail validation invalid_link_id false
++                return $?
++            fi
++            if ! jq -e --arg id "$link_id" 'any(.[]; .id == $id and .supported == true)' \
++                "$items_cache_path" > /dev/null 2>&1; then
++                subscription_apply_v2_fail validation link_is_not_supported false
++                return $?
++            fi
++
++            if grep -Fxq "$link_id" "$proposed_ids_file" 2> /dev/null; then
++                was_excluded=1
++            else
++                was_excluded=0
++            fi
++            tmp_ids_file="$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.next"
++            grep -Fxv "$link_id" "$proposed_ids_file" > "$tmp_ids_file" 2> /dev/null || true
++            if [ "$enabled_value" -eq 0 ]; then
++                printf '%s\n' "$link_id" >> "$tmp_ids_file"
++            fi
++            awk '!seen[$0]++' "$tmp_ids_file" > "$proposed_ids_file"
++            rm -f "$tmp_ids_file"
++
++            if { [ "$enabled_value" -eq 0 ] && [ "$was_excluded" -eq 0 ]; } ||
++                { [ "$enabled_value" -eq 1 ] && [ "$was_excluded" -eq 1 ]; }; then
++                changes_count=$((changes_count + 1))
++            fi
++        done < "$SUBSCRIPTION_APPLY_V2_TMP/changes.$section"
++        changed_count=$((changed_count + changes_count))
++
++        excluded_ids_json="$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$proposed_ids_file")"
++        remaining_enabled_count="$(jq --argjson excludedIds "$excluded_ids_json" '
++            [.[] | select(.supported == true and (. as $item | ($excludedIds | index($item.id)) == null))] | length
++        ' "$items_cache_path" 2> /dev/null || echo 0)"
++        if [ "$remaining_enabled_count" -eq 0 ]; then
++            subscription_apply_v2_fail validation cannot_disable_last_enabled_link false
++            return $?
++        fi
++        printf '%s\n' "$section" >> "$validated_sections_file"
++    done < "$sections_file"
++
++    SUBSCRIPTION_APPLY_V2_CHANGED="$changed_count"
++    if [ "$changed_count" -eq 0 ]; then
++        subscription_apply_v2_print_result true no_changes complete "" false false 0 false
++        subscription_apply_v2_cleanup
++        return 0
++    fi
++
++    if ! cp "$PODKOP_CONFIG" "$SUBSCRIPTION_APPLY_V2_TMP/podkop.config" 2> /dev/null; then
++        subscription_apply_v2_fail backup config_backup_failed false
++        return $?
++    fi
++    cache_was_present=0
++    if [ -d "$SUBSCRIPTION_CACHE_DIR" ]; then
++        cache_was_present=1
++        mkdir "$SUBSCRIPTION_APPLY_V2_TMP/subscriptions" || {
++            subscription_apply_v2_fail backup cache_backup_failed false
++            return $?
++        }
++        if ! cp -a "$SUBSCRIPTION_CACHE_DIR/." "$SUBSCRIPTION_APPLY_V2_TMP/subscriptions/" 2> /dev/null; then
++            subscription_apply_v2_fail backup cache_backup_failed false
++            return $?
++        fi
++    fi
++    printf '%s\n' "$cache_was_present" > "$SUBSCRIPTION_APPLY_V2_TMP/cache.present"
++
++    SUBSCRIPTION_APPLY_V2_STAGED=1
++    while IFS= read -r section || [ -n "$section" ]; do
++        [ -n "$section" ] || continue
++        uci -q delete "podkop.$section.subscription_excluded_link_ids" > /dev/null 2>&1 || true
++        section_file="$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.proposed"
++        while IFS= read -r link_id || [ -n "$link_id" ]; do
++            [ -n "$link_id" ] || continue
++            if ! uci -q add_list "podkop.$section.subscription_excluded_link_ids=$link_id"; then
++                uci -q revert podkop > /dev/null 2>&1 || true
++                subscription_apply_v2_fail commit uci_stage_failed false
++                return $?
++            fi
++        done < "$section_file"
++    done < "$validated_sections_file"
++
++    SUBSCRIPTION_APPLY_V2_COMMITTED=1
++    if ! uci commit podkop; then
++        subscription_apply_v2_fail commit uci_commit_failed true
++        return $?
++    fi
++    SUBSCRIPTION_APPLY_V2_STAGED=0
++    config_load "$PODKOP_CONFIG"
++
++    while IFS= read -r section || [ -n "$section" ]; do
++        [ -n "$section" ] || continue
++        collect_subscription_excluded_ids "$section" "$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.committed"
++        if ! cmp -s "$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.proposed" \
++            "$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.committed"; then
++            subscription_apply_v2_fail verify committed_config_mismatch true
++            return $?
++        fi
++        if ! apply_subscription_exclusions_to_cached_links "$section"; then
++            subscription_apply_v2_fail cache subscription_cache_update_failed true
++            return $?
++        fi
++        items_cache_path="$(get_subscription_items_cache_path "$section")"
++        if [ ! -s "$(get_subscription_cache_path "$section")" ] ||
++            ! jq -e 'type == "array"' "$items_cache_path" > /dev/null 2>&1; then
++            subscription_apply_v2_fail verify subscription_cache_verification_failed true
++            return $?
++        fi
++    done < "$validated_sections_file"
++
++    if ! subscription_apply_v2_reload; then
++        subscription_apply_v2_fail reload reload_failed true
++        return $?
++    fi
++
++    subscription_apply_v2_print_result true success complete "" true false "$changed_count" true
++    subscription_apply_v2_cleanup
++    return 0
++}
++# subscription_apply_v2 end
++
+ subscription_update_section_handler() {
+     local section="$1"
+     local connection_type proxy_config_type
+@@ -2276,6 +2612,14 @@ subscription_speedtest_start() {
+         '{section:$section, originalMixedEnabled:$originalMixedEnabled, originalMixedPort:$originalMixedPort}' \
+         > "$restore_file"
+
++    updated_at="$(date -Iseconds 2> /dev/null || date)"
++    jq -cn --arg state "running" --arg message "speedtest_running" \
++        --arg section "$section" --arg itemId "$item_id" \
++        --arg updatedAt "$updated_at" --argjson pid "$$" \
++        --arg logTail "" \
++        '{state:$state, message:$message, section:$section, itemId:$itemId, updatedAt:$updatedAt, pid:$pid, logTail:$logTail}' \
++        > "$status_file"
++
+     runner="/tmp/podkop-subscriptions-speedtest-runner.sh"
+     cat > "$runner" << 'EOF'
+ #!/bin/ash
+@@ -2400,11 +2744,6 @@ subscription_patch_update_status_file() {
+ subscription_patch_update() {
+     local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1 patch_update_podkop_update_v1
+
+-    if [ -x /usr/bin/podkop-update-manager ]; then
+-        /usr/bin/podkop-update-manager update_start
+-        return $?
+-    fi
+-
+     patch_update_start_stop_daemon_v1=1
+     patch_update_noop_v1=1
+     patch_update_podkop_update_v1=1
+@@ -2504,7 +2843,7 @@ if [ "$download_ok" -ne 1 ] || [ ! -s "$tmp" ]; then
+     exit 1
+ fi
+
+-if run_with_timeout 240 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}" sh "$tmp"; then
++if run_with_timeout 900 env PODKOP_PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}" PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}" sh "$tmp"; then
+     if grep -q "PODKOP_PATCH_NOOP=1" "$log_file" 2> /dev/null; then
+         write_status "success" "patch_update_noop" "$(tail -n 20 "$log_file" 2> /dev/null)"
+     else
+@@ -2527,15 +2866,9 @@ EOF
+
+     echo '{"success":true,"started":true}'
+ }
+-
+ get_subscription_patch_update_status() {
+     local status_file
+
+-    if [ -x /usr/bin/podkop-update-manager ]; then
+-        /usr/bin/podkop-update-manager status
+-        return $?
+-    fi
+-
+     status_file="$(subscription_patch_update_status_file)"
+     if [ -s "$status_file" ]; then
+         cat "$status_file"
+@@ -2544,25 +2877,14 @@ get_subscription_patch_update_status() {
+     fi
+ }
+
+-subscription_patch_update_check() {
+-    if [ ! -x /usr/bin/podkop-update-manager ]; then
+-        echo '{"success":false,"error":"update_manager_missing"}'
+-        return 1
+-    fi
+-    /usr/bin/podkop-update-manager check_start
+-}
+-
+-get_subscription_patch_update_log() {
+-    if [ ! -x /usr/bin/podkop-update-manager ]; then
+-        return 0
+-    fi
+-    /usr/bin/podkop-update-manager log
+-}
+-
+ subscription_action_lock_file() {
+     echo "/tmp/podkop-subscription-action.lock"
+ }
+
++subscription_action_lock_dir() {
++    echo "/tmp/podkop-subscription-action.lock.d"
++}
++
+ subscription_action_lock_pid_alive() {
+     local pid="$1"
+
+@@ -2576,38 +2898,89 @@ subscription_action_lock_pid_alive() {
+     [ -d "/proc/$pid" ]
+ }
+
+-subscription_action_lock_busy() {
++subscription_action_legacy_lock_busy() {
+     local lock_file pid
+
+     lock_file="$(subscription_action_lock_file)"
+-    [ -s "$lock_file" ] || return 1
++    [ -e "$lock_file" ] || return 1
+
+     pid="$(awk 'NR == 1 {print $1}' "$lock_file" 2> /dev/null)"
++    # An empty file can be the short creation-before-write window of a live
++    # pre-v2 process, so it is not safe to reclaim it as stale.
++    [ -n "$pid" ] || return 0
+     if subscription_action_lock_pid_alive "$pid"; then
+         return 0
+     fi
+
+-    rm -f "$lock_file"
++    rm -f "$lock_file" 2> /dev/null || return 0
+     return 1
+ }
+
++subscription_action_lock_busy() {
++    local lock_dir pid
++
++    lock_dir="$(subscription_action_lock_dir)"
++    if [ -d "$lock_dir" ]; then
++        pid="$(awk 'NR == 1 {print $1}' "$lock_dir/owner" 2> /dev/null)"
++        # Another process may have created the directory immediately before it
++        # writes the owner file. Treat that short ownerless window as busy;
++        # removing the directory here would break the atomic lock protocol.
++        [ -n "$pid" ] || return 0
++        if subscription_action_lock_pid_alive "$pid"; then
++            return 0
++        fi
++
++        rm -f "$lock_dir/owner"
++        rmdir "$lock_dir" 2> /dev/null || return 0
++    fi
++
++    # Honour a lock created by a process that started before the v2 upgrade.
++    subscription_action_legacy_lock_busy
++}
++
+ subscription_action_lock_acquire() {
+     local action="$1"
+-    local lock_file
++    local lock_file lock_dir
+
+-    lock_file="$(subscription_action_lock_file)"
+     if subscription_action_lock_busy; then
+         return 1
+     fi
+
+-    printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$lock_file"
++    lock_dir="$(subscription_action_lock_dir)"
++    mkdir "$lock_dir" 2> /dev/null || return 1
++    if ! printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$lock_dir/owner"; then
++        rmdir "$lock_dir" 2> /dev/null || true
++        return 1
++    fi
++
++    # Bridge the rolling-upgrade window in both directions: new processes use
++    # the atomic directory, while already-running old processes see this file.
++    if subscription_action_legacy_lock_busy; then
++        subscription_action_lock_release
++        return 1
++    fi
++    lock_file="$(subscription_action_lock_file)"
++    if ! (set -C; printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$lock_file") 2> /dev/null; then
++        subscription_action_lock_release
++        return 1
++    fi
+ }
+
+ subscription_action_lock_release() {
+-    local lock_file pid
++    local lock_file lock_dir pid
++
++    lock_dir="$(subscription_action_lock_dir)"
++    if [ -d "$lock_dir" ]; then
++        pid="$(awk 'NR == 1 {print $1}' "$lock_dir/owner" 2> /dev/null)"
++        if [ "$pid" = "$$" ]; then
++            rm -f "$lock_dir/owner"
++            rmdir "$lock_dir" 2> /dev/null || true
++        fi
++    fi
+
++    # Release a legacy lock only when this process owns it.
+     lock_file="$(subscription_action_lock_file)"
+-    [ -s "$lock_file" ] || return 0
++    [ -e "$lock_file" ] || return 0
+
+     pid="$(awk 'NR == 1 {print $1}' "$lock_file" 2> /dev/null)"
+     [ "$pid" = "$$" ] && rm -f "$lock_file"
+@@ -2911,41 +3284,15 @@ configure_outbound_handler() {
+     esac
+ }
+
+-load_active_dns_settings() {
+-    local failover_enabled active_slot secondary_dns_type secondary_dns_server secondary_bootstrap_dns_server
+-
+-    config_get ACTIVE_DNS_TYPE "settings" "dns_type" "doh"
+-    config_get ACTIVE_DNS_SERVER "settings" "dns_server" "1.1.1.1"
+-    config_get ACTIVE_BOOTSTRAP_DNS_SERVER "settings" "bootstrap_dns_server" "77.88.8.8"
+-    config_get_bool failover_enabled "settings" "dns_failover_enabled" "0"
+-    config_get active_slot "settings" "dns_failover_active_slot" "primary"
+-
+-    ACTIVE_DNS_SLOT="primary"
+-    if [ "$failover_enabled" -eq 1 ] && [ "$active_slot" = "secondary" ]; then
+-        config_get secondary_dns_type "settings" "secondary_dns_type"
+-        config_get secondary_dns_server "settings" "secondary_dns_server"
+-        config_get secondary_bootstrap_dns_server "settings" "secondary_bootstrap_dns_server"
+-        if [ -n "$secondary_dns_type" ] && [ -n "$secondary_dns_server" ] && [ -n "$secondary_bootstrap_dns_server" ]; then
+-            ACTIVE_DNS_TYPE="$secondary_dns_type"
+-            ACTIVE_DNS_SERVER="$secondary_dns_server"
+-            ACTIVE_BOOTSTRAP_DNS_SERVER="$secondary_bootstrap_dns_server"
+-            ACTIVE_DNS_SLOT="secondary"
+-        else
+-            log "Secondary DNS pair is incomplete, using the primary pair" "warn"
+-        fi
+-    fi
+-}
+-
+ sing_box_configure_dns() {
+     log "Configure the DNS section of a sing-box JSON configuration"
+     config=$(sing_box_cm_configure_dns "$config" "$SB_DNS_SERVER_TAG" "ipv4_only" true)
+
+     log "Adding DNS Servers" "debug"
+     local dns_type dns_server bootstrap_dns_server dns_domain_resolver dns_server_address
+-    load_active_dns_settings
+-    dns_type="$ACTIVE_DNS_TYPE"
+-    dns_server="$ACTIVE_DNS_SERVER"
+-    bootstrap_dns_server="$ACTIVE_BOOTSTRAP_DNS_SERVER"
++    config_get dns_type "settings" "dns_type" "doh"
++    config_get dns_server "settings" "dns_server" "1.1.1.1"
++    config_get bootstrap_dns_server "settings" "bootstrap_dns_server" "77.88.8.8"
+
+     dns_server_address="$(url_get_host "$dns_server")"
+     if ! is_ipv4 "$dns_server_address"; then
+@@ -4027,7 +4374,6 @@ show_config() {
+         -e 's/\(option subscription_url\).*/\1 '\''MASKED'\''/g' \
+         -e 's/\(list subscription_url\).*/\1 '\''MASKED'\''/g' \
+         -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
+-        -e "s@\\(option secondary_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
+         -e "s@\\(option domain_resolver_dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \
+         -e 's/\(option yacd_secret_key\).*/\1 '\''MASKED'\''/g' \
+         "$PODKOP_CONFIG" > "$tmp_config"
+@@ -4151,12 +4497,10 @@ get_status() {
+ }
+
+ check_dns_available() {
+-    local dns_type dns_server bootstrap_dns_server active_dns_slot
+-    load_active_dns_settings
+-    dns_type="$ACTIVE_DNS_TYPE"
+-    dns_server="$ACTIVE_DNS_SERVER"
+-    bootstrap_dns_server="$ACTIVE_BOOTSTRAP_DNS_SERVER"
+-    active_dns_slot="$ACTIVE_DNS_SLOT"
++    local dns_type dns_server bootstrap_dns_server
++    config_get dns_type "settings" "dns_type"
++    config_get dns_server "settings" "dns_server"
++    config_get bootstrap_dns_server "settings" "bootstrap_dns_server"
+
+     local dns_status=0
+     local dns_on_router=0
+@@ -4215,7 +4559,7 @@ check_dns_available() {
+     config_foreach check_dhcp_has_podkop_dns dnsmasq
+     config_load "$PODKOP_CONFIG"
+
+-    echo "{\"dns_type\":\"$dns_type\",\"dns_server\":\"$display_dns_server\",\"dns_status\":$dns_status,\"dns_on_router\":$dns_on_router,\"bootstrap_dns_server\":\"$bootstrap_dns_server\",\"bootstrap_dns_status\":$bootstrap_dns_status,\"active_dns_slot\":\"$active_dns_slot\",\"dhcp_config_status\":$dhcp_config_status}" | jq .
++    echo "{\"dns_type\":\"$dns_type\",\"dns_server\":\"$display_dns_server\",\"dns_status\":$dns_status,\"dns_on_router\":$dns_on_router,\"bootstrap_dns_server\":\"$bootstrap_dns_server\",\"bootstrap_dns_status\":$bootstrap_dns_status,\"dhcp_config_status\":$dhcp_config_status}" | jq .
+ }
+
+ check_dhcp_has_podkop_dns() {
+@@ -4392,7 +4736,34 @@ check_sing_box() {
+ }
+
+ check_fakeip() {
+-    curl -m 3 -s "https://$FAKEIP_TEST_DOMAIN/check" | jq .
++    local response_file curl_meta http_code remote_ip fakeip_address body fakeip_status proxy_ip fakeip_timeout fakeip_route_check_v3
++
++    fakeip_route_check_v3=1
++    FAKEIP_TEST_DOMAIN="${FAKEIP_TEST_DOMAIN:-fakeip.podkop.fyi}"
++    fakeip_timeout="${PODKOP_FAKEIP_CHECK_TIMEOUT:-8}"
++    response_file="$(mktemp)"
++    curl_meta=$(curl -m "$fakeip_timeout" -s -o "$response_file" -w "%{http_code} %{remote_ip}" "https://$FAKEIP_TEST_DOMAIN/check" 2> /dev/null)
++    body="$(cat "$response_file" 2> /dev/null)"
++    rm -f "$response_file"
++
++    if [ -n "$body" ] && echo "$body" | jq -e . > /dev/null 2>&1; then
++        fakeip_status="$(echo "$body" | jq -r '.fakeip // false')"
++        if [ "$fakeip_status" = "true" ]; then
++            echo "$body" | jq .
++            return
++        fi
++
++        http_code="${curl_meta%% *}"
++        remote_ip="${curl_meta#* }"
++        fakeip_address="$(dig +short @127.0.0.42 "$FAKEIP_TEST_DOMAIN" 2> /dev/null | head -n 1)"
++        if [ "$http_code" = "200" ] && echo "$remote_ip" | grep -q "^198\.18\." && echo "$fakeip_address" | grep -q "^198\.18\."; then
++            proxy_ip="$(echo "$body" | jq -r '.IP // empty')"
++            printf '{"fakeip":true,"IP":"%s"}\n' "$proxy_ip" | jq .
++            return
++        fi
++
++        echo "$body" | jq .
++    fi
+ }
+
+ #######################################
+@@ -4417,7 +4788,7 @@ clash_api() {
+     if [ -z "$clash_api_controller_address" ]; then
+         clash_api_controller_address="127.0.0.1"
+     fi
+-    CLASH_URL="$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"
++    CLASH_URL="http://$clash_api_controller_address:$SB_CLASH_API_CONTROLLER_PORT"
+     TEST_URL="https://www.gstatic.com/generate_204"
+
+     local enable_yacd_wan_access yacd_secret_key auth_header
+@@ -4868,12 +5239,8 @@ Available commands:
+                             Show background subscription benchmark status
+     subscription_patch_update
+                             Update the Podkop subscriptions patch from GitHub
+-    subscription_patch_update_check
+-                            Check compatible Podkop and patch updates
+     get_subscription_patch_update_status
+                             Show background patch update status
+-    get_subscription_patch_update_log
+-                            Show the full Podkop and patch update log
+     check_proxy             Check proxy connectivity
+     check_nft               Check NFT rules
+     check_nft_rules         Check NFT rules status
+@@ -4894,6 +5261,8 @@ Available commands:
+                             Enable or disable a subscription proxy item by id
+     set_subscription_links_enabled
+                             Enable or disable multiple subscription proxy items by id
++    set_subscription_sections_enabled
++                            Transactionally apply JSON changes for multiple sections
+     show_config             Display current podkop configuration
+     show_version            Show podkop version
+     show_sing_box_config    Show sing-box configuration
+@@ -4947,15 +5316,9 @@ get_subscription_speedtest_status)
+ subscription_patch_update)
+     subscription_patch_update
+     ;;
+-subscription_patch_update_check)
+-    subscription_patch_update_check
+-    ;;
+ get_subscription_patch_update_status)
+     get_subscription_patch_update_status
+     ;;
+-get_subscription_patch_update_log)
+-    get_subscription_patch_update_log
+-    ;;
+ check_proxy)
+     check_proxy
+     ;;
+@@ -4999,6 +5362,9 @@ set_subscription_links_enabled)
+     shift
+     set_subscription_links_enabled "$@"
+     ;;
++set_subscription_sections_enabled)
++    set_subscription_sections_enabled "$2"
++    ;;
+ show_config)
+     show_config
+     ;;
+@@ -5034,3 +5400,7 @@ global_check)
+     exit 1
+     ;;
+ esac
++
++# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260627-mix-v1
++
++# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260704-fakeip-route-fix1
+diff --git a/podkop/files/usr/bin/podkop-dns-failover b/podkop/files/usr/bin/podkop-dns-failover
+index abf7bbb..4eccb36 100755
+--- a/podkop/files/usr/bin/podkop-dns-failover
++++ b/podkop/files/usr/bin/podkop-dns-failover
+@@ -1,12 +1,15 @@
+ #!/bin/ash
+
+-VERSION="20260711-dns-failover-v2"
++VERSION="20260813-dns-failover-v3"
+ OPTIMIZER="/usr/bin/podkop-dns-optimizer"
+ STATE_DIR="/tmp/podkop-dns-failover"
+ STATUS_FILE="$STATE_DIR/status.json"
+ FAILURE_FILE="$STATE_DIR/failures"
+ WATCH_LOCK="$STATE_DIR/watch.lock"
+ SWITCH_LOCK="$STATE_DIR/switch.lock"
++PODKOP_MUTATION_LOCK_DIR="${PODKOP_MUTATION_LOCK_DIR:-/tmp/podkop-subscription-action.lock.d}"
++PODKOP_MUTATION_LEGACY_LOCK_FILE="${PODKOP_MUTATION_LEGACY_LOCK_FILE:-/tmp/podkop-subscription-action.lock}"
++PODKOP_MUTATION_LOCK_HELD=0
+
+ updated_at() {
+     date -Iseconds 2> /dev/null || date
+@@ -17,6 +20,73 @@ ensure_state_dir() {
+     chmod 700 "$STATE_DIR" 2> /dev/null || true
+ }
+
++podkop_mutation_lock_pid_alive() {
++    local pid="$1"
++
++    case "$pid" in
++        ''|*[!0-9]*|0) return 1 ;;
++    esac
++    [ -d "/proc/$pid" ]
++}
++
++podkop_mutation_legacy_lock_busy() {
++    local holder
++
++    [ -e "$PODKOP_MUTATION_LEGACY_LOCK_FILE" ] || return 1
++    holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LEGACY_LOCK_FILE" 2> /dev/null)"
++    [ -n "$holder" ] || return 0
++    if podkop_mutation_lock_pid_alive "$holder"; then
++        return 0
++    fi
++    rm -f "$PODKOP_MUTATION_LEGACY_LOCK_FILE" 2> /dev/null || return 0
++    return 1
++}
++
++podkop_mutation_lock_acquire() {
++    local action="$1"
++    local holder
++
++    [ "$PODKOP_MUTATION_LOCK_HELD" = "1" ] && return 0
++    podkop_mutation_legacy_lock_busy && return 1
++    if ! mkdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null; then
++        holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LOCK_DIR/owner" 2> /dev/null)"
++        if [ -z "$holder" ] || podkop_mutation_lock_pid_alive "$holder"; then
++            return 1
++        fi
++        rm -f "$PODKOP_MUTATION_LOCK_DIR/owner"
++        rmdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || return 1
++        mkdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || return 1
++    fi
++    if ! printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$PODKOP_MUTATION_LOCK_DIR/owner"; then
++        rm -f "$PODKOP_MUTATION_LOCK_DIR/owner"
++        rmdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || true
++        return 1
++    fi
++    PODKOP_MUTATION_LOCK_HELD=1
++    if podkop_mutation_legacy_lock_busy; then
++        podkop_mutation_lock_release
++        return 1
++    fi
++    if ! (set -C; printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$PODKOP_MUTATION_LEGACY_LOCK_FILE") 2> /dev/null; then
++        podkop_mutation_lock_release
++        return 1
++    fi
++}
++
++podkop_mutation_lock_release() {
++    local holder legacy_holder
++
++    [ "$PODKOP_MUTATION_LOCK_HELD" = "1" ] || return 0
++    holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LOCK_DIR/owner" 2> /dev/null)"
++    if [ "$holder" = "$$" ]; then
++        rm -f "$PODKOP_MUTATION_LOCK_DIR/owner"
++        rmdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || true
++    fi
++    legacy_holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LEGACY_LOCK_FILE" 2> /dev/null)"
++    [ "$legacy_holder" != "$$" ] || rm -f "$PODKOP_MUTATION_LEGACY_LOCK_FILE"
++    PODKOP_MUTATION_LOCK_HELD=0
++}
++
+ normalize_slot() {
+     case "$1" in
+         primary|secondary) printf '%s\n' "$1" ;;
+@@ -221,7 +291,10 @@ acquire_lock() {
+
+ release_lock() {
+     local directory="$1"
++    local holder
+
++    holder="$(cat "$directory/pid" 2> /dev/null || true)"
++    [ "$holder" = "$$" ] || return 0
+     rm -f "$directory/pid"
+     rmdir "$directory" 2> /dev/null || true
+ }
+@@ -234,6 +307,11 @@ release_switch_lock() {
+     release_lock "$SWITCH_LOCK"
+ }
+
++release_switch_transaction() {
++    release_switch_lock
++    podkop_mutation_lock_release
++}
++
+ set_active_slot() {
+     local slot="$1"
+
+@@ -247,8 +325,13 @@ switch_to_slot() {
+     local previous failures rollback_ok
+
+     normalize_slot "$target" > /dev/null || return 2
++    if ! podkop_mutation_lock_acquire "dns_failover_switch"; then
++        write_status "busy" "$(active_slot)" "$(read_failure_count)" null "$reason" "podkop_action_busy"
++        return 4
++    fi
+     acquire_switch_lock || {
+         write_status "busy" "$(active_slot)" "$(read_failure_count)" null "$reason" "switch_in_progress"
++        podkop_mutation_lock_release
+         return 3
+     }
+
+@@ -258,17 +341,17 @@ switch_to_slot() {
+         if wait_for_runtime; then
+             write_failure_count 0
+             write_status "healthy" "$target" 0 true "$reason" "already_active"
+-            release_switch_lock
++            release_switch_transaction
+             return 0
+         fi
+         write_status "error" "$target" "$failures" false "$reason" "active_runtime_invalid"
+-        release_switch_lock
++        release_switch_transaction
+         return 1
+     fi
+
+     if ! probe_slot "$target"; then
+         write_status "degraded" "$previous" "$failures" false "$reason" "target_slot_unavailable"
+-        release_switch_lock
++        release_switch_transaction
+         return 1
+     fi
+
+@@ -284,14 +367,14 @@ switch_to_slot() {
+             write_status "error" "$previous" "$failures" false "$reason" "switch_and_rollback_failed"
+         fi
+         logger -t podkop-dns-failover "DNS slot switch failed; previous slot restored=$rollback_ok"
+-        release_switch_lock
++        release_switch_transaction
+         return 1
+     fi
+
+     write_failure_count 0
+     write_status "healthy" "$target" 0 true "$reason" "slot_switched"
+     logger -t podkop-dns-failover "DNS failover switched active slot to $target"
+-    release_switch_lock
++    release_switch_transaction
+     return 0
+ }
+
+@@ -310,6 +393,7 @@ run_probe_command() {
+ }
+
+ cleanup_watch_lock() {
++    release_switch_transaction
+     release_lock "$WATCH_LOCK"
+ }
+
+@@ -409,10 +493,16 @@ case "${1:-}" in
+             echo '{"success":false,"error":"slot_required"}'
+             exit 2
+         }
++        trap 'release_switch_transaction; exit 130' INT TERM HUP
+         if switch_to_slot "$2" "manual"; then
+             echo '{"success":true}'
+         else
+-            echo '{"success":false,"error":"switch_failed"}'
++            rc="$?"
++            case "$rc" in
++                4) echo '{"success":false,"error":"podkop_action_busy"}' ;;
++                3) echo '{"success":false,"error":"switch_in_progress"}' ;;
++                *) echo '{"success":false,"error":"switch_failed"}' ;;
++            esac
+             exit 1
+         fi
+         ;;
+diff --git a/podkop/files/usr/bin/podkop-dns-optimizer b/podkop/files/usr/bin/podkop-dns-optimizer
+old mode 100644
+new mode 100755
+index a069c70..c5d476f
+--- a/podkop/files/usr/bin/podkop-dns-optimizer
++++ b/podkop/files/usr/bin/podkop-dns-optimizer
+@@ -1,6 +1,6 @@
+ #!/bin/ash
+
+-VERSION="20260717-dns-optimizer-v10"
++VERSION="20260813-dns-optimizer-v12"
+ STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
+ STATUS_FILE="$STATE_DIR/status.json"
+ LOG_FILE="$STATE_DIR/worker.log"
+@@ -9,11 +9,86 @@ PERSIST_DIR="${PODKOP_DNS_OPTIMIZER_PERSIST_DIR:-/etc/podkop/dns-optimizer}"
+ PREVIOUS_FILE="$PERSIST_DIR/previous-dns.json"
+ LAST_BENCHMARK_FILE="$PERSIST_DIR/last-benchmark.json"
+ SELF="$(readlink -f "$0" 2> /dev/null || printf '%s' "$0")"
++PODKOP_MUTATION_LOCK_DIR="${PODKOP_MUTATION_LOCK_DIR:-/tmp/podkop-subscription-action.lock.d}"
++PODKOP_MUTATION_LEGACY_LOCK_FILE="${PODKOP_MUTATION_LEGACY_LOCK_FILE:-/tmp/podkop-subscription-action.lock}"
++PODKOP_MUTATION_LOCK_HELD=0
+
+ updated_at() {
+     date -Iseconds 2> /dev/null || date
+ }
+
++podkop_mutation_lock_pid_alive() {
++    local pid="$1"
++
++    case "$pid" in
++        ''|*[!0-9]*|0) return 1 ;;
++    esac
++    [ -d "/proc/$pid" ]
++}
++
++podkop_mutation_legacy_lock_busy() {
++    local holder
++
++    [ -e "$PODKOP_MUTATION_LEGACY_LOCK_FILE" ] || return 1
++    holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LEGACY_LOCK_FILE" 2> /dev/null)"
++    [ -n "$holder" ] || return 0
++    if podkop_mutation_lock_pid_alive "$holder"; then
++        return 0
++    fi
++    rm -f "$PODKOP_MUTATION_LEGACY_LOCK_FILE" 2> /dev/null || return 0
++    return 1
++}
++
++podkop_mutation_lock_acquire() {
++    local action="$1"
++    local holder
++
++    [ "$PODKOP_MUTATION_LOCK_HELD" = "1" ] && return 0
++    podkop_mutation_legacy_lock_busy && return 1
++    if ! mkdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null; then
++        holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LOCK_DIR/owner" 2> /dev/null)"
++        if [ -z "$holder" ] || podkop_mutation_lock_pid_alive "$holder"; then
++            return 1
++        fi
++        rm -f "$PODKOP_MUTATION_LOCK_DIR/owner"
++        rmdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || return 1
++        mkdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || return 1
++    fi
++    if ! printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$PODKOP_MUTATION_LOCK_DIR/owner"; then
++        rm -f "$PODKOP_MUTATION_LOCK_DIR/owner"
++        rmdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || true
++        return 1
++    fi
++    PODKOP_MUTATION_LOCK_HELD=1
++    if podkop_mutation_legacy_lock_busy; then
++        podkop_mutation_lock_release
++        return 1
++    fi
++    if ! (set -C; printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$PODKOP_MUTATION_LEGACY_LOCK_FILE") 2> /dev/null; then
++        podkop_mutation_lock_release
++        return 1
++    fi
++}
++
++podkop_mutation_lock_release() {
++    local holder legacy_holder
++
++    [ "$PODKOP_MUTATION_LOCK_HELD" = "1" ] || return 0
++    holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LOCK_DIR/owner" 2> /dev/null)"
++    if [ "$holder" = "$$" ]; then
++        rm -f "$PODKOP_MUTATION_LOCK_DIR/owner"
++        rmdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || true
++    fi
++    legacy_holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LEGACY_LOCK_FILE" 2> /dev/null)"
++    [ "$legacy_holder" != "$$" ] || rm -f "$PODKOP_MUTATION_LEGACY_LOCK_FILE"
++    PODKOP_MUTATION_LOCK_HELD=0
++}
++
++cleanup_optimizer_mutation() {
++    podkop_mutation_lock_release
++    rm -rf "$LOCK_DIR"
++}
++
+ ensure_state_dir() {
+     mkdir -p "$STATE_DIR"
+     chmod 700 "$STATE_DIR" 2> /dev/null || true
+@@ -533,6 +608,31 @@ profile_is_universal() {
+     esac
+ }
+
++candidate_is_primary_eligible() {
++    local id="$1"
++    local provider="${2:-}"
++    local value="${3:-}"
++    local host
++
++    host="$(candidate_host "$value")"
++    case "$id|$provider|$host" in
++        yandex\|*|*\|Yandex\|*|*\|Yandex\ *\|*|*\|*\|77.88.8.8|*\|*\|77.88.8.1|*\|*\|common.dot.dns.yandex.net)
++            return 1
++            ;;
++        *)
++            return 0
++            ;;
++    esac
++}
++
++candidate_primary_eligible_json() {
++    if candidate_is_primary_eligible "$@"; then
++        jq -cn --argjson primaryEligible true '$primaryEligible'
++    else
++        jq -cn --argjson primaryEligible false '$primaryEligible'
++    fi
++}
++
+ query_status() {
+     sed -n 's/.*status: \([A-Z][A-Z]*\).*/\1/p' | head -n 1
+ }
+@@ -801,9 +901,10 @@ benchmark_main_candidate() {
+     local success failures total probe_count stats median jitter p90 success_rate nxdomain_ok reliable score error stop_early
+     local base_counts community_counts compatibility_total compatibility_passed compatibility_stable compatibility_score
+     local compatibility_failures compatibility_unstable universal_eligible community_probe_total community_probe_passed community_probe_stable
+-    local community_score community_selected community_tested community_passed community_stable selected_community_json
++    local community_score community_selected community_tested community_passed community_stable selected_community_json primary_eligible
+
+     host="$(candidate_host "$value")"
++    primary_eligible="$(candidate_primary_eligible_json "$id" "$provider" "$value")"
+     path="$(candidate_path "$value")"
+     probes_file="$(mktemp)"
+     selected_file="$(mktemp)"
+@@ -833,8 +934,9 @@ benchmark_main_candidate() {
+             --arg protocol "$protocol" --arg error "bootstrap_failed" --argjson totalQueries "$total" \
+             --argjson compatibilityTotal "$compatibility_total" --argjson selectedCommunityServices "$selected_community_json" \
+             --argjson communitySelected "$community_selected" --argjson communityProbeTotal "$community_probe_total" \
++            --argjson primaryEligible "$primary_eligible" \
+             --slurpfile communityResults "$community_results_file" \
+-            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,successCount:0,totalQueries:$totalQueries,successRate:0,medianMs:0,p90Ms:0,jitterMs:0,nxdomainOk:false,compatibilityPassed:0,compatibilityStable:0,compatibilityTotal:$compatibilityTotal,compatibilityScore:0,compatibilityFailures:[],compatibilityUnstable:[],selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:0,communityPassed:0,communityStable:0,communityProbePassed:0,communityProbeStable:0,communityProbeTotal:$communityProbeTotal,communityScore:0,communityResults:$communityResults,universalEligible:false,reliable:false,score:-1000000,error:$error}'
++            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,primaryEligible:$primaryEligible,successCount:0,totalQueries:$totalQueries,successRate:0,medianMs:0,p90Ms:0,jitterMs:0,nxdomainOk:false,compatibilityPassed:0,compatibilityStable:0,compatibilityTotal:$compatibilityTotal,compatibilityScore:0,compatibilityFailures:[],compatibilityUnstable:[],selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:0,communityPassed:0,communityStable:0,communityProbePassed:0,communityProbeStable:0,communityProbeTotal:$communityProbeTotal,communityScore:0,communityResults:$communityResults,universalEligible:false,reliable:false,score:-1000000,error:$error}'
+         rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
+         return 0
+     fi
+@@ -971,9 +1073,9 @@ benchmark_main_candidate() {
+         --argjson communityTested "$community_tested" --argjson communityPassed "$community_passed" --argjson communityStable "$community_stable" \
+         --argjson communityProbePassed "$community_probe_passed" --argjson communityProbeStable "$community_probe_stable" \
+         --argjson communityProbeTotal "$community_probe_total" --argjson communityScore "$community_score" \
+-        --argjson nxdomainOk "$nxdomain_ok" --argjson universalEligible "$universal_eligible" --argjson reliable "$reliable" --argjson score "$score" \
++        --argjson nxdomainOk "$nxdomain_ok" --argjson primaryEligible "$primary_eligible" --argjson universalEligible "$universal_eligible" --argjson reliable "$reliable" --argjson score "$score" \
+         --slurpfile communityResults "$community_results_file" \
+-        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapProfile:$bootstrapProfile,bootstrapSuccessRate:$bootstrapSuccessRate,bootstrapMedianMs:$bootstrapMedianMs,bootstrapP90Ms:$bootstrapP90Ms,bootstrapJitterMs:$bootstrapJitterMs,bootstrapUniversalEligible:$bootstrapUniversalEligible,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:$communityTested,communityPassed:$communityPassed,communityStable:$communityStable,communityProbePassed:$communityProbePassed,communityProbeStable:$communityProbeStable,communityProbeTotal:$communityProbeTotal,communityScore:$communityScore,communityResults:$communityResults,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
++        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,primaryEligible:$primaryEligible,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapProfile:$bootstrapProfile,bootstrapSuccessRate:$bootstrapSuccessRate,bootstrapMedianMs:$bootstrapMedianMs,bootstrapP90Ms:$bootstrapP90Ms,bootstrapJitterMs:$bootstrapJitterMs,bootstrapUniversalEligible:$bootstrapUniversalEligible,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:$communityTested,communityPassed:$communityPassed,communityStable:$communityStable,communityProbePassed:$communityProbePassed,communityProbeStable:$communityProbeStable,communityProbeTotal:$communityProbeTotal,communityScore:$communityScore,communityResults:$communityResults,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
+     rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
+ }
+
+@@ -1003,7 +1105,7 @@ run_benchmark() {
+     local requested_protocols="$1"
+     local protocols protocol_count scope_protocol protocols_json candidate_protocol candidate_file
+     local main_file bootstrap_file bootstrap_jsonl bootstrap_json main_jsonl final_file
+-    local total completed line id provider value profile result recommendation secondary_recommendation ranking confidence recommendation_reason current_candidate state message current_protocol current_dns current_bootstrap current_pair active_slot
++    local total completed line id provider value profile result recommendation secondary_recommendation safe_ranking primary_ranking confidence recommendation_reason current_candidate state message current_protocol current_dns current_bootstrap current_pair active_slot
+
+     protocols="$(normalize_benchmark_protocols "$requested_protocols" || true)"
+     if [ -z "$protocols" ]; then
+@@ -1065,7 +1167,7 @@ run_benchmark() {
+     current_protocol="$(printf '%s\n' "$current_pair" | cut -d '|' -f 1)"
+     current_dns="$(printf '%s\n' "$current_pair" | cut -d '|' -f 2)"
+     current_bootstrap="$(printf '%s\n' "$current_pair" | cut -d '|' -f 3)"
+-    ranking="$(jq -s '
++    safe_ranking="$(jq -s '
+         map(select(
+             .reliable == true
+             and .universalEligible == true
+@@ -1082,8 +1184,9 @@ run_benchmark() {
+             .bootstrapDnsServer
+         ])
+     ' "$main_jsonl")"
+-    recommendation="$(printf '%s\n' "$ranking" | jq -c '.[0] // null')"
+-    confidence="$(printf '%s\n' "$ranking" | jq '
++    primary_ranking="$(printf '%s\n' "$safe_ranking" | jq 'map(select(.primaryEligible == true))')"
++    recommendation="$(printf '%s\n' "$primary_ranking" | jq -c '.[0] // null')"
++    confidence="$(printf '%s\n' "$primary_ranking" | jq '
+         if length < 2 then 100
+         else
+             (.[0].score - .[1].score) as $gap
+@@ -1094,7 +1197,7 @@ run_benchmark() {
+     ')"
+     recommendation_reason="clear_winner"
+     if [ "$confidence" -lt 35 ] && [ "$recommendation" != "null" ]; then
+-        current_candidate="$(printf '%s\n' "$ranking" | jq -c --arg currentProtocol "$current_protocol" --arg current "$current_dns" --arg currentBootstrap "$current_bootstrap" '
++        current_candidate="$(printf '%s\n' "$primary_ranking" | jq -c --arg currentProtocol "$current_protocol" --arg current "$current_dns" --arg currentBootstrap "$current_bootstrap" '
+             .[0] as $best
+             | (map(select(
+                 .protocol == $currentProtocol
+@@ -1114,7 +1217,7 @@ run_benchmark() {
+             recommendation_reason="close_results"
+         fi
+     fi
+-    secondary_recommendation="$(printf '%s\n' "$ranking" | jq -c --argjson primary "$recommendation" '
++    secondary_recommendation="$(printf '%s\n' "$safe_ranking" | jq -c --argjson primary "$recommendation" '
+         if $primary == null then null
+         else
+             (map(select(
+@@ -1375,7 +1478,12 @@ run_apply() {
+     local line provider dns_server host resolved
+     local secondary_line secondary_provider secondary_dns_server secondary_host secondary_resolved
+
+-    trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
++    trap 'cleanup_optimizer_mutation' EXIT
++    trap 'cleanup_optimizer_mutation; exit 130' INT TERM HUP
++    if ! podkop_mutation_lock_acquire "dns_optimizer_apply"; then
++        write_apply_final "error" "podkop_action_busy" "$protocol" "" "" "$bootstrap" false
++        return 1
++    fi
+     if [ -d /tmp/podkop-dns-failover/switch.lock ]; then
+         write_apply_final "error" "failover_switch_in_progress" "$protocol" "" "" "$bootstrap" false
+         return 1
+@@ -1391,6 +1499,10 @@ run_apply() {
+         write_apply_final "error" "stale_candidate" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+         return 1
+     fi
++    if ! candidate_is_primary_eligible "$candidate_id" "$provider" "$dns_server"; then
++        write_apply_final "error" "primary_dns_not_allowed" "$protocol" "$provider" "$dns_server" "$bootstrap" false
++        return 1
++    fi
+     host="$(candidate_host "$dns_server")"
+     if ! is_ipv4 "$host"; then
+         resolved="$(resolve_host "$bootstrap" "$host")"
+@@ -1475,7 +1587,12 @@ run_rollback() {
+     local previous_protocol previous_provider previous_dns previous_bootstrap previous_failover
+     local previous_secondary_protocol previous_secondary_dns previous_secondary_bootstrap
+
+-    trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
++    trap 'cleanup_optimizer_mutation' EXIT
++    trap 'cleanup_optimizer_mutation; exit 130' INT TERM HUP
++    if ! podkop_mutation_lock_acquire "dns_optimizer_rollback"; then
++        write_apply_final "error" "podkop_action_busy" "" "" "" "" false "rollback"
++        return 1
++    fi
+     [ -s "$PREVIOUS_FILE" ] || {
+         write_apply_final "error" "no_previous_dns" "" "" "" "" false "rollback"
+         return 1

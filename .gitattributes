@@ -1,0 +1,14 @@
+* text=auto
+
+# OpenWrt executes these files directly with BusyBox/ash. Keep their shebangs
+# and shell syntax safe regardless of the contributor's host OS.
+i text eol=lf
+*.sh text eol=lf
+openwrt/*.init text eol=lf
+openwrt/podkop-dns-failover text eol=lf
+openwrt/podkop-dns-optimizer text eol=lf
+openwrt/podkop-update-manager text eol=lf
+openwrt/runtime-*/usr/bin/podkop text eol=lf
+
+# The source patch series is consumed by git am and must remain byte-stable.
+*.patch text eol=lf

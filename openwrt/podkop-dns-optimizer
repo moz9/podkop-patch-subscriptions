@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260717-dns-optimizer-v10"
+VERSION="20260813-dns-optimizer-v15"
 STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
 STATUS_FILE="$STATE_DIR/status.json"
 LOG_FILE="$STATE_DIR/worker.log"
@@ -9,9 +9,84 @@ PERSIST_DIR="${PODKOP_DNS_OPTIMIZER_PERSIST_DIR:-/etc/podkop/dns-optimizer}"
 PREVIOUS_FILE="$PERSIST_DIR/previous-dns.json"
 LAST_BENCHMARK_FILE="$PERSIST_DIR/last-benchmark.json"
 SELF="$(readlink -f "$0" 2> /dev/null || printf '%s' "$0")"
+PODKOP_MUTATION_LOCK_DIR="${PODKOP_MUTATION_LOCK_DIR:-/tmp/podkop-subscription-action.lock.d}"
+PODKOP_MUTATION_LEGACY_LOCK_FILE="${PODKOP_MUTATION_LEGACY_LOCK_FILE:-/tmp/podkop-subscription-action.lock}"
+PODKOP_MUTATION_LOCK_HELD=0
 
 updated_at() {
     date -Iseconds 2> /dev/null || date
+}
+
+podkop_mutation_lock_pid_alive() {
+    local pid="$1"
+
+    case "$pid" in
+        ''|*[!0-9]*|0) return 1 ;;
+    esac
+    [ -d "/proc/$pid" ]
+}
+
+podkop_mutation_legacy_lock_busy() {
+    local holder
+
+    [ -e "$PODKOP_MUTATION_LEGACY_LOCK_FILE" ] || return 1
+    holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LEGACY_LOCK_FILE" 2> /dev/null)"
+    [ -n "$holder" ] || return 0
+    if podkop_mutation_lock_pid_alive "$holder"; then
+        return 0
+    fi
+    rm -f "$PODKOP_MUTATION_LEGACY_LOCK_FILE" 2> /dev/null || return 0
+    return 1
+}
+
+podkop_mutation_lock_acquire() {
+    local action="$1"
+    local holder
+
+    [ "$PODKOP_MUTATION_LOCK_HELD" = "1" ] && return 0
+    podkop_mutation_legacy_lock_busy && return 1
+    if ! mkdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null; then
+        holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LOCK_DIR/owner" 2> /dev/null)"
+        if [ -z "$holder" ] || podkop_mutation_lock_pid_alive "$holder"; then
+            return 1
+        fi
+        rm -f "$PODKOP_MUTATION_LOCK_DIR/owner"
+        rmdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || return 1
+        mkdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || return 1
+    fi
+    if ! printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$PODKOP_MUTATION_LOCK_DIR/owner"; then
+        rm -f "$PODKOP_MUTATION_LOCK_DIR/owner"
+        rmdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || true
+        return 1
+    fi
+    PODKOP_MUTATION_LOCK_HELD=1
+    if podkop_mutation_legacy_lock_busy; then
+        podkop_mutation_lock_release
+        return 1
+    fi
+    if ! (set -C; printf '%s %s %s\n' "$$" "$action" "$(date +%s 2> /dev/null || date)" > "$PODKOP_MUTATION_LEGACY_LOCK_FILE") 2> /dev/null; then
+        podkop_mutation_lock_release
+        return 1
+    fi
+}
+
+podkop_mutation_lock_release() {
+    local holder legacy_holder
+
+    [ "$PODKOP_MUTATION_LOCK_HELD" = "1" ] || return 0
+    holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LOCK_DIR/owner" 2> /dev/null)"
+    if [ "$holder" = "$$" ]; then
+        rm -f "$PODKOP_MUTATION_LOCK_DIR/owner"
+        rmdir "$PODKOP_MUTATION_LOCK_DIR" 2> /dev/null || true
+    fi
+    legacy_holder="$(awk 'NR == 1 {print $1}' "$PODKOP_MUTATION_LEGACY_LOCK_FILE" 2> /dev/null)"
+    [ "$legacy_holder" != "$$" ] || rm -f "$PODKOP_MUTATION_LEGACY_LOCK_FILE"
+    PODKOP_MUTATION_LOCK_HELD=0
+}
+
+cleanup_optimizer_mutation() {
+    podkop_mutation_lock_release
+    rm -rf "$LOCK_DIR"
 }
 
 ensure_state_dir() {
@@ -115,10 +190,10 @@ filter_selected_candidates() {
     if [ -z "$selected" ]; then
         case "$option" in
             dns_optimizer_candidates)
-                selected="cloudflare google yandex adguard_unfiltered controld_unfiltered mullvad"
+                selected="cloudflare google controld_unfiltered"
                 ;;
             dns_optimizer_bootstrap_candidates)
-                selected="cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 adguard_unfiltered controld_unfiltered"
+                selected="cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 controld_unfiltered"
                 ;;
             *) return 0 ;;
         esac
@@ -152,6 +227,7 @@ append_saved_custom_candidates() {
                 is_ipv4 "$host" || echo "$host" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
                 ;;
         esac
+        candidate_is_primary_eligible "saved_custom_${protocol}_$index" "Saved custom DNS $index" "$value" || continue
         append_unique_candidate "$file" "saved_custom_${protocol}_$index" "Saved custom DNS $index" "$value" "custom"
         index=$((index + 1))
     done
@@ -171,7 +247,6 @@ cloudflare|Cloudflare|1.1.1.1|unfiltered
 google|Google|8.8.8.8|unfiltered
 quad9|Quad9 Secure|9.9.9.9|security
 quad9_ecs|Quad9 Secure ECS|9.9.9.11|security_ecs
-yandex|Yandex Basic|77.88.8.8|unfiltered
 adguard_unfiltered|AdGuard Unfiltered|94.140.14.140|unfiltered
 controld_unfiltered|Control D Unfiltered|76.76.2.0|unfiltered
 EOF
@@ -182,7 +257,6 @@ cloudflare|Cloudflare|1.1.1.1|unfiltered
 google|Google|8.8.8.8|unfiltered
 quad9|Quad9 Secure|9.9.9.9|security
 quad9_ecs|Quad9 Secure ECS|9.9.9.11|security_ecs
-yandex|Yandex Basic|common.dot.dns.yandex.net|unfiltered
 adguard_unfiltered|AdGuard Unfiltered|unfiltered.adguard-dns.com/dns-query|unfiltered
 controld_unfiltered|Control D Unfiltered|freedns.controld.com/p0|unfiltered
 mullvad|Mullvad|dns.mullvad.net/dns-query|privacy
@@ -194,7 +268,6 @@ cloudflare|Cloudflare|1.1.1.1|unfiltered
 google|Google|8.8.8.8|unfiltered
 quad9|Quad9 Secure|9.9.9.9|security
 quad9_ecs|Quad9 Secure ECS|9.9.9.11|security_ecs
-yandex|Yandex Basic|common.dot.dns.yandex.net|unfiltered
 adguard_unfiltered|AdGuard Unfiltered|unfiltered.adguard-dns.com|unfiltered
 controld_unfiltered|Control D Unfiltered|p0.freedns.controld.com|unfiltered
 mullvad|Mullvad|dns.mullvad.net|privacy
@@ -215,7 +288,7 @@ EOF
         current_protocol="$(printf '%s\n' "$current_pair" | cut -d '|' -f 1)"
         current="$(printf '%s\n' "$current_pair" | cut -d '|' -f 2)"
         current_host="$(candidate_host "$current")"
-        if [ "$current_protocol" = "$protocol" ] && [ -n "$current" ] && { is_ipv4 "$current_host" || echo "$current_host" | grep -Eq '^[A-Za-z0-9.-]+$'; }; then
+        if [ "$current_protocol" = "$protocol" ] && [ -n "$current" ] && candidate_is_primary_eligible current "Current DNS" "$current" && { is_ipv4 "$current_host" || echo "$current_host" | grep -Eq '^[A-Za-z0-9.-]+$'; }; then
             append_unique_candidate "$file" "current" "Current DNS" "$current" "custom"
         fi
     fi
@@ -226,7 +299,7 @@ EOF
         ubus call network.interface dump 2> /dev/null |
             jq -r '.interface[]? | select(.up == true) | .["dns-server"][]?' 2> /dev/null |
             while IFS= read -r dns; do
-                if is_ipv4 "$dns"; then
+                if is_ipv4 "$dns" && candidate_is_primary_eligible "wan_$index" "WAN DNS $index" "$dns"; then
                     append_unique_candidate "$file" "wan_$index" "WAN DNS $index" "$dns" "isp"
                     index=$((index + 1))
                 fi
@@ -533,6 +606,33 @@ profile_is_universal() {
     esac
 }
 
+candidate_is_primary_eligible() {
+    local id="$1"
+    local provider="${2:-}"
+    local value="${3:-}"
+    local host normalized_id normalized_provider
+
+    normalized_id="$(printf '%s' "$id" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    normalized_provider="$(printf '%s' "$provider" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    host="$(candidate_host "$value" | LC_ALL=C tr '[:upper:]' '[:lower:]')"
+    case "$normalized_id|$normalized_provider|$host" in
+        yandex*\|*|*\|yandex\|*|*\|yandex\ *\|*|*\|*\|77.88.8.*|*\|*\|*.dns.yandex.net|*\|*\|dns.yandex.*)
+            return 1
+            ;;
+        *)
+            return 0
+            ;;
+    esac
+}
+
+candidate_primary_eligible_json() {
+    if candidate_is_primary_eligible "$@"; then
+        jq -cn --argjson primaryEligible true '$primaryEligible'
+    else
+        jq -cn --argjson primaryEligible false '$primaryEligible'
+    fi
+}
+
 query_status() {
     sed -n 's/.*status: \([A-Z][A-Z]*\).*/\1/p' | head -n 1
 }
@@ -801,9 +901,10 @@ benchmark_main_candidate() {
     local success failures total probe_count stats median jitter p90 success_rate nxdomain_ok reliable score error stop_early
     local base_counts community_counts compatibility_total compatibility_passed compatibility_stable compatibility_score
     local compatibility_failures compatibility_unstable universal_eligible community_probe_total community_probe_passed community_probe_stable
-    local community_score community_selected community_tested community_passed community_stable selected_community_json
+    local community_score community_selected community_tested community_passed community_stable selected_community_json primary_eligible
 
     host="$(candidate_host "$value")"
+    primary_eligible="$(candidate_primary_eligible_json "$id" "$provider" "$value")"
     path="$(candidate_path "$value")"
     probes_file="$(mktemp)"
     selected_file="$(mktemp)"
@@ -833,8 +934,9 @@ benchmark_main_candidate() {
             --arg protocol "$protocol" --arg error "bootstrap_failed" --argjson totalQueries "$total" \
             --argjson compatibilityTotal "$compatibility_total" --argjson selectedCommunityServices "$selected_community_json" \
             --argjson communitySelected "$community_selected" --argjson communityProbeTotal "$community_probe_total" \
+            --argjson primaryEligible "$primary_eligible" \
             --slurpfile communityResults "$community_results_file" \
-            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,successCount:0,totalQueries:$totalQueries,successRate:0,medianMs:0,p90Ms:0,jitterMs:0,nxdomainOk:false,compatibilityPassed:0,compatibilityStable:0,compatibilityTotal:$compatibilityTotal,compatibilityScore:0,compatibilityFailures:[],compatibilityUnstable:[],selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:0,communityPassed:0,communityStable:0,communityProbePassed:0,communityProbeStable:0,communityProbeTotal:$communityProbeTotal,communityScore:0,communityResults:$communityResults,universalEligible:false,reliable:false,score:-1000000,error:$error}'
+            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,primaryEligible:$primaryEligible,successCount:0,totalQueries:$totalQueries,successRate:0,medianMs:0,p90Ms:0,jitterMs:0,nxdomainOk:false,compatibilityPassed:0,compatibilityStable:0,compatibilityTotal:$compatibilityTotal,compatibilityScore:0,compatibilityFailures:[],compatibilityUnstable:[],selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:0,communityPassed:0,communityStable:0,communityProbePassed:0,communityProbeStable:0,communityProbeTotal:$communityProbeTotal,communityScore:0,communityResults:$communityResults,universalEligible:false,reliable:false,score:-1000000,error:$error}'
         rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
         return 0
     fi
@@ -971,9 +1073,9 @@ benchmark_main_candidate() {
         --argjson communityTested "$community_tested" --argjson communityPassed "$community_passed" --argjson communityStable "$community_stable" \
         --argjson communityProbePassed "$community_probe_passed" --argjson communityProbeStable "$community_probe_stable" \
         --argjson communityProbeTotal "$community_probe_total" --argjson communityScore "$community_score" \
-        --argjson nxdomainOk "$nxdomain_ok" --argjson universalEligible "$universal_eligible" --argjson reliable "$reliable" --argjson score "$score" \
+        --argjson nxdomainOk "$nxdomain_ok" --argjson primaryEligible "$primary_eligible" --argjson universalEligible "$universal_eligible" --argjson reliable "$reliable" --argjson score "$score" \
         --slurpfile communityResults "$community_results_file" \
-        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapProfile:$bootstrapProfile,bootstrapSuccessRate:$bootstrapSuccessRate,bootstrapMedianMs:$bootstrapMedianMs,bootstrapP90Ms:$bootstrapP90Ms,bootstrapJitterMs:$bootstrapJitterMs,bootstrapUniversalEligible:$bootstrapUniversalEligible,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:$communityTested,communityPassed:$communityPassed,communityStable:$communityStable,communityProbePassed:$communityProbePassed,communityProbeStable:$communityProbeStable,communityProbeTotal:$communityProbeTotal,communityScore:$communityScore,communityResults:$communityResults,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
+        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,primaryEligible:$primaryEligible,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapProfile:$bootstrapProfile,bootstrapSuccessRate:$bootstrapSuccessRate,bootstrapMedianMs:$bootstrapMedianMs,bootstrapP90Ms:$bootstrapP90Ms,bootstrapJitterMs:$bootstrapJitterMs,bootstrapUniversalEligible:$bootstrapUniversalEligible,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:$communityTested,communityPassed:$communityPassed,communityStable:$communityStable,communityProbePassed:$communityProbePassed,communityProbeStable:$communityProbeStable,communityProbeTotal:$communityProbeTotal,communityScore:$communityScore,communityResults:$communityResults,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
     rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
 }
 
@@ -1003,7 +1105,7 @@ run_benchmark() {
     local requested_protocols="$1"
     local protocols protocol_count scope_protocol protocols_json candidate_protocol candidate_file
     local main_file bootstrap_file bootstrap_jsonl bootstrap_json main_jsonl final_file
-    local total completed line id provider value profile result recommendation secondary_recommendation ranking confidence recommendation_reason current_candidate state message current_protocol current_dns current_bootstrap current_pair active_slot
+    local total completed line id provider value profile result recommendation secondary_recommendation safe_ranking primary_ranking confidence recommendation_reason current_candidate state message current_protocol current_dns current_bootstrap current_pair active_slot
 
     protocols="$(normalize_benchmark_protocols "$requested_protocols" || true)"
     if [ -z "$protocols" ]; then
@@ -1065,7 +1167,7 @@ run_benchmark() {
     current_protocol="$(printf '%s\n' "$current_pair" | cut -d '|' -f 1)"
     current_dns="$(printf '%s\n' "$current_pair" | cut -d '|' -f 2)"
     current_bootstrap="$(printf '%s\n' "$current_pair" | cut -d '|' -f 3)"
-    ranking="$(jq -s '
+    safe_ranking="$(jq -s '
         map(select(
             .reliable == true
             and .universalEligible == true
@@ -1082,8 +1184,9 @@ run_benchmark() {
             .bootstrapDnsServer
         ])
     ' "$main_jsonl")"
-    recommendation="$(printf '%s\n' "$ranking" | jq -c '.[0] // null')"
-    confidence="$(printf '%s\n' "$ranking" | jq '
+    primary_ranking="$(printf '%s\n' "$safe_ranking" | jq 'map(select(.primaryEligible == true))')"
+    recommendation="$(printf '%s\n' "$primary_ranking" | jq -c '.[0] // null')"
+    confidence="$(printf '%s\n' "$primary_ranking" | jq '
         if length < 2 then 100
         else
             (.[0].score - .[1].score) as $gap
@@ -1094,7 +1197,7 @@ run_benchmark() {
     ')"
     recommendation_reason="clear_winner"
     if [ "$confidence" -lt 35 ] && [ "$recommendation" != "null" ]; then
-        current_candidate="$(printf '%s\n' "$ranking" | jq -c --arg currentProtocol "$current_protocol" --arg current "$current_dns" --arg currentBootstrap "$current_bootstrap" '
+        current_candidate="$(printf '%s\n' "$primary_ranking" | jq -c --arg currentProtocol "$current_protocol" --arg current "$current_dns" --arg currentBootstrap "$current_bootstrap" '
             .[0] as $best
             | (map(select(
                 .protocol == $currentProtocol
@@ -1114,7 +1217,7 @@ run_benchmark() {
             recommendation_reason="close_results"
         fi
     fi
-    secondary_recommendation="$(printf '%s\n' "$ranking" | jq -c --argjson primary "$recommendation" '
+    secondary_recommendation="$(printf '%s\n' "$primary_ranking" | jq -c --argjson primary "$recommendation" '
         if $primary == null then null
         else
             (map(select(
@@ -1375,7 +1478,12 @@ run_apply() {
     local line provider dns_server host resolved
     local secondary_line secondary_provider secondary_dns_server secondary_host secondary_resolved
 
-    trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+    trap 'cleanup_optimizer_mutation' EXIT
+    trap 'cleanup_optimizer_mutation; exit 130' INT TERM HUP
+    if ! podkop_mutation_lock_acquire "dns_optimizer_apply"; then
+        write_apply_final "error" "podkop_action_busy" "$protocol" "" "" "$bootstrap" false
+        return 1
+    fi
     if [ -d /tmp/podkop-dns-failover/switch.lock ]; then
         write_apply_final "error" "failover_switch_in_progress" "$protocol" "" "" "$bootstrap" false
         return 1
@@ -1389,6 +1497,10 @@ run_apply() {
     dns_server="$(printf '%s\n' "$line" | cut -d '|' -f 3)"
     if [ -z "$expected_dns_server" ] || [ "$dns_server" != "$expected_dns_server" ]; then
         write_apply_final "error" "stale_candidate" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+        return 1
+    fi
+    if ! candidate_is_primary_eligible "$candidate_id" "$provider" "$dns_server"; then
+        write_apply_final "error" "primary_dns_not_allowed" "$protocol" "$provider" "$dns_server" "$bootstrap" false
         return 1
     fi
     host="$(candidate_host "$dns_server")"
@@ -1429,6 +1541,11 @@ run_apply() {
         secondary_dns_server="$(uci -q get podkop.settings.secondary_dns_server 2> /dev/null || true)"
         secondary_bootstrap="$(uci -q get podkop.settings.secondary_bootstrap_dns_server 2> /dev/null || true)"
         secondary_provider="Configured secondary DNS"
+    fi
+
+    if [ -n "$secondary_dns_server" ] && ! candidate_is_primary_eligible "${secondary_candidate_id:-configured_secondary}" "$secondary_provider" "$secondary_dns_server"; then
+        write_apply_final "error" "secondary_dns_not_allowed" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+        return 1
     fi
 
     write_status "running" "apply" "saving_previous_dns" 10 0 1 "$$"
@@ -1475,7 +1592,12 @@ run_rollback() {
     local previous_protocol previous_provider previous_dns previous_bootstrap previous_failover
     local previous_secondary_protocol previous_secondary_dns previous_secondary_bootstrap
 
-    trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+    trap 'cleanup_optimizer_mutation' EXIT
+    trap 'cleanup_optimizer_mutation; exit 130' INT TERM HUP
+    if ! podkop_mutation_lock_acquire "dns_optimizer_rollback"; then
+        write_apply_final "error" "podkop_action_busy" "" "" "" "" false "rollback"
+        return 1
+    fi
     [ -s "$PREVIOUS_FILE" ] || {
         write_apply_final "error" "no_previous_dns" "" "" "" "" false "rollback"
         return 1
