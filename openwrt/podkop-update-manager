@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260720-update-manager-v2"
+VERSION="20260813-update-manager-v3"
 STATE_DIR="/tmp/podkop-update-manager"
 STATUS_FILE="$STATE_DIR/status.json"
 DETAILS_FILE="$STATE_DIR/details.json"
@@ -70,6 +70,64 @@ version_gt() {
     [ "$amin" -gt "$bmin" ] && return 0
     [ "$amin" -lt "$bmin" ] && return 1
     [ "$apat" -gt "$bpat" ]
+}
+
+patch_version_date() {
+    case "$1" in
+    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-*)
+        printf '%.8s' "$1"
+        ;;
+    esac
+}
+
+patch_version_revision() {
+    printf '%s\n' "$1" | sed -n 's/.*-v\([0-9][0-9]*\)$/\1/p'
+}
+
+patch_update_available() {
+    local current="$1"
+    local latest="$2"
+    local current_date latest_date current_revision latest_revision
+
+    [ -n "$latest" ] || return 1
+    [ "$current" != "$latest" ] || return 1
+    [ -n "$current" ] || return 0
+
+    current_date="$(patch_version_date "$current")"
+    latest_date="$(patch_version_date "$latest")"
+    if [ -n "$current_date" ] && [ -n "$latest_date" ]; then
+        [ "$latest_date" -gt "$current_date" ] && return 0
+        [ "$latest_date" -lt "$current_date" ] && return 1
+
+        current_revision="$(patch_version_revision "$current")"
+        latest_revision="$(patch_version_revision "$latest")"
+        if [ -n "$current_revision" ] && [ -n "$latest_revision" ]; then
+            [ "$latest_revision" -gt "$current_revision" ]
+            return
+        fi
+        return 1
+    fi
+
+    [ -n "$current_date" ] && return 1
+    return 0
+}
+
+patch_manifest_is_older() {
+    local current="$1"
+    local latest="$2"
+    local current_date latest_date current_revision latest_revision
+
+    current_date="$(patch_version_date "$current")"
+    latest_date="$(patch_version_date "$latest")"
+    [ -n "$current_date" ] && [ -n "$latest_date" ] || return 1
+
+    [ "$current_date" -gt "$latest_date" ] && return 0
+    [ "$current_date" -lt "$latest_date" ] && return 1
+
+    current_revision="$(patch_version_revision "$current")"
+    latest_revision="$(patch_version_revision "$latest")"
+    [ -n "$current_revision" ] && [ -n "$latest_revision" ] || return 1
+    [ "$current_revision" -gt "$latest_revision" ]
 }
 
 kill_process_tree() {
@@ -158,7 +216,7 @@ version_supported() {
 perform_check() {
     local publish="${1:-1}"
     local manifest release current_podkop latest_podkop current_patch latest_patch
-    local current_supported latest_supported podkop_update patch_update mode can_update message
+    local current_supported latest_supported podkop_update patch_update patch_behind mode can_update message
     local cache_buster
 
     manifest="$STATE_DIR/manifest.json"
@@ -167,7 +225,7 @@ perform_check() {
     log_line "Checking Podkop and subscription patch updates."
 
     if ! download_file "$MANIFEST_URL?t=$cache_buster" "$manifest" ||
-        ! jq -e '.schemaVersion == 1 and (.patchVersion | type == "string") and (.supportedPodkopVersions | type == "array")' "$manifest" >/dev/null 2>&1; then
+        ! jq -e '.schemaVersion == 1 and (.patchVersion | type == "string" and length > 0) and (.supportedPodkopVersions | type == "array")' "$manifest" >/dev/null 2>&1; then
         log_line "Compatibility manifest download or validation failed."
         write_status "error" "manifest_failed"
         return 1
@@ -193,15 +251,20 @@ perform_check() {
     latest_supported=false
     podkop_update=false
     patch_update=false
+    patch_behind=false
     version_supported "$manifest" "$current_podkop" && current_supported=true
     version_supported "$manifest" "$latest_podkop" && latest_supported=true
     version_gt "$latest_podkop" "$current_podkop" && podkop_update=true
-    [ "$current_patch" = "$latest_patch" ] || patch_update=true
+    patch_update_available "$current_patch" "$latest_patch" && patch_update=true
+    patch_manifest_is_older "$current_patch" "$latest_patch" && patch_behind=true
 
     mode="none"
     can_update=false
     message="up_to_date"
-    if [ "$podkop_update" = true ] && [ "$latest_supported" != true ]; then
+    if [ "$podkop_update" = true ] && [ "$patch_behind" = true ]; then
+        mode="blocked"
+        message="published_patch_older"
+    elif [ "$podkop_update" = true ] && [ "$latest_supported" != true ]; then
         mode="blocked"
         message="unsupported_podkop"
     elif [ "$podkop_update" = true ]; then
@@ -223,6 +286,7 @@ perform_check() {
         --arg currentPatchVersion "$current_patch" \
         --arg latestPatchVersion "$latest_patch" \
         --arg updateMode "$mode" \
+        --arg message "$message" \
         --arg checkedAt "$(updated_at)" \
         --argjson podkopUpdateAvailable "$podkop_update" \
         --argjson patchUpdateAvailable "$patch_update" \
@@ -230,7 +294,7 @@ perform_check() {
         --argjson latestPodkopSupported "$latest_supported" \
         --argjson canUpdate "$can_update" \
         --argjson supportedPodkopVersions "$(jq -c '.supportedPodkopVersions' "$manifest")" \
-        '{currentPodkopVersion:$currentPodkopVersion,latestPodkopVersion:$latestPodkopVersion,currentPatchVersion:$currentPatchVersion,latestPatchVersion:$latestPatchVersion,updateMode:$updateMode,checkedAt:$checkedAt,podkopUpdateAvailable:$podkopUpdateAvailable,patchUpdateAvailable:$patchUpdateAvailable,currentPodkopSupported:$currentPodkopSupported,latestPodkopSupported:$latestPodkopSupported,canUpdate:$canUpdate,supportedPodkopVersions:$supportedPodkopVersions}' \
+        '{currentPodkopVersion:$currentPodkopVersion,latestPodkopVersion:$latestPodkopVersion,currentPatchVersion:$currentPatchVersion,latestPatchVersion:$latestPatchVersion,updateMode:$updateMode,message:$message,checkedAt:$checkedAt,podkopUpdateAvailable:$podkopUpdateAvailable,patchUpdateAvailable:$patchUpdateAvailable,currentPodkopSupported:$currentPodkopSupported,latestPodkopSupported:$latestPodkopSupported,canUpdate:$canUpdate,supportedPodkopVersions:$supportedPodkopVersions}' \
         > "$DETAILS_FILE"
 
     log_line "Installed Podkop: $current_podkop; latest: $latest_podkop; supported: $latest_supported."
@@ -248,7 +312,7 @@ perform_update() {
     can_update="$(jq -r '.canUpdate // false' "$DETAILS_FILE")"
 
     if [ "$mode" = "blocked" ]; then
-        write_status "blocked" "$( [ "$(jq -r '.podkopUpdateAvailable' "$DETAILS_FILE")" = true ] && echo unsupported_podkop || echo installed_podkop_unsupported )"
+        write_status "blocked" "$(jq -r '.message // "blocked"' "$DETAILS_FILE")"
         return 0
     fi
     if [ "$can_update" != true ]; then

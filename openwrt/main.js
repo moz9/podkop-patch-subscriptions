@@ -4106,6 +4106,7 @@ function statusText(status) {
     patch_update_noop: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u044B\u0435 \u0432\u0435\u0440\u0441\u0438\u0438.",
     unsupported_podkop: "\u041D\u043E\u0432\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F Podkop \u043F\u043E\u043A\u0430 \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u043F\u0430\u0442\u0447\u0435\u043C. \u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043E.",
     installed_podkop_unsupported: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043D\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F Podkop \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u044D\u0442\u0438\u043C \u0432\u044B\u043F\u0443\u0441\u043A\u043E\u043C \u043F\u0430\u0442\u0447\u0430.",
+    published_patch_older: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043D\u044B\u0439 \u043F\u0430\u0442\u0447 \u043D\u043E\u0432\u0435\u0435 \u043E\u043F\u0443\u0431\u043B\u0438\u043A\u043E\u0432\u0430\u043D\u043D\u043E\u0433\u043E. \u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 Podkop \u0447\u0435\u0440\u0435\u0437 \u044D\u0442\u043E\u0442 \u043A\u0430\u043D\u0430\u043B \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043E, \u0447\u0442\u043E\u0431\u044B \u043D\u0435 \u043E\u0442\u043A\u0430\u0442\u0438\u0442\u044C \u043F\u0430\u0442\u0447.",
     manifest_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043C\u0430\u043D\u0438\u0444\u0435\u0441\u0442 \u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u043E\u0441\u0442\u0438.",
     release_check_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044E\u044E \u0432\u0435\u0440\u0441\u0438\u044E Podkop.",
     version_check_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u0438\u0442\u044C \u0432\u0435\u0440\u0441\u0438\u0438 \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u043E\u0432.",
@@ -4118,9 +4119,10 @@ function statusText(status) {
   };
   return messages[status.message] || "\u041D\u0430\u0436\u043C\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0439.";
 }
-function versionValue(current, latest) {
+function versionValue(current, latest, updateAvailable) {
   if (!current && !latest) return "\u2014";
-  if (!latest || current === latest) return current || latest || "\u2014";
+  if (!updateAvailable || !latest || current === latest)
+    return current || latest || "\u2014";
   return `${current || "\u2014"} \u2192 ${latest}`;
 }
 function renderUpdateCenter({
@@ -4149,7 +4151,8 @@ function renderUpdateCenter({
           {},
           versionValue(
             status.currentPodkopVersion,
-            status.latestPodkopVersion
+            status.latestPodkopVersion,
+            status.podkopUpdateAvailable
           )
         )
       ]),
@@ -4158,7 +4161,11 @@ function renderUpdateCenter({
         E(
           "b",
           {},
-          versionValue(status.currentPatchVersion, status.latestPatchVersion)
+          versionValue(
+            status.currentPatchVersion,
+            status.latestPatchVersion,
+            status.patchUpdateAvailable
+          )
         )
       ])
     ]),

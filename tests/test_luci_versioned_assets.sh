@@ -115,6 +115,12 @@ for required in \
         fail_test "backup/rollback inventory omits $required"
 done
 
+for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+    required="www/luci-static/resources/view/$LUCI_MODULE_NAMESPACE/$asset"
+    printf '%s\n' "$RUNTIME_FILES" | grep -Fxq "$required" ||
+        fail_test "current versioned asset is missing from backup/rollback inventory: $required"
+done
+
 sed -n '/^luci_assets_current() {/,/^}/p' "$repo_root/i" |
     grep -q 'versioned_luci_assets_current' ||
     fail_test 'installer no-op capability check does not require the versioned namespace'

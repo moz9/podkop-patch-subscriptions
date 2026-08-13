@@ -67,6 +67,26 @@ if ! grep -q '#view \.cbi-page-actions' openwrt/main.js ||
     fail 'Podkop must contain narrow LuCI actions and tabs without page overflow'
 fi
 
+for field in \
+    dns_optimizer_protocols \
+    dns_optimizer_candidates \
+    dns_optimizer_bootstrap_candidates; do
+    if ! grep -Fq ".cbi-value[data-name=\"$field\"] .cbi-dropdown[multiple]" openwrt/settings.js; then
+        fail "DNS optimizer MultiValue $field must be constrained inside its LuCI field"
+    fi
+done
+
+dns_multivalue_css="$({
+    sed -n '/DNS optimizer MultiValue intrinsic containment/,/DNS optimizer MultiValue intrinsic containment end/p' \
+        openwrt/settings.js
+} || true)"
+if ! printf '%s\n' "$dns_multivalue_css" | grep -q 'width: 100%' ||
+    ! printf '%s\n' "$dns_multivalue_css" | grep -q 'max-width: 100%' ||
+    ! printf '%s\n' "$dns_multivalue_css" | grep -q 'min-width: 0' ||
+    ! printf '%s\n' "$dns_multivalue_css" | grep -q 'flex-wrap: wrap'; then
+    fail 'DNS optimizer MultiValue controls must defeat Proton2025 intrinsic-width overflow'
+fi
+
 if sed -n '/#view \.cbi-page-actions \.cbi-button {/,/^    }/p' openwrt/main.js \
     | grep -Eq 'flex:[[:space:]]*1 1 [0-9]+px'; then
     fail 'LuCI action buttons must not use a pixel flex-basis that becomes height in Proton2025 column layout'

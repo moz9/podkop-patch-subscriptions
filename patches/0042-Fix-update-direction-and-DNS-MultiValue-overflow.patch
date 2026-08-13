@@ -1,0 +1,560 @@
+From 3e9ad96040e0bdc4230069a498e50c0dcb7e130c Mon Sep 17 00:00:00 2001
+From: Codex 0042 <codex@example.invalid>
+Date: Thu, 13 Aug 2026 15:05:44 +0700
+Subject: [PATCH] Fix update direction and DNS policy/UI overflow
+
+---
+ .../diagnostic/partials/renderUpdateCenter.ts |  18 ++-
+ .../luci-static/resources/view/podkop/main.js |  15 ++-
+ .../resources/view/podkop/settings.js         | 119 ++++++++++++++----
+ podkop/files/usr/bin/podkop-dns-optimizer     |  21 ++--
+ podkop/files/usr/bin/podkop-update-manager    |  78 ++++++++++--
+ 5 files changed, 201 insertions(+), 50 deletions(-)
+
+diff --git a/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderUpdateCenter.ts b/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderUpdateCenter.ts
+index df2b9a8..1830906 100644
+--- a/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderUpdateCenter.ts
++++ b/fe-app-podkop/src/podkop/tabs/diagnostic/partials/renderUpdateCenter.ts
+@@ -28,6 +28,8 @@ function statusText(status: Podkop.SubscriptionPatchUpdateStatus) {
+       'Новая версия Podkop пока не поддерживается патчем. Обновление заблокировано.',
+     installed_podkop_unsupported:
+       'Установленная версия Podkop не поддерживается этим выпуском патча.',
++    published_patch_older:
++      'Установленный патч новее опубликованного. Обновление Podkop через этот канал заблокировано, чтобы не откатить патч.',
+     manifest_failed: 'Не удалось загрузить манифест совместимости.',
+     release_check_failed: 'Не удалось получить последнюю версию Podkop.',
+     version_check_failed: 'Не удалось определить версии компонентов.',
+@@ -42,9 +44,14 @@ function statusText(status: Podkop.SubscriptionPatchUpdateStatus) {
+   return messages[status.message] || 'Нажмите проверку обновлений.';
+ }
+
+-function versionValue(current?: string, latest?: string) {
++function versionValue(
++  current?: string,
++  latest?: string,
++  updateAvailable?: boolean,
++) {
+   if (!current && !latest) return '—';
+-  if (!latest || current === latest) return current || latest || '—';
++  if (!updateAvailable || !latest || current === latest)
++    return current || latest || '—';
+   return `${current || '—'} → ${latest}`;
+ }
+
+@@ -83,6 +90,7 @@ export function renderUpdateCenter({
+           versionValue(
+             status.currentPodkopVersion,
+             status.latestPodkopVersion,
++            status.podkopUpdateAvailable,
+           ),
+         ),
+       ]),
+@@ -91,7 +99,11 @@ export function renderUpdateCenter({
+         E(
+           'b',
+           {},
+-          versionValue(status.currentPatchVersion, status.latestPatchVersion),
++          versionValue(
++            status.currentPatchVersion,
++            status.latestPatchVersion,
++            status.patchUpdateAvailable,
++          ),
+         ),
+       ]),
+     ]),
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+index bd4f466..23e5bb5 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/main.js
+@@ -4106,6 +4106,7 @@ function statusText(status) {
+     patch_update_noop: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u044B \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u044B\u0435 \u0432\u0435\u0440\u0441\u0438\u0438.",
+     unsupported_podkop: "\u041D\u043E\u0432\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F Podkop \u043F\u043E\u043A\u0430 \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u043F\u0430\u0442\u0447\u0435\u043C. \u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043E.",
+     installed_podkop_unsupported: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043D\u0430\u044F \u0432\u0435\u0440\u0441\u0438\u044F Podkop \u043D\u0435 \u043F\u043E\u0434\u0434\u0435\u0440\u0436\u0438\u0432\u0430\u0435\u0442\u0441\u044F \u044D\u0442\u0438\u043C \u0432\u044B\u043F\u0443\u0441\u043A\u043E\u043C \u043F\u0430\u0442\u0447\u0430.",
++    published_patch_older: "\u0423\u0441\u0442\u0430\u043D\u043E\u0432\u043B\u0435\u043D\u043D\u044B\u0439 \u043F\u0430\u0442\u0447 \u043D\u043E\u0432\u0435\u0435 \u043E\u043F\u0443\u0431\u043B\u0438\u043A\u043E\u0432\u0430\u043D\u043D\u043E\u0433\u043E. \u041E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0435 Podkop \u0447\u0435\u0440\u0435\u0437 \u044D\u0442\u043E\u0442 \u043A\u0430\u043D\u0430\u043B \u0437\u0430\u0431\u043B\u043E\u043A\u0438\u0440\u043E\u0432\u0430\u043D\u043E, \u0447\u0442\u043E\u0431\u044B \u043D\u0435 \u043E\u0442\u043A\u0430\u0442\u0438\u0442\u044C \u043F\u0430\u0442\u0447.",
+     manifest_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u0437\u0430\u0433\u0440\u0443\u0437\u0438\u0442\u044C \u043C\u0430\u043D\u0438\u0444\u0435\u0441\u0442 \u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u043E\u0441\u0442\u0438.",
+     release_check_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043F\u043E\u043B\u0443\u0447\u0438\u0442\u044C \u043F\u043E\u0441\u043B\u0435\u0434\u043D\u044E\u044E \u0432\u0435\u0440\u0441\u0438\u044E Podkop.",
+     version_check_failed: "\u041D\u0435 \u0443\u0434\u0430\u043B\u043E\u0441\u044C \u043E\u043F\u0440\u0435\u0434\u0435\u043B\u0438\u0442\u044C \u0432\u0435\u0440\u0441\u0438\u0438 \u043A\u043E\u043C\u043F\u043E\u043D\u0435\u043D\u0442\u043E\u0432.",
+@@ -4118,9 +4119,10 @@ function statusText(status) {
+   };
+   return messages[status.message] || "\u041D\u0430\u0436\u043C\u0438\u0442\u0435 \u043F\u0440\u043E\u0432\u0435\u0440\u043A\u0443 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u0439.";
+ }
+-function versionValue(current, latest) {
++function versionValue(current, latest, updateAvailable) {
+   if (!current && !latest) return "\u2014";
+-  if (!latest || current === latest) return current || latest || "\u2014";
++  if (!updateAvailable || !latest || current === latest)
++    return current || latest || "\u2014";
+   return `${current || "\u2014"} \u2192 ${latest}`;
+ }
+ function renderUpdateCenter({
+@@ -4149,7 +4151,8 @@ function renderUpdateCenter({
+           {},
+           versionValue(
+             status.currentPodkopVersion,
+-            status.latestPodkopVersion
++            status.latestPodkopVersion,
++            status.podkopUpdateAvailable
+           )
+         )
+       ]),
+@@ -4158,7 +4161,11 @@ function renderUpdateCenter({
+         E(
+           "b",
+           {},
+-          versionValue(status.currentPatchVersion, status.latestPatchVersion)
++          versionValue(
++            status.currentPatchVersion,
++            status.latestPatchVersion,
++            status.patchUpdateAvailable
++          )
+         )
+       ])
+     ]),
+diff --git a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
+index a1ab857..a2cfa69 100644
+--- a/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
++++ b/luci-app-podkop/htdocs/luci-static/resources/view/podkop/settings.js
+@@ -10,6 +10,22 @@ const DNS_OPTIMIZER_COMMAND = "/usr/bin/podkop-dns-optimizer";
+ const DNS_PRIMARY_POLICY = {
+   yandex: { primaryEligible: false },
+ };
++const NORMAL_DNS_OPTIMIZER_CANDIDATES = [
++  ["cloudflare", "Cloudflare"],
++  ["google", "Google"],
++  ["quad9", "Quad9 Secure"],
++  ["quad9_ecs", "Quad9 Secure ECS"],
++  ["adguard_unfiltered", "AdGuard Unfiltered"],
++  ["controld_unfiltered", "Control D Unfiltered"],
++  ["mullvad", "Mullvad"],
++];
++const DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES = [
++  "cloudflare",
++  "google",
++  "adguard_unfiltered",
++  "controld_unfiltered",
++  "mullvad",
++];
+ const dnsOptimizerState = {
+   node: null,
+   status: null,
+@@ -305,6 +321,36 @@ function injectDnsOptimizerStyles() {
+       pointer-events: none;
+       opacity: 0.55;
+     }
++    /* DNS optimizer MultiValue intrinsic containment */
++    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-value-field,
++    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-value-field,
++    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-value-field {
++      min-width: 0;
++      max-width: 100%;
++    }
++    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple],
++    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple],
++    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple] {
++      box-sizing: border-box;
++      width: 100%;
++      max-width: 100%;
++      min-width: 0;
++    }
++    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple] > ul:not(.dropdown),
++    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple] > ul:not(.dropdown),
++    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple] > ul:not(.dropdown) {
++      min-width: 0;
++      max-width: 100%;
++      flex-wrap: wrap;
++    }
++    #view .cbi-value[data-name="dns_optimizer_protocols"] .cbi-dropdown[multiple] > ul:not(.dropdown) > li[display],
++    #view .cbi-value[data-name="dns_optimizer_candidates"] .cbi-dropdown[multiple] > ul:not(.dropdown) > li[display],
++    #view .cbi-value[data-name="dns_optimizer_bootstrap_candidates"] .cbi-dropdown[multiple] > ul:not(.dropdown) > li[display] {
++      min-width: 0;
++      max-width: 100%;
++      flex: 0 1 auto;
++    }
++    /* DNS optimizer MultiValue intrinsic containment end */
+     @media (max-width: 800px) {
+       .pdk-dns-optimizer { padding: 10px; }
+       .pdk-dns-optimizer__actions { width: 100%; }
+@@ -445,7 +491,9 @@ function optimizerMessage(status) {
+     stale_candidate:
+       "Адрес этой строки изменился после проверки. Для безопасности запустите проверку ещё раз.",
+     primary_dns_not_allowed:
+-      "Yandex нельзя установить как основной DNS. Он остаётся доступен для bootstrap и резервной пары.",
++      "Yandex DNS можно использовать только как bootstrap DNS.",
++    secondary_dns_not_allowed:
++      "Yandex DNS нельзя установить как резервный upstream. Он доступен только для bootstrap.",
+     secondary_arguments_required:
+       "Резервная DNS-пара задана не полностью. Применение отменено.",
+     invalid_secondary_recommendation:
+@@ -516,9 +564,6 @@ function candidateIsPrimaryEligible(candidate) {
+   if (!candidate) {
+     return false;
+   }
+-  if (typeof candidate.primaryEligible === "boolean") {
+-    return candidate.primaryEligible !== false;
+-  }
+
+   const endpoint = dnsEndpointHost(candidate.dnsServer);
+   const candidateId = String(candidate.id || "").toLowerCase();
+@@ -531,12 +576,17 @@ function candidateIsPrimaryEligible(candidate) {
+     provider.startsWith("yandex ")
+       ? DNS_PRIMARY_POLICY.yandex
+       : null) ||
+-    (["77.88.8.8", "77.88.8.1", "common.dot.dns.yandex.net"].includes(
+-      endpoint,
+-    )
++    (/^77\.88\.8\.\d+$/.test(endpoint) ||
++    endpoint.endsWith(".dns.yandex.net") ||
++    endpoint === "dns.yandex.net" ||
++    endpoint.endsWith(".dns.yandex.ru") ||
++    endpoint === "dns.yandex.ru"
+       ? DNS_PRIMARY_POLICY.yandex
+       : null);
+-  return policy?.primaryEligible !== false;
++  if (policy?.primaryEligible === false) {
++    return false;
++  }
++  return candidate.primaryEligible !== false;
+ }
+
+ function isComparisonOnly(result) {
+@@ -1009,7 +1059,9 @@ function renderRecommendation(status, running) {
+ }
+
+ function renderMainResults(status, running) {
+-  const results = Array.isArray(status?.results) ? status.results : [];
++  const results = Array.isArray(status?.results)
++    ? status.results.filter(candidateIsPrimaryEligible)
++    : [];
+   if (!results.length) {
+     return E("div");
+   }
+@@ -1224,6 +1276,7 @@ function pickSecondaryFor(status, primary) {
+       candidate.id !== primary?.id &&
+       candidate.dnsServer !== primary?.dnsServer &&
+       candidate.provider !== primary?.provider &&
++      candidateIsPrimaryEligible(candidate) &&
+       candidate.reliable === true &&
+       candidate.universalEligible === true &&
+       candidate.bootstrapUniversalEligible === true,
+@@ -1580,6 +1633,7 @@ async function applyDnsResult(result, secondaryResult = null) {
+   if (
+     !result ||
+     !candidateIsPrimaryEligible(result) ||
++    (secondaryResult && !candidateIsPrimaryEligible(secondaryResult)) ||
+     dnsOptimizerState.status?.state === "running"
+   ) {
+     return;
+@@ -1685,6 +1739,9 @@ function createSettingsContent(section) {
+   dnsOptimizerState.dnsServerOption = o;
+   o.write = writePrimaryDnsOption;
+   o.validate = function (section_id, value) {
++    if (!candidateIsPrimaryEligible({ dnsServer: value })) {
++      return "Yandex DNS можно использовать только как bootstrap DNS.";
++    }
+     const validation = main.validateDNS(value);
+
+     if (validation.valid) {
+@@ -1764,6 +1821,9 @@ function createSettingsContent(section) {
+   o.depends("dns_failover_enabled", "1");
+   dnsOptimizerState.secondaryDnsServerOption = o;
+   o.validate = function (section_id, value) {
++    if (!candidateIsPrimaryEligible({ dnsServer: value })) {
++      return "Yandex DNS можно использовать только как bootstrap DNS.";
++    }
+     const validation = main.validateDNS(value);
+     return validation.valid ? true : validation.message;
+   };
+@@ -1811,25 +1871,30 @@ function createSettingsContent(section) {
+     "DNS для проверки",
+     "Выберите основной каталог для теста. Меньше кандидатов — быстрее и точнее сравнение. Пользовательские и WAN DNS не становятся автоматической рекомендацией.",
+   );
+-  [
+-    ["cloudflare", "Cloudflare"],
+-    ["google", "Google"],
+-    ["quad9", "Quad9 Secure"],
+-    ["quad9_ecs", "Quad9 Secure ECS"],
+-    ["yandex", "Yandex Basic"],
+-    ["adguard_unfiltered", "AdGuard Unfiltered"],
+-    ["controld_unfiltered", "Control D Unfiltered"],
+-    ["mullvad", "Mullvad"],
+-  ].forEach(([value, label]) => o.value(value, label));
+-  o.default = [
+-    "cloudflare",
+-    "google",
+-    "yandex",
+-    "adguard_unfiltered",
+-    "controld_unfiltered",
+-    "mullvad",
+-  ];
++  NORMAL_DNS_OPTIMIZER_CANDIDATES.forEach(([value, label]) =>
++    o.value(value, label),
++  );
++  o.default = DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES;
+   o.rmempty = false;
++  o.cfgvalue = function (sectionId) {
++    const configured = uci.get(
++      "podkop",
++      sectionId,
++      "dns_optimizer_candidates",
++    );
++    const selected = Array.isArray(configured)
++      ? configured
++      : String(configured || "")
++          .split(/\s+/)
++          .filter(Boolean);
++    const allowed = new Set(
++      NORMAL_DNS_OPTIMIZER_CANDIDATES.map(([value]) => value),
++    );
++    const filtered = selected.filter((value) => allowed.has(value));
++    return filtered.length
++      ? filtered
++      : DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES;
++  };
+
+   o = section.option(
+     form.MultiValue,
+diff --git a/podkop/files/usr/bin/podkop-dns-optimizer b/podkop/files/usr/bin/podkop-dns-optimizer
+index c5d476f..1610e71 100755
+--- a/podkop/files/usr/bin/podkop-dns-optimizer
++++ b/podkop/files/usr/bin/podkop-dns-optimizer
+@@ -1,6 +1,6 @@
+ #!/bin/ash
+
+-VERSION="20260813-dns-optimizer-v12"
++VERSION="20260813-dns-optimizer-v13"
+ STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
+ STATUS_FILE="$STATE_DIR/status.json"
+ LOG_FILE="$STATE_DIR/worker.log"
+@@ -190,7 +190,7 @@ filter_selected_candidates() {
+     if [ -z "$selected" ]; then
+         case "$option" in
+             dns_optimizer_candidates)
+-                selected="cloudflare google yandex adguard_unfiltered controld_unfiltered mullvad"
++                selected="cloudflare google adguard_unfiltered controld_unfiltered mullvad"
+                 ;;
+             dns_optimizer_bootstrap_candidates)
+                 selected="cloudflare_1 cloudflare_2 google_1 google_2 yandex_1 yandex_2 adguard_unfiltered controld_unfiltered"
+@@ -227,6 +227,7 @@ append_saved_custom_candidates() {
+                 is_ipv4 "$host" || echo "$host" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
+                 ;;
+         esac
++        candidate_is_primary_eligible "saved_custom_${protocol}_$index" "Saved custom DNS $index" "$value" || continue
+         append_unique_candidate "$file" "saved_custom_${protocol}_$index" "Saved custom DNS $index" "$value" "custom"
+         index=$((index + 1))
+     done
+@@ -246,7 +247,6 @@ cloudflare|Cloudflare|1.1.1.1|unfiltered
+ google|Google|8.8.8.8|unfiltered
+ quad9|Quad9 Secure|9.9.9.9|security
+ quad9_ecs|Quad9 Secure ECS|9.9.9.11|security_ecs
+-yandex|Yandex Basic|77.88.8.8|unfiltered
+ adguard_unfiltered|AdGuard Unfiltered|94.140.14.140|unfiltered
+ controld_unfiltered|Control D Unfiltered|76.76.2.0|unfiltered
+ EOF
+@@ -257,7 +257,6 @@ cloudflare|Cloudflare|1.1.1.1|unfiltered
+ google|Google|8.8.8.8|unfiltered
+ quad9|Quad9 Secure|9.9.9.9|security
+ quad9_ecs|Quad9 Secure ECS|9.9.9.11|security_ecs
+-yandex|Yandex Basic|common.dot.dns.yandex.net|unfiltered
+ adguard_unfiltered|AdGuard Unfiltered|unfiltered.adguard-dns.com/dns-query|unfiltered
+ controld_unfiltered|Control D Unfiltered|freedns.controld.com/p0|unfiltered
+ mullvad|Mullvad|dns.mullvad.net/dns-query|privacy
+@@ -269,7 +268,6 @@ cloudflare|Cloudflare|1.1.1.1|unfiltered
+ google|Google|8.8.8.8|unfiltered
+ quad9|Quad9 Secure|9.9.9.9|security
+ quad9_ecs|Quad9 Secure ECS|9.9.9.11|security_ecs
+-yandex|Yandex Basic|common.dot.dns.yandex.net|unfiltered
+ adguard_unfiltered|AdGuard Unfiltered|unfiltered.adguard-dns.com|unfiltered
+ controld_unfiltered|Control D Unfiltered|p0.freedns.controld.com|unfiltered
+ mullvad|Mullvad|dns.mullvad.net|privacy
+@@ -290,7 +288,7 @@ EOF
+         current_protocol="$(printf '%s\n' "$current_pair" | cut -d '|' -f 1)"
+         current="$(printf '%s\n' "$current_pair" | cut -d '|' -f 2)"
+         current_host="$(candidate_host "$current")"
+-        if [ "$current_protocol" = "$protocol" ] && [ -n "$current" ] && { is_ipv4 "$current_host" || echo "$current_host" | grep -Eq '^[A-Za-z0-9.-]+$'; }; then
++        if [ "$current_protocol" = "$protocol" ] && [ -n "$current" ] && candidate_is_primary_eligible current "Current DNS" "$current" && { is_ipv4 "$current_host" || echo "$current_host" | grep -Eq '^[A-Za-z0-9.-]+$'; }; then
+             append_unique_candidate "$file" "current" "Current DNS" "$current" "custom"
+         fi
+     fi
+@@ -301,7 +299,7 @@ EOF
+         ubus call network.interface dump 2> /dev/null |
+             jq -r '.interface[]? | select(.up == true) | .["dns-server"][]?' 2> /dev/null |
+             while IFS= read -r dns; do
+-                if is_ipv4 "$dns"; then
++                if is_ipv4 "$dns" && candidate_is_primary_eligible "wan_$index" "WAN DNS $index" "$dns"; then
+                     append_unique_candidate "$file" "wan_$index" "WAN DNS $index" "$dns" "isp"
+                     index=$((index + 1))
+                 fi
+@@ -616,7 +614,7 @@ candidate_is_primary_eligible() {
+
+     host="$(candidate_host "$value")"
+     case "$id|$provider|$host" in
+-        yandex\|*|*\|Yandex\|*|*\|Yandex\ *\|*|*\|*\|77.88.8.8|*\|*\|77.88.8.1|*\|*\|common.dot.dns.yandex.net)
++        yandex*\|*|*\|Yandex\|*|*\|Yandex\ *\|*|*\|*\|77.88.8.*|*\|*\|*.dns.yandex.net|*\|*\|dns.yandex.*)
+             return 1
+             ;;
+         *)
+@@ -1217,7 +1215,7 @@ run_benchmark() {
+             recommendation_reason="close_results"
+         fi
+     fi
+-    secondary_recommendation="$(printf '%s\n' "$safe_ranking" | jq -c --argjson primary "$recommendation" '
++    secondary_recommendation="$(printf '%s\n' "$primary_ranking" | jq -c --argjson primary "$recommendation" '
+         if $primary == null then null
+         else
+             (map(select(
+@@ -1543,6 +1541,11 @@ run_apply() {
+         secondary_provider="Configured secondary DNS"
+     fi
+
++    if [ -n "$secondary_dns_server" ] && ! candidate_is_primary_eligible "${secondary_candidate_id:-configured_secondary}" "$secondary_provider" "$secondary_dns_server"; then
++        write_apply_final "error" "secondary_dns_not_allowed" "$protocol" "$provider" "$dns_server" "$bootstrap" false
++        return 1
++    fi
++
+     write_status "running" "apply" "saving_previous_dns" 10 0 1 "$$"
+     save_previous_dns || {
+         write_apply_final "error" "backup_failed" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+diff --git a/podkop/files/usr/bin/podkop-update-manager b/podkop/files/usr/bin/podkop-update-manager
+index 1475d4a..25f2135 100755
+--- a/podkop/files/usr/bin/podkop-update-manager
++++ b/podkop/files/usr/bin/podkop-update-manager
+@@ -1,6 +1,6 @@
+ #!/bin/ash
+
+-VERSION="20260720-update-manager-v2"
++VERSION="20260813-update-manager-v3"
+ STATE_DIR="/tmp/podkop-update-manager"
+ STATUS_FILE="$STATE_DIR/status.json"
+ DETAILS_FILE="$STATE_DIR/details.json"
+@@ -72,6 +72,64 @@ version_gt() {
+     [ "$apat" -gt "$bpat" ]
+ }
+
++patch_version_date() {
++    case "$1" in
++    [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-*)
++        printf '%.8s' "$1"
++        ;;
++    esac
++}
++
++patch_version_revision() {
++    printf '%s\n' "$1" | sed -n 's/.*-v\([0-9][0-9]*\)$/\1/p'
++}
++
++patch_update_available() {
++    local current="$1"
++    local latest="$2"
++    local current_date latest_date current_revision latest_revision
++
++    [ -n "$latest" ] || return 1
++    [ "$current" != "$latest" ] || return 1
++    [ -n "$current" ] || return 0
++
++    current_date="$(patch_version_date "$current")"
++    latest_date="$(patch_version_date "$latest")"
++    if [ -n "$current_date" ] && [ -n "$latest_date" ]; then
++        [ "$latest_date" -gt "$current_date" ] && return 0
++        [ "$latest_date" -lt "$current_date" ] && return 1
++
++        current_revision="$(patch_version_revision "$current")"
++        latest_revision="$(patch_version_revision "$latest")"
++        if [ -n "$current_revision" ] && [ -n "$latest_revision" ]; then
++            [ "$latest_revision" -gt "$current_revision" ]
++            return
++        fi
++        return 1
++    fi
++
++    [ -n "$current_date" ] && return 1
++    return 0
++}
++
++patch_manifest_is_older() {
++    local current="$1"
++    local latest="$2"
++    local current_date latest_date current_revision latest_revision
++
++    current_date="$(patch_version_date "$current")"
++    latest_date="$(patch_version_date "$latest")"
++    [ -n "$current_date" ] && [ -n "$latest_date" ] || return 1
++
++    [ "$current_date" -gt "$latest_date" ] && return 0
++    [ "$current_date" -lt "$latest_date" ] && return 1
++
++    current_revision="$(patch_version_revision "$current")"
++    latest_revision="$(patch_version_revision "$latest")"
++    [ -n "$current_revision" ] && [ -n "$latest_revision" ] || return 1
++    [ "$current_revision" -gt "$latest_revision" ]
++}
++
+ kill_process_tree() {
+     local pid="$1"
+     local child
+@@ -158,7 +216,7 @@ version_supported() {
+ perform_check() {
+     local publish="${1:-1}"
+     local manifest release current_podkop latest_podkop current_patch latest_patch
+-    local current_supported latest_supported podkop_update patch_update mode can_update message
++    local current_supported latest_supported podkop_update patch_update patch_behind mode can_update message
+     local cache_buster
+
+     manifest="$STATE_DIR/manifest.json"
+@@ -167,7 +225,7 @@ perform_check() {
+     log_line "Checking Podkop and subscription patch updates."
+
+     if ! download_file "$MANIFEST_URL?t=$cache_buster" "$manifest" ||
+-        ! jq -e '.schemaVersion == 1 and (.patchVersion | type == "string") and (.supportedPodkopVersions | type == "array")' "$manifest" >/dev/null 2>&1; then
++        ! jq -e '.schemaVersion == 1 and (.patchVersion | type == "string" and length > 0) and (.supportedPodkopVersions | type == "array")' "$manifest" >/dev/null 2>&1; then
+         log_line "Compatibility manifest download or validation failed."
+         write_status "error" "manifest_failed"
+         return 1
+@@ -193,15 +251,20 @@ perform_check() {
+     latest_supported=false
+     podkop_update=false
+     patch_update=false
++    patch_behind=false
+     version_supported "$manifest" "$current_podkop" && current_supported=true
+     version_supported "$manifest" "$latest_podkop" && latest_supported=true
+     version_gt "$latest_podkop" "$current_podkop" && podkop_update=true
+-    [ "$current_patch" = "$latest_patch" ] || patch_update=true
++    patch_update_available "$current_patch" "$latest_patch" && patch_update=true
++    patch_manifest_is_older "$current_patch" "$latest_patch" && patch_behind=true
+
+     mode="none"
+     can_update=false
+     message="up_to_date"
+-    if [ "$podkop_update" = true ] && [ "$latest_supported" != true ]; then
++    if [ "$podkop_update" = true ] && [ "$patch_behind" = true ]; then
++        mode="blocked"
++        message="published_patch_older"
++    elif [ "$podkop_update" = true ] && [ "$latest_supported" != true ]; then
+         mode="blocked"
+         message="unsupported_podkop"
+     elif [ "$podkop_update" = true ]; then
+@@ -223,6 +286,7 @@ perform_check() {
+         --arg currentPatchVersion "$current_patch" \
+         --arg latestPatchVersion "$latest_patch" \
+         --arg updateMode "$mode" \
++        --arg message "$message" \
+         --arg checkedAt "$(updated_at)" \
+         --argjson podkopUpdateAvailable "$podkop_update" \
+         --argjson patchUpdateAvailable "$patch_update" \
+@@ -230,7 +294,7 @@ perform_check() {
+         --argjson latestPodkopSupported "$latest_supported" \
+         --argjson canUpdate "$can_update" \
+         --argjson supportedPodkopVersions "$(jq -c '.supportedPodkopVersions' "$manifest")" \
+-        '{currentPodkopVersion:$currentPodkopVersion,latestPodkopVersion:$latestPodkopVersion,currentPatchVersion:$currentPatchVersion,latestPatchVersion:$latestPatchVersion,updateMode:$updateMode,checkedAt:$checkedAt,podkopUpdateAvailable:$podkopUpdateAvailable,patchUpdateAvailable:$patchUpdateAvailable,currentPodkopSupported:$currentPodkopSupported,latestPodkopSupported:$latestPodkopSupported,canUpdate:$canUpdate,supportedPodkopVersions:$supportedPodkopVersions}' \
++        '{currentPodkopVersion:$currentPodkopVersion,latestPodkopVersion:$latestPodkopVersion,currentPatchVersion:$currentPatchVersion,latestPatchVersion:$latestPatchVersion,updateMode:$updateMode,message:$message,checkedAt:$checkedAt,podkopUpdateAvailable:$podkopUpdateAvailable,patchUpdateAvailable:$patchUpdateAvailable,currentPodkopSupported:$currentPodkopSupported,latestPodkopSupported:$latestPodkopSupported,canUpdate:$canUpdate,supportedPodkopVersions:$supportedPodkopVersions}' \
+         > "$DETAILS_FILE"
+
+     log_line "Installed Podkop: $current_podkop; latest: $latest_podkop; supported: $latest_supported."
+@@ -248,7 +312,7 @@ perform_update() {
+     can_update="$(jq -r '.canUpdate // false' "$DETAILS_FILE")"
+
+     if [ "$mode" = "blocked" ]; then
+-        write_status "blocked" "$( [ "$(jq -r '.podkopUpdateAvailable' "$DETAILS_FILE")" = true ] && echo unsupported_podkop || echo installed_podkop_unsupported )"
++        write_status "blocked" "$(jq -r '.message // "blocked"' "$DETAILS_FILE")"
+         return 0
+     fi
+     if [ "$can_update" != true ]; then
