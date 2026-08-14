@@ -19,7 +19,7 @@ CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260813-reliability-responsive-v4"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260814-google-play-guard-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -32,7 +32,9 @@ DASHBOARD_JS_FILE="dashboard.js"
 DIAGNOSTIC_JS_FILE="diagnostic.js"
 PODKOP_JS_FILE="podkop.js"
 DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
-DNS_OPTIMIZER_VERSION="20260813-dns-optimizer-v15"
+DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v16"
+DNS_OPTIMIZER_GOOGLE_PLAY_GUARD_CAPABILITY="google_play_dns_transport_guard_v1"
+DNS_OPTIMIZER_CHATGPT_GUARD_CAPABILITY="chatgpt_dns_transport_guard_v1"
 DNS_FAILOVER_FILE="podkop-dns-failover"
 DNS_FAILOVER_INIT_FILE="podkop-dns-failover.init"
 DNS_FAILOVER_VERSION="20260813-dns-failover-v3"
@@ -43,7 +45,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20260813_reliability_responsive_v4"
+LUCI_MODULE_NAMESPACE="podkop_patch_20260814_google_play_guard_v1"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -101,6 +103,13 @@ www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/s
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/settings.js
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/dashboard.js
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/main.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/podkop.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/section.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/settings.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/dashboard.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -867,6 +876,16 @@ versioned_luci_assets_current() {
 		"$LUCI_MENU_FILE" >/dev/null 2>&1
 }
 
+dns_optimizer_has_google_play_guard() {
+	optimizer_file="$1"
+
+	[ -s "$optimizer_file" ] &&
+		grep -Fxq "GOOGLE_PLAY_GUARD_CAPABILITY=\"$DNS_OPTIMIZER_GOOGLE_PLAY_GUARD_CAPABILITY\"" "$optimizer_file" &&
+		grep -Fxq "CHATGPT_GUARD_CAPABILITY=\"$DNS_OPTIMIZER_CHATGPT_GUARD_CAPABILITY\"" "$optimizer_file" &&
+		grep -q '^validate_google_play_transport() {' "$optimizer_file" &&
+		grep -q '^validate_chatgpt_transport() {' "$optimizer_file"
+}
+
 install_versioned_luci_assets() {
 	versioned_tmp_dir="$tmp_dir/luci-versioned/$LUCI_MODULE_NAMESPACE"
 	versioned_view_dir="$LUCI_VIEW_ROOT/$LUCI_MODULE_NAMESPACE"
@@ -898,6 +917,7 @@ luci_assets_current() {
 	base_luci_assets_current &&
 		versioned_luci_assets_current &&
 		[ -x /usr/bin/podkop-dns-optimizer ] &&
+		dns_optimizer_has_google_play_guard /usr/bin/podkop-dns-optimizer &&
 		cmp -s /usr/bin/podkop-dns-optimizer "$tmp_dir/$DNS_OPTIMIZER_FILE" &&
 		[ -x /usr/bin/podkop-dns-failover ] &&
 		cmp -s /usr/bin/podkop-dns-failover "$tmp_dir/$DNS_FAILOVER_FILE" &&
@@ -1435,6 +1455,8 @@ ensure_no_pending_uci_changes || fail "the router has pending or unreadable UCI 
 ensure_no_pending_podkop_changes || fail "Podkop has pending UCI changes; apply or revert them before updating Podkop or the patch"
 require_patch
 prefetch_patch_assets
+dns_optimizer_has_google_play_guard "$tmp_dir/$DNS_OPTIMIZER_FILE" ||
+	fail "downloaded DNS optimizer lacks the Google Play or ChatGPT/OpenAI guard capability"
 prepare_versioned_luci_assets || fail "failed to prepare versioned Podkop LuCI assets"
 update_official_podkop_if_requested
 ensure_no_pending_uci_changes || fail "the router UCI state changed or became unreadable before patching; apply or revert pending changes and retry"
@@ -1680,6 +1702,9 @@ fi
 if [ "$(/usr/bin/podkop-dns-optimizer version 2>/dev/null || true)" != "$DNS_OPTIMIZER_VERSION" ]; then
 	abort_with_restore "DNS optimizer version check failed"
 fi
+
+dns_optimizer_has_google_play_guard /usr/bin/podkop-dns-optimizer ||
+	abort_with_restore "DNS optimizer Google Play or ChatGPT/OpenAI guard capability check failed"
 
 if [ "$(/usr/bin/podkop-dns-failover version 2>/dev/null || true)" != "$DNS_FAILOVER_VERSION" ]; then
 	abort_with_restore "DNS failover version check failed"

@@ -45,15 +45,22 @@ installer_target="$(normalize i | sed -n 's/^PODKOP_PATCH_TARGET_PODKOP_VERSION=
 installer_supported="$(normalize i | sed -n 's/^PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS="${PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS:-\([^"]*\)}"$/\1/p')"
 dns_optimizer_version="$(normalize openwrt/podkop-dns-optimizer | sed -n 's/^VERSION="\([^"]*\)"$/\1/p')"
 installer_dns_optimizer_version="$(normalize i | sed -n 's/^DNS_OPTIMIZER_VERSION="\([^"]*\)"$/\1/p')"
+dns_optimizer_google_play_capability="$(normalize openwrt/podkop-dns-optimizer | sed -n 's/^GOOGLE_PLAY_GUARD_CAPABILITY="\([^"]*\)"$/\1/p')"
+installer_dns_optimizer_google_play_capability="$(normalize i | sed -n 's/^DNS_OPTIMIZER_GOOGLE_PLAY_GUARD_CAPABILITY="\([^"]*\)"$/\1/p')"
+dns_optimizer_chatgpt_capability="$(normalize openwrt/podkop-dns-optimizer | sed -n 's/^CHATGPT_GUARD_CAPABILITY="\([^"]*\)"$/\1/p')"
+installer_dns_optimizer_chatgpt_capability="$(normalize i | sed -n 's/^DNS_OPTIMIZER_CHATGPT_GUARD_CAPABILITY="\([^"]*\)"$/\1/p')"
 dns_failover_version="$(normalize openwrt/podkop-dns-failover | sed -n 's/^VERSION="\([^"]*\)"$/\1/p')"
 installer_dns_failover_version="$(normalize i | sed -n 's/^DNS_FAILOVER_VERSION="\([^"]*\)"$/\1/p')"
 manifest_patch="$(jq -r '.patchVersion' openwrt/update-manifest.json)"
 manifest_recommended="$(jq -r '.recommendedPodkopVersion' openwrt/update-manifest.json)"
 manifest_supported="$(jq -r '.supportedPodkopVersions | join(" ")' openwrt/update-manifest.json)"
-expected_patch_version="20260813-reliability-responsive-v4"
+expected_patch_version="20260814-google-play-guard-v1"
+expected_dns_optimizer_version="20260814-dns-optimizer-v16"
+expected_google_play_capability="google_play_dns_transport_guard_v1"
+expected_chatgpt_capability="chatgpt_dns_transport_guard_v1"
 
 if [ "$manifest_patch" != "$expected_patch_version" ]; then
-    printf 'FAIL: release must publish the FakeIP diagnostics fix as %s, got %s\n' \
+    printf 'FAIL: release must publish the Google Play guard as %s, got %s\n' \
         "$expected_patch_version" "$manifest_patch" >&2
     exit 1
 fi
@@ -94,6 +101,50 @@ if [ -z "$dns_optimizer_version" ] || [ "$dns_optimizer_version" != "$installer_
         "$dns_optimizer_version" "$installer_dns_optimizer_version" >&2
     exit 1
 fi
+
+if [ "$dns_optimizer_version" != "$expected_dns_optimizer_version" ]; then
+    printf 'FAIL: DNS optimizer release version mismatch: got=%s expected=%s\n' \
+        "$dns_optimizer_version" "$expected_dns_optimizer_version" >&2
+    exit 1
+fi
+
+if [ -z "$dns_optimizer_google_play_capability" ] ||
+    [ "$dns_optimizer_google_play_capability" != "$installer_dns_optimizer_google_play_capability" ] ||
+    [ "$dns_optimizer_google_play_capability" != "$expected_google_play_capability" ]; then
+    printf 'FAIL: Google Play guard capability mismatch: optimizer=%s installer=%s expected=%s\n' \
+        "$dns_optimizer_google_play_capability" \
+        "$installer_dns_optimizer_google_play_capability" \
+        "$expected_google_play_capability" >&2
+    exit 1
+fi
+
+if [ -z "$dns_optimizer_chatgpt_capability" ] ||
+    [ "$dns_optimizer_chatgpt_capability" != "$installer_dns_optimizer_chatgpt_capability" ] ||
+    [ "$dns_optimizer_chatgpt_capability" != "$expected_chatgpt_capability" ]; then
+    printf 'FAIL: ChatGPT/OpenAI guard capability mismatch: optimizer=%s installer=%s expected=%s\n' \
+        "$dns_optimizer_chatgpt_capability" \
+        "$installer_dns_optimizer_chatgpt_capability" \
+        "$expected_chatgpt_capability" >&2
+    exit 1
+fi
+
+sed -n '/^dns_optimizer_has_google_play_guard() {/,/^}/p' i |
+    grep -q 'CHATGPT_GUARD_CAPABILITY.*DNS_OPTIMIZER_CHATGPT_GUARD_CAPABILITY' || {
+        printf '%s\n' 'FAIL: installer capability predicate omits the ChatGPT/OpenAI guard marker' >&2
+        exit 1
+    }
+
+sed -n '/^dns_optimizer_has_google_play_guard() {/,/^}/p' i |
+    grep -q '^[[:space:]]*grep .*validate_chatgpt_transport' || {
+        printf '%s\n' 'FAIL: installer capability predicate omits validate_chatgpt_transport' >&2
+        exit 1
+    }
+
+sed -n '/^luci_assets_current() {/,/^}/p' i |
+    grep -q 'dns_optimizer_has_google_play_guard /usr/bin/podkop-dns-optimizer' || {
+        printf '%s\n' 'FAIL: installer no-op verification omits the required transport guard capabilities' >&2
+        exit 1
+    }
 
 if [ -z "$dns_failover_version" ] || [ "$dns_failover_version" != "$installer_dns_failover_version" ]; then
     printf 'FAIL: DNS failover version mismatch: failover=%s installer=%s\n' \

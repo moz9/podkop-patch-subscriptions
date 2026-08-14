@@ -277,19 +277,19 @@ fi
 [ "$MOCK_SET_COUNT" -eq 2 ] && [ "$MOCK_COMMIT_COUNT" -eq 1 ] && [ "$MOCK_REVERT_COUNT" -eq 1 ] ||
     fail_test 'commit failure did not perform exactly one package revert'
 
-grep -q '^VERSION="20260813-dns-optimizer-v15"$' openwrt/podkop-dns-optimizer ||
-    fail_test 'DNS optimizer version was not bumped to v15'
+grep -q '^VERSION="20260814-dns-optimizer-v16"$' openwrt/podkop-dns-optimizer ||
+    fail_test 'DNS optimizer version was not bumped to v16'
 for installer in i openwrt/install.sh; do
-    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260813-reliability-responsive-v4"$' "$installer" ||
-        fail_test "$installer patch marker was not bumped to v4"
-    grep -q '^DNS_OPTIMIZER_VERSION="20260813-dns-optimizer-v15"$' "$installer" ||
-        fail_test "$installer DNS optimizer version was not bumped to v15"
-    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20260813_reliability_responsive_v4"$' "$installer" ||
-        fail_test "$installer LuCI namespace was not bumped to v4"
+    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260814-google-play-guard-v1"$' "$installer" ||
+        fail_test "$installer patch marker was not bumped for the Google Play guard release"
+    grep -q '^DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v16"$' "$installer" ||
+        fail_test "$installer DNS optimizer version was not bumped to v16"
+    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20260814_google_play_guard_v1"$' "$installer" ||
+        fail_test "$installer LuCI namespace was not bumped for the Google Play guard release"
 done
 
-[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20260813-reliability-responsive-v4' ] ||
-    fail_test 'update manifest patch version was not bumped to v4'
+[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20260814-google-play-guard-v1' ] ||
+    fail_test 'update manifest patch version was not bumped for the Google Play guard release'
 
 cmp -s i openwrt/install.sh ||
     fail_test 'unified installer copies differ'
