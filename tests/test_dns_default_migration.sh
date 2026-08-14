@@ -277,19 +277,19 @@ fi
 [ "$MOCK_SET_COUNT" -eq 2 ] && [ "$MOCK_COMMIT_COUNT" -eq 1 ] && [ "$MOCK_REVERT_COUNT" -eq 1 ] ||
     fail_test 'commit failure did not perform exactly one package revert'
 
-grep -q '^VERSION="20260814-dns-optimizer-v17"$' openwrt/podkop-dns-optimizer ||
-    fail_test 'DNS optimizer version was not bumped to v17'
+grep -q '^VERSION="20260814-dns-optimizer-v18"$' openwrt/podkop-dns-optimizer ||
+    fail_test 'DNS optimizer version was not bumped to v18'
 for installer in i openwrt/install.sh; do
-    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260814-google-play-guard-v2"$' "$installer" ||
-        fail_test "$installer patch marker was not bumped for the Google Play guard v2 release"
-    grep -q '^DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v17"$' "$installer" ||
-        fail_test "$installer DNS optimizer version was not bumped to v17"
-    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20260814_google_play_guard_v2"$' "$installer" ||
-        fail_test "$installer LuCI namespace was not bumped for the Google Play guard v2 release"
+    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260814-google-play-guard-v3"$' "$installer" ||
+        fail_test "$installer patch marker was not bumped for the Google Play guard v3 release"
+    grep -q '^DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v18"$' "$installer" ||
+        fail_test "$installer DNS optimizer version was not bumped to v18"
+    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20260814_google_play_guard_v3"$' "$installer" ||
+        fail_test "$installer LuCI namespace was not bumped for the Google Play guard v3 release"
 done
 
-[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20260814-google-play-guard-v2' ] ||
-    fail_test 'update manifest patch version was not bumped for the Google Play guard v2 release'
+[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20260814-google-play-guard-v3' ] ||
+    fail_test 'update manifest patch version was not bumped for the Google Play guard v3 release'
 
 cmp -s i openwrt/install.sh ||
     fail_test 'unified installer copies differ'

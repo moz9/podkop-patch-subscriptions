@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260814-dns-optimizer-v17"
+VERSION="20260814-dns-optimizer-v18"
 GOOGLE_PLAY_GUARD_CAPABILITY="google_play_dns_transport_guard_v1"
 CHATGPT_GUARD_CAPABILITY="chatgpt_dns_transport_guard_v1"
 STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
@@ -1611,6 +1611,7 @@ EOF
 chatgpt_transport_endpoints() {
     cat <<'EOF'
 https://chatgpt.com/.well-known/http-message-signatures-directory|200 206|required
+https://auth.openai.com/.well-known/openid-configuration|200 206|required
 https://api.openai.com/v1/models|401|advisory
 EOF
 }
