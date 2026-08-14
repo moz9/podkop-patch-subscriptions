@@ -3,6 +3,8 @@ set -eu
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$repo_root"
+test_root="$(mktemp -d)"
+trap 'rm -rf "$test_root"' EXIT INT TERM
 
 normalize() {
     sed 's/\r$//' "$1"
@@ -52,16 +54,24 @@ installer_dns_optimizer_chatgpt_capability="$(normalize i | sed -n 's/^DNS_OPTIM
 dns_failover_version="$(normalize openwrt/podkop-dns-failover | sed -n 's/^VERSION="\([^"]*\)"$/\1/p')"
 installer_dns_failover_version="$(normalize i | sed -n 's/^DNS_FAILOVER_VERSION="\([^"]*\)"$/\1/p')"
 manifest_patch="$(jq -r '.patchVersion' openwrt/update-manifest.json)"
+manifest_published_at="$(jq -r '.publishedAt' openwrt/update-manifest.json)"
 manifest_recommended="$(jq -r '.recommendedPodkopVersion' openwrt/update-manifest.json)"
 manifest_supported="$(jq -r '.supportedPodkopVersions | join(" ")' openwrt/update-manifest.json)"
-expected_patch_version="20260814-google-play-guard-v2"
-expected_dns_optimizer_version="20260814-dns-optimizer-v17"
+expected_patch_version="20260814-google-play-guard-v3"
+expected_dns_optimizer_version="20260814-dns-optimizer-v18"
+expected_published_at="2026-08-14T11:28:55+07:00"
 expected_google_play_capability="google_play_dns_transport_guard_v1"
 expected_chatgpt_capability="chatgpt_dns_transport_guard_v1"
 
 if [ "$manifest_patch" != "$expected_patch_version" ]; then
     printf 'FAIL: release must publish the Google Play guard as %s, got %s\n' \
         "$expected_patch_version" "$manifest_patch" >&2
+    exit 1
+fi
+
+if [ "$manifest_published_at" != "$expected_published_at" ]; then
+    printf 'FAIL: release publication time mismatch: got=%s expected=%s\n' \
+        "$manifest_published_at" "$expected_published_at" >&2
     exit 1
 fi
 
@@ -139,6 +149,39 @@ sed -n '/^dns_optimizer_has_google_play_guard() {/,/^}/p' i |
         printf '%s\n' 'FAIL: installer capability predicate omits validate_chatgpt_transport' >&2
         exit 1
     }
+
+sed -n '/^dns_optimizer_has_google_play_guard() {/,/^}/p' i |
+    grep -Fq 'https://auth.openai.com/.well-known/openid-configuration' || {
+        printf '%s\n' 'FAIL: installer capability predicate omits the exact ChatGPT auth OIDC endpoint' >&2
+        exit 1
+    }
+
+guard_library="$test_root/dns-optimizer-guard.sh"
+partial_optimizer="$test_root/partial-v18-optimizer"
+sed -n '/^dns_optimizer_has_google_play_guard() {/,/^}/p' i > "$guard_library"
+. "$guard_library"
+DNS_OPTIMIZER_GOOGLE_PLAY_GUARD_CAPABILITY="$expected_google_play_capability"
+DNS_OPTIMIZER_CHATGPT_GUARD_CAPABILITY="$expected_chatgpt_capability"
+cat > "$partial_optimizer" <<EOF
+VERSION="$expected_dns_optimizer_version"
+GOOGLE_PLAY_GUARD_CAPABILITY="$expected_google_play_capability"
+CHATGPT_GUARD_CAPABILITY="$expected_chatgpt_capability"
+validate_google_play_transport() {
+    return 0
+}
+validate_chatgpt_transport() {
+    return 0
+}
+EOF
+if dns_optimizer_has_google_play_guard "$partial_optimizer"; then
+    printf '%s\n' 'FAIL: partially delivered v18 without the auth OIDC endpoint passed the no-op capability predicate' >&2
+    exit 1
+fi
+printf '%s\n' 'https://auth.openai.com/.well-known/openid-configuration' >> "$partial_optimizer"
+if ! dns_optimizer_has_google_play_guard "$partial_optimizer"; then
+    printf '%s\n' 'FAIL: complete v18 auth OIDC delivery did not satisfy the capability predicate' >&2
+    exit 1
+fi
 
 sed -n '/^luci_assets_current() {/,/^}/p' i |
     grep -q 'dns_optimizer_has_google_play_guard /usr/bin/podkop-dns-optimizer' || {

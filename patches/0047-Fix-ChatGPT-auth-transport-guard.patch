@@ -1,0 +1,25 @@
+From 6fe5e33991d34faf213192b96e759ef384e41148 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Fri, 14 Aug 2026 11:30:12 +0700
+Subject: [PATCH] Fix ChatGPT auth transport guard
+
+
+diff --git a/podkop/files/usr/bin/podkop-dns-optimizer b/podkop/files/usr/bin/podkop-dns-optimizer
+index f7bb02c..6886711 100755
+--- a/podkop/files/usr/bin/podkop-dns-optimizer
++++ b/podkop/files/usr/bin/podkop-dns-optimizer
+@@ -1,5 +1,5 @@
+ #!/bin/ash
+
+-VERSION="20260814-dns-optimizer-v17"
++VERSION="20260814-dns-optimizer-v18"
+ GOOGLE_PLAY_GUARD_CAPABILITY="google_play_dns_transport_guard_v1"
+ CHATGPT_GUARD_CAPABILITY="chatgpt_dns_transport_guard_v1"
+@@ -1611,6 +1611,7 @@ EOF
+ chatgpt_transport_endpoints() {
+     cat <<'EOF'
+ https://chatgpt.com/.well-known/http-message-signatures-directory|200 206|required
++https://auth.openai.com/.well-known/openid-configuration|200 206|required
+ https://api.openai.com/v1/models|401|advisory
+ EOF
+ }

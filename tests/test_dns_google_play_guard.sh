@@ -18,8 +18,8 @@ awk '/^case "\$\{1:-\}" in$/ { exit } { sub(/\r$/, ""); print }' \
     openwrt/podkop-dns-optimizer > "$optimizer_functions"
 . "$optimizer_functions"
 
-[ "$VERSION" = "20260814-dns-optimizer-v17" ] ||
-    record_failure "DNS optimizer version is not v17: $VERSION"
+[ "$VERSION" = "20260814-dns-optimizer-v18" ] ||
+    record_failure "DNS optimizer version is not v18: $VERSION"
 
 # Google Play compatibility must cover both its control plane and download path.
 write_selected_community_services() {
@@ -268,6 +268,7 @@ curl() {
         *redirector.gvt1.com*) key=gvt1 ;;
         https://chatgpt.com/.well-known/http-message-signatures-directory) key=chatgpt ;;
         https://api.openai.com/v1/models) key=openai_api ;;
+        https://auth.openai.com/.well-known/openid-configuration) key=openai_auth ;;
         *) key=unknown ;;
     esac
     attempt_file="$test_root/attempt-$key"
@@ -282,6 +283,7 @@ curl() {
         fail_gvt1\|gvt1\|*) return 28 ;;
         fail_chatgpt\|chatgpt\|*) return 28 ;;
         fail_openai_api\|openai_api\|*) return 28 ;;
+        fail_openai_auth\|openai_auth\|*) return 28 ;;
     esac
     [ -n "$output" ] || return 2
     case "$CANARY_MODE" in
@@ -300,6 +302,9 @@ curl() {
         chatgpt_206\|chatgpt) http_status=206 ;;
         wrong_chatgpt_status\|chatgpt) http_status=403 ;;
         wrong_openai_api_status\|openai_api) http_status=200 ;;
+        openai_auth_206\|openai_auth) http_status=206 ;;
+        openai_auth_403\|openai_auth) http_status=403 ;;
+        openai_auth_404\|openai_auth) http_status=404 ;;
     esac
     printf '%s' "$http_status"
 }
@@ -363,6 +368,8 @@ else
         record_failure 'transport guard did not test the official ChatGPT well-known endpoint'
     grep -q 'https://api\.openai\.com/v1/models' "$curl_log" ||
         record_failure 'transport guard did not test the unauthenticated OpenAI API response'
+    grep -q 'https://auth\.openai\.com/\.well-known/openid-configuration' "$curl_log" ||
+        record_failure 'transport guard did not test the exact ChatGPT app OIDC discovery endpoint'
     if grep -Eq -- '--resolve|--doh-url|https://[0-9]+\.' "$curl_log"; then
         record_failure 'ChatGPT transport guard bypassed normal system DNS/FakeIP routing'
     fi
@@ -411,6 +418,27 @@ else
     if ! validate_chatgpt_transport; then
         record_failure 'advisory OpenAI API HTTP status incorrectly failed the mandatory ChatGPT guard'
     fi
+
+    reset_canary openai_auth_206
+    if ! validate_chatgpt_transport; then
+        record_failure 'ChatGPT auth transport guard rejected valid HTTP 206 from OIDC discovery'
+    fi
+    [ "$(cat "$test_root/attempt-openai_auth" 2> /dev/null || echo 0)" -eq 1 ] ||
+        record_failure 'ChatGPT auth OIDC canary was not attempted for HTTP 206 validation'
+
+    for invalid_auth_mode in openai_auth_403 openai_auth_404; do
+        reset_canary "$invalid_auth_mode"
+        if validate_chatgpt_transport; then
+            record_failure "ChatGPT auth transport guard accepted invalid ${invalid_auth_mode##*_} from OIDC discovery"
+        fi
+    done
+
+    reset_canary fail_openai_auth
+    if validate_chatgpt_transport; then
+        record_failure 'ChatGPT transport guard accepted a persistent mandatory auth.openai.com timeout'
+    fi
+    [ "$(cat "$test_root/attempt-openai_auth" 2> /dev/null || echo 0)" -eq 2 ] ||
+        record_failure 'mandatory ChatGPT auth canary was not attempted twice before failure'
 
     reset_canary empty
     if validate_chatgpt_transport; then
@@ -470,6 +498,20 @@ if command -v validate_google_play_transport > /dev/null 2>&1 &&
     fi
     grep -Fxq 'apply_complete|false' "$action_log" ||
         record_failure 'advisory OpenAI API failure did not retain the verified DNS apply'
+
+    reset_canary fail_openai_auth
+    : > "$action_log"
+    set +u
+    run_apply udp cloudflare 8.8.8.8 1.1.1.1
+    apply_status=$?
+    set -u
+    trap 'rm -rf "$test_root"' EXIT INT TERM
+    [ "$apply_status" -ne 0 ] ||
+        record_failure 'auto-apply succeeded despite a persistent mandatory auth.openai.com timeout'
+    grep -Fxq restore_previous_dns "$action_log" ||
+        record_failure 'mandatory auth transport failure did not restore the previous DNS configuration'
+    grep -Fxq 'apply_failed_rolled_back|true' "$action_log" ||
+        record_failure 'mandatory auth transport failure did not report the rolled-back apply state'
 
     reset_canary fail_chatgpt
     : > "$action_log"
