@@ -54,8 +54,8 @@ installer_dns_failover_version="$(normalize i | sed -n 's/^DNS_FAILOVER_VERSION=
 manifest_patch="$(jq -r '.patchVersion' openwrt/update-manifest.json)"
 manifest_recommended="$(jq -r '.recommendedPodkopVersion' openwrt/update-manifest.json)"
 manifest_supported="$(jq -r '.supportedPodkopVersions | join(" ")' openwrt/update-manifest.json)"
-expected_patch_version="20260814-google-play-guard-v1"
-expected_dns_optimizer_version="20260814-dns-optimizer-v16"
+expected_patch_version="20260814-google-play-guard-v2"
+expected_dns_optimizer_version="20260814-dns-optimizer-v17"
 expected_google_play_capability="google_play_dns_transport_guard_v1"
 expected_chatgpt_capability="chatgpt_dns_transport_guard_v1"
 

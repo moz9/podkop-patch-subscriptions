@@ -19,7 +19,7 @@ CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260814-google-play-guard-v1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260814-google-play-guard-v2"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -32,7 +32,7 @@ DASHBOARD_JS_FILE="dashboard.js"
 DIAGNOSTIC_JS_FILE="diagnostic.js"
 PODKOP_JS_FILE="podkop.js"
 DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
-DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v16"
+DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v17"
 DNS_OPTIMIZER_GOOGLE_PLAY_GUARD_CAPABILITY="google_play_dns_transport_guard_v1"
 DNS_OPTIMIZER_CHATGPT_GUARD_CAPABILITY="chatgpt_dns_transport_guard_v1"
 DNS_FAILOVER_FILE="podkop-dns-failover"
@@ -45,7 +45,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20260814_google_play_guard_v1"
+LUCI_MODULE_NAMESPACE="podkop_patch_20260814_google_play_guard_v2"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -110,6 +110,13 @@ www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/subscr
 www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/settings.js
 www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/dashboard.js
 www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v2/main.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v2/podkop.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v2/section.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v2/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v2/settings.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v2/dashboard.js
+www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v2/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 

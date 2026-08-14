@@ -131,7 +131,14 @@ for required in \
     www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/subscriptions.js \
     www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/settings.js \
     www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/dashboard.js \
-    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/diagnostic.js; do
+    www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v4/diagnostic.js \
+    www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/main.js \
+    www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/podkop.js \
+    www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/section.js \
+    www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/subscriptions.js \
+    www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/settings.js \
+    www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/dashboard.js \
+    www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v1/diagnostic.js; do
     printf '%s\n' "$RUNTIME_FILES" | grep -Fxq "$required" ||
         fail_test "backup/rollback inventory omits $required"
 done
