@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "patchVersion": "20260814-google-play-guard-v1",
+  "patchVersion": "20260814-google-play-guard-v2",
   "supportedPodkopVersions": [
     "0.7.19",
     "0.7.20",
     "0.7.21"
   ],
   "recommendedPodkopVersion": "0.7.21",
-  "publishedAt": "2026-08-14T09:07:45+07:00"
+  "publishedAt": "2026-08-14T10:12:57+07:00"
 }

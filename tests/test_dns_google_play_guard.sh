@@ -18,6 +18,9 @@ awk '/^case "\$\{1:-\}" in$/ { exit } { sub(/\r$/, ""); print }' \
     openwrt/podkop-dns-optimizer > "$optimizer_functions"
 . "$optimizer_functions"
 
+[ "$VERSION" = "20260814-dns-optimizer-v17" ] ||
+    record_failure "DNS optimizer version is not v17: $VERSION"
+
 # Google Play compatibility must cover both its control plane and download path.
 write_selected_community_services() {
     printf '%s\n' google_play > "$1"
@@ -34,11 +37,11 @@ for probe in \
     'base|google_downloads|dl.google.com' \
     'base|google_downloads|redirector.gvt1.com' \
     'base|chatgpt|chatgpt.com' \
-    'base|chatgpt|chat.openai.com' \
     'base|chatgpt|api.openai.com' \
-    'base|chatgpt|auth.openai.com' \
-    'base|chatgpt|cdn.oaistatic.com' \
-    'base|chatgpt|files.oaiusercontent.com' \
+    'advisory|chatgpt|chat.openai.com' \
+    'advisory|chatgpt|auth.openai.com' \
+    'advisory|chatgpt|cdn.oaistatic.com' \
+    'advisory|chatgpt|files.oaiusercontent.com' \
     'community|google_play|play.googleapis.com' \
     'community|google_play|play-fe.googleapis.com' \
     'community|google_play|prod-lt-playstoregatewayadapter-pa.googleapis.com' \
@@ -49,8 +52,19 @@ done
 
 # Candidate resolvers must not pass by returning a sinkhole, private, or bogon A record.
 MOCK_DNS_ANSWER=""
+MOCK_DNS_FULL_OUTPUT=0
 dig() {
     printf '%s\n' ';; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 1'
+    if [ "$MOCK_DNS_FULL_OUTPUT" -eq 1 ]; then
+        printf '\n'
+        printf '%s\n' ';example.com. IN A'
+        printf '\n'
+        printf '%s\n' 'example.com.        299 IN A 8.6.112.0'
+        printf '%s\n' 'example.com.        299 IN A 8.47.69.0'
+        printf '\n'
+        printf '%s\n' ';; Query time: 3 msec'
+        return 0
+    fi
     [ -z "$MOCK_DNS_ANSWER" ] ||
         printf 'example.com. 60 IN A %s\n' "$MOCK_DNS_ANSWER"
     printf '%s\n' ';; Query time: 3 msec'
@@ -96,12 +110,88 @@ if ! run_dns_query udp 1.1.1.1 "" "" example.com NOERROR > /dev/null 2>&1; then
     record_failure 'a normal public DNS A answer was rejected'
 fi
 
+# Real router dig output contains blank separators before its valid answer rows.
+# BusyBox awk must never evaluate a negative field index on those blank lines.
+MOCK_DNS_FULL_OUTPUT=1
+export MOCK_DNS_FULL_OUTPUT
+if ! run_dns_query udp 1.1.1.1 "" "" example.com NOERROR > /dev/null 2>&1; then
+    record_failure 'full multiline router dig output with public A answers was rejected'
+fi
+bootstrap_result="$(benchmark_bootstrap_candidate cloudflare_bootstrap Cloudflare 1.1.1.1 unfiltered)"
+if ! printf '%s\n' "$bootstrap_result" | jq -e \
+    '.successCount == 8 and .totalQueries == 8 and .reliable == true' > /dev/null 2>&1; then
+    record_failure 'real multiline dig output left a healthy bootstrap at less than 8/8'
+fi
+MOCK_DNS_FULL_OUTPUT=0
+export MOCK_DNS_FULL_OUTPUT
+
 # The local Podkop resolver intentionally returns RFC 2544 FakeIP addresses.
 MOCK_DNS_ANSWER=198.18.0.7
 export MOCK_DNS_ANSWER
 for local_resolver in 127.0.0.42 127.0.0.1; do
     if ! run_dns_query udp "$local_resolver" "" "" play.googleapis.com NOERROR > /dev/null 2>&1; then
         record_failure "the local Podkop FakeIP answer was rejected via $local_resolver"
+    fi
+done
+
+# Only the ChatGPT web and API names are eligibility gates. Auxiliary OpenAI
+# names remain measured twice and visible in diagnostics, but cannot suppress
+# an otherwise safe recommendation or fail post-apply DNS validation.
+find_compatible_bootstrap() {
+    printf '%s\n' '8.8.8.8|1.1.1.1|{"provider":"Google","medianMs":5,"jitterMs":1,"p90Ms":6,"successRate":100,"profile":"unfiltered"}'
+}
+POLICY_FAILED_DOMAINS=""
+run_dns_query() {
+    domain="$5"
+    expected="$6"
+    [ "$expected" != NXDOMAIN ] || {
+        printf '%s\n' 2
+        return 0
+    }
+    case " $POLICY_FAILED_DOMAINS " in
+        *" $domain "*) return 1 ;;
+    esac
+    printf '%s\n' 5
+}
+
+POLICY_FAILED_DOMAINS=""
+all_openai_result="$(benchmark_main_candidate udp cloudflare Cloudflare 1.1.1.1 unfiltered /dev/null)"
+POLICY_FAILED_DOMAINS="chat.openai.com auth.openai.com cdn.oaistatic.com files.oaiusercontent.com"
+advisory_failed_result="$(benchmark_main_candidate udp cloudflare Cloudflare 1.1.1.1 unfiltered /dev/null)"
+if ! printf '%s\n' "$advisory_failed_result" | jq -e '
+    .reliable == true
+    and .universalEligible == true
+    and .error == null
+    and .advisoryPassed == 0
+    and .advisoryStable == 0
+    and .advisoryTotal == 4
+    and (.advisoryFailures | sort) == ["auth.openai.com","cdn.oaistatic.com","chat.openai.com","files.oaiusercontent.com"]
+    and .requiredSuccessCount == .requiredTotalQueries
+' > /dev/null 2>&1; then
+    record_failure 'advisory OpenAI DNS failures suppressed a reliable universal candidate or disappeared from diagnostics'
+fi
+all_openai_score="$(printf '%s\n' "$all_openai_result" | jq -r '.score // 0')"
+advisory_failed_score="$(printf '%s\n' "$advisory_failed_result" | jq -r '.score // 0')"
+if [ "$advisory_failed_score" -ge "$all_openai_score" ]; then
+    record_failure 'advisory OpenAI DNS failures did not lower candidate score'
+fi
+if ! validate_service_compatibility 127.0.0.42; then
+    record_failure 'advisory OpenAI DNS failures blocked post-apply service validation'
+fi
+
+for mandatory_domain in chatgpt.com api.openai.com; do
+    POLICY_FAILED_DOMAINS="$mandatory_domain"
+    mandatory_failed_result="$(benchmark_main_candidate udp cloudflare Cloudflare 1.1.1.1 unfiltered /dev/null)"
+    if ! printf '%s\n' "$mandatory_failed_result" | jq -e --arg domain "$mandatory_domain" '
+        .reliable == false
+        and .universalEligible == false
+        and .error == "service_compatibility_failed"
+        and (.compatibilityFailures | index($domain)) != null
+    ' > /dev/null 2>&1; then
+        record_failure "mandatory ChatGPT DNS failure did not reject candidate: $mandatory_domain"
+    fi
+    if validate_service_compatibility 127.0.0.42; then
+        record_failure "mandatory ChatGPT DNS failure passed post-apply validation: $mandatory_domain"
     fi
 done
 
@@ -135,12 +225,23 @@ if ! printf '%s\n' "$pair_output" | jq -e \
     record_failure 'configured pair did not report mandatory ChatGPT DNS failure'
 fi
 
+PAIR_FAILED_DOMAIN=api.openai.com
+pair_output="$(probe_configured_pair primary)"
+pair_status=$?
+if [ "$pair_status" -eq 0 ]; then
+    record_failure 'configured pair passed even though api.openai.com failed'
+fi
+if ! printf '%s\n' "$pair_output" | jq -e \
+    '.success == false and .error == "chatgpt_api_dns_unavailable"' > /dev/null 2>&1; then
+    record_failure 'configured pair did not report mandatory ChatGPT API DNS failure'
+fi
+
 PAIR_FAILED_DOMAIN=github.com
 pair_output="$(probe_configured_pair primary)"
 pair_status=$?
 if [ "$pair_status" -ne 0 ] ||
     [ "$(printf '%s\n' "$pair_output" | jq -r '.success // false')" != true ]; then
-    record_failure 'configured pair rejected healthy mandatory Play/ChatGPT lookups plus one healthy general lookup'
+    record_failure 'configured pair rejected healthy mandatory Play/ChatGPT/API lookups plus one healthy general lookup'
 fi
 
 # The post-apply guard must make two small HTTPS transfers through normal system DNS.
