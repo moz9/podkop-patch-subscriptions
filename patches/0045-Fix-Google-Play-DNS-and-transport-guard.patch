@@ -8,29 +8,44 @@ diff --git a/podkop/files/usr/bin/podkop-dns-optimizer b/podkop/files/usr/bin/po
 index 001cabb..5272924 100755
 --- a/podkop/files/usr/bin/podkop-dns-optimizer
 +++ b/podkop/files/usr/bin/podkop-dns-optimizer
-@@ -3 +3,3 @@
+@@ -1,5 +1,7 @@
+ #!/bin/ash
+
 -VERSION="20260813-dns-optimizer-v15"
 +VERSION="20260814-dns-optimizer-v16"
 +GOOGLE_PLAY_GUARD_CAPABILITY="google_play_dns_transport_guard_v1"
 +CHATGPT_GUARD_CAPABILITY="chatgpt_dns_transport_guard_v1"
-@@ -464 +466,4 @@ write_community_service_probes() {
+ STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
+ STATUS_FILE="$STATE_DIR/status.json"
+@@ -462,5 +464,8 @@ write_community_service_probes() {
+             printf '%s\n' \
+                 'community|google_play|play.googleapis.com' \
 -                'community|google_play|android.clients.google.com'
 +                'community|google_play|android.clients.google.com' \
 +                'community|google_play|play-fe.googleapis.com' \
 +                'community|google_play|prod-lt-playstoregatewayadapter-pa.googleapis.com' \
 +                'community|google_play|beacons.gvt2.com'
-@@ -510,0 +516,3 @@ base|google_play|connectivitycheck.gstatic.com
+             ;;
+         hodca)
+@@ -509,6 +514,15 @@ base|google_play|play.googleapis.com
+ base|google_play|android.clients.google.com
+ base|google_play|connectivitycheck.gstatic.com
 +base|google_play|play-fe.googleapis.com
 +base|google_play|prod-lt-playstoregatewayadapter-pa.googleapis.com
 +base|google_play|beacons.gvt2.com
-@@ -512,0 +521,6 @@ base|google_downloads|redirector.gvt1.com
+ base|google_downloads|dl.google.com
+ base|google_downloads|redirector.gvt1.com
 +base|chatgpt|chatgpt.com
 +base|chatgpt|chat.openai.com
 +base|chatgpt|api.openai.com
 +base|chatgpt|auth.openai.com
 +base|chatgpt|cdn.oaistatic.com
 +base|chatgpt|files.oaiusercontent.com
-@@ -643,0 +658,64 @@ query_time() {
+ base|gaming|steamcdn-a.akamaihd.net
+ base|gaming|media.steampowered.com
+@@ -642,4 +656,68 @@ query_time() {
+ }
+
 +dns_answer_ipv4_is_usable() {
 +    local resolver="$1"
 +    local address="$2"
@@ -95,29 +110,44 @@ index 001cabb..5272924 100755
 +    return 1
 +}
 +
-@@ -686 +764 @@ run_dns_query() {
+ run_dns_query() {
+     local protocol="$1"
+@@ -684,5 +762,5 @@ run_dns_query() {
+     else
+         [ "$status" = "NOERROR" ] || return 1
 -        printf '%s\n' "$output" | grep -Eq '[[:space:]]IN[[:space:]]+A[[:space:]]+[0-9]+' || return 1
 +        printf '%s\n' "$output" | dns_output_has_usable_a "$endpoint_ip" || return 1
-@@ -736,0 +815 @@ probe_configured_pair() {
+     fi
+
+@@ -735,4 +813,5 @@ probe_configured_pair() {
+     local slot="$1"
+     local pair protocol dns_server bootstrap host endpoint_ip tls_hostname path domain elapsed successes total
 +    local play_dns_available chatgpt_dns_available error
-@@ -760,2 +839,4 @@ probe_configured_pair() {
+
+     pair="$(read_configured_pair "$slot" || true)"
+@@ -758,16 +837,28 @@ probe_configured_pair() {
+
+     successes=0
 -    total=3
 -    for domain in example.com github.com play.googleapis.com; do
 +    total=4
 +    play_dns_available=0
 +    chatgpt_dns_available=0
 +    for domain in example.com github.com play.googleapis.com chatgpt.com; do
-@@ -763 +844,5 @@ probe_configured_pair() {
+         elapsed="$(run_dns_query "$protocol" "$endpoint_ip" "$tls_hostname" "$path" "$domain" NOERROR 2> /dev/null || true)"
 -        [ -n "$elapsed" ] && successes=$((successes + 1))
 +        if [ -n "$elapsed" ]; then
 +            successes=$((successes + 1))
 +            [ "$domain" != "play.googleapis.com" ] || play_dns_available=1
 +            [ "$domain" != "chatgpt.com" ] || chatgpt_dns_available=1
 +        fi
-@@ -765 +850 @@ probe_configured_pair() {
+     done
 -    if [ "$successes" -ge 2 ]; then
 +    if [ "$successes" -ge 3 ] && [ "$play_dns_available" -eq 1 ] && [ "$chatgpt_dns_available" -eq 1 ]; then
-@@ -770,2 +855,8 @@ probe_configured_pair() {
+         jq -cn --arg slot "$slot" --arg protocol "$protocol" --argjson successes "$successes" --argjson total "$total" \
+             '{success:true,slot:$slot,protocol:$protocol,successes:$successes,total:$total}'
+         return 0
+     fi
 -    jq -cn --arg slot "$slot" --arg protocol "$protocol" --argjson successes "$successes" --argjson total "$total" \
 -        '{success:false,slot:$slot,protocol:$protocol,successes:$successes,total:$total,error:"dns_unavailable"}'
 +    error="dns_unavailable"
@@ -128,10 +158,18 @@ index 001cabb..5272924 100755
 +    fi
 +    jq -cn --arg slot "$slot" --arg protocol "$protocol" --arg error "$error" --argjson successes "$successes" --argjson total "$total" \
 +        '{success:false,slot:$slot,protocol:$protocol,successes:$successes,total:$total,error:$error}'
-@@ -1310 +1401 @@ restore_optional_uci_value() {
+     return 1
+ }
+@@ -1308,5 +1399,5 @@ restore_optional_uci_value() {
+
+     if [ -n "$value" ]; then
 -        uci set "podkop.settings.$option=$value"
 +        uci set "podkop.settings.$option=$value" || return 1
-@@ -1315,0 +1407,28 @@ restore_optional_uci_value() {
+     else
+         uci -q delete "podkop.settings.$option" 2> /dev/null || true
+@@ -1314,4 +1405,32 @@ restore_optional_uci_value() {
+ }
+
 +restored_uci_value_matches() {
 +    local option="$1"
 +    local expected="$2"
@@ -160,7 +198,11 @@ index 001cabb..5272924 100755
 +        restored_uci_value_matches "secondary_bootstrap_dns_server" "$8"
 +}
 +
-@@ -1331,9 +1450,12 @@ restore_previous_dns() {
+ restore_previous_dns() {
+     local dns_type dns_server bootstrap_dns_server failover_enabled active_slot
+@@ -1329,13 +1448,16 @@ restore_previous_dns() {
+     [ -n "$dns_type" ] && [ -n "$dns_server" ] && [ -n "$bootstrap_dns_server" ] || return 1
+
 -    uci set "podkop.settings.dns_type=$dns_type"
 -    uci set "podkop.settings.dns_server=$dns_server"
 -    uci set "podkop.settings.bootstrap_dns_server=$bootstrap_dns_server"
@@ -182,7 +224,11 @@ index 001cabb..5272924 100755
 +    verify_restored_dns_values \
 +        "$dns_type" "$dns_server" "$bootstrap_dns_server" "$failover_enabled" "$active_slot" \
 +        "$secondary_dns_type" "$secondary_dns_server" "$secondary_bootstrap_dns_server"
-@@ -1376,0 +1499,83 @@ validate_service_compatibility() {
+ }
+
+@@ -1375,4 +1497,87 @@ validate_service_compatibility() {
+ }
+
 +google_play_transport_endpoints() {
 +    cat <<'EOF'
 +https://dl.google.com/dl/android/maven2/master-index.xml
@@ -266,14 +312,22 @@ index 001cabb..5272924 100755
 +EOF
 +}
 +
-@@ -1572 +1777 @@ run_apply() {
+ validate_podkop_dns() {
+     local config_path dont_touch server noresolv cachesize output
+@@ -1570,5 +1775,5 @@ run_apply() {
+     if restart_podkop; then
+         write_status "running" "apply" "validating_dns" 80 0 1 "$$"
 -        if validate_podkop_dns; then
 +        if validate_podkop_dns && validate_google_play_transport && validate_chatgpt_transport; then
-@@ -1581,2 +1786 @@ run_apply() {
+             [ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover restart > /dev/null 2>&1 || true
+             write_apply_final "success" "apply_complete" "$protocol" "$provider" "$dns_server" "$bootstrap" false "apply" \
+@@ -1579,11 +1784,12 @@ run_apply() {
+
+     write_status "running" "apply" "rolling_back" 90 0 1 "$$"
 -    if restore_previous_dns; then
 -        restart_podkop > /dev/null 2>&1 || true
 +    if restore_previous_dns && restart_podkop > /dev/null 2>&1; then
-@@ -1584,3 +1788,4 @@ run_apply() {
+         [ ! -x /etc/init.d/podkop-dns-failover ] || /etc/init.d/podkop-dns-failover restart > /dev/null 2>&1 || true
 -        write_apply_final "error" "apply_failed_rolled_back" "$protocol" "$provider" "$dns_server" "$bootstrap" true
 -    else
 -        write_apply_final "error" "apply_failed_rollback_failed" "$protocol" "$provider" "$dns_server" "$bootstrap" false
@@ -281,5 +335,7 @@ index 001cabb..5272924 100755
 +            write_apply_final "error" "apply_failed_rolled_back" "$protocol" "$provider" "$dns_server" "$bootstrap" true
 +            return 1
 +        fi
-@@ -1587,0 +1793 @@ run_apply() {
+     fi
 +    write_apply_final "error" "apply_failed_rollback_failed" "$protocol" "$provider" "$dns_server" "$bootstrap" false
+     return 1
+ }
