@@ -4,8 +4,8 @@ set -eu
 PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 PODKOP_OFFICIAL_INSTALL_URL="${PODKOP_OFFICIAL_INSTALL_URL:-https://raw.githubusercontent.com/itdoginfo/podkop/main/install.sh}"
-PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-0.7.21}"
-PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS="${PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS:-0.7.19 0.7.20 0.7.21}"
+PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-0.7.22}"
+PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS="${PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS:-0.7.19 0.7.20 0.7.21 0.7.22}"
 PODKOP_PATCH_LATEST_RELEASE_URL="${PODKOP_PATCH_LATEST_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/latest}"
 PODKOP_PATCH_UPDATE_PODKOP_WAS_SET=0
 [ "${PODKOP_PATCH_UPDATE_PODKOP+x}" = x ] && PODKOP_PATCH_UPDATE_PODKOP_WAS_SET=1
@@ -19,7 +19,7 @@ CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260814-google-play-guard-v3"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260819-podkop-0722-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -45,7 +45,9 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20260814_google_play_guard_v3"
+RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
+RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
+LUCI_MODULE_NAMESPACE="podkop_patch_20260819_podkop_0722_v1"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -124,6 +126,13 @@ www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v3/subscr
 www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v3/settings.js
 www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v3/dashboard.js
 www/luci-static/resources/view/podkop_patch_20260814_google_play_guard_v3/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/main.js
+www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/podkop.js
+www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/section.js
+www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/settings.js
+www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/dashboard.js
+www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -243,6 +252,12 @@ install_prebuilt_0720_runtime() {
 	cp "$tmp_dir/podkop.js.runtime-0.7.20" "$LUCI_VIEW_ROOT/podkop/podkop.js"
 }
 
+install_prebuilt_0722_runtime() {
+	mkdir -p /usr/bin "$LUCI_VIEW_ROOT/podkop"
+	cp "$tmp_dir/podkop.runtime-0.7.22" /usr/bin/podkop
+	cp "$tmp_dir/podkop.js.runtime-0.7.22" "$LUCI_VIEW_ROOT/podkop/podkop.js"
+}
+
 prefetch_patch_assets() {
 	download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 	download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
@@ -266,6 +281,8 @@ prefetch_patch_assets() {
 	download "$RAW_BASE/$UPDATE_CENTER_UPGRADE_FILE" "$tmp_dir/$UPDATE_CENTER_UPGRADE_FILE"
 	download "$RAW_BASE/$RUNTIME_0720_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.20"
 	download "$RAW_BASE/$RUNTIME_0720_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.20"
+	download "$RAW_BASE/$RUNTIME_0722_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.22"
+	download "$RAW_BASE/$RUNTIME_0722_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.22"
 }
 
 stop_stale_list_update_downloads() {
@@ -1178,6 +1195,18 @@ needs_prebuilt_0720_runtime() {
 	return 0
 }
 
+needs_prebuilt_0722_runtime() {
+	/usr/bin/podkop show_version 2>/dev/null | grep -Eq "^v?0\\.7\\.22$" || return 1
+
+	grep -q "subscription_mix_manual_links_v1" /usr/bin/podkop 2>/dev/null &&
+		grep -q "subscription_urltest)" /usr/bin/podkop 2>/dev/null &&
+		grep -q "collect_urltest_proxy_links" /usr/bin/podkop 2>/dev/null &&
+		grep -q "patch_update_noop_v1" /usr/bin/podkop 2>/dev/null &&
+		return 1
+
+	return 0
+}
+
 normalize_version() {
 	printf '%s\n' "$1" | sed 's/^v//' | awk -F. '{ printf "%d %d %d\n", $1, $2, $3 }'
 }
@@ -1500,6 +1529,14 @@ elif needs_prebuilt_0720_runtime; then
 	rm -f "$LUCI_VIEW_ROOT/podkop/subscriptions.js"
 
 	if ! install_prebuilt_0720_runtime; then
+		abort_with_restore "runtime install failed"
+	fi
+elif needs_prebuilt_0722_runtime; then
+	log "Installing Subscription URLTest runtime for Podkop 0.7.22."
+	backup_runtime
+	rm -f "$LUCI_VIEW_ROOT/podkop/subscriptions.js"
+
+	if ! install_prebuilt_0722_runtime; then
 		abort_with_restore "runtime install failed"
 	fi
 elif has_cache_only_subscription_backend; then

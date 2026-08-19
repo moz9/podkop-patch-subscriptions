@@ -21,6 +21,7 @@ const cases = [
   [["20260813-reliability-responsive-v4", "20260814-google-play-guard-v1", true], "20260813-reliability-responsive-v4 → 20260814-google-play-guard-v1"],
   [["20260814-google-play-guard-v1", "20260814-google-play-guard-v2", true], "20260814-google-play-guard-v1 → 20260814-google-play-guard-v2"],
   [["20260814-google-play-guard-v2", "20260814-google-play-guard-v3", true], "20260814-google-play-guard-v2 → 20260814-google-play-guard-v3"],
+  [["20260814-google-play-guard-v3", "20260819-podkop-0722-v1", true], "20260814-google-play-guard-v3 → 20260819-podkop-0722-v1"],
   [["0.7.21", "0.7.21", false], "0.7.21"],
 ];
 for (const [args, expected] of cases) {

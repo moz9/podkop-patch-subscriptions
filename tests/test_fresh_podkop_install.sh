@@ -106,7 +106,7 @@ run_case() {
         }
 
         latest_official_podkop_version() {
-            printf '%s\n' 0.7.21
+            printf '%s\n' 0.7.22
         }
 
         update_manager_v1_requested_podkop_upgrade() {
@@ -167,9 +167,9 @@ run_case() {
     fi
 }
 
-run_case supported 0.7.21 success
+run_case supported 0.7.22 success
 run_case unsupported 0.8.0 failure
-run_case failure 0.7.21 failure
+run_case failure 0.7.22 failure
 run_case stale 0.7.20 failure
 
 forced_stale_root="$test_root/forced-stale-update"
@@ -186,12 +186,12 @@ if (
     transaction_phase="preflight"
     PODKOP_PATCH_UPDATE_PODKOP=1
     PODKOP_PATCH_FORCE_PODKOP_UPDATE=1
-    PODKOP_PATCH_TARGET_PODKOP_VERSION=0.7.21
+    PODKOP_PATCH_TARGET_PODKOP_VERSION=0.7.22
 
     podkop_runtime_exists() { return 0; }
     podkop_persistent_state_exists() { return 0; }
     current_podkop_version() { printf '%s\n' 0.7.20; }
-    latest_official_podkop_version() { printf '%s\n' 0.7.21; }
+    latest_official_podkop_version() { printf '%s\n' 0.7.22; }
     update_manager_v1_requested_podkop_upgrade() { return 1; }
     download() { : > "$2"; }
     installed_package_version() {
@@ -228,7 +228,7 @@ grep -q 'official Podkop installed unsupported version 0.8.0' "$test_root/unsupp
     fail_test 'unsupported fresh version did not report that the patch was withheld'
 grep -q 'official Podkop installation failed' "$test_root/failure/output" ||
     fail_test 'failed fresh official installation did not report an error'
-grep -q 'below target 0.7.21' "$test_root/stale/output" &&
+grep -q 'below target 0.7.22' "$test_root/stale/output" &&
     grep -q 'Subscription URLTest patch was not applied' "$test_root/stale/output" ||
     fail_test 'stale fresh Podkop version did not report that the target was missed and the patch was withheld'
 

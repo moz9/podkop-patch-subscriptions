@@ -279,7 +279,7 @@ if ! sh -x "$tmp/harness.sh" "$tmp" > "$tmp/harness.log" 2>&1; then
     fail 'v2 transaction/rollback harness failed'
 fi
 
-for version in 0.7.19 0.7.20 0.7.21; do
+for version in 0.7.19 0.7.20 0.7.21 0.7.22; do
     fixture="$tmp/podkop-$version"
     backup="$tmp/podkop-$version.backup"
     cat > "$tmp/runtime.fixture" <<'FIXTURE_EOF'
@@ -365,4 +365,4 @@ FIXTURE_EOF
         fail "v2 upgrade did not report no-op for Podkop $version"
 done
 
-printf '%s\n' 'PASS: subscription apply backend v2 validates, commits once, rolls back, and upgrades 0.7.19-0.7.21'
+printf '%s\n' 'PASS: subscription apply backend v2 validates, commits once, rolls back, and upgrades 0.7.19-0.7.22'
