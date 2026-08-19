@@ -98,7 +98,9 @@ for rel in \
 	podkop-subscription-legacy-upgrade.patch \
 	podkop-actions-ui-fix.sh \
 	runtime-0.7.20/usr/bin/podkop \
-	runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js
+	runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js \
+	runtime-0.7.22/usr/bin/podkop \
+	runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js
 do
 	fetch_asset "$rel"
 done

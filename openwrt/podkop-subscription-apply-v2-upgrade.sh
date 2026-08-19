@@ -42,7 +42,7 @@ grep -q '^set_subscription_links_enabled() {' "$target" ||
 
 version="$($target show_version 2> /dev/null | sed 's/^v//' | head -n 1 || true)"
 case "$version" in
-0.7.19 | 0.7.20 | 0.7.21) ;;
+0.7.19 | 0.7.20 | 0.7.21 | 0.7.22) ;;
 *) fail "unsupported Podkop version: ${version:-unknown}" ;;
 esac
 
