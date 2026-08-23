@@ -1,0 +1,129 @@
+From edb7dc8de5e783c7174fa722bf5ab9a8dbb33795 Mon Sep 17 00:00:00 2001
+From: Codex <codex@openai.com>
+Date: Thu, 20 Aug 2026 20:02:15 +0700
+Subject: [PATCH] Fix seamless subscription refresh
+
+
+diff --git a/podkop/files/usr/bin/podkop b/podkop/files/usr/bin/podkop
+index b61755e..aed8b89 100755
+--- a/podkop/files/usr/bin/podkop
++++ b/podkop/files/usr/bin/podkop
+@@ -2040,6 +2040,92 @@ set_subscription_sections_enabled() {
+ }
+ # subscription_apply_v2 end
+
++# subscription_seamless_reload begin
++subscription_sing_box_pid() {
++    pidof sing-box 2> /dev/null | awk '{ print $1; exit }'
++}
++
++subscription_signal_sing_box_reload() {
++    local pid="$1"
++
++    [ -n "$pid" ] && kill -HUP "$pid" 2> /dev/null
++}
++
++subscription_sing_box_reload_ready() {
++    local pid
++
++    pid="$(subscription_sing_box_pid)"
++    [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null
++}
++
++subscription_reload_pending_file() {
++    echo "${PODKOP_SUBSCRIPTION_RELOAD_PENDING_FILE:-/tmp/podkop-subscription-reload.pending}"
++}
++
++subscription_reload_seamless() {
++    local config_path backup_path pending_path before_hash after_hash pid recovery_pid attempts max_attempts delay
++
++    config_get config_path "settings" "config_path"
++    [ -n "$config_path" ] && [ -s "$config_path" ] || return 1
++
++    backup_path="$(mktemp)" || return 1
++    if ! cp "$config_path" "$backup_path"; then
++        rm -f "$backup_path"
++        return 1
++    fi
++
++    pending_path="$(subscription_reload_pending_file)"
++    if ! : > "$pending_path"; then
++        rm -f "$backup_path"
++        return 1
++    fi
++
++    before_hash="$(md5sum "$config_path" 2> /dev/null | awk '{ print $1 }')"
++    if ! (PODKOP_SUBSCRIPTION_CACHE_ONLY=1 sing_box_init_config); then
++        cp "$backup_path" "$config_path" 2> /dev/null || true
++        rm -f "$backup_path"
++        return 1
++    fi
++    after_hash="$(md5sum "$config_path" 2> /dev/null | awk '{ print $1 }')"
++
++    if [ -n "$before_hash" ] && [ "$before_hash" = "$after_hash" ]; then
++        rm -f "$backup_path"
++        rm -f "$pending_path"
++        log "Subscription cache changed without changing the active sing-box configuration" "debug"
++        return 0
++    fi
++
++    pid="$(subscription_sing_box_pid)"
++    if [ -z "$pid" ] || ! subscription_signal_sing_box_reload "$pid"; then
++        cp "$backup_path" "$config_path" 2> /dev/null || true
++        recovery_pid="$(subscription_sing_box_pid)"
++        [ -z "$recovery_pid" ] || subscription_signal_sing_box_reload "$recovery_pid" || true
++        rm -f "$backup_path"
++        return 1
++    fi
++
++    max_attempts="${PODKOP_SUBSCRIPTION_RELOAD_ATTEMPTS:-5}"
++    delay="${PODKOP_SUBSCRIPTION_RELOAD_DELAY:-1}"
++    attempts=0
++    while [ "$attempts" -lt "$max_attempts" ]; do
++        [ "$delay" = "0" ] || sleep "$delay"
++        if subscription_sing_box_reload_ready; then
++            rm -f "$backup_path"
++            rm -f "$pending_path"
++            log "Activated updated subscription cache without rebuilding nft or dnsmasq"
++            return 0
++        fi
++        attempts=$((attempts + 1))
++    done
++
++    cp "$backup_path" "$config_path" 2> /dev/null || true
++    recovery_pid="$(subscription_sing_box_pid)"
++    [ -z "$recovery_pid" ] || subscription_signal_sing_box_reload "$recovery_pid" || true
++    rm -f "$backup_path"
++    return 1
++}
++# subscription_seamless_reload end
++
+ subscription_update_section_handler() {
+     local section="$1"
+     local connection_type proxy_config_type
+@@ -2067,6 +2153,8 @@ subscription_update_section_handler() {
+ }
+
+ subscription_update() {
++    local pending_path
++
+     SUBSCRIPTION_UPDATE_TARGET="$1"
+     SUBSCRIPTION_FOUND_SECTIONS=0
+     SUBSCRIPTION_UPDATED_SECTIONS=0
+@@ -2091,9 +2179,14 @@ subscription_update() {
+         return 0
+     fi
+
+-    if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
+-        echolog "Subscription cache changed, reloading podkop..."
+-        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload
++    pending_path="$(subscription_reload_pending_file)"
++    if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ] || [ -f "$pending_path" ]; then
++        if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
++            echolog "Subscription cache changed, activating it without rebuilding the network..."
++        else
++            echolog "Retrying a previously deferred subscription activation..."
++        fi
++        subscription_reload_seamless
+         return $?
+     fi

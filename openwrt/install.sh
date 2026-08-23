@@ -19,7 +19,8 @@ CACHE_ONLY_UPGRADE_PATCH_FILE="podkop-subscription-cache-only-upgrade.patch"
 SPEEDTEST_CACHE_UPGRADE_PATCH_FILE="podkop-subscription-speedtest-cache-upgrade.patch"
 MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260819-podkop-0722-v1"
+SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260820-unified-install-seamless-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -47,7 +48,7 @@ RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
 RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20260819_podkop_0722_v1"
+LUCI_MODULE_NAMESPACE="podkop_patch_20260820_unified_install_seamless_v1"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -133,6 +134,13 @@ www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/subscription
 www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/settings.js
 www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/dashboard.js
 www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20260820_unified_install_seamless_v1/main.js
+www/luci-static/resources/view/podkop_patch_20260820_unified_install_seamless_v1/podkop.js
+www/luci-static/resources/view/podkop_patch_20260820_unified_install_seamless_v1/section.js
+www/luci-static/resources/view/podkop_patch_20260820_unified_install_seamless_v1/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20260820_unified_install_seamless_v1/settings.js
+www/luci-static/resources/view/podkop_patch_20260820_unified_install_seamless_v1/dashboard.js
+www/luci-static/resources/view/podkop_patch_20260820_unified_install_seamless_v1/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -272,6 +280,7 @@ prefetch_patch_assets() {
 	download "$RAW_BASE/$DNS_FAILOVER_INIT_FILE" "$tmp_dir/$DNS_FAILOVER_INIT_FILE"
 	download "$RAW_BASE/$DNS_FAILOVER_UPGRADE_FILE" "$tmp_dir/$DNS_FAILOVER_UPGRADE_FILE"
 	download "$RAW_BASE/$APPLY_V2_UPGRADE_FILE" "$tmp_dir/$APPLY_V2_UPGRADE_FILE"
+	download "$RAW_BASE/$SEAMLESS_RELOAD_UPGRADE_FILE" "$tmp_dir/$SEAMLESS_RELOAD_UPGRADE_FILE"
 	download "$RAW_BASE/$UPDATE_MANAGER_FILE" "$tmp_dir/$UPDATE_MANAGER_FILE"
 	download "$RAW_BASE/$UI_FIX_BACKEND_FILE" "$tmp_dir/$UI_FIX_BACKEND_FILE"
 	download "$RAW_BASE/$ACTIONS_UPGRADE_PATCH_FILE" "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"
@@ -334,6 +343,19 @@ run_podkop_reload() {
 	fi
 
 	return 0
+}
+
+run_podkop_reload_with_retry() {
+	reload_command="$1"
+	retry_delay="${PODKOP_PATCH_RELOAD_RETRY_DELAY:-3}"
+
+	if run_podkop_reload "$reload_command"; then
+		return 0
+	fi
+
+	log "Podkop did not start on the first attempt; retrying once before rollback."
+	sleep "$retry_delay"
+	run_podkop_reload "$reload_command"
 }
 
 podkop_dnsmasq_configured() {
@@ -817,6 +839,17 @@ has_latest_subscription_backend() {
 		grep -q "set_subscription_sections_enabled" /usr/bin/podkop 2>/dev/null &&
 		grep -q '^set_subscription_sections_enabled)' /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_apply_v2" /usr/bin/podkop 2>/dev/null &&
+		grep -Fq '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/null &&
+		grep -Fq '# subscription_seamless_reload end' /usr/bin/podkop 2>/dev/null &&
+		grep -Fq '# subscription_hwid_placeholder_guard begin' /usr/bin/podkop 2>/dev/null &&
+		grep -Fq '# subscription_hwid_placeholder_guard end' /usr/bin/podkop 2>/dev/null &&
+		grep -q '^get_subscription_request_hwid() {' /usr/bin/podkop 2>/dev/null &&
+		grep -q '^normalize_subscription_proxy_link() {' /usr/bin/podkop 2>/dev/null &&
+		grep -q '^subscription_reload_seamless() {' /usr/bin/podkop 2>/dev/null &&
+		grep -q '^subscription_reload_pending_file() {' /usr/bin/podkop 2>/dev/null &&
+		sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'subscription_reload_seamless' &&
+		sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'subscription_reload_pending' &&
+		! sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q '/usr/bin/podkop reload' &&
 		grep -q "subscription_update_json" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_speedtest" /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_patch_update" /usr/bin/podkop 2>/dev/null &&
@@ -1190,6 +1223,7 @@ needs_prebuilt_0720_runtime() {
 		grep -q "subscription_urltest)" /usr/bin/podkop 2>/dev/null &&
 		grep -q "collect_urltest_proxy_links" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_noop_v1" /usr/bin/podkop 2>/dev/null &&
+		grep -Fq '# subscription_hwid_placeholder_guard begin' /usr/bin/podkop 2>/dev/null &&
 		return 1
 
 	return 0
@@ -1202,6 +1236,7 @@ needs_prebuilt_0722_runtime() {
 		grep -q "subscription_urltest)" /usr/bin/podkop 2>/dev/null &&
 		grep -q "collect_urltest_proxy_links" /usr/bin/podkop 2>/dev/null &&
 		grep -q "patch_update_noop_v1" /usr/bin/podkop 2>/dev/null &&
+		grep -Fq '# subscription_hwid_placeholder_guard begin' /usr/bin/podkop 2>/dev/null &&
 		return 1
 
 	return 0
@@ -1580,6 +1615,20 @@ else
 	fi
 fi
 
+if ! grep -Fqx '# subscription_hwid_placeholder_guard begin' /usr/bin/podkop 2>/dev/null ||
+	! grep -Fqx '# subscription_hwid_placeholder_guard end' /usr/bin/podkop 2>/dev/null ||
+	! grep -q '^get_subscription_request_hwid() {' /usr/bin/podkop 2>/dev/null ||
+	! grep -q '^normalize_subscription_proxy_link() {' /usr/bin/podkop 2>/dev/null; then
+	case "$(current_podkop_version)" in
+	0.7.22) hwid_runtime_source="$tmp_dir/podkop.runtime-0.7.22" ;;
+	*) hwid_runtime_source="$tmp_dir/podkop.runtime-0.7.20" ;;
+	esac
+	cp "$hwid_runtime_source" /usr/bin/podkop ||
+		abort_with_restore "subscription HWID and placeholder guard runtime install failed"
+	chmod 755 /usr/bin/podkop ||
+		abort_with_restore "subscription HWID and placeholder guard runtime permission update failed"
+fi
+
 migration_status=0
 migrate_dns_optimizer_candidate_defaults || migration_status=$?
 case "$migration_status" in
@@ -1618,6 +1667,21 @@ if ! grep -q '^set_subscription_sections_enabled() {' /usr/bin/podkop 2>/dev/nul
 	fi
 fi
 
+if ! grep -Fqx '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/null ||
+	! grep -Fqx '# subscription_seamless_reload end' /usr/bin/podkop 2>/dev/null ||
+	! grep -q '^subscription_reload_seamless() {' /usr/bin/podkop 2>/dev/null ||
+	! grep -q '^subscription_reload_pending_file() {' /usr/bin/podkop 2>/dev/null ||
+	! sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'subscription_reload_seamless' ||
+	! sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'subscription_reload_pending' ||
+	sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q '/usr/bin/podkop reload'; then
+	seamless_source="$tmp_dir/podkop.subscription-seamless-source"
+	cp "$tmp_dir/podkop.runtime-0.7.20" "$seamless_source" || abort_with_restore "failed to prepare seamless subscription source"
+	if ! PODKOP_SUBSCRIPTION_SEAMLESS_SOURCE="$seamless_source" \
+		sh "$tmp_dir/$SEAMLESS_RELOAD_UPGRADE_FILE"; then
+		abort_with_restore "seamless subscription reload runtime upgrade failed"
+	fi
+fi
+
 for runtime_file in /usr/bin/podkop /usr/lib/podkop/helpers.sh; do
 	if [ -f "$runtime_file" ]; then
 		sed -i 's/wget -T 30 -t 1 /wget -T 30 /g' "$runtime_file"
@@ -1639,6 +1703,22 @@ if [ -f /usr/bin/podkop ]; then
 		abort_with_restore "subscription apply v2 dispatcher check failed"
 	grep -q 'subscription_apply_v2' /usr/bin/podkop 2>/dev/null ||
 		abort_with_restore "subscription apply v2 marker check failed"
+	grep -Fqx '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "seamless subscription reload marker check failed"
+	grep -q '^subscription_reload_seamless() {' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "seamless subscription reload capability check failed"
+	grep -q '^subscription_reload_pending_file() {' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "deferred subscription activation capability check failed"
+	grep -Fqx '# subscription_hwid_placeholder_guard begin' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "subscription HWID and placeholder guard marker check failed"
+	grep -q '^get_subscription_request_hwid() {' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "subscription HWID capability check failed"
+	grep -q '^normalize_subscription_proxy_link() {' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "subscription placeholder normalization check failed"
+	sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'subscription_reload_seamless' ||
+		abort_with_restore "seamless scheduled refresh check failed"
+	sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'subscription_reload_pending' ||
+		abort_with_restore "deferred scheduled activation check failed"
 	mark_latest_subscription_backend || abort_with_restore "failed to write subscription patch release marker"
 fi
 
@@ -1786,7 +1866,7 @@ if [ -x /etc/init.d/podkop ]; then
 		reload_command="PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop restart"
 	fi
 
-	if ! run_podkop_reload "$reload_command"; then
+	if ! run_podkop_reload_with_retry "$reload_command"; then
 		abort_with_restore "podkop reload failed"
 	fi
 fi

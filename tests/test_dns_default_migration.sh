@@ -280,15 +280,15 @@ fi
 grep -q '^VERSION="20260814-dns-optimizer-v18"$' openwrt/podkop-dns-optimizer ||
     fail_test 'DNS optimizer version was not bumped to v18'
 for installer in i openwrt/install.sh; do
-    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260819-podkop-0722-v1"$' "$installer" ||
+    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260820-unified-install-seamless-v1"$' "$installer" ||
         fail_test "$installer patch marker was not bumped for the Podkop 0.7.22 release"
     grep -q '^DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v18"$' "$installer" ||
         fail_test "$installer DNS optimizer version was not bumped to v18"
-    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20260819_podkop_0722_v1"$' "$installer" ||
+    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20260820_unified_install_seamless_v1"$' "$installer" ||
         fail_test "$installer LuCI namespace was not bumped for the Podkop 0.7.22 release"
 done
 
-[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20260819-podkop-0722-v1' ] ||
+[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20260820-unified-install-seamless-v1' ] ||
     fail_test 'update manifest patch version was not bumped for the Podkop 0.7.22 release'
 
 cmp -s i openwrt/install.sh ||

@@ -29,6 +29,7 @@ for router_executable in \
     openwrt/podkop-dns-failover-upgrade.sh \
     openwrt/podkop-dns-optimizer \
     openwrt/podkop-subscription-apply-v2-upgrade.sh \
+    openwrt/podkop-subscription-seamless-reload-upgrade.sh \
     openwrt/podkop-update-manager \
     openwrt/runtime-0.7.20/usr/bin/podkop \
     openwrt/runtime-0.7.22/usr/bin/podkop
@@ -59,9 +60,9 @@ manifest_patch="$(jq -r '.patchVersion' openwrt/update-manifest.json)"
 manifest_published_at="$(jq -r '.publishedAt' openwrt/update-manifest.json)"
 manifest_recommended="$(jq -r '.recommendedPodkopVersion' openwrt/update-manifest.json)"
 manifest_supported="$(jq -r '.supportedPodkopVersions | join(" ")' openwrt/update-manifest.json)"
-expected_patch_version="20260819-podkop-0722-v1"
+expected_patch_version="20260820-unified-install-seamless-v1"
 expected_dns_optimizer_version="20260814-dns-optimizer-v18"
-expected_published_at="2026-08-19T07:45:06+07:00"
+expected_published_at="2026-08-20T21:37:49+07:00"
 expected_google_play_capability="google_play_dns_transport_guard_v1"
 expected_chatgpt_capability="chatgpt_dns_transport_guard_v1"
 

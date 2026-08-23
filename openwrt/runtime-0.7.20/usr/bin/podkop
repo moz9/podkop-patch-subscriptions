@@ -965,9 +965,172 @@ get_subscription_link_name() {
     [ -n "$name" ] && url_decode "$name"
 }
 
+# subscription_hwid_placeholder_guard begin
+is_valid_vless_uuid() {
+    printf '%s\n' "$1" | grep -Eq '^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[1-5][0-9A-Fa-f]{3}-[89ABab][0-9A-Fa-f]{3}-[0-9A-Fa-f]{12}$'
+}
+
+is_valid_proxy_port() {
+    local port="$1"
+
+    case "$port" in
+    "" | *[!0-9]*) return 1 ;;
+    esac
+
+    [ "$port" -ge 1 ] && [ "$port" -le 65535 ]
+}
+
+normalize_subscription_proxy_link() {
+    local link="$1"
+    local scheme transport base fragment
+
+    scheme="$(url_get_scheme "$link")"
+    case "$scheme" in
+    vless | trojan) ;;
+    *)
+        printf '%s\n' "$link"
+        return 0
+        ;;
+    esac
+
+    transport="$(url_get_query_param "$link" "type")"
+    if [ -n "$transport" ]; then
+        printf '%s\n' "$link"
+        return 0
+    fi
+
+    base="${link%%#*}"
+    case "$link" in
+    *#*) fragment="#${link#*#}" ;;
+    *) fragment="" ;;
+    esac
+    case "$base" in
+    *\?*) base="$base&type=tcp" ;;
+    *) base="$base?type=tcp" ;;
+    esac
+
+    printf '%s%s\n' "$base" "$fragment"
+}
+
+subscription_response_requires_hwid() {
+    local headers_file="$1"
+
+    [ -s "$headers_file" ] || return 1
+    grep -Eiq '^x-hwid-not-supported:[[:space:]]*true[[:space:]]*\r?$' "$headers_file"
+}
+
+subscription_response_rejects_hwid() {
+    local headers_file="$1"
+
+    [ -s "$headers_file" ] || return 1
+    grep -Eiq '^x-hwid-(not-supported|max-devices-reached):[[:space:]]*true[[:space:]]*\r?$' "$headers_file"
+}
+
+get_subscription_request_hwid() {
+    local url="$1"
+    local seed_file seed_dir seed tmp_file provider_host
+
+    seed_file="${PODKOP_SUBSCRIPTION_HWID_SEED_FILE:-/etc/podkop/subscription-hwid.seed}"
+    seed_dir="${seed_file%/*}"
+    [ "$seed_dir" != "$seed_file" ] || seed_dir="."
+    mkdir -p "$seed_dir" || return 1
+
+    seed=""
+    if [ -e "$seed_file" ]; then
+        [ -r "$seed_file" ] || return 1
+        seed="$(tr -d ' \r\n' < "$seed_file")"
+        printf '%s\n' "$seed" | grep -Eq '^[0-9a-f]{64}$' || return 1
+    else
+        if [ -r /proc/sys/kernel/random/uuid ]; then
+            seed="$(
+                cat /proc/sys/kernel/random/uuid
+                cat /proc/sys/kernel/random/uuid
+            )"
+            seed="$(printf '%s' "$seed" | tr -d ' \r\n-')"
+        elif command -v hexdump > /dev/null 2>&1; then
+            seed="$(hexdump -n 32 -e '32/1 "%02x"' /dev/urandom 2> /dev/null)"
+        elif command -v od > /dev/null 2>&1; then
+            seed="$(od -An -N32 -tx1 /dev/urandom 2> /dev/null | tr -d ' \r\n')"
+        else
+            return 1
+        fi
+        printf '%s\n' "$seed" | grep -Eq '^[0-9a-f]{64}$' || return 1
+        tmp_file="$(mktemp "$seed_file.tmp.XXXXXX" 2> /dev/null)" || return 1
+        (umask 077 && printf '%s\n' "$seed" > "$tmp_file") || {
+            rm -f "$tmp_file"
+            return 1
+        }
+        if ! ln "$tmp_file" "$seed_file" 2> /dev/null; then
+            rm -f "$tmp_file"
+            [ -r "$seed_file" ] || return 1
+            seed="$(tr -d ' \r\n' < "$seed_file")"
+            printf '%s\n' "$seed" | grep -Eq '^[0-9a-f]{64}$' || return 1
+        else
+            rm -f "$tmp_file"
+        fi
+        chmod 600 "$seed_file" 2> /dev/null || return 1
+    fi
+
+    provider_host="$(url_get_host "$url" | tr '[:upper:]' '[:lower:]')"
+    [ -n "$provider_host" ] || return 1
+    command -v sha256sum > /dev/null 2>&1 || return 1
+    printf '%s:%s' "$seed" "$provider_host" | sha256sum | awk '{print $1}'
+}
+
+download_subscription_once() {
+    local url="$1"
+    local filepath="$2"
+    local http_proxy_address="$3"
+    local headers_file="$4"
+    local hwid="$5"
+    local user_agent="${PODKOP_SUBSCRIPTION_USER_AGENT:-sing-box}"
+
+    rm -f "$filepath" "$headers_file"
+    if command -v curl > /dev/null 2>&1; then
+        if [ -n "$http_proxy_address" ]; then
+            if [ -n "$hwid" ]; then
+                curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 \
+                    -A "$user_agent" -H "X-Hwid: $hwid" -H 'X-Device-OS: OpenWrt' \
+                    -D "$headers_file" -o "$filepath" "$url"
+            else
+                curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 \
+                    -A "$user_agent" -D "$headers_file" -o "$filepath" "$url"
+            fi
+        elif [ -n "$hwid" ]; then
+            curl -fsSL --connect-timeout 10 -m 30 -A "$user_agent" \
+                -H "X-Hwid: $hwid" -H 'X-Device-OS: OpenWrt' \
+                -D "$headers_file" -o "$filepath" "$url"
+        else
+            curl -fsSL --connect-timeout 10 -m 30 -A "$user_agent" \
+                -D "$headers_file" -o "$filepath" "$url"
+        fi
+    elif command -v wget > /dev/null 2>&1; then
+        if [ -n "$http_proxy_address" ]; then
+            if [ -n "$hwid" ]; then
+                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
+                    wget -T 30 -S -U "$user_agent" --header="X-Hwid: $hwid" \
+                    --header='X-Device-OS: OpenWrt' -O "$filepath" "$url" 2> "$headers_file"
+            else
+                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
+                    wget -T 30 -S -U "$user_agent" -O "$filepath" "$url" 2> "$headers_file"
+            fi
+        elif [ -n "$hwid" ]; then
+            wget -T 30 -S -U "$user_agent" --header="X-Hwid: $hwid" \
+                --header='X-Device-OS: OpenWrt' -O "$filepath" "$url" 2> "$headers_file"
+        else
+            wget -T 30 -S -U "$user_agent" -O "$filepath" "$url" 2> "$headers_file"
+        fi
+    else
+        return 1
+    fi
+
+    [ -s "$filepath" ]
+}
+# subscription_hwid_placeholder_guard end
+
 get_subscription_proxy_skip_reason() {
     local link="$1"
-    local scheme security transport userinfo decoded_userinfo
+    local scheme security transport userinfo decoded_userinfo host port
 
     scheme="$(url_get_scheme "$link")"
     case "$scheme" in
@@ -980,6 +1143,20 @@ get_subscription_proxy_skip_reason() {
 
     case "$scheme" in
     vless | trojan)
+        host="$(url_get_host "$link")"
+        port="$(url_get_port "$link")"
+        if [ -z "$host" ] || ! is_valid_proxy_port "$port"; then
+            echo "invalid_config"
+            return 0
+        fi
+        if [ "$scheme" = "vless" ]; then
+            userinfo="$(url_get_userinfo "$link")"
+            if ! is_valid_vless_uuid "$userinfo"; then
+                echo "invalid_config"
+                return 0
+            fi
+        fi
+
         transport="$(url_get_query_param "$link" "type")"
         case "$transport" in
         "" | tcp | raw | ws | grpc) ;;
@@ -1103,6 +1280,8 @@ filter_working_subscription_proxy_links() {
             continue
         fi
 
+        link="$(normalize_subscription_proxy_link "$link")"
+
         if candidate_config="$(sing_box_cf_add_proxy_outbound "$validation_config" "$section-subscription-check-$i" \
             "$link" "$udp_over_tcp")" && [ -n "$candidate_config" ]; then
             link_id="$(get_subscription_link_id "$link")"
@@ -1137,32 +1316,52 @@ download_subscription_to_file() {
     local http_proxy_address="$3"
     local retries="${4:-3}"
     local wait="${5:-2}"
-    local attempt
+    local attempt headers_file hwid
+
+    headers_file="$(mktemp)"
 
     for attempt in $(seq 1 "$retries"); do
-        rm -f "$filepath"
         if [ -n "$http_proxy_address" ]; then
-            if command -v curl > /dev/null 2>&1; then
-                curl -fsSL -x "http://$http_proxy_address" --connect-timeout 10 -m 30 -o "$filepath" "$url" &&
-                    [ -s "$filepath" ] && return 0
-            fi
-            if command -v wget > /dev/null 2>&1; then
-                http_proxy="http://$http_proxy_address" https_proxy="http://$http_proxy_address" \
-                    wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+            if download_subscription_once "$url" "$filepath" "$http_proxy_address" "$headers_file" ""; then
+                if subscription_response_requires_hwid "$headers_file"; then
+                    hwid="$(get_subscription_request_hwid "$url")" || hwid=""
+                    if [ -n "$hwid" ] &&
+                        download_subscription_once "$url" "$filepath" "$http_proxy_address" "$headers_file" "$hwid" &&
+                        ! subscription_response_rejects_hwid "$headers_file"; then
+                        rm -f "$headers_file"
+                        return 0
+                    fi
+                    rm -f "$filepath"
+                else
+                    rm -f "$headers_file"
+                    return 0
+                fi
             fi
             rm -f "$filepath"
             log "Subscription download via service proxy failed; trying direct download" "debug"
         fi
-        if command -v curl > /dev/null 2>&1; then
-            curl -fsSL --connect-timeout 10 -m 30 -o "$filepath" "$url" && [ -s "$filepath" ] && return 0
-        elif command -v wget > /dev/null 2>&1; then
-            wget -T 30 -O "$filepath" "$url" && [ -s "$filepath" ] && return 0
+
+        if download_subscription_once "$url" "$filepath" "" "$headers_file" ""; then
+            if subscription_response_requires_hwid "$headers_file"; then
+                hwid="$(get_subscription_request_hwid "$url")" || hwid=""
+                if [ -n "$hwid" ] &&
+                    download_subscription_once "$url" "$filepath" "" "$headers_file" "$hwid" &&
+                    ! subscription_response_rejects_hwid "$headers_file"; then
+                    rm -f "$headers_file"
+                    return 0
+                fi
+                rm -f "$filepath"
+            else
+                rm -f "$headers_file"
+                return 0
+            fi
         fi
 
         log "Attempt $attempt/$retries to download subscription failed" "warn"
         sleep "$wait"
     done
 
+    rm -f "$headers_file" "$filepath"
     return 1
 }
 refresh_subscription_cache() {
@@ -2040,6 +2239,92 @@ set_subscription_sections_enabled() {
 }
 # subscription_apply_v2 end
 
+# subscription_seamless_reload begin
+subscription_sing_box_pid() {
+    pidof sing-box 2> /dev/null | awk '{ print $1; exit }'
+}
+
+subscription_signal_sing_box_reload() {
+    local pid="$1"
+
+    [ -n "$pid" ] && kill -HUP "$pid" 2> /dev/null
+}
+
+subscription_sing_box_reload_ready() {
+    local pid
+
+    pid="$(subscription_sing_box_pid)"
+    [ -n "$pid" ] && kill -0 "$pid" 2> /dev/null
+}
+
+subscription_reload_pending_file() {
+    echo "${PODKOP_SUBSCRIPTION_RELOAD_PENDING_FILE:-/tmp/podkop-subscription-reload.pending}"
+}
+
+subscription_reload_seamless() {
+    local config_path backup_path pending_path before_hash after_hash pid recovery_pid attempts max_attempts delay
+
+    config_get config_path "settings" "config_path"
+    [ -n "$config_path" ] && [ -s "$config_path" ] || return 1
+
+    backup_path="$(mktemp)" || return 1
+    if ! cp "$config_path" "$backup_path"; then
+        rm -f "$backup_path"
+        return 1
+    fi
+
+    pending_path="$(subscription_reload_pending_file)"
+    if ! : > "$pending_path"; then
+        rm -f "$backup_path"
+        return 1
+    fi
+
+    before_hash="$(md5sum "$config_path" 2> /dev/null | awk '{ print $1 }')"
+    if ! (PODKOP_SUBSCRIPTION_CACHE_ONLY=1 sing_box_init_config); then
+        cp "$backup_path" "$config_path" 2> /dev/null || true
+        rm -f "$backup_path"
+        return 1
+    fi
+    after_hash="$(md5sum "$config_path" 2> /dev/null | awk '{ print $1 }')"
+
+    if [ -n "$before_hash" ] && [ "$before_hash" = "$after_hash" ]; then
+        rm -f "$backup_path"
+        rm -f "$pending_path"
+        log "Subscription cache changed without changing the active sing-box configuration" "debug"
+        return 0
+    fi
+
+    pid="$(subscription_sing_box_pid)"
+    if [ -z "$pid" ] || ! subscription_signal_sing_box_reload "$pid"; then
+        cp "$backup_path" "$config_path" 2> /dev/null || true
+        recovery_pid="$(subscription_sing_box_pid)"
+        [ -z "$recovery_pid" ] || subscription_signal_sing_box_reload "$recovery_pid" || true
+        rm -f "$backup_path"
+        return 1
+    fi
+
+    max_attempts="${PODKOP_SUBSCRIPTION_RELOAD_ATTEMPTS:-5}"
+    delay="${PODKOP_SUBSCRIPTION_RELOAD_DELAY:-1}"
+    attempts=0
+    while [ "$attempts" -lt "$max_attempts" ]; do
+        [ "$delay" = "0" ] || sleep "$delay"
+        if subscription_sing_box_reload_ready; then
+            rm -f "$backup_path"
+            rm -f "$pending_path"
+            log "Activated updated subscription cache without rebuilding nft or dnsmasq"
+            return 0
+        fi
+        attempts=$((attempts + 1))
+    done
+
+    cp "$backup_path" "$config_path" 2> /dev/null || true
+    recovery_pid="$(subscription_sing_box_pid)"
+    [ -z "$recovery_pid" ] || subscription_signal_sing_box_reload "$recovery_pid" || true
+    rm -f "$backup_path"
+    return 1
+}
+# subscription_seamless_reload end
+
 subscription_update_section_handler() {
     local section="$1"
     local connection_type proxy_config_type
@@ -2067,6 +2352,8 @@ subscription_update_section_handler() {
 }
 
 subscription_update() {
+    local pending_path
+
     SUBSCRIPTION_UPDATE_TARGET="$1"
     SUBSCRIPTION_FOUND_SECTIONS=0
     SUBSCRIPTION_UPDATED_SECTIONS=0
@@ -2091,9 +2378,14 @@ subscription_update() {
         return 0
     fi
 
-    if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
-        echolog "Subscription cache changed, reloading podkop..."
-        PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload
+    pending_path="$(subscription_reload_pending_file)"
+    if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ] || [ -f "$pending_path" ]; then
+        if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
+            echolog "Subscription cache changed, activating it without rebuilding the network..."
+        else
+            echolog "Retrying a previously deferred subscription activation..."
+        fi
+        subscription_reload_seamless
         return $?
     fi
 
