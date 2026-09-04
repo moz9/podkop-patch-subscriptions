@@ -1209,6 +1209,119 @@ append_subscription_skipped_proxy_link() {
         '{id: $id, name: $name, protocol: $protocol, transport: $transport, reason: $reason}' >> "$SUBSCRIPTION_SKIPPED_LINKS_FILE"
 }
 
+# subscription_sources_v1 begin
+# A source is identified by its URL hash, never by its position in the UI.
+subscription_source_policy() {
+    jq -c --argjson disabled "$1" --argjson excluded "$2" '
+        map(. as $item
+            | .enabled = (.supported == true and ($excluded | index($item.id)) == null)
+            | .sourceEnabled = (if ((.sourceIds // []) | length) > 0 then
+                any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
+                else ($disabled | length) == 0 end)
+            | .runtimeEnabled = (.enabled and .sourceEnabled)
+            | if .supported then .reason = (if .enabled then "" else "user_excluded" end) else . end)
+    ' "$3"
+}
+
+subscription_disabled_sources_json() {
+    local ids id
+    config_get ids "$1" subscription_disabled_source_ids
+    for id in $ids; do
+        case "$id" in *[!a-f0-9]*|'') continue ;; esac
+        [ "${#id}" -ne 32 ] || printf '%s\n' "$id"
+    done | jq -Rsc 'split("\n") | map(select(length > 0)) | unique'
+}
+
+get_subscription_sources() {
+    local section="$1" urls url index disabled id errors
+    validate_subscription_section_name "$section" && validate_subscription_urltest_section "$section" || return 1
+    urls="$(mktemp)" || return 1
+    collect_subscription_urls "$section" "$urls" || { rm -f "$urls"; printf '[]\n'; return 0; }
+    disabled="$(subscription_disabled_sources_json "$section")" || { rm -f "$urls"; return 1; }
+    errors="$(cat "$(get_subscription_items_cache_path "$section").refresh-errors" 2>/dev/null || printf '{}')"
+    index=0
+    while IFS= read -r url || [ -n "$url" ]; do
+        [ -n "$url" ] || continue
+        index=$((index + 1))
+        id="$(get_subscription_link_id "$url")"
+        jq -cn --arg id "$id" --argjson index "$index" --argjson disabled "$disabled" --argjson errors "$errors" \
+            '{id:$id,sourceIndex:$index,enabled:(($disabled | index($id)) == null),error:($errors[$id] // "")}'
+    done < "$urls" | jq -s '.'
+    rm -f "$urls"
+}
+
+subscription_source_error() {
+    local section="$1" url="$2" code="$3" path id previous
+    path="$(get_subscription_items_cache_path "$section").refresh-errors"
+    id="$(get_subscription_link_id "$url")"
+    previous="$(cat "$path" 2>/dev/null || printf '{}')"
+    printf '%s\n' "$previous" | jq --arg id "$id" --arg code "$code" '.[$id]=$code' > "$path.tmp.$$" && mv "$path.tmp.$$" "$path"
+}
+
+subscription_items_with_sources() {
+    local section="$1" file="$2" sources
+    sources="$(get_subscription_sources "$section")" || return 1
+    jq -c --argjson sources "$sources" '
+        map(. as $item | .sourceIds = (.sourceIds // [$sources[] | select(.sourceIndex == ($item.sourceIndex // 1)) | .id]))
+    ' "$file"
+}
+
+subscription_filter_source_links() {
+    local items="$1" links="$2" output="$3" disabled="$4" excluded="$5" work link id
+    work="$(mktemp)" || return 1
+    subscription_source_policy "$disabled" "$excluded" "$items" > "$work" || { rm -f "$work"; return 1; }
+    : > "$output"
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        id="$(get_subscription_link_id "$link")"
+        if jq -e --arg id "$id" 'any(.[]; .id == $id and .runtimeEnabled)' "$work" >/dev/null; then
+            printf '%s\n' "$link" >> "$output"
+        fi
+    done < "$links"
+    mv "$work" "$items"
+}
+
+# Stage and validate source choices inside the existing single-commit transaction.
+subscription_sources_prepare() {
+    local section="$1" changes="$2" items="$3" excluded="$4" dir="$SUBSCRIPTION_APPLY_V2_TMP"
+    local sources proposed id enabled current count
+    sources="$(get_subscription_sources "$section")" || return 1
+    proposed="$(subscription_disabled_sources_json "$section")"
+    printf '%s\n' "$changes" | jq -r '.sources // [] | .[] | [.id,.enabled] | @tsv' > "$dir/sources.$section.changes" || return 1
+    count=0
+    while IFS="$(printf '\t')" read -r id enabled; do
+        [ -n "$id" ] || continue
+        printf '%s\n' "$sources" | jq -e --arg id "$id" 'any(.[]; .id == $id)' >/dev/null || return 1
+        current="$(printf '%s\n' "$proposed" | jq --arg id "$id" 'index($id) != null')"
+        [ "$current" = "$enabled" ] && count=$((count + 1))
+        proposed="$(printf '%s\n' "$proposed" | jq -c --arg id "$id" --argjson enabled "$enabled" 'map(select(. != $id)) + (if $enabled then [] else [$id] end) | unique')" || return 1
+    done < "$dir/sources.$section.changes"
+    printf '%s\n' "$proposed" > "$dir/sources.$section.proposed"
+    subscription_items_with_sources "$section" "$items" > "$dir/sources.$section.items" || return 1
+    subscription_source_policy "$proposed" "$excluded" "$dir/sources.$section.items" > "$dir/sources.$section.effective" || return 1
+    SUBSCRIPTION_SOURCES_REMAINING="$(jq '[.[] | select(.runtimeEnabled)] | length' "$dir/sources.$section.effective")"
+    SUBSCRIPTION_SOURCES_CHANGED="$count"
+}
+
+subscription_sources_stage() {
+    local section="$1" id
+    # A link-only transaction must not alter another UCI option.
+    [ -s "$SUBSCRIPTION_APPLY_V2_TMP/sources.$section.changes" ] || return 0
+    uci -q delete "podkop.$section.subscription_disabled_source_ids" >/dev/null 2>&1 || true
+    jq -r '.[]' "$SUBSCRIPTION_APPLY_V2_TMP/sources.$section.proposed" > "$SUBSCRIPTION_APPLY_V2_TMP/sources.$section.ids" || return 1
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        uci -q add_list "podkop.$section.subscription_disabled_source_ids=$id" || return 1
+    done < "$SUBSCRIPTION_APPLY_V2_TMP/sources.$section.ids"
+}
+
+subscription_sources_verify() {
+    local actual
+    actual="$(subscription_disabled_sources_json "$1")" || return 1
+    [ "$actual" = "$(cat "$SUBSCRIPTION_APPLY_V2_TMP/sources.$1.proposed")" ]
+}
+# subscription_sources_v1 end
+
 append_subscription_item() {
     local link="$1"
     local source_index="$2"
@@ -1229,6 +1342,7 @@ append_subscription_item() {
         --arg protocol "$scheme" \
         --arg transport "$transport" \
         --arg reason "$reason" \
+        --arg sourceId "${SUBSCRIPTION_SOURCE_ID:-}" \
         --arg sourceName "$source_name" \
         --argjson sourceIndex "$source_index" \
         --argjson supported "$supported" \
@@ -1238,6 +1352,7 @@ append_subscription_item() {
             name: $name,
             protocol: $protocol,
             transport: $transport,
+            sourceIds: (if $sourceId == "" then [] else [$sourceId] end),
             sourceIndex: $sourceIndex,
             sourceName: $sourceName,
             supported: $supported,
@@ -1269,6 +1384,7 @@ filter_working_subscription_proxy_links() {
     : > "$items_file"
     SUBSCRIPTION_SKIPPED_LINKS_FILE="$skipped_file"
     SUBSCRIPTION_ITEMS_FILE="$items_file"
+    SUBSCRIPTION_SOURCE_ID="$(get_subscription_link_id "${subscription_url:-}")"
     while IFS= read -r link || [ -n "$link" ]; do
         [ -n "$link" ] || continue
 
@@ -1393,6 +1509,9 @@ refresh_subscription_cache() {
 
     collect_subscription_excluded_ids "$section" "$excluded_ids_file"
     http_proxy_address="$(get_service_proxy_address)"
+    mkdir -p "$SUBSCRIPTION_CACHE_DIR" || return 1
+    printf '{}\n' > "$(get_subscription_items_cache_path "$section").refresh-errors.tmp.$$"
+    mv "$(get_subscription_items_cache_path "$section").refresh-errors.tmp.$$" "$(get_subscription_items_cache_path "$section").refresh-errors"
     failed_sources=0
     skipped_sources=0
     source_index=1
@@ -1407,6 +1526,7 @@ refresh_subscription_cache() {
         http://* | https://*) ;;
         *)
             log "Skipping subscription source with unsupported URL scheme in section '$section'" "warn"
+            subscription_source_error "$section" "$subscription_url" unsupported_format
             skipped_sources=$((skipped_sources + 1))
             source_index=$((source_index + 1))
             continue
@@ -1422,6 +1542,7 @@ refresh_subscription_cache() {
 
         if ! download_subscription_to_file "$subscription_url" "$tmpfile" "$http_proxy_address"; then
             log "Subscription download failed for one of section '$section' sources" "warn"
+            subscription_source_error "$section" "$subscription_url" download_failed
             failed_sources=$((failed_sources + 1))
             rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
                 "$items_file"
@@ -1431,6 +1552,7 @@ refresh_subscription_cache() {
 
         if ! normalize_subscription_file "$tmpfile" "$links_file"; then
             log "One subscription source for section '$section' does not contain supported proxy links" "warn"
+            subscription_source_error "$section" "$subscription_url" unsupported_format
             skipped_sources=$((skipped_sources + 1))
             rm -f "$tmpfile" "$links_file" "$validated_links_file" "$all_links_file" "$skipped_links_file" \
                 "$items_file"
@@ -1441,6 +1563,7 @@ refresh_subscription_cache() {
         if ! filter_working_subscription_proxy_links "$section" "$links_file" "$validated_links_file" \
             "$all_links_file" "$skipped_links_file" "$items_file" "$excluded_ids_file" "$source_index"; then
             log "One subscription source for section '$section' does not contain proxy links supported by podkop" "warn"
+            subscription_source_error "$section" "$subscription_url" unsupported_format
             skipped_sources=$((skipped_sources + 1))
             cat "$skipped_links_file" >> "$merged_skipped_links_file"
             cat "$items_file" >> "$merged_items_file"
@@ -1460,11 +1583,19 @@ refresh_subscription_cache() {
     done < "$urls_file"
 
 
+    if [ "$failed_sources" -gt 0 ]; then
+        log "Subscription source download failed; the previous complete cache was kept" "warn"
+        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
+            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
+            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
+        return 1
+    fi
+
     awk '!seen[$0]++' "$merged_links_file" > "$deduped_links_file"
     awk '!seen[$0]++' "$merged_all_links_file" > "$deduped_all_links_file"
     jq -c -s 'reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end) | .[]' \
         "$merged_skipped_links_file" > "$deduped_skipped_links_file"
-    jq -c -s 'reduce .[] as $item ([]; if any(.[]; .id == $item.id) then . else . + [$item] end) | .[]' \
+    jq -c -s 'reduce .[] as $item ([]; if any(.[]; .id == $item.id) then map(if .id == $item.id then .sourceIds = ((.sourceIds + $item.sourceIds) | unique) else . end) else . + [$item] end) | .[]' \
         "$merged_items_file" > "$deduped_items_file"
     if [ ! -s "$deduped_links_file" ]; then
         log "Subscriptions for section '$section' do not contain enabled proxy links supported by podkop" "warn"
@@ -1498,6 +1629,18 @@ refresh_subscription_cache() {
     else
         items_json="[]"
     fi
+
+    printf '%s\n' "$items_json" > "$deduped_items_file"
+    if ! subscription_filter_source_links "$deduped_items_file" "$deduped_all_links_file" "$deduped_links_file" \
+        "$(subscription_disabled_sources_json "$section")" \
+        "$(jq -Rsc 'split("\n") | map(select(length > 0))' "$excluded_ids_file")" || [ ! -s "$deduped_links_file" ]; then
+        log "No active subscription configs remain; keeping the previous cache" "warn"
+        rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
+            "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
+            "$merged_items_file" "$deduped_items_file" "$excluded_ids_file"
+        return 1
+    fi
+    items_json="$(cat "$deduped_items_file")"
 
     if [ ! -f "$cache_path" ] || ! cmp -s "$deduped_links_file" "$cache_path"; then
         tmp_cache="$cache_path.tmp.$$"
@@ -1564,6 +1707,7 @@ load_subscription_proxy_links_for_section() {
         log "Using cached subscription for section '$section'" "warn"
     fi
 
+    apply_subscription_exclusions_to_cached_links "$section" || return 1
     if [ -s "$cache_path" ]; then
         if cp "$cache_path" "$output_file"; then
             return 0
@@ -1708,77 +1852,28 @@ validate_subscription_urltest_section() {
 }
 
 apply_subscription_exclusions_to_cached_links() {
-    local section="$1"
-    local cache_path all_cache_path items_cache_path excluded_ids_file active_links_file tmp_cache tmp_items_cache \
-        excluded_ids_json link link_id items_json
-
+    local section="$1" work cache all items excluded disabled
+    work="$(mktemp -d)" || return 1
+    cache="$(get_subscription_cache_path "$section")"
+    all="$(get_subscription_all_cache_path "$section")"
+    items="$(get_subscription_items_cache_path "$section")"
     SUBSCRIPTION_CACHE_CHANGED=0
-    cache_path="$(get_subscription_cache_path "$section")"
-    all_cache_path="$(get_subscription_all_cache_path "$section")"
-    items_cache_path="$(get_subscription_items_cache_path "$section")"
-    excluded_ids_file="$(mktemp)"
-    active_links_file="$(mktemp)"
-
-    if [ ! -s "$all_cache_path" ] && [ -s "$cache_path" ]; then
-        cp "$cache_path" "$all_cache_path"
-        chmod 600 "$all_cache_path" 2> /dev/null
+    if [ ! -s "$all" ] || ! subscription_items_with_sources "$section" "$items" > "$work/items"; then
+        rm -rf "$work"; return 1
     fi
-
-    if [ ! -s "$all_cache_path" ]; then
-        rm -f "$excluded_ids_file" "$active_links_file"
-        return 1
+    collect_subscription_excluded_ids "$section" "$work/excluded"
+    excluded="$(jq -Rsc 'split("\n") | map(select(length > 0))' "$work/excluded")"
+    disabled="$(subscription_disabled_sources_json "$section")"
+    if ! subscription_filter_source_links "$work/items" "$all" "$work/active" "$disabled" "$excluded" || [ ! -s "$work/active" ]; then
+        rm -rf "$work"; return 1
     fi
-
-    collect_subscription_excluded_ids "$section" "$excluded_ids_file"
-    : > "$active_links_file"
-
-    while IFS= read -r link || [ -n "$link" ]; do
-        [ -n "$link" ] || continue
-        link_id="$(get_subscription_link_id "$link")"
-        if ! is_subscription_link_id_excluded "$link_id" "$excluded_ids_file"; then
-            printf '%s\n' "$link" >> "$active_links_file"
-        fi
-    done < "$all_cache_path"
-
-    if [ ! -s "$active_links_file" ]; then
-        rm -f "$excluded_ids_file" "$active_links_file"
-        return 1
+    if ! cmp -s "$work/active" "$cache"; then
+        cp "$work/active" "$cache.tmp.$$" && mv "$cache.tmp.$$" "$cache" || { rm -rf "$work"; return 1; }
+        SUBSCRIPTION_CACHE_CHANGED=1
     fi
-
-    if [ ! -f "$cache_path" ] || ! cmp -s "$active_links_file" "$cache_path"; then
-        tmp_cache="$cache_path.tmp.$$"
-        if cp "$active_links_file" "$tmp_cache" && mv "$tmp_cache" "$cache_path"; then
-            chmod 600 "$cache_path" 2> /dev/null
-            SUBSCRIPTION_CACHE_CHANGED=1
-        else
-            rm -f "$tmp_cache" "$excluded_ids_file" "$active_links_file"
-            return 1
-        fi
-    fi
-
-    if [ -s "$items_cache_path" ]; then
-        excluded_ids_json="$(jq -R -s -c 'split("\n") | map(select(length > 0))' "$excluded_ids_file")"
-        tmp_items_cache="$items_cache_path.tmp.$$"
-        items_json="$(jq -c --argjson excludedIds "$excluded_ids_json" '
-            map(
-                if .supported == true then
-                    . as $item
-                    | .enabled = (($excludedIds | index($item.id)) == null)
-                    | .reason = (if (($excludedIds | index($item.id)) == null) then "" else "user_excluded" end)
-                else
-                    .
-                end
-            )
-        ' "$items_cache_path")"
-        if printf '%s\n' "$items_json" > "$tmp_items_cache" && mv "$tmp_items_cache" "$items_cache_path"; then
-            chmod 600 "$items_cache_path" 2> /dev/null
-        else
-            rm -f "$tmp_items_cache"
-            log "Failed to update subscription items cache for section '$section'" "warn"
-        fi
-    fi
-
-    rm -f "$excluded_ids_file" "$active_links_file"
+    cp "$work/items" "$items.tmp.$$" && mv "$items.tmp.$$" "$items" || { rm -rf "$work"; return 1; }
+    chmod 600 "$cache" "$items"
+    rm -rf "$work"
     return 0
 }
 
@@ -2066,7 +2161,11 @@ set_subscription_sections_enabled() {
             and all(.sections[];
                 type == "object"
                 and (.section | type == "string" and length > 0)
-                and (.changes | type == "array" and length > 0)
+                and (.changes | type == "array")
+                and ((.sources // []) | type == "array")
+                and ((.changes | length) + ((.sources // []) | length) > 0)
+                and all((.sources // [])[]; type == "object" and (.id | type == "string" and length == 32) and (.enabled | type == "boolean"))
+                and (([.sources[]?.id] | length) == ([.sources[]?.id] | unique | length))
                 and all(.changes[];
                     type == "object"
                     and (.id | type == "string")
@@ -2153,6 +2252,17 @@ set_subscription_sections_enabled() {
         remaining_enabled_count="$(jq --argjson excludedIds "$excluded_ids_json" '
             [.[] | select(.supported == true and (. as $item | ($excludedIds | index($item.id)) == null))] | length
         ' "$items_cache_path" 2> /dev/null || echo 0)"
+        if command -v subscription_sources_prepare >/dev/null 2>&1; then
+            if ! subscription_sources_prepare "$section" "$section_json" "$items_cache_path" "$excluded_ids_json"; then
+                subscription_apply_v2_fail validation invalid_subscription_source false
+                return $?
+            fi
+            remaining_enabled_count="$SUBSCRIPTION_SOURCES_REMAINING"
+            changed_count=$((changed_count + SUBSCRIPTION_SOURCES_CHANGED))
+        elif [ "$(printf '%s' "$section_json" | jq '(.sources // []) | length')" -gt 0 ]; then
+            subscription_apply_v2_fail validation source_support_missing false
+            return $?
+        fi
         if [ "$remaining_enabled_count" -eq 0 ]; then
             subscription_apply_v2_fail validation cannot_disable_last_enabled_link false
             return $?
@@ -2198,6 +2308,11 @@ set_subscription_sections_enabled() {
                 return $?
             fi
         done < "$section_file"
+        if command -v subscription_sources_stage >/dev/null 2>&1 && ! subscription_sources_stage "$section"; then
+            uci -q revert podkop >/dev/null 2>&1 || true
+            subscription_apply_v2_fail commit uci_stage_failed false
+            return $?
+        fi
     done < "$validated_sections_file"
 
     SUBSCRIPTION_APPLY_V2_COMMITTED=1
@@ -2213,6 +2328,10 @@ set_subscription_sections_enabled() {
         collect_subscription_excluded_ids "$section" "$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.committed"
         if ! cmp -s "$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.proposed" \
             "$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.committed"; then
+            subscription_apply_v2_fail verify committed_config_mismatch true
+            return $?
+        fi
+        if command -v subscription_sources_verify >/dev/null 2>&1 && ! subscription_sources_verify "$section"; then
             subscription_apply_v2_fail verify committed_config_mismatch true
             return $?
         fi
@@ -2571,281 +2690,100 @@ subscription_speedtest_result_success() {
         '{id:$id, tag:$tag, name:$name, success:true, bytesPerSecond:$bytesPerSecond, timeTotal:$timeTotal, sizeDownload:$sizeDownload, httpCode:$httpCode}'
 }
 
-subscription_speedtest() {
-    local section="$1"
-    local only_id="$2"
-    local items_cache_path active_items_file results_file clash_url auth_header selector_tag urltest_tag original_proxy restore_proxy \
-        original_mixed_enabled original_mixed_port mixed_port mixed_changed mixed_address benchmark_url \
-        warmup_url benchmark_bytes benchmark_streams benchmark_timeout warmup_bytes benchmark_attempts min_size_download item_json id name tag index \
-        output output_dir stream stream_file bytes_per_second time_total time_starttransfer transfer_time size_download http_code success_http_code results_json attempt best_bytes_per_second \
-        best_time_total best_size_download best_http_code clash_ready completed_streams total_size max_time cache_buster
-
-    if [ -z "$section" ]; then
-        echo '{"success":false,"error":"section_required"}'
-        return 1
-    fi
-
-    if ! validate_subscription_urltest_section "$section"; then
-        echo '{"success":false,"error":"section_is_not_subscription_urltest"}'
-        return 1
-    fi
-
-    if subscription_runtime_busy; then
-        echo '{"success":false,"error":"service_busy"}'
-        return 1
-    fi
-
-    if ! subscription_action_lock_acquire "speedtest"; then
-        echo '{"success":false,"error":"service_busy"}'
-        return 1
-    fi
-    trap 'subscription_action_lock_release' EXIT INT TERM
-
-    items_cache_path="$(get_subscription_items_cache_path "$section")"
-    if [ ! -s "$items_cache_path" ]; then
-        refresh_subscription_cache "$section" > /dev/null 2>&1 || true
-    fi
-
-    if [ ! -s "$items_cache_path" ]; then
-        echo '{"success":false,"error":"subscription_cache_missing"}'
-        return 1
-    fi
-
-    active_items_file="$(mktemp)"
-    results_file="$(mktemp)"
-    if [ -n "$only_id" ]; then
-        jq -c --arg id "$only_id" \
-            '[.[] | select(.supported == true and .enabled == true)] | to_entries[] | select(.value.id == $id) | .value + {activeIndex:(.key + 1)}' \
-            "$items_cache_path" > "$active_items_file"
-    else
-        jq -c '[.[] | select(.supported == true and .enabled == true)] | to_entries[] | .value + {activeIndex:(.key + 1)}' \
-            "$items_cache_path" > "$active_items_file"
-    fi
-
-    if [ ! -s "$active_items_file" ]; then
-        rm -f "$active_items_file" "$results_file"
-        if [ -n "$only_id" ]; then
-            echo '{"success":false,"error":"subscription_link_not_available"}'
-        else
-            echo '{"success":false,"error":"no_enabled_links"}'
-        fi
-        return 1
-    fi
-
-    clash_url="$(get_clash_api_base_url)"
-    auth_header="$(get_clash_api_auth_header)"
-    selector_tag="$(get_outbound_tag_by_section "$section")"
-    urltest_tag="$(get_outbound_tag_by_section "$section-urltest")"
-    restore_proxy="$urltest_tag"
-    original_proxy="$(clash_api_wait_proxy_now "$clash_url" "$auth_header" "$selector_tag" 15)"
-
-    if [ -z "$original_proxy" ]; then
-        rm -f "$active_items_file" "$results_file"
-        echo '{"success":false,"error":"selector_not_available"}'
-        return 1
-    fi
-
-    config_get original_mixed_enabled "$section" "mixed_proxy_enabled"
-    config_get original_mixed_port "$section" "mixed_proxy_port"
-    mixed_port="$original_mixed_port"
-    [ -n "$mixed_port" ] || mixed_port="$(get_subscription_benchmark_port "$section")"
-    mixed_changed=0
-    trap 'clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 || clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true; subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1; rm -f "$active_items_file" "$results_file"; subscription_action_lock_release; exit 130' INT TERM HUP
-
-    if [ "$original_mixed_enabled" != "1" ] || [ -z "$original_mixed_port" ]; then
-        uci -q set "podkop.$section.mixed_proxy_enabled=1"
-        uci -q set "podkop.$section.mixed_proxy_port=$mixed_port"
-        if ! uci commit podkop > /dev/null 2>&1; then
-            rm -f "$active_items_file" "$results_file"
-            echo '{"success":false,"error":"uci_commit_failed"}'
-            return 1
-        fi
-        config_load "$PODKOP_CONFIG"
-        mixed_changed=1
-
-        if ! PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1; then
-            subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
-            rm -f "$active_items_file" "$results_file"
-            echo '{"success":false,"error":"reload_failed"}'
-            return 1
-        fi
-    fi
-
-    mixed_address="$(get_service_listen_address)"
-    if [ -z "$mixed_address" ]; then
-        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
-            clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
-        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
-        rm -f "$active_items_file" "$results_file"
-        echo '{"success":false,"error":"mixed_proxy_address_missing"}'
-        return 1
-    fi
-
-    clash_ready=0
-    for attempt in $(seq 1 10); do
-        if [ -n "$(clash_api_wait_proxy_now "$clash_url" "$auth_header" "$selector_tag" 1)" ]; then
-            clash_ready=1
-            break
-        fi
-        sleep 1
+# subscription_isolated_probe_v1 begin
+# Diagnostics use a private loopback listener and never the working selector.
+subscription_isolated_test() (
+    section="$1"
+    item_id="$2"
+    mode="${3:-ping}"
+    probe_pid=""
+    curl_pids=""
+    work=""
+    locked=0
+    cleanup_probe() {
+        for child in $curl_pids; do kill "$child" 2>/dev/null || true; done
+        if [ -n "$probe_pid" ]; then kill "$probe_pid" 2>/dev/null || true; wait "$probe_pid" 2>/dev/null || true; fi
+        [ -z "$work" ] || rm -rf "$work"
+        [ "$locked" -eq 0 ] || subscription_action_lock_release
+    }
+    trap cleanup_probe EXIT
+    trap 'exit 130' INT TERM HUP
+    probe_error() { jq -cn --arg error "$1" '{success:false,error:$error}'; exit 1; }
+    validate_subscription_section_name "$section" && validate_subscription_urltest_section "$section" || probe_error invalid_section
+    validate_subscription_link_id "$item_id" || probe_error invalid_link_id
+    case "$mode" in ping|speed) ;; *) probe_error invalid_probe_mode ;; esac
+    subscription_action_lock_acquire "isolated_$mode" || probe_error service_busy
+    locked=1
+    umask 077
+    work="$(mktemp -d /tmp/podkop-subscription-probe.XXXXXX)" || probe_error temporary_directory_failed
+    items="$(get_subscription_items_cache_path "$section")"
+    jq -e --arg id "$item_id" 'any(.[]; .id == $id and .supported == true)' "$items" >/dev/null 2>&1 || probe_error subscription_link_not_available
+    link=""
+    while IFS= read -r candidate || [ -n "$candidate" ]; do
+        if [ "$(get_subscription_link_id "$candidate")" = "$item_id" ]; then link="$candidate"; break; fi
+    done < "$(get_subscription_all_cache_path "$section")"
+    [ -n "$link" ] || probe_error subscription_link_not_available
+    name="$(jq -r --arg id "$item_id" '.[] | select(.id == $id) | .name' "$items")"
+    # Retain configured real DNS servers, but not FakeIP rules or production detours.
+    config="$(jq -c '{dns:{servers:[.dns.servers[] | select(.type != "fakeip") | del(.detour)], final:.dns.final, strategy:"ipv4_only"},
+        inbounds:[],outbounds:[],route:{default_mark:2097152,default_domain_resolver:.route.default_domain_resolver},log:{level:"warn"}}' /etc/sing-box/config.json)" || probe_error dns_config_invalid
+    config_get udp_over_tcp "$section" enable_udp_over_tcp
+    config="$(sing_box_cf_add_proxy_outbound "$config" subscription-probe "$link" "$udp_over_tcp" 2>"$work/parser.log")" || probe_error invalid_config
+    tag="$(get_outbound_tag_by_section subscription-probe)"
+    port=$((43000 + $$ % 1000))
+    tries=0
+    while netstat -ln 2>/dev/null | grep -q ":$port "; do
+        port=$((port + 1)); tries=$((tries + 1))
+        [ "$tries" -lt 20 ] || probe_error probe_port_busy
     done
-
-    if [ "$clash_ready" -ne 1 ]; then
-        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
-            clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
-        subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
-        rm -f "$active_items_file" "$results_file"
-        echo '{"success":false,"error":"selector_not_available"}'
-        return 1
-    fi
-
-    benchmark_bytes="$(get_subscription_benchmark_bytes)"
-    benchmark_streams="$(get_subscription_benchmark_streams)"
-    benchmark_timeout="$(get_subscription_benchmark_timeout)"
-    warmup_bytes="$(get_subscription_benchmark_warmup_bytes)"
-    benchmark_attempts="$(get_subscription_benchmark_attempts)"
-    case "$benchmark_bytes" in ''|*[!0-9]*) benchmark_bytes=8388608 ;; esac
-    case "$benchmark_streams" in ''|*[!0-9]*) benchmark_streams=4 ;; esac
-    case "$benchmark_timeout" in ''|*[!0-9]*) benchmark_timeout=15 ;; esac
-    case "$warmup_bytes" in ''|*[!0-9]*) warmup_bytes=0 ;; esac
-    case "$benchmark_attempts" in ''|*[!0-9]*) benchmark_attempts=3 ;; esac
-    [ "$benchmark_bytes" -gt 0 ] || benchmark_bytes=8388608
-    [ "$benchmark_streams" -gt 0 ] || benchmark_streams=1
-    [ "$benchmark_streams" -le 8 ] || benchmark_streams=8
-    [ "$benchmark_timeout" -ge 5 ] || benchmark_timeout=5
-    [ "$benchmark_attempts" -gt 0 ] || benchmark_attempts=3
-    min_size_download=$((benchmark_bytes * 9 / 10))
-    benchmark_url="https://speed.cloudflare.com/__down?bytes=$benchmark_bytes"
-    warmup_url="https://speed.cloudflare.com/__down?bytes=$warmup_bytes"
-    index=1
-    while IFS= read -r item_json || [ -n "$item_json" ]; do
-        [ -n "$item_json" ] || continue
-
-        id="$(echo "$item_json" | jq -r '.id')"
-        name="$(echo "$item_json" | jq -r '.name // ""')"
-        index="$(echo "$item_json" | jq -r '.activeIndex')"
-        tag="$(get_outbound_tag_by_section "$section-$index")"
-
-        if ! clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$tag"; then
-            subscription_speedtest_result_error "$id" "$tag" "$name" "select_failed" >> "$results_file"
-            index=$((index + 1))
-            continue
-        fi
-
-        if [ "$warmup_bytes" -gt 0 ]; then
-            curl -L -s -o /dev/null \
-                -x "http://$mixed_address:$mixed_port" \
-                --connect-timeout 3 \
-                -m 4 \
-                "$warmup_url" > /dev/null 2>&1 || true
-        fi
-
-        best_bytes_per_second=0
-        best_time_total=0
-        best_size_download=0
-        best_http_code=0
-        for attempt in $(seq 1 "$benchmark_attempts"); do
-            output_dir="$(mktemp -d)" || continue
-            cache_buster="$(date +%s)-$$-$attempt"
-            stream=1
-            while [ "$stream" -le "$benchmark_streams" ]; do
-                stream_file="$output_dir/$stream.out"
-                curl -L -s -o /dev/null \
-                    -x "http://$mixed_address:$mixed_port" \
-                    --connect-timeout 4 \
-                    -m "$benchmark_timeout" \
-                    -w '%{time_total} %{time_starttransfer} %{size_download} %{http_code}' \
-                    "$benchmark_url&stream=$stream&r=$cache_buster" > "$stream_file" 2> /dev/null &
-                stream=$((stream + 1))
-            done
-            wait
-
-            completed_streams=0
-            total_size=0
-            max_time=0
-            success_http_code=0
-            stream=1
-            while [ "$stream" -le "$benchmark_streams" ]; do
-                stream_file="$output_dir/$stream.out"
-                output="$(cat "$stream_file" 2> /dev/null)"
-                time_total="$(echo "$output" | awk '{print ($1 == "" ? 0 : $1)}')"
-                time_starttransfer="$(echo "$output" | awk '{print ($2 == "" ? 0 : $2)}')"
-                size_download="$(echo "$output" | awk '{printf "%d", $3}')"
-                http_code="$(echo "$output" | awk '{printf "%d", $4}')"
-                transfer_time="$(
-                    awk -v total="$time_total" -v start="$time_starttransfer" '
-                        BEGIN {
-                            transfer = total - start
-                            if (transfer <= 0) {
-                                transfer = total
-                            }
-                            print transfer
-                        }
-                    '
-                )"
-
-                if [ "${size_download:-0}" -ge "$min_size_download" ] &&
-                    [ "${http_code:-0}" -ge 200 ] && [ "${http_code:-0}" -lt 400 ]; then
-                    completed_streams=$((completed_streams + 1))
-                    total_size=$((total_size + size_download))
-                    success_http_code="$http_code"
-                    max_time="$(
-                        awk -v current="$max_time" -v candidate="$transfer_time" '
-                            BEGIN {
-                                if (candidate > current) {
-                                    print candidate
-                                } else {
-                                    print current
-                                }
-                            }
-                        '
-                    )"
-                fi
-
-                stream=$((stream + 1))
-            done
-            rm -rf "$output_dir"
-
-            bytes_per_second="$(
-                awk -v size="$total_size" -v total="$max_time" '
-                    BEGIN {
-                        if (total > 0) {
-                            printf "%d", size / total
-                        } else {
-                            printf "0"
-                        }
-                    }
-                '
-            )"
-
-            if [ "${bytes_per_second:-0}" -gt "$best_bytes_per_second" ] &&
-                [ "${completed_streams:-0}" -gt 0 ]; then
-                best_bytes_per_second="${bytes_per_second:-0}"
-                best_time_total="${max_time:-0}"
-                best_size_download="${total_size:-0}"
-                best_http_code="${success_http_code:-0}"
-            fi
+    printf '%s\n' "$config" | jq --arg tag "$tag" --argjson port "$port" '
+        .inbounds = [{type:"mixed",tag:"probe-in",listen:"127.0.0.1",listen_port:$port}]
+        | .route.final = $tag' > "$work/config.json" || probe_error invalid_config
+    sing-box check -c "$work/config.json" >"$work/check.log" 2>&1 || probe_error invalid_config
+    sing-box run -c "$work/config.json" >"$work/runtime.log" 2>&1 &
+    probe_pid=$!
+    sleep 1
+    kill -0 "$probe_pid" 2>/dev/null || probe_error probe_start_failed
+    proxy="http://127.0.0.1:$port"
+    if [ "$mode" = ping ]; then
+        result="$(curl -sS --proxy "$proxy" --noproxy '' --connect-timeout 7 -m 12 -o /dev/null -w '%{http_code} %{time_total}' https://www.gstatic.com/generate_204 2>"$work/curl.log")"
+        rc=$?
+        [ "$rc" -eq 0 ] || probe_error "probe_curl_$rc"
+        printf '%s\n' "$result" | jq -R --arg id "$item_id" 'split(" ") | {success:(.[0] == "204"),id:$id,latencyMs:((.[1]|tonumber)*1000|round),httpCode:(.[0]|tonumber)}'
+    else
+        bytes="$(get_subscription_benchmark_bytes)"
+        streams="$(get_subscription_benchmark_streams)"
+        timeout="$(get_subscription_benchmark_timeout)"
+        case "$bytes:$streams:$timeout" in *[!0-9:]*|'') probe_error invalid_benchmark_options ;; esac
+        [ "$streams" -ge 1 ] && [ "$streams" -le 8 ] && [ "$timeout" -ge 1 ] && [ "$timeout" -le 60 ] && [ "$bytes" -ge 65536 ] || probe_error invalid_benchmark_options
+        stream=1
+        while [ "$stream" -le "$streams" ]; do
+            (curl -sS --proxy "$proxy" --noproxy '' --connect-timeout 7 -m "$timeout" -o /dev/null \
+                -w '%{http_code} %{size_download} %{time_total} %{time_starttransfer}' \
+                "https://speed.cloudflare.com/__down?bytes=$bytes&probe=$$-$stream" 2>/dev/null; printf '\n') > "$work/stream.$stream" &
+            curl_pids="$curl_pids $!"
+            stream=$((stream + 1))
         done
+        for child in $curl_pids; do wait "$child" 2>/dev/null || true; done
+        curl_pids=""
+        jq -Rsc --arg id "$item_id" --arg name "$name" '
+            split("\n") | map(select(length > 0) | split(" ") | map(tonumber?))
+            | map(select(length == 4 and .[0] == 200 and .[1] >= 65536))
+            | if length == 0 then {success:true,results:[{id:$id,name:$name,success:false,error:"download_failed"}]}
+              else (map(.[1])|add) as $bytes | (map(.[2]-.[3])|max) as $time
+              | {success:true,results:[{id:$id,name:$name,tag:"isolated",success:($time>0),bytesPerSecond:(if $time>0 then $bytes/$time else 0 end),sizeDownload:$bytes,timeTotal:$time,httpCode:200}]} end
+        ' "$work"/stream.*
+    fi
+)
 
-        if [ "$best_bytes_per_second" -gt 0 ]; then
-            subscription_speedtest_result_success "$id" "$tag" "$name" \
-                "$best_bytes_per_second" "$best_time_total" "$best_size_download" "$best_http_code" >> "$results_file"
-        else
-            subscription_speedtest_result_error "$id" "$tag" "$name" "download_failed" >> "$results_file"
-        fi
-
-        index=$((index + 1))
-    done < "$active_items_file"
-
-    clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$restore_proxy" > /dev/null 2>&1 ||
-        clash_api_set_group_proxy_raw "$clash_url" "$auth_header" "$selector_tag" "$original_proxy" > /dev/null 2>&1 || true
-    subscription_speedtest_restore_mixed_proxy "$section" "$original_mixed_enabled" "$original_mixed_port" "$mixed_changed" > /dev/null 2>&1
-
-    results_json="$(jq -s '.' "$results_file")"
-    rm -f "$active_items_file" "$results_file"
-    jq -cn --arg section "$section" --argjson results "$results_json" \
-        '{success:true, section:$section, results:$results}'
+subscription_ping() {
+    subscription_isolated_test "$1" "$2" ping
 }
+
+subscription_speedtest() {
+    subscription_isolated_test "$1" "$2" speed
+}
+# subscription_isolated_probe_v1 end
 
 subscription_speedtest_status_file() {
     echo "/tmp/podkop-subscriptions-speedtest.json"
@@ -3002,17 +2940,7 @@ subscription_speedtest_stop() {
         sleep 1
     fi
 
-    if [ -s "$restore_file" ]; then
-        restore_section="$(jq -r '.section // ""' "$restore_file" 2> /dev/null)"
-        original_mixed_enabled="$(jq -r '.originalMixedEnabled // ""' "$restore_file" 2> /dev/null)"
-        original_mixed_port="$(jq -r '.originalMixedPort // ""' "$restore_file" 2> /dev/null)"
-        if [ -n "$restore_section" ]; then
-            subscription_speedtest_restore_mixed_proxy "$restore_section" "$original_mixed_enabled" "$original_mixed_port" 1 > /dev/null 2>&1 || true
-        fi
-        rm -f "$restore_file"
-    elif [ -n "$section" ]; then
-        subscription_speedtest_restore_mixed_proxy "$section" "" "" 1 > /dev/null 2>&1 || true
-    fi
+    rm -f "$restore_file"
 
     subscription_speedtest_write_status "cancelled" "speedtest_cancelled" "$section" "$item_id" "0"
     echo '{"success":true,"stopped":true}'
@@ -5583,6 +5511,9 @@ subscription_update)
 subscription_update_json)
     subscription_update_json "$2"
     ;;
+subscription_ping)
+    subscription_ping "$2" "$3"
+    ;;
 subscription_speedtest)
     subscription_speedtest "$2" "$3"
     ;;
@@ -5633,6 +5564,9 @@ get_subscription_skipped_links)
     ;;
 get_subscription_items)
     get_subscription_items "$2"
+    ;;
+get_subscription_sources)
+    get_subscription_sources "$2"
     ;;
 get_subscription_items_cached)
     get_subscription_items_cached "$2"

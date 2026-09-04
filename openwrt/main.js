@@ -780,6 +780,8 @@ var PodkopShellMethods = {
     Podkop.AvailableMethods.GET_SUBSCRIPTION_ITEMS,
     [section]
   ),
+  getSubscriptionSources: async (section) => callBaseMethod("get_subscription_sources", [section]),
+  pingSubscription: async (section, id) => callBaseMethod("subscription_ping", [section, id], "/usr/bin/podkop", 3e4),
   getSubscriptionItemsCached: async (section) => callBaseMethod(
     Podkop.AvailableMethods.GET_SUBSCRIPTION_ITEMS_CACHED,
     [section]
@@ -802,7 +804,10 @@ var PodkopShellMethods = {
     [
       JSON.stringify({
         sections: Object.entries(changesBySection).map(
-          ([section, changes]) => ({ section, changes })
+          ([section, changes]) => ({ section,
+            changes: changes.filter(change => !change.id.startsWith("source:")),
+            sources: changes.filter(change => change.id.startsWith("source:")).map(change => ({...change, id:change.id.slice(7)}))
+          })
         )
       })
     ],
@@ -5288,6 +5293,7 @@ function getStatusLabel({
   if (!item.supported) {
     return getReasonLabel(item.reason);
   }
+  if (item.subscriptionDisabled) return "Подписка отключена";
   if (pending) {
     return effectiveEnabled ? _("Will be included") : _("Will be excluded");
   }
@@ -5298,6 +5304,7 @@ function getStatusClass({
   pending,
   effectiveEnabled
 }) {
+  if (item.subscriptionDisabled && item.supported) return "pdk_subscriptions-page__status--excluded";
   if (!item.supported) {
     return "pdk_subscriptions-page__status--unsupported";
   }
@@ -5309,23 +5316,24 @@ function getStatusClass({
 function renderEmptyState(text) {
   return E("div", { class: "pdk_subscriptions-page__empty centered" }, text);
 }
-function getSourceGroups(items) {
+function getSourceGroups(section) {
+  const sources = section.sources || [];
+  if (sources.length) return sources.map(source => ({...source,
+    items: section.items.filter(item => item.sourceIds?.length ? item.sourceIds.includes(source.id) : (item.sourceIndex || 1) === source.sourceIndex),
+    firstItemIndex: 0
+  }));
   const groups = [];
-  const indexBySource = {};
-  items.forEach((item, index) => {
+  section.items.forEach((item,index) => {
     const sourceIndex = item.sourceIndex || 1;
-    const key = String(sourceIndex);
-    if (!(key in indexBySource)) {
-      indexBySource[key] = groups.length;
-      groups.push({
-        sourceIndex,
-        items: [],
-        firstItemIndex: index
-      });
-    }
-    groups[indexBySource[key]].items.push(item);
+    let group = groups.find(group => group.sourceIndex === sourceIndex);
+    if (!group) { group = {sourceIndex,enabled:true,items:[],firstItemIndex:index}; groups.push(group); }
+    group.items.push(item);
   });
   return groups;
+}
+function getEffectiveSourceEnabled(pendingChanges, sectionCode, source) {
+  const key = sectionCode + ":source:" + source.id;
+  return key in pendingChanges ? pendingChanges[key] : source.enabled !== false;
 }
 function getSourceSummary({
   section,
@@ -5344,6 +5352,7 @@ function getSourceSummary({
   if (unsupportedCount > 0) {
     parts.push(`${_("Unsupported")}: ${unsupportedCount}`);
   }
+  if (group.error) parts.push(group.error === "download_failed" ? "Сервер подписки недоступен — сохранён предыдущий список" : "Сервер вернул неподдерживаемый формат подписки");
   return parts.join(" | ");
 }
 function getToolbarMessage({
@@ -5359,7 +5368,7 @@ function getToolbarMessage({
     return _("Loading subscription configs");
   }
   if (failed) {
-    return _("Failed to load subscription configs");
+    return actionMessage || _("Failed to load subscription configs");
   }
   if (applying || status === "applying") {
     return _("Applying changes. Podkop will be restarted once.");
@@ -5415,15 +5424,13 @@ function renderToolbar({
   onReset,
   onRefresh,
   onPing,
-  onSpeedtest,
-  onPatchUpdate
+  onSpeedtest
 }) {
   const actionRunning = actionStatus === "running";
   const speedRunning = action === "speed" && actionRunning;
   const canRunAction = !loading && !failed && !applying && !actionRunning;
   const canRunSubscriptionAction = canRunAction && pendingCount === 0;
   const canRefresh = !loading && !applying && !actionRunning && (failed || pendingCount === 0);
-  const canRunPatchAction = !loading && !applying && !actionRunning && pendingCount === 0;
   const canApply = pendingCount > 0 && !loading && !failed && !applying && !actionRunning;
   const canReset = pendingCount > 0 && !applying && !actionRunning;
   return E(
@@ -5480,16 +5487,6 @@ function renderToolbar({
           disabled: speedRunning ? false : !canRunSubscriptionAction
         }),
         renderButton({
-          text: _("Patch"),
-          title: _("Update patch"),
-          ariaLabel: _("Update patch"),
-          icon: renderCogIcon24,
-          hideText: true,
-          onClick: onPatchUpdate,
-          loading: action === "patch" && actionRunning,
-          disabled: !canRunPatchAction
-        }),
-        renderButton({
           classNames: ["cbi-button-apply"],
           text: _("Apply"),
           onClick: onApply,
@@ -5523,18 +5520,18 @@ function renderRow({
     section.code,
     item
   );
-  const isLastEnabled = item.supported && effectiveEnabled && enabledSupportedCount <= 1;
+  const isLastEnabled = item.supported && effectiveEnabled && !item.subscriptionDisabled && enabledSupportedCount <= 1;
   const disabled = !item.supported || applying || isLastEnabled;
   const latency = latencyByRow[rowId];
   const speed = speedByRow[rowId];
   function renderLatency() {
-    if (!item.supported || !effectiveEnabled) {
+    if (!item.supported) {
       return "-";
     }
-    return typeof latency === "number" && latency > 0 ? `${latency} ms` : "-";
+    return typeof latency === "number" ? (latency > 0 ? `${latency} ms` : "Нет ответа") : "-";
   }
   function renderSpeed() {
-    if (!item.supported || !effectiveEnabled) {
+    if (!item.supported) {
       return "-";
     }
     if (!speed) {
@@ -5580,7 +5577,7 @@ function renderRow({
       ),
       E(
         "td",
-        { "data-label": _("Config"), "data-title": _("Config") },
+        { "data-label": _("Config"), "data-title": _("Config"), title: getItemName(item, index) },
         getItemName(item, index)
       ),
       E(
@@ -5650,7 +5647,7 @@ function renderSourceTable({
         group.items.map(
           (item, index) => renderRow({
             section,
-            item,
+            item: {...item, subscriptionDisabled: !getEffectiveSourceEnabled(pendingChanges, section.code, group)},
             index: group.firstItemIndex + index,
             pendingChanges,
             latencyByRow,
@@ -5689,6 +5686,14 @@ function renderSourceGroup({
       ].filter(Boolean).join(" ")
     },
     [
+      E("div", {class:"pdk_subscriptions-page__source-controls"}, [
+      E("label", {class:"pdk_subscriptions-page__source-toggle", title:"Использовать эту подписку для рабочего трафика"}, [
+        E("input", {type:"checkbox", checked:getEffectiveSourceEnabled(pendingChanges, section.code, group) ? "checked" : void 0,
+          disabled: applying || !group.id ? "disabled" : void 0,
+          "aria-label": `Использовать подписку ${group.sourceIndex}`,
+          change:event => onToggle(section.code, {id:`source:${group.id}`,enabled:group.enabled !== false}, event.target.checked)}),
+        E("span", {}, getEffectiveSourceEnabled(pendingChanges, section.code, group) ? "В работе" : "Отключена")
+      ]),
       E(
         "button",
         {
@@ -5712,6 +5717,7 @@ function renderSourceGroup({
           )
         ]
       ),
+      ]),
       ...collapsed ? [] : [
         renderSourceTable({
           section,
@@ -5740,14 +5746,14 @@ function renderSection({
   const enabledSupportedCount = section.items.filter(
     (item) => item.supported && getEffectiveEnabled(pendingChanges, section.code, item)
   ).length;
-  const sourceGroups = getSourceGroups(section.items);
+  const sourceGroups = getSourceGroups(section);
   return E("div", { class: "pdk_subscriptions-page__section" }, [
     E(
       "div",
       { class: "pdk_subscriptions-page__section-title" },
       section.displayName
     ),
-    section.items.length === 0 ? renderEmptyState(
+    sourceGroups.length === 0 ? renderEmptyState(
       _("Subscription cache is empty. Click refresh to load configs.")
     ) : E(
       "div",
@@ -5818,7 +5824,6 @@ function renderSubscriptionSections({
   onRefresh,
   onPing,
   onSpeedtest,
-  onPatchUpdate,
   onToggleSource
 }) {
   const pendingCount = getPendingCount(pendingChanges);
@@ -5836,16 +5841,15 @@ function renderSubscriptionSections({
       onReset,
       onRefresh,
       onPing,
-      onSpeedtest,
-      onPatchUpdate
+      onSpeedtest
     }),
-    loading ? renderEmptyState(_("Loading")) : failed ? renderEmptyState(_("Failed to load subscription configs")) : renderSections2({
+    loading && !sections.length ? renderEmptyState(_("Loading")) : failed && !sections.length ? renderEmptyState(actionMessage || _("Failed to load subscription configs")) : renderSections2({
       sections,
       pendingChanges,
       collapsedSources,
       latencyByRow,
       speedByRow,
-      applying,
+      applying: applying || loading || failed || actionStatus === "running",
       onToggle,
       onToggleSource
     })
@@ -5889,8 +5893,6 @@ function render3() {
           },
           onSpeedtest: () => {
           },
-          onPatchUpdate: () => {
-          },
           onToggleSource: () => {
           }
         })
@@ -5912,7 +5914,7 @@ function sleep(ms) {
   return new Promise((resolve) => window.setTimeout(resolve, ms));
 }
 function getEnabledSupportedItems(section) {
-  return section.items.filter((item) => item.supported && item.enabled);
+  return section.items.filter((item) => item.supported);
 }
 async function getSubscriptionSectionsForAction() {
   let sections = store.get().subscriptionItemsWidget.data;
@@ -5971,9 +5973,12 @@ async function fetchSubscriptionItems(status = "idle") {
     );
     const data = await Promise.all(
       subscriptionSections.map(async (section) => {
-        const items = await PodkopShellMethods.getSubscriptionItemsCached(
-          section[".name"]
-        );
+        const [items, sources] = await Promise.all([
+          PodkopShellMethods.getSubscriptionItemsCached(section[".name"]),
+          PodkopShellMethods.getSubscriptionSources(section[".name"])
+        ]);
+        if (!sources.success) throw new Error(sources.error || "subscription_items_load_failed");
+        if (!Array.isArray(sources.data)) throw new Error("source_support_missing");
         if (!items.success || !Array.isArray(items.data)) {
           throw new Error(
             items.success ? "invalid_subscription_items" : items.error
@@ -5982,7 +5987,8 @@ async function fetchSubscriptionItems(status = "idle") {
         return {
           code: section[".name"],
           displayName: section[".name"],
-          items: items.data
+          items: items.data,
+          sources: sources.data
         };
       })
     );
@@ -6002,7 +6008,8 @@ async function fetchSubscriptionItems(status = "idle") {
         data
       }
     });
-  } catch (_error) {
+    return true;
+  } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to fetch subscription items");
     store.set({
       subscriptionItemsWidget: {
@@ -6010,7 +6017,9 @@ async function fetchSubscriptionItems(status = "idle") {
         loading: false,
         failed: true,
         applying: false,
-        status: "error"
+        status: "error",
+        actionStatus: "error",
+        actionMessage: getSubscriptionActionErrorMessage(error, "Не удалось прочитать подписки. Последний список сохранён; попробуйте обновить страницу.")
       }
     });
   }
@@ -6127,6 +6136,7 @@ async function handleRefreshSubscriptions() {
       throw new Error(result.success ? result.data.output : result.error);
     }
     await fetchSubscriptionItems();
+    if (store.get().subscriptionItemsWidget.failed) throw new Error("subscription_items_load_failed");
     setActionState({
       action: "refresh",
       actionStatus: "success",
@@ -6135,13 +6145,11 @@ async function handleRefreshSubscriptions() {
     showToast(_("Subscription configs updated."), "success");
   } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to refresh subscriptions");
-    logger.error("[SUBSCRIPTIONS]", error);
+    await fetchSubscriptionItems();
     setActionState({
       action: "refresh",
       actionStatus: "error",
-      actionMessage: _(
-        "Failed to update subscription configs. Cache was kept."
-      )
+      actionMessage: getSubscriptionActionErrorMessage(error, "Не удалось обновить подписки. Сохранён предыдущий список. Проверьте доступность сервера подписки и повторите обновление.")
     });
     showToast(_("Failed to update subscription configs."), "error");
   }
@@ -6168,19 +6176,11 @@ async function handlePingSubscriptions() {
         actionStatus: "running",
         actionMessage: `${_("Testing latency")}: ${section.displayName}`
       });
-      const result = await PodkopShellMethods.getClashApiGroupLatency(
-        `${section.code}-out`
-      );
-      if (!result.success) {
-        throw new Error(result.error);
+      for (const item of enabledItems) {
+        const result = await PodkopShellMethods.pingSubscription(section.code, item.id);
+        latencyByRow[getRowId2(section.code, item.id)] = result.success && result.data?.success ? result.data.latencyMs : 0;
+        store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,latencyByRow:{...latencyByRow}}});
       }
-      enabledItems.forEach((item, index) => {
-        const tag = `${section.code}-${index + 1}-out`;
-        const latency = result.data[tag];
-        if (typeof latency === "number" && latency > 0) {
-          latencyByRow[getRowId2(section.code, item.id)] = latency;
-        }
-      });
     }
     store.set({
       subscriptionItemsWidget: {
@@ -6407,6 +6407,13 @@ function getErrorText(error) {
   return "";
 }
 function getSubscriptionActionErrorMessage(error, fallback) {
+  const detail = getErrorText(error);
+  if (/cannot_disable_last_enabled_link/.test(detail)) return "В секции должен остаться хотя бы один включённый конфиг из включённой подписки.";
+  if (/source_support_missing/.test(detail)) return "На роутере ещё нет поддержки отключения подписок. Обновите патч и перезагрузите страницу.";
+  if (/invalid_subscription_source/.test(detail)) return "Список подписок изменился. Обновите страницу и повторите выбор.";
+  if (/subscription_items_load_failed|invalid_subscription_items/.test(detail)) return "Не удалось прочитать список после обновления. Предыдущий список сохранён; обновите страницу.";
+  if (/timeout|timed out/i.test(detail)) return "Роутер или сервер подписки не ответил вовремя. Предыдущий список сохранён; повторите обновление.";
+  if (/permission|access denied|session/i.test(detail)) return "Сессия LuCI завершилась или недостаточно прав. Войдите в интерфейс заново.";
   switch (getErrorText(error)) {
     case "service_busy":
       return _("Podkop is restarting now. Try again in a minute.");
@@ -6442,110 +6449,6 @@ function getSubscriptionActionErrorMessage(error, fallback) {
       return fallback;
   }
 }
-function getPatchUpdateMessage(status) {
-  switch (status.message) {
-    case "patch_update_running":
-      return "\u041E\u0431\u043D\u043E\u0432\u043B\u044F\u0435\u043C Podkop \u0438 \u043F\u0430\u0442\u0447 \u043F\u043E\u0434\u043F\u0438\u0441\u043E\u043A.";
-    case "patch_update_noop":
-      return "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D.";
-    case "patch_update_success":
-      return _("Patch updated. Refresh the page in a minute.");
-    case "download_failed":
-      return _("Failed to download patch update.");
-    case "install_failed":
-      return _("Failed to install patch update.");
-    default:
-      return status.message || _("Patch update status is unknown.");
-  }
-}
-async function pollPatchUpdateStatus() {
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    await sleep(3e3);
-    try {
-      const status = await PodkopShellMethods.getSubscriptionPatchUpdateStatus();
-      if (!status.success) {
-        continue;
-      }
-      if (status.data.state === "running") {
-        setActionState({
-          action: "patch",
-          actionStatus: "running",
-          actionMessage: getPatchUpdateMessage(status.data)
-        });
-        continue;
-      }
-      setActionState({
-        action: "patch",
-        actionStatus: status.data.state === "success" ? "success" : "error",
-        actionMessage: getPatchUpdateMessage(status.data)
-      });
-      return status.data;
-    } catch (error) {
-      logger.error("[SUBSCRIPTIONS]", "failed to poll patch update status");
-      logger.error("[SUBSCRIPTIONS]", error);
-    }
-  }
-  setActionState({
-    action: "patch",
-    actionStatus: "success",
-    actionMessage: _("Patch update is still running. Refresh the page later.")
-  });
-  return { state: "success", message: "patch_update_running" };
-}
-async function handlePatchUpdate() {
-  const widget = store.get().subscriptionItemsWidget;
-  if (widget.applying || isActionRunning() || getPendingCount2(widget.pendingChanges) > 0) {
-    return;
-  }
-  setActionState({
-    action: "patch",
-    actionStatus: "running",
-    actionMessage: "\u041E\u0431\u043D\u043E\u0432\u043B\u044F\u0435\u043C Podkop \u0438 \u043F\u0430\u0442\u0447 \u043F\u043E\u0434\u043F\u0438\u0441\u043E\u043A."
-  });
-  try {
-    const result = await PodkopShellMethods.updateSubscriptionPatch();
-    if (!result.success || !result.data.success) {
-      throw new Error(result.success ? result.data.error : result.error);
-    }
-    const status = await pollPatchUpdateStatus();
-    const success = status.state === "success";
-    showToast(
-      status.message === "patch_update_noop" ? "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D." : success ? _("Patch update started.") : _("Patch update failed."),
-      success ? "success" : "error"
-    );
-  } catch (error) {
-    logger.error("[SUBSCRIPTIONS]", "failed to start patch update");
-    logger.error("[SUBSCRIPTIONS]", error);
-    try {
-      const status = await PodkopShellMethods.getSubscriptionPatchUpdateStatus();
-      if (status.success && (status.data.state === "running" || status.data.state === "success")) {
-        setActionState({
-          action: "patch",
-          actionStatus: status.data.state === "success" ? "success" : "running",
-          actionMessage: getPatchUpdateMessage(status.data)
-        });
-        if (status.data.state === "running") {
-          const status2 = await pollPatchUpdateStatus();
-          const success = status2.state === "success";
-          showToast(
-            status2.message === "patch_update_noop" ? "\u041F\u0430\u0442\u0447 \u0443\u0436\u0435 \u0430\u043A\u0442\u0443\u0430\u043B\u0435\u043D." : success ? _("Patch update started.") : _("Patch update failed."),
-            success ? "success" : "error"
-          );
-        }
-        return;
-      }
-    } catch (statusError) {
-      logger.error("[SUBSCRIPTIONS]", "failed to read patch update status");
-      logger.error("[SUBSCRIPTIONS]", statusError);
-    }
-    setActionState({
-      action: "patch",
-      actionStatus: "error",
-      actionMessage: _("Failed to start patch update.")
-    });
-    showToast(_("Failed to start patch update."), "error");
-  }
-}
 async function renderSubscriptionItemsWidget() {
   logger.debug("[SUBSCRIPTIONS]", "renderSubscriptionItemsWidget");
   const subscriptionItemsWidget = store.get().subscriptionItemsWidget;
@@ -6569,7 +6472,6 @@ async function renderSubscriptionItemsWidget() {
     onRefresh: handleRefreshSubscriptions,
     onPing: handlePingSubscriptions,
     onSpeedtest: handleSpeedtestSubscriptions,
-    onPatchUpdate: handlePatchUpdate,
     onToggleSource: handleToggleSource
   });
   return preserveScrollForPage(() => {
@@ -6628,6 +6530,14 @@ var styles5 = `
     box-sizing: border-box;
 }
 
+#cbi-podkop-subscriptions .cbi-value-field,
+#cbi-podkop-subscriptions .cbi-value,
+#subscriptions-sections-grid {
+    width: 100%; min-width: 0; margin-left: 0; box-sizing: border-box;
+}
+.pdk_subscriptions-page__source-controls { display:flex; align-items:center; gap:8px; min-width:0; }
+.pdk_subscriptions-page__source-toggle { display:flex; align-items:center; gap:6px; padding:8px; min-height:44px; flex-shrink:0; cursor:pointer; }
+.pdk_subscriptions-page__source-controls .pdk_subscriptions-page__source-header { flex:1; min-width:0; flex-wrap:wrap; }
 #cbi-podkop-subscriptions > h3 {
     display: none;
 }
@@ -6662,9 +6572,8 @@ var styles5 = `
     min-width: 0;
     color: var(--text-color-medium);
     line-height: 1.35;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .pdk_subscriptions-page__toolbar-actions {
@@ -6778,9 +6687,8 @@ var styles5 = `
 .pdk_subscriptions-page__source-summary {
     color: var(--text-color-medium);
     min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
 
 .pdk_subscriptions-page__table-wrap {
@@ -6791,7 +6699,7 @@ var styles5 = `
 
 .pdk_subscriptions-page__table {
     width: 100%;
-    min-width: 820px;
+    min-width: 0;
     table-layout: fixed;
     border-collapse: collapse;
 }
@@ -6801,9 +6709,9 @@ var styles5 = `
     padding: 8px;
     border-bottom: 1px var(--background-color-low, lightgray) solid;
     text-align: left;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    vertical-align: middle;
 }
 
 .pdk_subscriptions-page__table th {
@@ -6811,7 +6719,7 @@ var styles5 = `
 }
 
 .pdk_subscriptions-page__toggle-cell {
-    width: 58px;
+    width: 64px;
 }
 
 .pdk_subscriptions-page__toggle-target {
@@ -6825,34 +6733,34 @@ var styles5 = `
 
 .pdk_subscriptions-page__table th:nth-child(1),
 .pdk_subscriptions-page__table td:nth-child(1) {
-    width: 58px;
+    width: 64px;
 }
 
 .pdk_subscriptions-page__table th:nth-child(2),
 .pdk_subscriptions-page__table td:nth-child(2) {
-    width: 22%;
+    width: auto;
 }
 
 .pdk_subscriptions-page__table th:nth-child(3),
 .pdk_subscriptions-page__table td:nth-child(3) {
-    width: 105px;
+    width: 108px;
 }
 
 .pdk_subscriptions-page__table th:nth-child(4),
 .pdk_subscriptions-page__table td:nth-child(4) {
-    width: 115px;
+    width: 116px;
 }
 
 .pdk_subscriptions-page__table th:nth-child(5),
 .pdk_subscriptions-page__table td:nth-child(5),
 .pdk_subscriptions-page__table th:nth-child(6),
 .pdk_subscriptions-page__table td:nth-child(6) {
-    width: 110px;
+    width: 104px;
 }
 
 .pdk_subscriptions-page__table th:nth-child(7),
 .pdk_subscriptions-page__table td:nth-child(7) {
-    width: 150px;
+    width: 130px;
 }
 
 .pdk_subscriptions-page__row--unsupported {

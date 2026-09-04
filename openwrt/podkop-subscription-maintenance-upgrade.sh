@@ -297,12 +297,13 @@ if ! grep -q "subscription_runtime_busy" "$target" 2>/dev/null; then
 	rm -f "$tmp"
 fi
 
-if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608' "$target" 2>/dev/null ||
+if ! grep -Fqx '# subscription_isolated_probe_v1 end' "$target" 2>/dev/null && {
+	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_ATTEMPTS:-3' "$target" 2>/dev/null ||
-	! grep -q "^get_subscription_benchmark_attempts()" "$target" 2>/dev/null; then
+	! grep -q "^get_subscription_benchmark_attempts()" "$target" 2>/dev/null; }; then
 	benchmark_helpers="$(mktemp)"
 	cat > "$benchmark_helpers" <<'BENCHMARK_HELPERS_EOF'
 get_subscription_benchmark_port() {
@@ -367,7 +368,8 @@ BENCHMARK_HELPERS_EOF
 	rm -f "$tmp" "$benchmark_helpers"
 fi
 
-if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608' "$target" 2>/dev/null ||
+if ! grep -Fqx '# subscription_isolated_probe_v1 end' "$target" 2>/dev/null && {
+	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15' "$target" 2>/dev/null ||
 	! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0' "$target" 2>/dev/null ||
@@ -379,7 +381,7 @@ if ! grep -q 'PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608' "$target" 2>/dev/nul
 	! grep -q "clash_ready" "$target" 2>/dev/null ||
 	! grep -q "service_busy" "$target" 2>/dev/null ||
 	! grep -q "clash_api_wait_proxy_now" "$target" 2>/dev/null ||
-	! grep -q "restore_proxy" "$target" 2>/dev/null; then
+	! grep -q "restore_proxy" "$target" 2>/dev/null; }; then
 	speedtest_function="$(mktemp)"
 	cat > "$speedtest_function" <<'SPEEDTEST_EOF'
 subscription_speedtest() {
@@ -1152,7 +1154,8 @@ if ! grep -q "subscription_action_lock_acquire \"speedtest\"" "$target" 2>/dev/n
 	rm -f "$tmp"
 fi
 
-if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608" "$target" 2>/dev/null ||
+if ! grep -Fqx '# subscription_isolated_probe_v1 end' "$target" 2>/dev/null && {
+	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608" "$target" 2>/dev/null ||
 	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_STREAMS:-4" "$target" 2>/dev/null ||
 	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_TIMEOUT:-15" "$target" 2>/dev/null ||
 	! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0" "$target" 2>/dev/null ||
@@ -1160,7 +1163,7 @@ if ! grep -q "PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608" "$target" 2>/dev/nul
 	! grep -q -- "--connect-timeout 4" "$target" 2>/dev/null ||
 	! grep -q "time_starttransfer" "$target" 2>/dev/null ||
 	! grep -q 'local only_id="$2"' "$target" 2>/dev/null ||
-	! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null; then
+	! grep -q "exit 130' INT TERM HUP" "$target" 2>/dev/null; }; then
 	sed -i \
 		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_BYTES:-8388608#g' \
 		-e 's#PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-[0-9][0-9]*#PODKOP_SUBSCRIPTION_BENCHMARK_WARMUP_BYTES:-0#g' \

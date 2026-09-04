@@ -132,8 +132,15 @@ if command -v get_subscription_request_hwid >/dev/null 2>&1; then
 		record_failure 'subscription HWID is not stable for the same provider host'
 	[ "$hwid_a1" != "$hwid_b" ] ||
 		record_failure 'subscription HWID is reused across different provider hosts'
-	[ "$(stat -c '%a' "$PODKOP_SUBSCRIPTION_HWID_SEED_FILE")" = 600 ] ||
-		record_failure 'subscription HWID seed is not stored with mode 600'
+	case "$(uname -s)" in
+	MINGW*|MSYS*|CYGWIN*)
+		printf '%s\n' 'SKIP: POSIX mode 600 must be verified on the OpenWrt canary (Windows filesystem)'
+		;;
+	*)
+		[ "$(stat -c '%a' "$PODKOP_SUBSCRIPTION_HWID_SEED_FILE")" = 600 ] ||
+			record_failure 'subscription HWID seed is not stored with mode 600'
+		;;
+	esac
 	grep -q '/proc/sys/kernel/random/uuid' "$runtime" ||
 		record_failure 'subscription HWID generation still depends on optional OpenWrt utilities'
 
