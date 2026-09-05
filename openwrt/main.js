@@ -711,9 +711,9 @@ var PodkopShellMethods = {
   globalCheck: async () => callBaseMethod(Podkop.AvailableMethods.GLOBAL_CHECK),
   showSingBoxConfig: async () => callBaseMethod(Podkop.AvailableMethods.SHOW_SING_BOX_CONFIG),
   checkLogs: async () => callBaseMethod(Podkop.AvailableMethods.CHECK_LOGS),
-  updateSubscriptions: async () => callBaseMethod(
+  updateSubscriptions: async (sectionCode, sourceId) => callBaseMethod(
     Podkop.AvailableMethods.SUBSCRIPTION_UPDATE_JSON,
-    [],
+    sourceId ? [sectionCode, sourceId] : [],
     "/usr/bin/podkop",
     12e4
   ),
@@ -5335,6 +5335,13 @@ function getEffectiveSourceEnabled(pendingChanges, sectionCode, source) {
   const key = sectionCode + ":source:" + source.id;
   return key in pendingChanges ? pendingChanges[key] : source.enabled !== false;
 }
+function getSubscriptionActionSections(sections, target) {
+  if (!target?.sourceId) return sections;
+  const section = sections.find(section => section.code === target.sectionCode);
+  const source = section && getSourceGroups(section).find(source => source.id === target.sourceId);
+  if (!source) throw new Error("unknown_subscription_source");
+  return [{...section, displayName:`${section.displayName} / ${_("Subscription")} ${source.sourceIndex}`, items:source.items}];
+}
 function getSourceSummary({
   section,
   group,
@@ -5671,7 +5678,8 @@ function renderSourceGroup({
   applying,
   enabledSupportedCount,
   onToggle,
-  onToggleSource
+  onToggleSource,
+  sourceActions
 }) {
   const collapsed = Boolean(
     collapsedSources[getSourceId(section.code, group.sourceIndex)]
@@ -5691,8 +5699,7 @@ function renderSourceGroup({
         E("input", {type:"checkbox", checked:getEffectiveSourceEnabled(pendingChanges, section.code, group) ? "checked" : void 0,
           disabled: applying || !group.id ? "disabled" : void 0,
           "aria-label": `Использовать подписку ${group.sourceIndex}`,
-          change:event => onToggle(section.code, {id:`source:${group.id}`,enabled:group.enabled !== false}, event.target.checked)}),
-        E("span", {}, getEffectiveSourceEnabled(pendingChanges, section.code, group) ? "В работе" : "Отключена")
+          change:event => onToggle(section.code, {id:`source:${group.id}`,enabled:group.enabled !== false}, event.target.checked)})
       ]),
       E(
         "button",
@@ -5717,6 +5724,7 @@ function renderSourceGroup({
           )
         ]
       ),
+      renderSubscriptionSourceActions(section, group, sourceActions)
       ]),
       ...collapsed ? [] : [
         renderSourceTable({
@@ -5733,6 +5741,23 @@ function renderSourceGroup({
     ]
   );
 }
+function renderSubscriptionSourceActions(section, group, actions) {
+  const target = {sectionCode:section.code, sourceId:group.id};
+  const selected = actions.target?.sectionCode === section.code && actions.target?.sourceId === group.id;
+  const stopping = actions.speedRunning && selected;
+  return E("div", {class:"pdk_subscriptions-page__source-actions"}, [
+    renderButton({title:`Обновить подписку ${group.sourceIndex}`, ariaLabel:`Обновить подписку ${group.sourceIndex}`,
+      text:_("Refresh"), hideText:true, icon:renderRotateCcwIcon24,
+      disabled:!group.id || actions.refreshDisabled, onClick:()=>actions.onRefresh(target)}),
+    renderButton({title:`Пинг подписки ${group.sourceIndex}`, ariaLabel:`Пинг подписки ${group.sourceIndex}`,
+      text:_("Ping"), hideText:true, icon:renderSearchIcon24,
+      disabled:!group.id || actions.disabled || !group.items.some(item=>item.supported), onClick:()=>actions.onPing(target)}),
+    renderButton({title:stopping ? _("Stop speed test") : `Бенчмарк подписки ${group.sourceIndex}`,
+      ariaLabel:stopping ? _("Stop speed test") : `Бенчмарк подписки ${group.sourceIndex}`,
+      text:stopping ? _("Stop") : _("Speed"), hideText:true, icon:stopping ? renderCircleStopIcon24 : renderSquareChartGanttIcon24,
+      disabled:!stopping && (!group.id || actions.disabled || !group.items.some(item=>item.supported)), onClick:()=>actions.onSpeedtest(target)})
+  ]);
+}
 function renderSection({
   section,
   pendingChanges,
@@ -5741,7 +5766,8 @@ function renderSection({
   speedByRow,
   applying,
   onToggle,
-  onToggleSource
+  onToggleSource,
+  sourceActions
 }) {
   const enabledSupportedCount = section.items.filter(
     (item) => item.supported && getEffectiveEnabled(pendingChanges, section.code, item)
@@ -5769,7 +5795,8 @@ function renderSection({
           applying,
           enabledSupportedCount,
           onToggle,
-          onToggleSource
+          onToggleSource,
+          sourceActions
         })
       )
     )
@@ -5783,7 +5810,8 @@ function renderSections2({
   speedByRow,
   applying,
   onToggle,
-  onToggleSource
+  onToggleSource,
+  sourceActions
 }) {
   if (sections.length === 0) {
     return renderEmptyState("\u041D\u0435\u0442 \u0441\u0435\u043A\u0446\u0438\u0439 \u041C\u0438\u043A\u0441");
@@ -5800,7 +5828,8 @@ function renderSections2({
         speedByRow,
         applying,
         onToggle,
-        onToggleSource
+        onToggleSource,
+        sourceActions
       })
     )
   );
@@ -5824,7 +5853,8 @@ function renderSubscriptionSections({
   onRefresh,
   onPing,
   onSpeedtest,
-  onToggleSource
+  onToggleSource,
+  actionTarget
 }) {
   const pendingCount = getPendingCount(pendingChanges);
   return E("div", { class: "pdk_subscriptions-page__content" }, [
@@ -5851,7 +5881,14 @@ function renderSubscriptionSections({
       speedByRow,
       applying: applying || loading || failed || actionStatus === "running",
       onToggle,
-      onToggleSource
+      onToggleSource,
+      sourceActions: {
+        target:actionTarget,
+        disabled:applying || loading || failed || actionStatus === "running" || pendingCount > 0,
+        refreshDisabled:applying || loading || actionStatus === "running" || (!failed && pendingCount > 0),
+        speedRunning:action === "speed" && actionStatus === "running",
+        onRefresh, onPing, onSpeedtest
+      }
     })
   ]);
 }
@@ -5945,7 +5982,8 @@ function canRefreshSubscriptions() {
 function setActionState({
   action,
   actionStatus,
-  actionMessage
+  actionMessage,
+  actionTarget = store.get().subscriptionItemsWidget.actionTarget
 }) {
   const widget = store.get().subscriptionItemsWidget;
   store.set({
@@ -5953,11 +5991,12 @@ function setActionState({
       ...widget,
       action,
       actionStatus,
-      actionMessage
+      actionMessage,
+      actionTarget
     }
   });
 }
-async function fetchSubscriptionItems(status = "idle") {
+async function fetchSubscriptionItems(status = "idle", refreshedSource) {
   const prev = store.get().subscriptionItemsWidget;
   store.set({
     subscriptionItemsWidget: {
@@ -6003,8 +6042,8 @@ async function fetchSubscriptionItems(status = "idle") {
         actionStatus: "idle",
         actionMessage: "",
         pendingChanges: {},
-        latencyByRow: {},
-        speedByRow: {},
+        latencyByRow: refreshedSource?.sourceId ? retainOtherSubscriptionResults(prev.latencyByRow, data, refreshedSource) : {},
+        speedByRow: refreshedSource?.sourceId ? retainOtherSubscriptionResults(prev.speedByRow, data, refreshedSource) : {},
         data
       }
     });
@@ -6023,6 +6062,11 @@ async function fetchSubscriptionItems(status = "idle") {
       }
     });
   }
+}
+function retainOtherSubscriptionResults(results, sections, target) {
+  const refreshed = new Set(getSubscriptionActionSections(sections, target).flatMap(section => section.items.map(item => getRowId2(section.code,item.id))));
+  const existing = new Set(sections.flatMap(section => section.items.map(item => getRowId2(section.code,item.id))));
+  return Object.fromEntries(Object.entries(results || {}).filter(([id]) => existing.has(id) && !refreshed.has(id)));
 }
 function handleToggle(sectionCode, item, enabled) {
   const widget = store.get().subscriptionItemsWidget;
@@ -6121,21 +6165,22 @@ async function handleApply() {
     await fetchSubscriptionItems("error");
   }
 }
-async function handleRefreshSubscriptions() {
+async function handleRefreshSubscriptions(target) {
   if (!canRefreshSubscriptions()) {
     return;
   }
   setActionState({
     action: "refresh",
     actionStatus: "running",
+    actionTarget:target?.sourceId ? target : null,
     actionMessage: _("Updating subscription configs. Podkop may be reloaded.")
   });
   try {
-    const result = await PodkopShellMethods.updateSubscriptions();
+    const result = await PodkopShellMethods.updateSubscriptions(target?.sectionCode, target?.sourceId);
     if (!result.success || !result.data.success) {
       throw new Error(result.success ? result.data.output : result.error);
     }
-    await fetchSubscriptionItems();
+    await fetchSubscriptionItems("idle", target);
     if (store.get().subscriptionItemsWidget.failed) throw new Error("subscription_items_load_failed");
     setActionState({
       action: "refresh",
@@ -6145,7 +6190,7 @@ async function handleRefreshSubscriptions() {
     showToast(_("Subscription configs updated."), "success");
   } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to refresh subscriptions");
-    await fetchSubscriptionItems();
+    await fetchSubscriptionItems("idle", target);
     setActionState({
       action: "refresh",
       actionStatus: "error",
@@ -6154,18 +6199,19 @@ async function handleRefreshSubscriptions() {
     showToast(_("Failed to update subscription configs."), "error");
   }
 }
-async function handlePingSubscriptions() {
+async function handlePingSubscriptions(target) {
   if (!canRunServiceAction()) {
     return;
   }
-  const latencyByRow = {};
+  const latencyByRow = target?.sourceId ? {...store.get().subscriptionItemsWidget.latencyByRow} : {};
   setActionState({
     action: "ping",
     actionStatus: "running",
+    actionTarget:target?.sourceId ? target : null,
     actionMessage: _("Loading subscription configs")
   });
   try {
-    const sections = await getSubscriptionSectionsForAction();
+    const sections = getSubscriptionActionSections(await getSubscriptionSectionsForAction(), target);
     for (const section of sections) {
       const enabledItems = getEnabledSupportedItems(section);
       if (!enabledItems.length) {
@@ -6205,7 +6251,7 @@ async function handlePingSubscriptions() {
     showToast(_("Failed to test latency."), "error");
   }
 }
-async function handleSpeedtestSubscriptions() {
+async function handleSpeedtestSubscriptions(target) {
   if (isSpeedtestRunning()) {
     try {
       await stopSpeedtestSubscriptions();
@@ -6228,16 +6274,17 @@ async function handleSpeedtestSubscriptions() {
   if (!canRunServiceAction()) {
     return;
   }
-  const speedByRow = {};
+  const speedByRow = target?.sourceId ? {...store.get().subscriptionItemsWidget.speedByRow} : {};
   const runToken = speedtestRunToken += 1;
   let failedItems = 0;
   setActionState({
     action: "speed",
     actionStatus: "running",
+    actionTarget:target?.sourceId ? target : null,
     actionMessage: _("Loading subscription configs")
   });
   try {
-    const sections = await getSubscriptionSectionsForAction();
+    const sections = getSubscriptionActionSections(await getSubscriptionSectionsForAction(), target);
     for (const section of sections) {
       const enabledItems = getEnabledSupportedItems(section);
       if (!enabledItems.length) {
@@ -6472,6 +6519,7 @@ async function renderSubscriptionItemsWidget() {
     onRefresh: handleRefreshSubscriptions,
     onPing: handlePingSubscriptions,
     onSpeedtest: handleSpeedtestSubscriptions,
+    actionTarget: subscriptionItemsWidget.actionTarget,
     onToggleSource: handleToggleSource
   });
   return preserveScrollForPage(() => {
@@ -6538,6 +6586,12 @@ var styles5 = `
 .pdk_subscriptions-page__source-controls { display:flex; align-items:center; gap:8px; min-width:0; }
 .pdk_subscriptions-page__source-toggle { display:flex; align-items:center; gap:6px; padding:8px; min-height:44px; flex-shrink:0; cursor:pointer; }
 .pdk_subscriptions-page__source-controls .pdk_subscriptions-page__source-header { flex:1; min-width:0; flex-wrap:wrap; }
+.pdk_subscriptions-page__source-actions { display:flex; gap:6px; flex-shrink:0; }
+@media (max-width: 600px) {
+  .pdk_subscriptions-page__source-controls { flex-wrap:wrap; gap:4px; }
+  .pdk_subscriptions-page__source-actions { margin-left:auto; padding:0 4px 6px; }
+  .pdk_subscriptions-page__source-controls .pdk_subscriptions-page__source-header { flex-basis:calc(100% - 48px); }
+}
 #cbi-podkop-subscriptions > h3 {
     display: none;
 }

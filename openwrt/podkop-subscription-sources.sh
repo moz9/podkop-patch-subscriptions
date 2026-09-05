@@ -1,5 +1,40 @@
 # subscription_sources_v1 begin
 # A source is identified by its URL hash, never by its position in the UI.
+# subscription_source_actions_v1
+subscription_cached_source_append() {
+    local section="$1" source_id="$2" source_index="$3" active="$4" all="$5" skipped="$6" items="$7"
+    local cached source_items link id count expected all_cache skipped_cache
+    cached="$(get_subscription_items_cache_path "$section")"
+    [ -s "$cached" ] || return 0
+    source_items="$(jq -c --arg id "$source_id" --argjson index "$source_index" '
+        map(select(if (.sourceIds // [] | length) > 0 then (.sourceIds | index($id)) != null else (.sourceIndex // 1) == $index end)
+            | .sourceIds=[$id] | .sourceIndex=$index | .sourceName=("Subscription " + ($index|tostring)))
+    ' "$cached")" || return 1
+    printf '%s\n' "$source_items" | jq -c '.[]' >> "$items" || return 1
+    all_cache="$(get_subscription_all_cache_path "$section")"
+    count=0
+    if [ -s "$all_cache" ]; then
+        while IFS= read -r link || [ -n "$link" ]; do
+            [ -n "$link" ] || continue
+            id="$(get_subscription_link_id "$link")"
+            if printf '%s\n' "$source_items" | jq -e --arg id "$id" 'any(.[]; .id==$id and .supported)' >/dev/null; then
+                printf '%s\n' "$link" >> "$all"
+                count=$((count + 1))
+                if printf '%s\n' "$source_items" | jq -e --arg id "$id" 'any(.[]; .id==$id and .enabled)' >/dev/null; then
+                    printf '%s\n' "$link" >> "$active"
+                fi
+            fi
+        done < "$all_cache"
+    fi
+    expected="$(printf '%s\n' "$source_items" | jq '[.[] | select(.supported)] | length')"
+    [ "$count" -eq "$expected" ] || return 1
+    skipped_cache="$(get_subscription_skipped_cache_path "$section")"
+    if [ -s "$skipped_cache" ]; then
+        jq -c --argjson items "$source_items" '.[] | . as $skip | select(any($items[]; .id==$skip.id))' "$skipped_cache" >> "$skipped" || return 1
+    fi
+    return 0
+}
+
 subscription_source_policy() {
     jq -c --argjson disabled "$1" --argjson excluded "$2" '
         map(. as $item

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "patchVersion": "20260904-subscription-controls-v2",
+  "patchVersion": "20260905-source-actions-v1",
   "supportedPodkopVersions": [
     "0.7.19",
     "0.7.20",
@@ -8,5 +8,5 @@
     "0.7.22"
   ],
   "recommendedPodkopVersion": "0.7.22",
-  "publishedAt": "2026-09-04T16:30:00+07:00"
+  "publishedAt": "2026-09-05T12:30:00+07:00"
 }

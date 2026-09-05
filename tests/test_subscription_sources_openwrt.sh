@@ -70,4 +70,20 @@ refresh_subscription_cache main >/dev/null
 jq -e '[.[] | select(.sourceIndex == 1 and .runtimeEnabled)] | length == 0' "$items" >/dev/null
 jq -e --arg id "$source1" 'any(.[]; (.sourceIds | index($id)) != null)' "$items" >/dev/null
 printf 'PASS: downloaded subscriptions retain source identity and disabled traffic policy\n'
+eval "$(sed -n '/^download_subscription_to_file() {$/,/^}$/p' "$runtime" | sed '1s/download_subscription_to_file/source_actions_original_download/')"
+download_subscription_to_file() {
+    get_subscription_link_id "$1" >> "$test_work/source-downloads"
+    source_actions_original_download "$@"
+}
+active_before="$(sha256sum "$(get_subscription_cache_path main)")"
+peers_before="$(jq -c --arg id "$source2" '[.[] | select(.sourceIds|index($id)) | .id] | sort' "$items")"
+reloads_before="$(wc -l < "$test_work/reloads")"
+subscription_update_json main "$source1" | jq -e '.success' >/dev/null
+[ "$(cat "$test_work/source-downloads")" = "$source1" ]
+[ "$active_before" = "$(sha256sum "$(get_subscription_cache_path main)")" ]
+[ "$peers_before" = "$(jq -c --arg id "$source2" '[.[] | select(.sourceIds|index($id)) | .id] | sort' "$items")" ]
+[ "$reloads_before" = "$(wc -l < "$test_work/reloads")" ]
+[ "$live_hash" = "$(sha256sum /etc/config/podkop /etc/sing-box/config.json)" ]
+[ "$live_pid" = "$(pidof sing-box)" ]
+printf 'PASS: individual disabled-source refresh downloads only that source; peers, live settings and process unchanged\n'
 rm -rf "$test_work"

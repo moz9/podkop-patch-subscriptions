@@ -1211,6 +1211,41 @@ append_subscription_skipped_proxy_link() {
 
 # subscription_sources_v1 begin
 # A source is identified by its URL hash, never by its position in the UI.
+# subscription_source_actions_v1
+subscription_cached_source_append() {
+    local section="$1" source_id="$2" source_index="$3" active="$4" all="$5" skipped="$6" items="$7"
+    local cached source_items link id count expected all_cache skipped_cache
+    cached="$(get_subscription_items_cache_path "$section")"
+    [ -s "$cached" ] || return 0
+    source_items="$(jq -c --arg id "$source_id" --argjson index "$source_index" '
+        map(select(if (.sourceIds // [] | length) > 0 then (.sourceIds | index($id)) != null else (.sourceIndex // 1) == $index end)
+            | .sourceIds=[$id] | .sourceIndex=$index | .sourceName=("Subscription " + ($index|tostring)))
+    ' "$cached")" || return 1
+    printf '%s\n' "$source_items" | jq -c '.[]' >> "$items" || return 1
+    all_cache="$(get_subscription_all_cache_path "$section")"
+    count=0
+    if [ -s "$all_cache" ]; then
+        while IFS= read -r link || [ -n "$link" ]; do
+            [ -n "$link" ] || continue
+            id="$(get_subscription_link_id "$link")"
+            if printf '%s\n' "$source_items" | jq -e --arg id "$id" 'any(.[]; .id==$id and .supported)' >/dev/null; then
+                printf '%s\n' "$link" >> "$all"
+                count=$((count + 1))
+                if printf '%s\n' "$source_items" | jq -e --arg id "$id" 'any(.[]; .id==$id and .enabled)' >/dev/null; then
+                    printf '%s\n' "$link" >> "$active"
+                fi
+            fi
+        done < "$all_cache"
+    fi
+    expected="$(printf '%s\n' "$source_items" | jq '[.[] | select(.supported)] | length')"
+    [ "$count" -eq "$expected" ] || return 1
+    skipped_cache="$(get_subscription_skipped_cache_path "$section")"
+    if [ -s "$skipped_cache" ]; then
+        jq -c --argjson items "$source_items" '.[] | . as $skip | select(any($items[]; .id==$skip.id))' "$skipped_cache" >> "$skipped" || return 1
+    fi
+    return 0
+}
+
 subscription_source_policy() {
     jq -c --argjson disabled "$1" --argjson excluded "$2" '
         map(. as $item
@@ -1510,7 +1545,12 @@ refresh_subscription_cache() {
     collect_subscription_excluded_ids "$section" "$excluded_ids_file"
     http_proxy_address="$(get_service_proxy_address)"
     mkdir -p "$SUBSCRIPTION_CACHE_DIR" || return 1
-    printf '{}\n' > "$(get_subscription_items_cache_path "$section").refresh-errors.tmp.$$"
+    if [ -n "${SUBSCRIPTION_UPDATE_SOURCE_ID:-}" ]; then
+        { cat "$(get_subscription_items_cache_path "$section").refresh-errors" 2>/dev/null || printf '{}\n'; } |
+            jq --arg id "$SUBSCRIPTION_UPDATE_SOURCE_ID" 'del(.[$id])' > "$(get_subscription_items_cache_path "$section").refresh-errors.tmp.$$"
+    else
+        printf '{}\n' > "$(get_subscription_items_cache_path "$section").refresh-errors.tmp.$$"
+    fi
     mv "$(get_subscription_items_cache_path "$section").refresh-errors.tmp.$$" "$(get_subscription_items_cache_path "$section").refresh-errors"
     failed_sources=0
     skipped_sources=0
@@ -1522,6 +1562,14 @@ refresh_subscription_cache() {
 
     while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
         [ -n "$subscription_url" ] || continue
+        if [ -n "${SUBSCRIPTION_UPDATE_SOURCE_ID:-}" ] &&
+            [ "$(get_subscription_link_id "$subscription_url")" != "$SUBSCRIPTION_UPDATE_SOURCE_ID" ]; then
+            subscription_cached_source_append "$section" "$(get_subscription_link_id "$subscription_url")" "$source_index" \
+                "$merged_links_file" "$merged_all_links_file" "$merged_skipped_links_file" "$merged_items_file" ||
+                failed_sources=$((failed_sources + 1))
+            source_index=$((source_index + 1))
+            continue
+        fi
         case "$subscription_url" in
         http://* | https://*) ;;
         *)
@@ -1583,7 +1631,7 @@ refresh_subscription_cache() {
     done < "$urls_file"
 
 
-    if [ "$failed_sources" -gt 0 ]; then
+    if [ "$failed_sources" -gt 0 ] || { [ -n "${SUBSCRIPTION_UPDATE_SOURCE_ID:-}" ] && [ "$skipped_sources" -gt 0 ]; }; then
         log "Subscription source download failed; the previous complete cache was kept" "warn"
         rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
             "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
@@ -2474,23 +2522,40 @@ subscription_update() {
     local pending_path
 
     SUBSCRIPTION_UPDATE_TARGET="$1"
+    SUBSCRIPTION_UPDATE_SOURCE_ID="${2:-}"
     SUBSCRIPTION_FOUND_SECTIONS=0
     SUBSCRIPTION_UPDATED_SECTIONS=0
     SUBSCRIPTION_FAILED_SECTIONS=0
 
+    if [ -n "$SUBSCRIPTION_UPDATE_SOURCE_ID" ]; then
+        validate_subscription_section_name "$SUBSCRIPTION_UPDATE_TARGET" &&
+            validate_subscription_urltest_section "$SUBSCRIPTION_UPDATE_TARGET" &&
+            get_subscription_sources "$SUBSCRIPTION_UPDATE_TARGET" |
+                jq -e --arg id "$SUBSCRIPTION_UPDATE_SOURCE_ID" 'any(.[]; .id==$id)' >/dev/null || {
+            echolog "Unknown subscription source"
+            return 1
+        }
+    fi
+
     if subscription_runtime_busy; then
         echolog "Subscription runtime is busy, skipping subscription update"
+        [ -z "$SUBSCRIPTION_UPDATE_SOURCE_ID" ] || return 1
         return 0
     fi
 
     if ! subscription_action_lock_acquire "subscription_update"; then
         echolog "Subscription runtime is busy, skipping subscription update"
+        [ -z "$SUBSCRIPTION_UPDATE_SOURCE_ID" ] || return 1
         return 0
     fi
     trap 'subscription_action_lock_release' EXIT INT TERM
 
     echolog "Starting subscription update..."
     config_foreach subscription_update_section_handler "section"
+
+    if [ -n "$SUBSCRIPTION_UPDATE_SOURCE_ID" ] && [ "$SUBSCRIPTION_FAILED_SECTIONS" -gt 0 ]; then
+        return 1
+    fi
 
     if [ "$SUBSCRIPTION_FOUND_SECTIONS" -eq 0 ]; then
         echolog "No Subscription URLTest sections found"
@@ -2520,8 +2585,8 @@ subscription_update_json() {
     local section="$1"
     local output status success
 
-    output="$(subscription_update "$section" 2>&1)"
-    status=$?
+    status=0
+    output="$(subscription_update "$section" "${2:-}" 2>&1)" || status=$?
     if [ "$status" -eq 0 ]; then
         success=true
     else
@@ -5497,7 +5562,7 @@ subscription_update)
     subscription_update "$2"
     ;;
 subscription_update_json)
-    subscription_update_json "$2"
+    subscription_update_json "$2" "$3"
     ;;
 subscription_ping)
     subscription_ping "$2" "$3"

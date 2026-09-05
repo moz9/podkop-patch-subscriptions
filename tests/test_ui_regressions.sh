@@ -108,7 +108,7 @@ if ! sed -n '/function canRefreshSubscriptions()/,/^}/p' openwrt/main.js \
     fail 'subscription refresh must remain available after a cache load failure, including stale pending UI state'
 fi
 
-if ! sed -n '/async function handleRefreshSubscriptions()/,/^}/p' openwrt/main.js \
+if ! sed -n '/async function handleRefreshSubscriptions(/,/^}/p' openwrt/main.js \
     | grep -q 'canRefreshSubscriptions()'; then
     fail 'subscription refresh handler must use the recoverable refresh guard'
 fi
