@@ -11,21 +11,30 @@ trap 'rm -f "$tmp"' EXIT
     exit 1
 }
 
-if grep -q '^subscription_patch_update_check() {' "$target" 2>/dev/null &&
-    grep -q '^get_subscription_patch_update_log() {' "$target" 2>/dev/null &&
-    grep -q '^subscription_patch_update_check)$' "$target" 2>/dev/null; then
+has_wrapper() {
+    sed -n "/^$1() {/,/^}/p" "$target" | grep -Fq "/usr/bin/podkop-update-manager $2"
+}
+update=0; status=0; check=0; log=0; check_case=0; log_case=0
+has_wrapper subscription_patch_update update_start || update=1
+has_wrapper get_subscription_patch_update_status status || status=1
+grep -q '^subscription_patch_update_check() {' "$target" || check=1
+grep -q '^get_subscription_patch_update_log() {' "$target" || log=1
+grep -q '^subscription_patch_update_check)$' "$target" || check_case=1
+grep -q '^get_subscription_patch_update_log)$' "$target" || log_case=1
+if [ "$update$status$check$log$check_case$log_case" = 000000 ]; then
     exit 0
 fi
 
-awk '
+awk -v need_update="$update" -v need_status="$status" -v need_check="$check" -v need_log="$log" \
+    -v need_check_case="$check_case" -v need_log_case="$log_case" '
 BEGIN {
-    update_wrapper = 0
-    status_wrapper = 0
-    helper_functions = 0
-    dispatcher = 0
+    update_wrapper = !need_update
+    status_wrapper = !need_status
+    helper_functions = !(need_check || need_log)
+    dispatcher = !(need_check_case || need_log_case)
 }
 
-$0 == "subscription_patch_update() {" {
+$0 == "subscription_patch_update() {" && need_update {
     print
     print "    if [ -x /usr/bin/podkop-update-manager ]; then"
     print "        /usr/bin/podkop-update-manager update_start"
@@ -35,7 +44,7 @@ $0 == "subscription_patch_update() {" {
     next
 }
 
-$0 == "get_subscription_patch_update_status() {" {
+$0 == "get_subscription_patch_update_status() {" && need_status {
     print
     print "    if [ -x /usr/bin/podkop-update-manager ]; then"
     print "        /usr/bin/podkop-update-manager status"
@@ -46,6 +55,7 @@ $0 == "get_subscription_patch_update_status() {" {
 }
 
 $0 == "subscription_action_lock_file() {" && !helper_functions {
+    if (need_check) {
     print "subscription_patch_update_check() {"
     print "    if [ ! -x /usr/bin/podkop-update-manager ]; then"
     print "        echo \047{\"success\":false,\"error\":\"update_manager_missing\"}\047"
@@ -54,6 +64,8 @@ $0 == "subscription_action_lock_file() {" && !helper_functions {
     print "    /usr/bin/podkop-update-manager check_start"
     print "}"
     print ""
+    }
+    if (need_log) {
     print "get_subscription_patch_update_log() {"
     print "    if [ ! -x /usr/bin/podkop-update-manager ]; then"
     print "        return 0"
@@ -61,16 +73,21 @@ $0 == "subscription_action_lock_file() {" && !helper_functions {
     print "    /usr/bin/podkop-update-manager log"
     print "}"
     print ""
+    }
     helper_functions = 1
 }
 
 $0 == "check_proxy)" && !dispatcher {
+    if (need_check_case) {
     print "subscription_patch_update_check)"
     print "    subscription_patch_update_check"
     print "    ;;"
+    }
+    if (need_log_case) {
     print "get_subscription_patch_update_log)"
     print "    get_subscription_patch_update_log"
     print "    ;;"
+    }
     dispatcher = 1
 }
 
