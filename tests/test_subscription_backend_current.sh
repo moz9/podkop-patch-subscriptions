@@ -10,6 +10,9 @@ for version in 0.7.20 0.7.22; do
     sed -i 's/wget -T 30 -t 1 /wget -T 30 /g' "$work/runtime"
     PODKOP_MAINTENANCE_TARGET="$work/runtime" PODKOP_MAINTENANCE_HELPERS_TARGET="$work/helpers" \
         sh "$repo/openwrt/podkop-subscription-maintenance-upgrade.sh"
+    # Match the real installer: update-center repair follows maintenance.
+    PODKOP_UPDATE_CENTER_TARGET="$work/runtime" PODKOP_UPDATE_CENTER_SHELL=sh \
+        sh "$repo/openwrt/podkop-update-center-upgrade.sh"
     # The installer finalizes the legacy updater timeout after maintenance.
     sed -i 's/run_with_timeout 240 env PODKOP_PATCH_VERSION=/run_with_timeout 900 env PODKOP_PATCH_VERSION=/g' "$work/runtime"
     sed -n '/^# subscription_isolated_probe_v1 begin$/,/^# subscription_isolated_probe_v1 end$/p' "$work/runtime" > "$work/probe"

@@ -46,6 +46,7 @@ case "$version" in
 esac
 
 if grep -Fqx '# subscription_seamless_reload begin' "$target" &&
+	grep -q 'subscription_deferred_apply_v1' "$target" &&
 	grep -Fqx '# subscription_seamless_reload end' "$target" &&
 	sed -n '/^subscription_update() {/,/^}/p' "$target" | grep -q 'subscription_reload_seamless' &&
 	! sed -n '/^subscription_update() {/,/^}/p' "$target" | grep -q '/usr/bin/podkop reload'; then
@@ -81,6 +82,7 @@ BEGIN { inserted = 0; in_update = 0; switched = 0 }
 	inserted = 1
 }
 $0 == "subscription_update() {" { in_update = 1 }
+in_update && $0 ~ /^[[:space:]]*subscription_reload_seamless$/ { switched = 1 }
 in_update && $0 ~ /^[[:space:]]*echolog "Subscription cache changed, reloading podkop\.\.\."$/ {
 	print "        echolog \"Subscription cache changed, activating it without rebuilding the network...\""
 	next

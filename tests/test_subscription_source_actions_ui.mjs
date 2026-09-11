@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 const js=fs.readFileSync(new URL('../openwrt/main.js',import.meta.url),'utf8');
+assert.ok(js.includes('Подписки скачаны. Применение новых конфигов выполняется отдельно.'), 'refresh must not claim active configuration was updated');
 const source={id:'one',sourceIndex:1,enabled:false};
 const section={code:'main',displayName:'main',sources:[source,{id:'two',sourceIndex:2}],items:[
   {id:'a',supported:true,enabled:false,sourceIds:['one']},

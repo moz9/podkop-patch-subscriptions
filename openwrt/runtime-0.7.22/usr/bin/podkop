@@ -2431,6 +2431,14 @@ subscription_reload_pending_file() {
 subscription_reload_seamless() {
     local config_path backup_path pending_path before_hash after_hash pid recovery_pid attempts max_attempts delay
 
+    # subscription_deferred_apply_v1: downloading is never permission to interrupt traffic.
+    if [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != "1" ]; then
+        pending_path="$(subscription_reload_pending_file)"
+        : > "$pending_path" || return 1
+        echolog "Subscription downloaded; changes pending explicit application. Active connections were not interrupted."
+        return 0
+    fi
+
     config_get config_path "settings" "config_path"
     [ -n "$config_path" ] && [ -s "$config_path" ] || return 1
 
@@ -2565,9 +2573,9 @@ subscription_update() {
     pending_path="$(subscription_reload_pending_file)"
     if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ] || [ -f "$pending_path" ]; then
         if [ "$SUBSCRIPTION_UPDATED_SECTIONS" -gt 0 ]; then
-            echolog "Subscription cache changed, activating it without rebuilding the network..."
+            echolog "Subscription cache changed; checking application policy..."
         else
-            echolog "Retrying a previously deferred subscription activation..."
+            echolog "Subscription changes are still pending application..."
         fi
         subscription_reload_seamless
         return $?

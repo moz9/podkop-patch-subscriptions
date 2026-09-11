@@ -58,6 +58,15 @@ PODKOP_SUBSCRIPTION_SEAMLESS_TARGET="$fixture" \
 	sh "$upgrade" >/dev/null
 [ ! -e "$second_backup" ] || fail_test 'idempotent upgrade created a second backup'
 
+# An already-delivered soft reload must also receive the new default policy.
+sed -i '/subscription_deferred_apply_v1/d' "$fixture"
+PODKOP_SUBSCRIPTION_SEAMLESS_TARGET="$fixture" \
+	PODKOP_SUBSCRIPTION_SEAMLESS_SOURCE="$runtime" \
+	PODKOP_SUBSCRIPTION_SEAMLESS_BACKUP="$second_backup" \
+	sh "$upgrade" >/dev/null
+grep -q 'subscription_deferred_apply_v1' "$fixture" || fail_test 'old soft reload was incorrectly treated as current'
+[ -f "$second_backup" ] || fail_test 'old soft reload upgrade has no backup'
+
 grep -q 'SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"' "$installer" ||
 	fail_test 'installer does not name the seamless reload upgrade asset'
 grep -q 'download "$RAW_BASE/$SEAMLESS_RELOAD_UPGRADE_FILE"' "$installer" ||

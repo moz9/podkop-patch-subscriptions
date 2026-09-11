@@ -6173,7 +6173,7 @@ async function handleRefreshSubscriptions(target) {
     action: "refresh",
     actionStatus: "running",
     actionTarget:target?.sourceId ? target : null,
-    actionMessage: _("Updating subscription configs. Podkop may be reloaded.")
+    actionMessage: "Скачиваем подписки без перезапуска работающего прокси."
   });
   try {
     const result = await PodkopShellMethods.updateSubscriptions(target?.sectionCode, target?.sourceId);
@@ -6185,9 +6185,9 @@ async function handleRefreshSubscriptions(target) {
     setActionState({
       action: "refresh",
       actionStatus: "success",
-      actionMessage: _("Subscription configs updated.")
+      actionMessage: "Подписки скачаны. Применение новых конфигов выполняется отдельно."
     });
-    showToast(_("Subscription configs updated."), "success");
+    showToast("Подписки скачаны. Применение новых конфигов выполняется отдельно.", "success");
   } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to refresh subscriptions");
     await fetchSubscriptionItems("idle", target);

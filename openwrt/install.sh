@@ -21,7 +21,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260905-source-actions-v2"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260911-deferred-subscriptions-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -49,7 +49,7 @@ RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
 RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20260905_source_actions_v2"
+LUCI_MODULE_NAMESPACE="podkop_patch_20260911_deferred_subscriptions_v1"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -135,13 +135,13 @@ www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/subscription
 www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/settings.js
 www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/dashboard.js
 www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20260905_source_actions_v2/main.js
-www/luci-static/resources/view/podkop_patch_20260905_source_actions_v2/podkop.js
-www/luci-static/resources/view/podkop_patch_20260905_source_actions_v2/section.js
-www/luci-static/resources/view/podkop_patch_20260905_source_actions_v2/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20260905_source_actions_v2/settings.js
-www/luci-static/resources/view/podkop_patch_20260905_source_actions_v2/dashboard.js
-www/luci-static/resources/view/podkop_patch_20260905_source_actions_v2/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20260911_deferred_subscriptions_v1/main.js
+www/luci-static/resources/view/podkop_patch_20260911_deferred_subscriptions_v1/podkop.js
+www/luci-static/resources/view/podkop_patch_20260911_deferred_subscriptions_v1/section.js
+www/luci-static/resources/view/podkop_patch_20260911_deferred_subscriptions_v1/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20260911_deferred_subscriptions_v1/settings.js
+www/luci-static/resources/view/podkop_patch_20260911_deferred_subscriptions_v1/dashboard.js
+www/luci-static/resources/view/podkop_patch_20260911_deferred_subscriptions_v1/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -845,6 +845,7 @@ has_latest_subscription_backend() {
 		grep -Fqx '# subscription_source_actions_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_isolated_probe_v1 end' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/null &&
+		grep -q 'subscription_deferred_apply_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_seamless_reload end' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_hwid_placeholder_guard begin' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_hwid_placeholder_guard end' /usr/bin/podkop 2>/dev/null &&
@@ -1672,6 +1673,7 @@ if ! grep -q '^set_subscription_sections_enabled() {' /usr/bin/podkop 2>/dev/nul
 fi
 
 if ! grep -Fqx '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/null ||
+	! grep -q 'subscription_deferred_apply_v1' /usr/bin/podkop 2>/dev/null ||
 	! grep -Fqx '# subscription_seamless_reload end' /usr/bin/podkop 2>/dev/null ||
 	! grep -q '^subscription_reload_seamless() {' /usr/bin/podkop 2>/dev/null ||
 	! grep -q '^subscription_reload_pending_file() {' /usr/bin/podkop 2>/dev/null ||
@@ -1716,6 +1718,8 @@ if [ -f /usr/bin/podkop ]; then
 		abort_with_restore "subscription apply v2 marker check failed"
 	grep -Fqx '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/null ||
 		abort_with_restore "seamless subscription reload marker check failed"
+	grep -q 'subscription_deferred_apply_v1' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "deferred subscription application check failed"
 	grep -q '^subscription_reload_seamless() {' /usr/bin/podkop 2>/dev/null ||
 		abort_with_restore "seamless subscription reload capability check failed"
 	grep -q '^subscription_reload_pending_file() {' /usr/bin/podkop 2>/dev/null ||
