@@ -4958,7 +4958,23 @@ check_nft_rules() {
         rm -f /tmp/podkop_mark_check.$$
     fi
 
-    echo "{\"table_exist\":$table_exist,\"rules_mangle_exist\":$rules_mangle_exist,\"rules_mangle_counters\":$rules_mangle_counters,\"rules_mangle_output_exist\":$rules_mangle_output_exist,\"rules_mangle_output_counters\":$rules_mangle_output_counters,\"rules_proxy_exist\":$rules_proxy_exist,\"rules_proxy_counters\":$rules_proxy_counters,\"rules_other_mark_exist\":$rules_other_mark_exist}" | jq .
+    # Classify only the exact support-package rule; unknown marks stay warnings.
+    local mark_details
+    mark_details="$(nft -j list ruleset 2>/dev/null | jq --arg table "$NFT_TABLE_NAME" '
+      def known:
+        .family == "inet" and .table == "fw4" and .chain == "podkop_zerotier_bypass" and
+        .comment == "Keep ZeroTier outside Podkop" and
+        ([.expr[] | select(has("counter") | not)] == [
+          {"match":{"op":"==","left":{"payload":{"protocol":"udp","field":"sport"}},"right":"@podkop_zerotier_udp_ports"}},
+          {"mangle":{"key":{"meta":{"key":"mark"}},"value":2097152}}
+        ]);
+      [.nftables[] | .rule? | select(. != null and .table != $table) |
+        select(any(.expr[]?; .mangle.key.meta.key? == "mark" or .mangle.key.ct.key? == "mark"))] as $rules |
+      {rules_zerotier_mark_count: ([$rules[] | select(known)] | length),
+       rules_unknown_mark_count: ([$rules[] | select(known | not)] | length)}
+    ' 2>/dev/null)"
+    [ -n "$mark_details" ] || mark_details='{}'
+    echo "{\"table_exist\":$table_exist,\"rules_mangle_exist\":$rules_mangle_exist,\"rules_mangle_counters\":$rules_mangle_counters,\"rules_mangle_output_exist\":$rules_mangle_output_exist,\"rules_mangle_output_counters\":$rules_mangle_output_counters,\"rules_proxy_exist\":$rules_proxy_exist,\"rules_proxy_counters\":$rules_proxy_counters,\"rules_other_mark_exist\":$rules_other_mark_exist}" | jq --argjson marks "$mark_details" '. + $marks'
 }
 
 check_sing_box() {
@@ -5092,30 +5108,40 @@ clash_api() {
     get_proxy_latency)
         local proxy_tag="$2"
         local timeout="${3:-2000}"
+        local test_url="${4:-$TEST_URL}"
 
         if [ -z "$proxy_tag" ]; then
             echo '{"error":"proxy_tag required"}' | jq .
             return 1
         fi
 
+        case "$test_url" in
+        "https://www.gstatic.com/generate_204"|"https://cp.cloudflare.com/generate_204") ;;
+        *) echo '{"error":"unsupported_test_url"}' | jq .; return 1 ;;
+        esac
         curl -G -s "$CLASH_URL/proxies/$proxy_tag/delay" \
             --header "$auth_header" \
-            --data-urlencode "url=$TEST_URL" \
+            --data-urlencode "url=$test_url" \
             --data-urlencode "timeout=$timeout" | jq .
         ;;
 
     get_group_latency)
         local group_tag="$2"
         local timeout="${3:-5000}"
+        local test_url="${4:-$TEST_URL}"
 
         if [ -z "$group_tag" ]; then
             echo '{"error":"group_tag required"}' | jq .
             return 1
         fi
 
+        case "$test_url" in
+        "https://www.gstatic.com/generate_204"|"https://cp.cloudflare.com/generate_204") ;;
+        *) echo '{"error":"unsupported_test_url"}' | jq .; return 1 ;;
+        esac
         curl -G -s "$CLASH_URL/group/$group_tag/delay" \
             --header "$auth_header" \
-            --data-urlencode "url=$TEST_URL" \
+            --data-urlencode "url=$test_url" \
             --data-urlencode "timeout=$timeout" | jq .
         ;;
 
@@ -5627,7 +5653,7 @@ check_fakeip)
     check_fakeip
     ;;
 clash_api)
-    clash_api "$2" "$3" "$4"
+    clash_api "$2" "$3" "$4" "$5"
     ;;
 get_subscription_cached_links)
     get_subscription_cached_links "$2"

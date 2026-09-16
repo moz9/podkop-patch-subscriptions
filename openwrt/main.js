@@ -670,13 +670,13 @@ var PodkopShellMethods = {
   getClashApiProxies: async () => callBaseMethod(Podkop.AvailableMethods.CLASH_API, [
     Podkop.AvailableClashAPIMethods.GET_PROXIES
   ]),
-  getClashApiProxyLatency: async (tag) => callBaseMethod(
+  getClashApiProxyLatency: async (tag, url) => callBaseMethod(
     Podkop.AvailableMethods.CLASH_API,
-    [Podkop.AvailableClashAPIMethods.GET_PROXY_LATENCY, tag, "5000"]
+    [Podkop.AvailableClashAPIMethods.GET_PROXY_LATENCY, tag, "5000", url]
   ),
-  getClashApiGroupLatency: async (tag) => callBaseMethod(
+  getClashApiGroupLatency: async (tag, url) => callBaseMethod(
     Podkop.AvailableMethods.CLASH_API,
-    [Podkop.AvailableClashAPIMethods.GET_GROUP_LATENCY, tag, "10000"]
+    [Podkop.AvailableClashAPIMethods.GET_GROUP_LATENCY, tag, "10000", url]
   ),
   setClashApiGroupProxy: async (group, proxy) => callBaseMethod(Podkop.AvailableMethods.CLASH_API, [
     Podkop.AvailableClashAPIMethods.SET_GROUP_PROXY,
@@ -883,9 +883,11 @@ async function getDashboardSections() {
         );
         const activeConfigs = splitProxyString(section.proxy_string);
         const proxyDisplayName = getProxyUrlName(activeConfigs?.[0]) || outbound?.value?.name || "";
-        return {
-          withTagSelect: false,
-          code: outbound?.code || section[".name"],
+      return {
+        withTagSelect: false,
+        code: outbound?.code || section[".name"],
+        activeCandidateCode: outbound?.code || "",
+        poolCode: "",
           displayName: section[".name"],
           outbounds: [
             {
@@ -908,6 +910,8 @@ async function getDashboardSections() {
         return {
           withTagSelect: false,
           code: outbound?.code || section[".name"],
+          activeCandidateCode: outbound?.code || "",
+          poolCode: "",
           displayName: section[".name"],
           outbounds: [
             {
@@ -940,6 +944,8 @@ async function getDashboardSections() {
         return {
           withTagSelect: true,
           code: selector?.code || section[".name"],
+          activeCandidateCode: selector?.value?.now || "",
+          poolCode: selector?.code || "",
           displayName: section[".name"],
           outbounds
         };
@@ -965,6 +971,8 @@ async function getDashboardSections() {
         return {
           withTagSelect: true,
           code: selector?.code || section[".name"],
+          activeCandidateCode: outbound?.value?.now || selector?.value?.now || "",
+          poolCode: selector?.code || "",
           displayName: section[".name"],
           outbounds: [
             {
@@ -983,9 +991,11 @@ async function getDashboardSections() {
       const outbound = proxies.find(
         (proxy) => proxy.code === `${section[".name"]}-out`
       );
-      return {
-        withTagSelect: false,
-        code: outbound?.code || section[".name"],
+        return {
+          withTagSelect: false,
+          code: outbound?.code || section[".name"],
+          activeCandidateCode: outbound?.code || "",
+          poolCode: "",
         displayName: section[".name"],
         outbounds: [
           {
@@ -2921,9 +2931,11 @@ async function runNftCheck() {
     throw new Error("Nftables checks failed");
   }
   const data = nftablesChecks.data;
+  const extraMarks = typeof data.rules_unknown_mark_count === "number" ? data.rules_unknown_mark_count > 0 : Boolean(data.rules_other_mark_exist);
+  const knownMarks = data.rules_zerotier_mark_count || 0;
   const routingCountersActive = Boolean(data.rules_mangle_output_counters) && Boolean(data.rules_proxy_counters);
-  const allGood = Boolean(data.table_exist) && Boolean(data.rules_mangle_exist) && Boolean(data.rules_mangle_output_exist) && Boolean(data.rules_mangle_output_counters) && Boolean(data.rules_proxy_exist) && Boolean(data.rules_proxy_counters) && !data.rules_other_mark_exist;
-  const atLeastOneGood = Boolean(data.table_exist) || Boolean(data.rules_mangle_exist) || Boolean(data.rules_mangle_counters) || Boolean(data.rules_mangle_output_exist) || Boolean(data.rules_mangle_output_counters) || Boolean(data.rules_proxy_exist) || Boolean(data.rules_proxy_counters) || !data.rules_other_mark_exist;
+  const allGood = Boolean(data.table_exist) && Boolean(data.rules_mangle_exist) && Boolean(data.rules_mangle_output_exist) && Boolean(data.rules_mangle_output_counters) && Boolean(data.rules_proxy_exist) && Boolean(data.rules_proxy_counters) && !extraMarks;
+  const atLeastOneGood = Boolean(data.table_exist) || Boolean(data.rules_mangle_exist) || Boolean(data.rules_mangle_counters) || Boolean(data.rules_mangle_output_exist) || Boolean(data.rules_mangle_output_counters) || Boolean(data.rules_proxy_exist) || Boolean(data.rules_proxy_counters) || !extraMarks;
   const { state, description } = getMeta({ atLeastOneGood, allGood });
   updateCheckStore({
     order,
@@ -2968,9 +2980,9 @@ async function runNftCheck() {
         value: ""
       },
       {
-        state: !data.rules_other_mark_exist ? "success" : "warning",
-        key: !data.rules_other_mark_exist ? _("No other marking rules found") : _("Additional marking rules found"),
-        value: ""
+        state: extraMarks ? "warning" : "success",
+        key: extraMarks ? "Обнаружены нераспознанные маркировки — проверьте совместимость" : knownMarks ? "Распознано правило защиты ZeroTier от Podkop" : _("No other marking rules found"),
+        value: knownMarks ? `ZeroTier: ${knownMarks} · метка 0x200000` : ""
       }
     ]
   });
@@ -4276,106 +4288,59 @@ function renderWikiDisclaimer(kind) {
 }
 
 // src/podkop/tabs/diagnostic/checks/runSectionsCheck.ts
+function diagnosticExitResult(activeAttempts, poolAttempts, section = {}) {
+  const delay = (response) => typeof response?.data?.delay === "number" && Number.isFinite(response.data.delay) && response.data.delay > 0 ? response.data.delay : 0;
+  const firstDelay = (responses) => responses.map(delay).find(Boolean) || 0;
+  const rpcSucceeded = (responses) => responses.some((response) => response?.success);
+  const poolResponding = (responses) => Math.max(0, ...responses.filter((response) => response?.success && response.data && typeof response.data === "object" && !response.data.message).map((response) => Object.values(response.data).filter((value) => typeof value === "number" && Number.isFinite(value) && value > 0).length));
+  if (section.canTest === false) return { state: "skipped", value: "Не проверяется: выход отключён или не требует прокси" };
+  const activeDelay = firstDelay(activeAttempts);
+  const responding = poolResponding(poolAttempts);
+  const availability = section.total > 0 && rpcSucceeded(poolAttempts) ? ` · Ответили ${responding} из ${section.total} конфигураций` : "";
+  if (activeDelay) return { state: "success", value: `Выбранный выход работает · ${activeDelay} мс${availability}` };
+  if (!rpcSucceeded(activeAttempts)) return { state: "skipped", value: `Диагностика выбранного выхода недоступна — это не ошибка маршрута${availability}` };
+  if (section.total <= 1) return { state: "error", value: "Выбранный выход не ответил" };
+  if (!rpcSucceeded(poolAttempts)) return { state: "skipped", value: "Диагностика пула недоступна — состояние конфигураций не определено" };
+  if (responding > 0) return { state: "warning", value: `Выбранный конфиг не ответил · доступны ${responding} из ${section.total} конфигураций` };
+  return { state: "error", value: `Не ответили все ${section.total} конфигураций` };
+}
 async function runSectionsCheck() {
   const { order, title, code } = DIAGNOSTICS_CHECKS_MAP.OUTBOUNDS;
-  updateCheckStore({
-    order,
-    code,
-    title,
-    description: _("Checking, please wait"),
-    state: "loading",
-    items: []
-  });
+  updateCheckStore({ order, code, title, description: _("Checking, please wait"), state: "loading", items: [] });
   const sections = await getDashboardSections();
   if (!sections.success) {
-    updateCheckStore({
-      order,
-      code,
-      title,
-      description: _("Cannot receive checks result"),
-      state: "error",
-      items: []
-    });
-    throw new Error("Sections checks failed");
+    updateCheckStore({ order, code, title, description: "Диагностика выходов недоступна — состояние маршрутов не определено", state: "skipped", items: [] });
+    return;
   }
-  const checkableSections = sections.data.filter(
-    (section) => section.canTestLatency !== false
-  );
-  const items = await Promise.all(
-    checkableSections.map(async (section) => {
-      async function getLatency() {
-        if (section.withTagSelect) {
-          const latencyGroup = await PodkopShellMethods.getClashApiGroupLatency(
-            section.code
-          );
-          const selectedOutbound = section.outbounds.find(
-            (item) => item.selected
-          );
-          const isUrlTest = selectedOutbound?.type === "URLTest";
-          const success3 = latencyGroup.success && !latencyGroup.data.message;
-          if (success3) {
-            if (isUrlTest) {
-              const latency2 = Object.values(latencyGroup.data).map((item) => item ? `${item}ms` : "n/a").join(" / ");
-              return {
-                success: true,
-                latency: `[${_("Fastest")}] ${latency2}`
-              };
-            }
-            const selectedProxyDelay = latencyGroup.data?.[selectedOutbound?.code ?? ""];
-            if (selectedProxyDelay) {
-              return {
-                success: true,
-                latency: `[${selectedOutbound?.displayName ?? ""}] ${selectedProxyDelay}ms`
-              };
-            }
-            return {
-              success: false,
-              latency: `[${selectedOutbound?.displayName ?? ""}] ${_("Not responding")}`
-            };
-          }
-          return {
-            success: false,
-            latency: _("Not responding")
-          };
-        }
-        const latencyProxy = await PodkopShellMethods.getClashApiProxyLatency(
-          section.code
-        );
-        const success2 = latencyProxy.success && !latencyProxy.data.message;
-        if (success2) {
-          return {
-            success: true,
-            latency: `${latencyProxy.data.delay} ms`
-          };
-        }
-        return {
-          success: false,
-          latency: _("Not responding")
-        };
-      }
-      const { latency, success } = await getLatency();
-      return {
-        state: success ? "success" : "error",
-        key: section.displayName,
-        value: latency
-      };
-    })
-  );
-  const allGood = items.every((item) => item.state === "success");
-  const atLeastOneGood = items.some((item) => item.state === "success");
-  const { state, description } = getMeta({ atLeastOneGood, allGood });
+  const probeUrls = ["https://www.gstatic.com/generate_204", "https://cp.cloudflare.com/generate_204"];
+  async function probe(method, tag) {
+    if (!tag) return [];
+    const attempts = [];
+    for (const url of probeUrls) {
+      try { attempts.push(await method(tag, url)); }
+      catch (_) { attempts.push({ success: false }); }
+      if (typeof attempts.at(-1)?.data?.delay === "number" && attempts.at(-1).data.delay > 0) break;
+    }
+    return attempts;
+  }
+  const items = await Promise.all(sections.data.map(async (section) => {
+    if (section.canTestLatency === false) return { state: "skipped", key: section.displayName, value: "Не проверяется: конфигурации не импортированы" };
+    const total = (section.outbounds || []).filter((item) => !["URLTest", "Selector"].includes(item.type)).length;
+    const active = await probe(PodkopShellMethods.getClashApiProxyLatency, section.activeCandidateCode || section.code);
+    const pool = total > 1 ? await probe(PodkopShellMethods.getClashApiGroupLatency, section.poolCode || section.code) : [];
+    const result = diagnosticExitResult(active, pool, { total, canTest: total > 0 });
+    return { state: result.state, key: section.displayName, value: result.value };
+  }));
+  const hasOutage = items.some((item) => item.state === "error");
+  const hasDegraded = items.some((item) => item.state === "warning");
   updateCheckStore({
-    order,
-    code,
-    title,
-    description,
-    state,
+    order, code, title,
+    description: hasOutage ? "Есть полностью недоступные выходы" : hasDegraded ? "Часть пулов деградирована, но доступные маршруты сохранены" : "Выбранные выходы отвечают",
+    state: hasOutage ? "error" : hasDegraded ? "warning" : "success",
     items
   });
-  if (!atLeastOneGood) {
-    throw new Error("Sections checks failed");
-  }
 }
+
 
 // src/helpers/removeVersionPrefix.ts
 function removeVersionPrefix(version) {

@@ -1,0 +1,31 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const js=fs.readFileSync(new URL('../openwrt/main.js',import.meta.url),'utf8');
+const c=vm.createContext({});
+const source=js.match(/function diagnosticExitResult\([\s\S]*?\n}/);
+assert.ok(source,'diagnosticExitResult must distinguish a failed probe from a failed exit');
+vm.runInContext(source[0],c);
+const ok={success:true,data:{delay:230}};
+const down={success:true,data:{message:'Timeout'}};
+const rpc={success:false};
+assert.equal(c.diagnosticExitResult([ok],[{success:true,data:{a:12,b:0}}],{total:7}).state,'success');
+assert.match(c.diagnosticExitResult([ok],[{success:true,data:{a:12,b:0}}],{total:7}).value,/1 из 7/);
+assert.equal(c.diagnosticExitResult([down],[{success:true,data:{a:12,b:0}}],{total:7}).state,'warning');
+assert.equal(c.diagnosticExitResult([down],[{success:true,data:{}}],{total:7}).state,'error');
+assert.equal(c.diagnosticExitResult([down],[],{total:1}).state,'error');
+assert.equal(c.diagnosticExitResult([rpc],[{success:true,data:{a:12}}],{total:7}).state,'skipped');
+assert.equal(c.diagnosticExitResult([rpc],[rpc],{total:7}).state,'skipped');
+assert.equal(c.diagnosticExitResult([],[],{total:0,canTest:false}).state,'skipped');
+assert.match(js,/activeCandidateCode: outbound\?\.value\?\.now \|\| selector\?\.value\?\.now/,'urltest must expose its actual selected candidate');
+assert.match(js,/poolCode: selector\?\.code \|\| ""/,'URLTest pool must be probed through its outer selector');
+assert.match(js,/section\.activeCandidateCode \|\| section\.code/,'active member, not group tag, must be probed');
+assert.match(js,/section\.poolCode \|\| section\.code/,'pool probing must be explicit and separate');
+assert.match(js,/cp\.cloudflare\.com\/generate_204/,'fallback probe URL must remain available');
+for (const runtime of ['0.7.20','0.7.22']) {
+  const shell=fs.readFileSync(new URL(`../openwrt/runtime-${runtime}/usr/bin/podkop`,import.meta.url),'utf8');
+  assert.match(shell,/local test_url="\$\{4:-\$TEST_URL\}"/,'diagnostic fallback URL must reach the backend');
+  assert.match(shell,/unsupported_test_url/,'backend must reject arbitrary diagnostic destinations');
+  assert.match(shell,/clash_api "\$2" "\$3" "\$4" "\$5"/,'dispatcher must forward the fallback URL');
+}
+console.log('PASS: active route, partial pool, outage, diagnostic fault and untestable state');
