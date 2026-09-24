@@ -5221,12 +5221,12 @@ function getSourceId(sectionCode, sourceIndex) {
 function formatMbitPerSecond(bytesPerSecond) {
   const mbitPerSecond = bytesPerSecond * 8 / 1e6;
   if (mbitPerSecond >= 100) {
-    return `${mbitPerSecond.toFixed(0)} Mbit/s`;
+    return `${mbitPerSecond.toFixed(0)} Мбит/с`;
   }
   if (mbitPerSecond >= 10) {
-    return `${mbitPerSecond.toFixed(1)} Mbit/s`;
+    return `${mbitPerSecond.toFixed(1)} Мбит/с`;
   }
-  return `${mbitPerSecond.toFixed(2)} Mbit/s`;
+  return `${mbitPerSecond.toFixed(2)} Мбит/с`;
 }
 function getPendingCount(pendingChanges) {
   return Object.keys(pendingChanges).length;
@@ -5509,7 +5509,7 @@ function renderRow({
     if (!item.supported) {
       return "-";
     }
-    return typeof latency === "number" ? (latency > 0 ? `${latency} ms` : "Нет ответа") : "-";
+    return typeof latency === "number" ? (latency > 0 ? `${latency} мс` : "Нет ответа") : "-";
   }
   function renderSpeed() {
     if (!item.supported) {
@@ -6447,13 +6447,13 @@ function getSpeedtestStatusMessage(status, section, item) {
     case "speedtest_success":
       return `${_("Speed test completed")}: ${section.displayName} / ${item.name}`;
     case "service_busy":
-      return _("Podkop is restarting now. Try again in a minute.");
+      return "Podkop занят. Дождитесь завершения текущей операции.";
     case "download_failed":
       return `${_("Download failed")}: ${item.name}`;
     case "select_failed":
       return `${_("Failed to select config")}: ${item.name}`;
     default:
-      return status.message || `${_("Running speed test")}: ${section.displayName} / ${item.name}`;
+      return getSubscriptionActionErrorMessage(status.message, status.state === "error" ? "Не удалось проверить скорость. Повторите проверку после завершения текущих операций." : `${_("Running speed test")}: ${section.displayName} / ${item.name}`);
   }
 }
 async function pollSpeedtestStatus(section, item, runToken) {
@@ -6498,6 +6498,8 @@ function getErrorText(error) {
 }
 function getSubscriptionActionErrorMessage(error, fallback) {
   const detail = getErrorText(error);
+  if (/probe_start_failed/.test(detail)) return "Не удалось запустить временный процесс проверки. Рабочее подключение не изменено.";
+  if (/probe_curl_|dns_config_invalid/.test(detail)) return "Проверочное подключение не удалось. Проверьте доступность сервера и настройки DNS.";
   if (/cannot_disable_last_enabled_link/.test(detail)) return "В секции должен остаться хотя бы один включённый конфиг из включённой подписки.";
   if (/source_support_missing/.test(detail)) return "На роутере ещё нет поддержки отключения подписок. Обновите патч и перезагрузите страницу.";
   if (/invalid_subscription_source/.test(detail)) return "Список подписок изменился. Обновите страницу и повторите выбор.";

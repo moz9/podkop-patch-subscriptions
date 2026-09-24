@@ -1,6 +1,13 @@
 #!/bin/sh
 set -eu
 
+# Modern ucode LuCI caches menus in hash-suffixed JSON files, including during rollback.
+installer_dir="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+[ "$(grep -Fc 'rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*.json' "$installer_dir/i")" -eq 2 ] || {
+    echo 'FAIL: install and rollback must invalidate modern LuCI menu caches'
+    exit 1
+}
+
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 test_root="$(mktemp -d)"
 library="$test_root/installer-functions.sh"

@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "patchVersion": "20260924-subscription-reliability-v1",
+  "patchVersion": "20260924-subscription-reliability-v2",
   "supportedPodkopVersions": [
     "0.7.19",
     "0.7.20",

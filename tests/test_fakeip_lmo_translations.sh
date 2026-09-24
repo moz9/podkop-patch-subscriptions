@@ -5,6 +5,8 @@ repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 
 node - "$repo_root/openwrt/podkop.ru.lmo.base64" <<'NODE'
 const fs = require('fs');
+const path = require('path');
+const vm = require('vm');
 
 const encoded = fs.readFileSync(process.argv[2], 'utf8').trim();
 const lmo = Buffer.from(encoded, 'base64');
@@ -96,6 +98,33 @@ const pluralFormula = translations.get(0);
 if (!pluralFormula || !pluralFormula.includes('nplurals=3')) {
   throw new Error('Russian plural formula is missing from the LMO asset');
 }
+
+// Check the shipped dictionary, not a fake identity translator.
+const source = fs.readFileSync(path.join(path.dirname(process.argv[2]), 'main.js'), 'utf8');
+const assetDir = path.dirname(process.argv[2]);
+const uiSource = fs.readdirSync(assetDir).filter(name => name.endsWith('.js')).map(name => fs.readFileSync(path.join(assetDir,name),'utf8')).join('\n');
+const uiKeys = [...uiSource.matchAll(/_\(\s*((?:"(?:[^"\\]|\\.)*")(?:\s*\+\s*"(?:[^"\\]|\\.)*")*)\s*,?\s*\)/g)]
+  .map(m=>[...m[1].matchAll(/"(?:[^"\\]|\\.)*"/g)].map(s=>JSON.parse(s[0])).join(''));
+const untranslated = [...new Set(uiKeys)]
+  .filter(key=>/[A-Za-z]/.test(key) && !/[А-Яа-яЁё]/.test(key) && !['Podkop','Sing-box'].includes(key) && !translations.has(sfhHash(key)));
+if (untranslated.length) throw new Error('Untranslated UI labels: ' + JSON.stringify(untranslated));
+for (const label of ['Proxy','Block','Exclusion','Trace','Debug','Info','Warn','Fatal','Panic','Service list','Domains list','IP or subnet']) {
+  if (new RegExp('(?:o\\.value\\("[^"]+",\\s*|o\\.placeholder\\s*=\\s*)"'+label+'"').test(uiSource)) throw new Error('Unlocalized form label: '+label);
+}
+if (/"(?:Flash|RAM) \(/.test(uiSource)) throw new Error('Storage labels must be Russian');
+const subscriptions = source.slice(source.indexOf('function formatMbitPerSecond('), source.indexOf('// src/podkop/tabs/subscriptions/styles.ts'));
+const missing = [...new Set([...subscriptions.matchAll(/_\(\s*"((?:[^"\\]|\\.)*)"\s*\)/g)].map(m => JSON.parse('"' + m[1] + '"')))]
+  .filter(key => /[A-Za-z]/.test(key) && !/[А-Яа-яЁё]/.test(translations.get(sfhHash(key)) || ''));
+if (missing.length) throw new Error('Missing Russian subscription messages: ' + JSON.stringify(missing));
+const context = vm.createContext({_: key => translations.get(sfhHash(key)) || key});
+for (const name of ['getSpeedtestStatusMessage','getErrorText','getSubscriptionActionErrorMessage','formatMbitPerSecond']) {
+  const match = source.match(new RegExp('function ' + name + '\\([\\s\\S]*?\\n}(?=\\r?\\n)'));
+  if (!match) throw new Error('Missing function ' + name);
+  vm.runInContext(match[0], context);
+}
+const message = context.getSpeedtestStatusMessage({message:'probe_start_failed'}, {displayName:'main'}, {name:'Node'});
+if (!/[А-Яа-яЁё]/.test(message) || message.includes('probe_start_failed')) throw new Error('Technical benchmark status leaked to the UI: ' + message);
+if (!context.formatMbitPerSecond(125000).includes('Мбит/с')) throw new Error('Speed units must be Russian');
 NODE
 
 printf '%s\n' 'PASS: FakeIP diagnostic Russian translations are packaged in the LMO asset'

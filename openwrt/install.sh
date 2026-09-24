@@ -21,7 +21,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260924-subscription-reliability-v1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260924-subscription-reliability-v2"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -49,7 +49,7 @@ RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
 RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20260924_subscription_reliability_v1"
+LUCI_MODULE_NAMESPACE="podkop_patch_20260924_subscription_reliability_v2"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -135,13 +135,13 @@ www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/subscription
 www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/settings.js
 www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/dashboard.js
 www/luci-static/resources/view/podkop_patch_20260819_podkop_0722_v1/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v1/main.js
-www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v1/podkop.js
-www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v1/section.js
-www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v1/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v1/settings.js
-www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v1/dashboard.js
-www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v1/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2/main.js
+www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2/podkop.js
+www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2/section.js
+www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2/settings.js
+www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2/dashboard.js
+www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -693,7 +693,7 @@ restore_runtime() {
 		fi
 	done
 	restore_persistent_paths "$rollback_dir" || runtime_restore_ok=0
-	rm -f /tmp/luci-indexcache
+	rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*.json
 	rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 	/etc/init.d/rpcd restart >/dev/null 2>&1 || true
 	/etc/init.d/uhttpd restart >/dev/null 2>&1 || true
@@ -1873,7 +1873,7 @@ if [ -f /usr/lib/podkop/sing_box_config_facade.sh ] && ! ash -n /usr/lib/podkop/
 	abort_with_restore "sing-box facade syntax check failed"
 fi
 
-rm -f /tmp/luci-indexcache
+rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*.json
 rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 
 if [ -x /etc/init.d/podkop ]; then

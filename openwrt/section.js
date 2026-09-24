@@ -20,10 +20,10 @@ function createSectionContent(section) {
     _("Connection Type"),
     _("Select between VPN and Proxy connection methods for traffic routing"),
   );
-  o.value("proxy", "Proxy");
+  o.value("proxy", "Прокси");
   o.value("vpn", "VPN");
-  o.value("block", "Block");
-  o.value("exclusion", "Exclusion");
+  o.value("block", "Блокировка");
+  o.value("exclusion", "Исключение");
 
   o = section.option(
     form.ListValue,
@@ -385,7 +385,7 @@ function createSectionContent(section) {
     _("Select a predefined list for routing") +
       ' <a href="https://github.com/itdoginfo/allow-domains" target="_blank">github.com/itdoginfo/allow-domains</a>',
   );
-  o.placeholder = "Service list";
+  o.placeholder = "Список сервисов";
   Object.entries(main.DOMAIN_LIST_OPTIONS).forEach(([key, label]) => {
     o.value(key, _(label));
   });
@@ -486,7 +486,7 @@ function createSectionContent(section) {
       "Enter domain names without protocols, e.g. example.com or sub.example.com",
     ),
   );
-  o.placeholder = "Domains list";
+  o.placeholder = "Список доменов";
   o.depends("user_domain_list_type", "dynamic");
   o.rmempty = false;
   o.validate = function (section_id, value) {
@@ -513,7 +513,7 @@ function createSectionContent(section) {
     ),
   );
   o.placeholder =
-    "example.com, sub.example.com\n// Social networks\ndomain.com test.com // personal domains";
+    "example.com, sub.example.com\n// Социальные сети\ndomain.com test.com // свои домены";
   o.depends("user_domain_list_type", "text");
   o.rows = 8;
   o.rmempty = false;
@@ -566,7 +566,7 @@ function createSectionContent(section) {
       "Enter subnets in CIDR notation (e.g. 103.21.244.0/22) or single IP addresses",
     ),
   );
-  o.placeholder = "IP or subnet";
+  o.placeholder = "IP-адрес или подсеть";
   o.depends("user_subnet_list_type", "dynamic");
   o.rmempty = false;
   o.validate = function (section_id, value) {
@@ -594,7 +594,7 @@ function createSectionContent(section) {
     ),
   );
   o.placeholder =
-    "103.21.244.0/22\n// Google DNS\n8.8.8.8\n1.1.1.1/32, 9.9.9.9 // Cloudflare and Quad9";
+    "103.21.244.0/22\n// DNS Google\n8.8.8.8\n1.1.1.1/32, 9.9.9.9 // Cloudflare и Quad9";
   o.depends("user_subnet_list_type", "text");
   o.rows = 10;
   o.rmempty = false;
@@ -725,7 +725,7 @@ function createSectionContent(section) {
       "Specify local IP addresses or subnets whose traffic will always be routed through the configured route",
     ),
   );
-  o.placeholder = "192.168.1.2 or 192.168.1.0/24";
+  o.placeholder = "192.168.1.2 или 192.168.1.0/24";
   o.rmempty = true;
   o.depends("connection_type", "proxy");
   o.depends("connection_type", "vpn");

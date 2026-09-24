@@ -2281,8 +2281,8 @@ function createSettingsContent(section) {
       "Select path for sing-box config file. Change this ONLY if you know what you are doing",
     ),
   );
-  o.value("/etc/sing-box/config.json", "Flash (/etc/sing-box/config.json)");
-  o.value("/tmp/sing-box/config.json", "RAM (/tmp/sing-box/config.json)");
+  o.value("/etc/sing-box/config.json", "Флеш-память (/etc/sing-box/config.json)");
+  o.value("/tmp/sing-box/config.json", "Оперативная память (/tmp/sing-box/config.json)");
   o.default = "/etc/sing-box/config.json";
   o.rmempty = false;
 
@@ -2294,10 +2294,10 @@ function createSettingsContent(section) {
       "Select or enter path for sing-box cache file. Change this ONLY if you know what you are doing",
     ),
   );
-  o.value("/tmp/sing-box/cache.db", "RAM (/tmp/sing-box/cache.db)");
+  o.value("/tmp/sing-box/cache.db", "Оперативная память (/tmp/sing-box/cache.db)");
   o.value(
     "/usr/share/sing-box/cache.db",
-    "Flash (/usr/share/sing-box/cache.db)",
+    "Флеш-память (/usr/share/sing-box/cache.db)",
   );
   o.default = "/tmp/sing-box/cache.db";
   o.rmempty = false;
@@ -2328,13 +2328,13 @@ function createSettingsContent(section) {
     _("Log Level"),
     _("Select the log level for sing-box"),
   );
-  o.value("trace", "Trace");
-  o.value("debug", "Debug");
-  o.value("info", "Info");
-  o.value("warn", "Warn");
-  o.value("error", "Error");
-  o.value("fatal", "Fatal");
-  o.value("panic", "Panic");
+  o.value("trace", "Трассировка");
+  o.value("debug", "Отладка");
+  o.value("info", "Информация");
+  o.value("warn", "Предупреждения");
+  o.value("error", "Ошибки");
+  o.value("fatal", "Критические ошибки");
+  o.value("panic", "Аварии");
   o.default = "warn";
   o.rmempty = false;
 
