@@ -1,6 +1,60 @@
 # subscription_sources_v1 begin
 # A source is identified by its URL hash, never by its position in the UI.
 # subscription_source_actions_v1
+# subscription_choices_and_busy_v1
+subscription_connection_key() {
+    # Labels and query ordering are not connection changes. Never persist credentials separately.
+    local base="${1%%#*}" query
+    case "$base" in
+        *\?*) query="${base#*\?}"; base="${base%%\?*}" ;;
+        *) query='' ;;
+    esac
+    { printf '%s\n' "$base"; printf '%s' "$query" | tr '&' '\n' | LC_ALL=C sort; } | md5sum | awk '{print $1}'
+}
+
+subscription_index_choices() {
+    local items="$1" links="$2" map link
+    map="$(mktemp)" || return 1
+    if [ -s "$links" ]; then
+        while IFS= read -r link || [ -n "$link" ]; do
+            [ -n "$link" ] || continue
+            printf '%s %s\n' "$(get_subscription_link_id "$link")" "$(subscription_connection_key "$link")"
+        done < "$links" > "$map"
+    fi
+    jq --rawfile keys "$map" '
+        ($keys | split("\n") | map(select(length>0) | split(" ") | {key:.[0],value:.[1]}) | from_entries) as $keys
+        | map(.connectionKey = ($keys[.id] // .connectionKey // ""))
+    ' "$items"
+    local rc=$?; rm -f "$map"; return "$rc"
+}
+
+subscription_reconcile_choices() {
+    jq --slurpfile old "$1" '
+        . as $new
+        | def same_source($a;$b): any(($a.sourceIds // [])[]; . as $s | ($b.sourceIds // [] | index($s)) != null);
+          def same_key($a;$b): ($a.connectionKey // "") != "" and $a.connectionKey == $b.connectionKey;
+          def same_name($a;$b): ($a.name // "") != "" and $a.name==$b.name and $a.protocol==$b.protocol and ($a.transport // "")==($b.transport // "");
+          map(. as $item
+            | [$old[0][] | select(.id==$item.id)] as $exact
+            | [$old[0][] | select(same_source(.;$item) and same_key(.;$item))] as $key
+            | [$old[0][] | select(same_source(.;$item) and same_name(.;$item))] as $name
+            | (if ($exact|length)==1 then $exact[0]
+               elif ($key|length)==1 and ([$new[]|select(same_source(.;$item) and same_key(.;$item))]|length)==1 then $key[0]
+               elif ($name|length)==1 and ([$new[]|select(same_source(.;$item) and same_name(.;$item))]|length)==1 then $name[0]
+               else null end) as $previous
+            | .selectionId=($previous.selectionId // $previous.id // .id)
+            | .selectionNew=($previous==null and ($old[0]|length)>0))
+    ' "$2"
+}
+
+get_subscription_operation_status() {
+    local busy=false pending=false
+    subscription_runtime_busy && busy=true
+    [ ! -f "$(subscription_reload_pending_file)" ] || pending=true
+    jq -cn --argjson busy "$busy" --argjson pending "$pending" \
+        '{busy:$busy,pending:$pending,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+}
+
 subscription_cached_source_append() {
     local section="$1" source_id="$2" source_index="$3" active="$4" all="$5" skipped="$6" items="$7"
     local cached source_items link id count expected all_cache skipped_cache
@@ -38,7 +92,7 @@ subscription_cached_source_append() {
 subscription_source_policy() {
     jq -c --argjson disabled "$1" --argjson excluded "$2" '
         map(. as $item
-            | .enabled = (.supported == true and ($excluded | index($item.id)) == null)
+            | .enabled = (.supported == true and ($excluded | index($item.id)) == null and ($excluded | index($item.selectionId // $item.id)) == null)
             | .sourceEnabled = (if ((.sourceIds // []) | length) > 0 then
                 any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
                 else ($disabled | length) == 0 end)

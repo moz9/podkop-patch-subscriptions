@@ -23,7 +23,7 @@ validate_subscription_section_name() { [ "$1" = main ]; }
 validate_subscription_urltest_section() { [ "$1" = main ]; }
 config_get() { case "$3" in connection_type) eval "$1=proxy";; proxy_config_type) eval "$1=subscription_urltest";; subscription_disabled_source_ids) eval "$1=\$one";; esac; }
 section_has_subscription_urls() { return 0; }
-config_foreach() { "$1" main; "$1" other; }
+config_foreach() { "$1" main; }
 subscription_runtime_busy() { [ "${busy:-0}" -eq 1 ]; }
 subscription_action_lock_acquire() { return 0; }
 subscription_action_lock_release() { :; }
@@ -32,6 +32,7 @@ subscription_reload_seamless() { echo reload >> "$work/reloads"; }
 download_subscription_to_file() {
     printf '%s\n' "$1" >> "$work/downloads"
     [ "${download_fail:-0}" -eq 0 ] || return 1
+    [ "${failed_url:-}" != "$1" ] || return 1
     printf '%s\n' new shared > "$2"
 }
 normalize_subscription_file() { [ "${invalid_format:-0}" -eq 0 ] && cp "$1" "$2"; }
@@ -67,6 +68,12 @@ download_fail=0; invalid_format=1
 subscription_update_json main "$one" | jq -e '.success==false' >/dev/null
 [ "$before" = "$(sha256sum "$work/main.items" "$work/main.links" "$work/main.all")" ]
 subscription_update_json main invalid | jq -e '.success==false' >/dev/null
+invalid_format=0; failed_url=https://two.example/sub
+# A failed peer must retain its old nodes while the successful source can refresh.
+subscription_update_json '' | jq -e '.success==true' >/dev/null || { echo 'FAIL: healthy subscription blocked by a failed peer'; exit 1; }
+jq -e --arg other "$other" 'any(.[];.id==$other)' "$work/main.items" >/dev/null
+jq -e --arg two "$two" '.[$two]=="download_failed"' "$work/main.items.refresh-errors" >/dev/null
 busy=1
 subscription_update_json main "$one" | jq -e '.success==false' >/dev/null
+subscription_update_json '' | jq -e '.success==false and .error=="service_busy" and .retryAfter>0' >/dev/null || { echo 'FAIL: global busy update must not report success'; exit 1; }
 echo 'PASS: scoped refresh downloads only its source, preserves peers and shared links, and retains cache on errors'

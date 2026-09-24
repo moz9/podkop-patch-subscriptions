@@ -781,6 +781,7 @@ var PodkopShellMethods = {
     [section]
   ),
   getSubscriptionSources: async (section) => callBaseMethod("get_subscription_sources", [section]),
+  getSubscriptionOperationStatus: async () => callBaseMethod("get_subscription_operation_status", []),
   pingSubscription: async (section, id) => callBaseMethod("subscription_ping", [section, id], "/usr/bin/podkop", 3e4),
   getSubscriptionItemsCached: async (section) => callBaseMethod(
     Podkop.AvailableMethods.GET_SUBSCRIPTION_ITEMS_CACHED,
@@ -5334,7 +5335,8 @@ function getToolbarMessage({
   status,
   actionStatus,
   actionMessage,
-  pendingCount
+  pendingCount,
+  runtimeStatus
 }) {
   if (loading) {
     return _("Loading subscription configs");
@@ -5345,6 +5347,8 @@ function getToolbarMessage({
   if (applying || status === "applying") {
     return _("Applying changes. Podkop will be restarted once.");
   }
+  if (runtimeStatus?.unknown) return "Проверяем связь с роутером. Пока состояние неизвестно, запуск операций недоступен.";
+  if (runtimeStatus?.busy && actionStatus !== "running") return "Podkop завершает другую операцию. Кнопки станут доступны автоматически; повторять нажатие сейчас не нужно.";
   if (actionStatus === "running") {
     return actionMessage || _("Action is running");
   }
@@ -5360,6 +5364,7 @@ function getToolbarMessage({
   if (pendingCount > 0) {
     return `${_("Unsaved changes")}: ${pendingCount}. ${_("Click Apply to restart Podkop once.")}`;
   }
+  if (runtimeStatus?.pending) return "Новые конфиги скачаны, но ещё не используются. Нажмите «Применить», когда допустим краткий перерыв соединений.";
   if (status === "success") {
     return _("Changes applied. Podkop has been restarted.");
   }
@@ -5396,14 +5401,16 @@ function renderToolbar({
   onReset,
   onRefresh,
   onPing,
-  onSpeedtest
+  onSpeedtest,
+  runtimeStatus
 }) {
   const actionRunning = actionStatus === "running";
   const speedRunning = action === "speed" && actionRunning;
-  const canRunAction = !loading && !failed && !applying && !actionRunning;
+  const blocked = runtimeStatus?.busy || runtimeStatus?.unknown;
+  const canRunAction = !loading && !failed && !applying && !actionRunning && !blocked;
   const canRunSubscriptionAction = canRunAction && pendingCount === 0;
-  const canRefresh = !loading && !applying && !actionRunning && (failed || pendingCount === 0);
-  const canApply = pendingCount > 0 && !loading && !failed && !applying && !actionRunning;
+  const canRefresh = !loading && !applying && !actionRunning && !blocked && (failed || pendingCount === 0);
+  const canApply = (pendingCount > 0 || runtimeStatus?.pending) && canRunAction;
   const canReset = pendingCount > 0 && !applying && !actionRunning;
   return E(
     "div",
@@ -5414,6 +5421,7 @@ function renderToolbar({
       ].filter(Boolean).join(" ")
     },
     [
+      renderSubscriptionState({loading,failed,applying,action,actionStatus,pendingCount,runtimeStatus}),
       E(
         "div",
         { class: "pdk_subscriptions-page__toolbar-message" },
@@ -5424,7 +5432,8 @@ function renderToolbar({
           status,
           actionStatus,
           actionMessage,
-          pendingCount
+          pendingCount,
+          runtimeStatus
         })
       ),
       E("div", { class: "pdk_subscriptions-page__toolbar-actions" }, [
@@ -5819,7 +5828,8 @@ function renderSubscriptionSections({
   onPing,
   onSpeedtest,
   onToggleSource,
-  actionTarget
+  actionTarget,
+  runtimeStatus
 }) {
   const pendingCount = getPendingCount(pendingChanges);
   return E("div", { class: "pdk_subscriptions-page__content" }, [
@@ -5836,7 +5846,8 @@ function renderSubscriptionSections({
       onReset,
       onRefresh,
       onPing,
-      onSpeedtest
+      onSpeedtest,
+      runtimeStatus
     }),
     loading && !sections.length ? renderEmptyState(_("Loading")) : failed && !sections.length ? renderEmptyState(actionMessage || _("Failed to load subscription configs")) : renderSections2({
       sections,
@@ -5849,8 +5860,8 @@ function renderSubscriptionSections({
       onToggleSource,
       sourceActions: {
         target:actionTarget,
-        disabled:applying || loading || failed || actionStatus === "running" || pendingCount > 0,
-        refreshDisabled:applying || loading || actionStatus === "running" || (!failed && pendingCount > 0),
+        disabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || pendingCount > 0,
+        refreshDisabled:applying || loading || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || (!failed && pendingCount > 0),
         speedRunning:action === "speed" && actionStatus === "running",
         onRefresh, onPing, onSpeedtest
       }
@@ -5906,6 +5917,41 @@ function render3() {
 // src/podkop/tabs/subscriptions/initController.ts
 var speedtestRunToken = 0;
 var subscriptionsLifecycleRegistered = false;
+var subscriptionStatusTimer;
+var subscriptionStatusGeneration = 0;
+function subscriptionStateLabel(widget) {
+  if (widget.applying) return ["busy", "Применяется", "Сохраняем выбор и применяем настройки. Повторное нажатие не требуется."];
+  if (widget.actionStatus === "running") return ["busy", widget.action === "refresh" ? "Обновляется" : "Тестируется", "Дождитесь завершения текущей операции. Бенчмарк можно остановить его кнопкой."];
+  if (widget.runtimeStatus?.unknown) return ["unknown", "Нет статуса", "Не удалось получить состояние роутера. Проверка повторяется автоматически; при истёкшей сессии войдите заново."];
+  if (widget.runtimeStatus?.busy) return ["busy", "Podkop занят", "Применяются настройки или выполняется другая операция. Кнопки станут доступны после завершения; повторять нажатие не нужно."];
+  if (widget.loading) return ["busy", "Загрузка", "Читаем состояние подписок."];
+  if (widget.failed || widget.actionStatus === "error") return ["error", "Ошибка", "Причина указана рядом. Несохранённый выбор сохранён в этой вкладке."];
+  if (widget.pendingCount > 0 || widget.runtimeStatus?.pending) return ["pending", "Нужно применить", "Есть несохранённый выбор или скачанные конфиги, ещё не используемые Podkop. Нажмите «Применить»; соединения могут кратко прерваться."];
+  return ["ready", "Готово", "Подписки доступны для действий. Это состояние операций, не проверка доступности всех прокси."];
+}
+function renderSubscriptionState(widget) {
+  const [kind,label,title] = subscriptionStateLabel(widget);
+  return E("span", {class:`pdk-subscription-state pdk-subscription-state--${kind}`,role:"status",title,"aria-label":`${label}. ${title}`}, label);
+}
+async function refreshSubscriptionRuntimeStatus() {
+  const generation = subscriptionStatusGeneration;
+  try {
+    const result = await PodkopShellMethods.getSubscriptionOperationStatus();
+    if (generation !== subscriptionStatusGeneration) return;
+    if (!result.success || typeof result.data?.busy !== "boolean") throw new Error("status_failed");
+    const widget = store.get().subscriptionItemsWidget;
+    const recovered = widget.actionError === "service_busy" && !result.data.busy;
+    if (!recovered && JSON.stringify(widget.runtimeStatus) === JSON.stringify(result.data)) return;
+    store.set({subscriptionItemsWidget:{...widget,runtimeStatus:result.data,
+      ...(recovered ? {actionStatus:"idle",actionError:"",actionMessage:"Podkop готов. Повторите действие; ваш выбор сохранён."} : {})}});
+  } catch (_) {
+    if (generation === subscriptionStatusGeneration && !store.get().subscriptionItemsWidget.runtimeStatus?.unknown) store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,runtimeStatus:{unknown:true}}});
+  }
+}
+async function pollSubscriptionRuntimeStatus(generation) {
+  await refreshSubscriptionRuntimeStatus();
+  if (generation === subscriptionStatusGeneration) subscriptionStatusTimer = setTimeout(()=>pollSubscriptionRuntimeStatus(generation),3000);
+}
 function getRowId2(sectionCode, itemId) {
   return `${sectionCode}:${itemId}`;
 }
@@ -5938,17 +5984,18 @@ function isSpeedtestRunning() {
 }
 function canRunServiceAction() {
   const widget = store.get().subscriptionItemsWidget;
-  return !widget.loading && !widget.failed && !widget.applying && !isActionRunning() && getPendingCount2(widget.pendingChanges) === 0;
+  return !widget.loading && !widget.failed && !widget.applying && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && getPendingCount2(widget.pendingChanges) === 0;
 }
 function canRefreshSubscriptions() {
   const widget = store.get().subscriptionItemsWidget;
-  return !widget.loading && !widget.applying && !isActionRunning() && (widget.failed || getPendingCount2(widget.pendingChanges) === 0);
+  return !widget.loading && !widget.applying && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && (widget.failed || getPendingCount2(widget.pendingChanges) === 0);
 }
 function setActionState({
   action,
   actionStatus,
   actionMessage,
-  actionTarget = store.get().subscriptionItemsWidget.actionTarget
+  actionTarget = store.get().subscriptionItemsWidget.actionTarget,
+  actionError = ""
 }) {
   const widget = store.get().subscriptionItemsWidget;
   store.set({
@@ -5957,11 +6004,12 @@ function setActionState({
       action,
       actionStatus,
       actionMessage,
-      actionTarget
+      actionTarget,
+      actionError
     }
   });
 }
-async function fetchSubscriptionItems(status = "idle", refreshedSource) {
+async function fetchSubscriptionItems(status = "idle", refreshedSource, preserveDraft = true) {
   const prev = store.get().subscriptionItemsWidget;
   store.set({
     subscriptionItemsWidget: {
@@ -6006,7 +6054,7 @@ async function fetchSubscriptionItems(status = "idle", refreshedSource) {
         action: "none",
         actionStatus: "idle",
         actionMessage: "",
-        pendingChanges: {},
+        pendingChanges: preserveDraft ? rebaseSubscriptionDraft(store.get().subscriptionItemsWidget.pendingChanges, data) : {},
         latencyByRow: refreshedSource?.sourceId ? retainOtherSubscriptionResults(prev.latencyByRow, data, refreshedSource) : {},
         speedByRow: refreshedSource?.sourceId ? retainOtherSubscriptionResults(prev.speedByRow, data, refreshedSource) : {},
         data
@@ -6032,6 +6080,21 @@ function retainOtherSubscriptionResults(results, sections, target) {
   const refreshed = new Set(getSubscriptionActionSections(sections, target).flatMap(section => section.items.map(item => getRowId2(section.code,item.id))));
   const existing = new Set(sections.flatMap(section => section.items.map(item => getRowId2(section.code,item.id))));
   return Object.fromEntries(Object.entries(results || {}).filter(([id]) => existing.has(id) && !refreshed.has(id)));
+}
+function rebaseSubscriptionDraft(draft, sections) {
+  const remaining = {...draft};
+  for (const section of sections) {
+    for (const item of section.items) {
+      const key = `${section.code}:${item.id}`;
+      if (key in remaining && remaining[key] === item.enabled) delete remaining[key];
+    }
+    for (const source of section.sources || []) {
+      const key = `${section.code}:source:${source.id}`;
+      if (key in remaining && remaining[key] === (source.enabled !== false)) delete remaining[key];
+    }
+  }
+  // Unknown IDs are retained: never silently discard a user's selection on an RPC failure.
+  return remaining;
 }
 function handleToggle(sectionCode, item, enabled) {
   const widget = store.get().subscriptionItemsWidget;
@@ -6098,7 +6161,7 @@ function getChangesBySection(pendingChanges) {
 async function handleApply() {
   const widget = store.get().subscriptionItemsWidget;
   const pendingChanges = widget.pendingChanges;
-  if (getPendingCount2(pendingChanges) === 0 || widget.applying || isActionRunning()) {
+  if ((getPendingCount2(pendingChanges) === 0 && !widget.runtimeStatus?.pending) || widget.applying || widget.loading || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown || isActionRunning()) {
     return;
   }
   store.set({
@@ -6110,6 +6173,12 @@ async function handleApply() {
   });
   try {
     const changesBySection = getChangesBySection(pendingChanges);
+    if (!Object.keys(changesBySection).length && widget.runtimeStatus?.pending) {
+      const section = widget.data.find(section=>section.items.some(item=>item.supported));
+      const item = section?.items.find(item=>item.supported);
+      if (!item) throw new Error("subscription_cache_missing");
+      changesBySection[section.code] = [{id:item.id,enabled:item.enabled}];
+    }
     const result = await PodkopShellMethods.setSubscriptionSectionsEnabled(
       changesBySection
     );
@@ -6119,7 +6188,7 @@ async function handleApply() {
       );
     }
     showToast(_("Saved!"), "success");
-    await fetchSubscriptionItems("success");
+    await fetchSubscriptionItems("success", null, false);
   } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to apply subscription changes");
     logger.error("[SUBSCRIPTIONS]", error);
@@ -6128,6 +6197,10 @@ async function handleApply() {
       "error"
     );
     await fetchSubscriptionItems("error");
+    setActionState({action:"apply",actionStatus:"error",actionError:error?.message,actionMessage:getSubscriptionActionErrorMessage(error,"Не удалось подтвердить применение. Ваш выбор сохранён; проверьте состояние и повторите «Применить».")});
+  } finally {
+    // Re-read actual worker state; do not guess a fixed cooldown after applying.
+    if (PodkopShellMethods.getSubscriptionOperationStatus) await refreshSubscriptionRuntimeStatus();
   }
 }
 async function handleRefreshSubscriptions(target) {
@@ -6143,25 +6216,30 @@ async function handleRefreshSubscriptions(target) {
   try {
     const result = await PodkopShellMethods.updateSubscriptions(target?.sectionCode, target?.sourceId);
     if (!result.success || !result.data.success) {
-      throw new Error(result.success ? result.data.output : result.error);
+      throw new Error(result.success ? result.data.error || result.data.output : result.error);
     }
     await fetchSubscriptionItems("idle", target);
     if (store.get().subscriptionItemsWidget.failed) throw new Error("subscription_items_load_failed");
+    const sourceErrors = store.get().subscriptionItemsWidget.data.flatMap(section=>(section.sources||[]).filter(source=>source.error && (!target?.sourceId || (section.code===target.sectionCode && source.id===target.sourceId))).map(source=>`${section.code}: подписка ${source.sourceIndex}`));
+    const newCount = store.get().subscriptionItemsWidget.data.reduce((n,section)=>n+section.items.filter(item=>item.selectionNew && item.supported).length,0);
     setActionState({
       action: "refresh",
-      actionStatus: "success",
-      actionMessage: "Подписки скачаны. Применение новых конфигов выполняется отдельно."
+      actionStatus: sourceErrors.length ? "error" : "success",
+      actionMessage: sourceErrors.length ? `Часть подписок не обновилась (${sourceErrors.join(", ")}). Причина указана у подписки.` : "Подписки скачаны. Применение новых конфигов выполняется отдельно." + (newCount ? ` Новых или изменённых конфигов без однозначного соответствия: ${newCount}. Проверьте их галочки.` : "")
     });
-    showToast("Подписки скачаны. Применение новых конфигов выполняется отдельно.", "success");
+    showToast(sourceErrors.length ? "Часть подписок не обновилась. Проверьте сообщения у подписок." : "Подписки скачаны. Применение новых конфигов выполняется отдельно.", sourceErrors.length ? "error" : "success");
   } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to refresh subscriptions");
     await fetchSubscriptionItems("idle", target);
     setActionState({
       action: "refresh",
       actionStatus: "error",
+      actionError: error?.message,
       actionMessage: getSubscriptionActionErrorMessage(error, "Не удалось обновить подписки. Сохранён предыдущий список. Проверьте доступность сервера подписки и повторите обновление.")
     });
     showToast(_("Failed to update subscription configs."), "error");
+  } finally {
+    if (PodkopShellMethods.getSubscriptionOperationStatus) await refreshSubscriptionRuntimeStatus();
   }
 }
 async function handlePingSubscriptions(target) {
@@ -6424,11 +6502,12 @@ function getSubscriptionActionErrorMessage(error, fallback) {
   if (/source_support_missing/.test(detail)) return "На роутере ещё нет поддержки отключения подписок. Обновите патч и перезагрузите страницу.";
   if (/invalid_subscription_source/.test(detail)) return "Список подписок изменился. Обновите страницу и повторите выбор.";
   if (/subscription_items_load_failed|invalid_subscription_items/.test(detail)) return "Не удалось прочитать список после обновления. Предыдущий список сохранён; обновите страницу.";
-  if (/timeout|timed out/i.test(detail)) return "Роутер или сервер подписки не ответил вовремя. Предыдущий список сохранён; повторите обновление.";
+  if (/timeout|timed out/i.test(detail)) return "Ответ не получен вовремя. Операция могла продолжиться на роутере. Проверяем состояние; не повторяйте действие, пока Podkop занят. Ваш выбор сохранён.";
+  if (/link_is_not_supported|invalid_link_id/.test(detail)) return "Список конфигов изменился. Несохранённый выбор оставлен на экране. Сверьте его с текущим списком; при необходимости нажмите «Сбросить» и выберите заново.";
   if (/permission|access denied|session/i.test(detail)) return "Сессия LuCI завершилась или недостаточно прав. Войдите в интерфейс заново.";
   switch (getErrorText(error)) {
     case "service_busy":
-      return _("Podkop is restarting now. Try again in a minute.");
+      return "Podkop ещё применяет настройки или выполняет другую операцию. Ваш выбор сохранён. Дождитесь статуса «Готово» или «Нужно применить» и повторите действие.";
     case "selector_not_available":
       return _("Podkop selector is not ready. Try again in a minute.");
     case "reload_failed":
@@ -6485,6 +6564,7 @@ async function renderSubscriptionItemsWidget() {
     onPing: handlePingSubscriptions,
     onSpeedtest: handleSpeedtestSubscriptions,
     actionTarget: subscriptionItemsWidget.actionTarget,
+    runtimeStatus: subscriptionItemsWidget.runtimeStatus,
     onToggleSource: handleToggleSource
   });
   return preserveScrollForPage(() => {
@@ -6499,11 +6579,14 @@ async function onStoreUpdate3(next, prev, diff) {
 async function onPageMount3() {
   onPageUnmount3();
   store.subscribe(onStoreUpdate3);
-  await fetchSubscriptionItems();
+  store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,runtimeStatus:{unknown:true}}});
+  pollSubscriptionRuntimeStatus(subscriptionStatusGeneration);
+  if (!isActionRunning() && !store.get().subscriptionItemsWidget.applying) await fetchSubscriptionItems();
 }
 function onPageUnmount3() {
   store.unsubscribe(onStoreUpdate3);
-  store.reset(["subscriptionItemsWidget"]);
+  clearTimeout(subscriptionStatusTimer);
+  subscriptionStatusGeneration++;
 }
 function onSubscriptionTabChange(next, prev, diff) {
   if (diff.tabService && next.tabService.current !== prev.tabService.current) {
@@ -6536,6 +6619,11 @@ async function initController3() {
 
 // src/podkop/tabs/subscriptions/styles.ts
 var styles5 = `
+.pdk-subscription-state { display:inline-flex; align-items:center; white-space:nowrap; font-size:12px; gap:6px; margin-right:8px; }
+.pdk-subscription-state::before { content:""; width:7px; height:7px; border-radius:50%; background:#69bf83; }
+.pdk-subscription-state--busy::before { background:#6199ed; }
+.pdk-subscription-state--pending::before { background:#dbac42; }
+.pdk-subscription-state--error::before,.pdk-subscription-state--unknown::before { background:#e86666; }
 #cbi-podkop-subscriptions,
 #cbi-podkop-subscriptions-_mount_node,
 #cbi-podkop-subscriptions-_mount_node > div {

@@ -132,6 +132,12 @@ apply_subscription_exclusions_to_cached_links() {
 subscription_action_lock_acquire() {
     mkdir "$tmp/action.lock" 2>/dev/null
 }
+subscription_runtime_busy() { return 1; }
+subscription_reload_pending_file() { echo "$tmp/pending"; }
+subscription_reload_seamless() {
+    [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" = 1 ] || return 1
+    rm -f "$tmp/pending"
+}
 subscription_action_lock_release() {
     rmdir "$tmp/action.lock" 2>/dev/null || true
 }
@@ -288,6 +294,8 @@ for version in 0.7.19 0.7.20 0.7.21 0.7.22; do
 set_subscription_links_enabled() {
     :
 }
+
+subscription_runtime_busy() { return 1; }
 
 subscription_update_section_handler() {
     :

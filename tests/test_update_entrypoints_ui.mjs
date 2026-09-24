@@ -15,6 +15,11 @@ const context = {
 };
 for (const icon of toolbar.match(/render\w+Icon24/g) || []) context[icon] = () => {};
 vm.createContext(context);
+for (const name of ['subscriptionStateLabel','renderSubscriptionState']) {
+  const match=source.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`));
+  assert.ok(match);
+  vm.runInContext(match[0],context);
+}
 vm.runInContext(toolbar, context);
 for (const state of [
   {}, { loading: true }, { failed: true }, { pendingCount: 2 },

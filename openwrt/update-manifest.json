@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "patchVersion": "20260911-deferred-subscriptions-v1",
+  "patchVersion": "20260924-subscription-reliability-v1",
   "supportedPodkopVersions": [
     "0.7.19",
     "0.7.20",
@@ -8,5 +8,5 @@
     "0.7.22"
   ],
   "recommendedPodkopVersion": "0.7.22",
-  "publishedAt": "2026-09-11T09:00:00+07:00"
+  "publishedAt": "2026-09-24T12:00:00+07:00"
 }

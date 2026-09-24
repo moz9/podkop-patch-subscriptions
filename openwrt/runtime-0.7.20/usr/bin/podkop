@@ -1212,6 +1212,60 @@ append_subscription_skipped_proxy_link() {
 # subscription_sources_v1 begin
 # A source is identified by its URL hash, never by its position in the UI.
 # subscription_source_actions_v1
+# subscription_choices_and_busy_v1
+subscription_connection_key() {
+    # Labels and query ordering are not connection changes. Never persist credentials separately.
+    local base="${1%%#*}" query
+    case "$base" in
+        *\?*) query="${base#*\?}"; base="${base%%\?*}" ;;
+        *) query='' ;;
+    esac
+    { printf '%s\n' "$base"; printf '%s' "$query" | tr '&' '\n' | LC_ALL=C sort; } | md5sum | awk '{print $1}'
+}
+
+subscription_index_choices() {
+    local items="$1" links="$2" map link
+    map="$(mktemp)" || return 1
+    if [ -s "$links" ]; then
+        while IFS= read -r link || [ -n "$link" ]; do
+            [ -n "$link" ] || continue
+            printf '%s %s\n' "$(get_subscription_link_id "$link")" "$(subscription_connection_key "$link")"
+        done < "$links" > "$map"
+    fi
+    jq --rawfile keys "$map" '
+        ($keys | split("\n") | map(select(length>0) | split(" ") | {key:.[0],value:.[1]}) | from_entries) as $keys
+        | map(.connectionKey = ($keys[.id] // .connectionKey // ""))
+    ' "$items"
+    local rc=$?; rm -f "$map"; return "$rc"
+}
+
+subscription_reconcile_choices() {
+    jq --slurpfile old "$1" '
+        . as $new
+        | def same_source($a;$b): any(($a.sourceIds // [])[]; . as $s | ($b.sourceIds // [] | index($s)) != null);
+          def same_key($a;$b): ($a.connectionKey // "") != "" and $a.connectionKey == $b.connectionKey;
+          def same_name($a;$b): ($a.name // "") != "" and $a.name==$b.name and $a.protocol==$b.protocol and ($a.transport // "")==($b.transport // "");
+          map(. as $item
+            | [$old[0][] | select(.id==$item.id)] as $exact
+            | [$old[0][] | select(same_source(.;$item) and same_key(.;$item))] as $key
+            | [$old[0][] | select(same_source(.;$item) and same_name(.;$item))] as $name
+            | (if ($exact|length)==1 then $exact[0]
+               elif ($key|length)==1 and ([$new[]|select(same_source(.;$item) and same_key(.;$item))]|length)==1 then $key[0]
+               elif ($name|length)==1 and ([$new[]|select(same_source(.;$item) and same_name(.;$item))]|length)==1 then $name[0]
+               else null end) as $previous
+            | .selectionId=($previous.selectionId // $previous.id // .id)
+            | .selectionNew=($previous==null and ($old[0]|length)>0))
+    ' "$2"
+}
+
+get_subscription_operation_status() {
+    local busy=false pending=false
+    subscription_runtime_busy && busy=true
+    [ ! -f "$(subscription_reload_pending_file)" ] || pending=true
+    jq -cn --argjson busy "$busy" --argjson pending "$pending" \
+        '{busy:$busy,pending:$pending,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+}
+
 subscription_cached_source_append() {
     local section="$1" source_id="$2" source_index="$3" active="$4" all="$5" skipped="$6" items="$7"
     local cached source_items link id count expected all_cache skipped_cache
@@ -1249,7 +1303,7 @@ subscription_cached_source_append() {
 subscription_source_policy() {
     jq -c --argjson disabled "$1" --argjson excluded "$2" '
         map(. as $item
-            | .enabled = (.supported == true and ($excluded | index($item.id)) == null)
+            | .enabled = (.supported == true and ($excluded | index($item.id)) == null and ($excluded | index($item.selectionId // $item.id)) == null)
             | .sourceEnabled = (if ((.sourceIds // []) | length) > 0 then
                 any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
                 else ($disabled | length) == 0 end)
@@ -1521,7 +1575,7 @@ refresh_subscription_cache() {
         validated_links_file all_links_file skipped_links_file items_file merged_links_file deduped_links_file \
         merged_all_links_file deduped_all_links_file merged_skipped_links_file deduped_skipped_links_file \
         merged_items_file deduped_items_file excluded_ids_file urls_file tmp_cache tmp_all_cache tmp_skipped_cache \
-        tmp_items_cache http_proxy_address failed_sources skipped_sources skipped_json items_json source_index
+        tmp_items_cache http_proxy_address failed_sources skipped_sources skipped_json items_json source_index successful_sources merge_failed
 
     SUBSCRIPTION_CACHE_CHANGED=0
     urls_file="$(mktemp)"
@@ -1554,6 +1608,8 @@ refresh_subscription_cache() {
     mv "$(get_subscription_items_cache_path "$section").refresh-errors.tmp.$$" "$(get_subscription_items_cache_path "$section").refresh-errors"
     failed_sources=0
     skipped_sources=0
+    successful_sources=0
+    merge_failed=0
     source_index=1
     : > "$merged_links_file"
     : > "$merged_all_links_file"
@@ -1622,6 +1678,7 @@ refresh_subscription_cache() {
         fi
 
         cat "$validated_links_file" >> "$merged_links_file"
+        successful_sources=$((successful_sources + 1))
         cat "$all_links_file" >> "$merged_all_links_file"
         cat "$skipped_links_file" >> "$merged_skipped_links_file"
         cat "$items_file" >> "$merged_items_file"
@@ -1631,7 +1688,21 @@ refresh_subscription_cache() {
     done < "$urls_file"
 
 
-    if [ "$failed_sources" -gt 0 ] || { [ -n "${SUBSCRIPTION_UPDATE_SOURCE_ID:-}" ] && [ "$skipped_sources" -gt 0 ]; }; then
+    # One unavailable source must not block its healthy peers or erase its old nodes.
+    if [ -z "${SUBSCRIPTION_UPDATE_SOURCE_ID:-}" ] && { [ "$failed_sources" -gt 0 ] || [ "$skipped_sources" -gt 0 ]; }; then
+        source_index=1
+        while IFS= read -r subscription_url || [ -n "$subscription_url" ]; do
+            [ -n "$subscription_url" ] || continue
+            if jq -e --arg id "$(get_subscription_link_id "$subscription_url")" 'has($id)' \
+                "$(get_subscription_items_cache_path "$section").refresh-errors" >/dev/null; then
+                subscription_cached_source_append "$section" "$(get_subscription_link_id "$subscription_url")" "$source_index" \
+                    "$merged_links_file" "$merged_all_links_file" "$merged_skipped_links_file" "$merged_items_file" || merge_failed=1
+            fi
+            source_index=$((source_index + 1))
+        done < "$urls_file"
+    fi
+    if [ "$merge_failed" -gt 0 ] || [ "$successful_sources" -eq 0 ] ||
+        { [ -n "${SUBSCRIPTION_UPDATE_SOURCE_ID:-}" ] && { [ "$failed_sources" -gt 0 ] || [ "$skipped_sources" -gt 0 ]; }; }; then
         log "Subscription source download failed; the previous complete cache was kept" "warn"
         rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
             "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
@@ -1679,7 +1750,15 @@ refresh_subscription_cache() {
     fi
 
     printf '%s\n' "$items_json" > "$deduped_items_file"
-    if ! subscription_filter_source_links "$deduped_items_file" "$deduped_all_links_file" "$deduped_links_file" \
+    # Preserve a stable preference identity across unambiguous subscription changes.
+    if [ -s "$items_cache_path" ]; then
+        subscription_index_choices "$items_cache_path" "$all_cache_path" > "$merged_items_file" || merge_failed=1
+    else
+        printf '[]\n' > "$merged_items_file"
+    fi
+    subscription_index_choices "$deduped_items_file" "$deduped_all_links_file" > "$merged_skipped_links_file" || merge_failed=1
+    subscription_reconcile_choices "$merged_items_file" "$merged_skipped_links_file" > "$deduped_items_file" || merge_failed=1
+    if [ "$merge_failed" -gt 0 ] || ! subscription_filter_source_links "$deduped_items_file" "$deduped_all_links_file" "$deduped_links_file" \
         "$(subscription_disabled_sources_json "$section")" \
         "$(jq -Rsc 'split("\n") | map(select(length > 0))' "$excluded_ids_file")" || [ ! -s "$deduped_links_file" ]; then
         log "No active subscription configs remain; keeping the previous cache" "warn"
@@ -2181,7 +2260,7 @@ set_subscription_sections_enabled() {
     local excluded_ids_json remaining_enabled_count validated_sections_file changed_count
     local cache_was_present section_file
 
-    if ! subscription_action_lock_acquire "subscription_apply_v2"; then
+    if subscription_runtime_busy || ! subscription_action_lock_acquire "subscription_apply_v2"; then
         subscription_apply_v2_print_result false error lock service_busy false false 0 false
         return 1
     fi
@@ -2276,15 +2355,20 @@ set_subscription_sections_enabled() {
                 return $?
             fi
 
-            if grep -Fxq "$link_id" "$proposed_ids_file" 2> /dev/null; then
+            # Both IDs may exist after migrating an older exclusion. Remove both on enable.
+            local selection_id
+            selection_id="$(jq -r --arg id "$link_id" '.[] | select(.id==$id) | .selectionId // .id' "$items_cache_path")"
+            validate_subscription_link_id "$selection_id" || { subscription_apply_v2_fail validation invalid_link_id false; return $?; }
+
+            if grep -Fxq -e "$link_id" -e "$selection_id" "$proposed_ids_file" 2> /dev/null; then
                 was_excluded=1
             else
                 was_excluded=0
             fi
             tmp_ids_file="$SUBSCRIPTION_APPLY_V2_TMP/excluded.$section.next"
-            grep -Fxv "$link_id" "$proposed_ids_file" > "$tmp_ids_file" 2> /dev/null || true
+            grep -Fxv -e "$link_id" -e "$selection_id" "$proposed_ids_file" > "$tmp_ids_file" 2> /dev/null || true
             if [ "$enabled_value" -eq 0 ]; then
-                printf '%s\n' "$link_id" >> "$tmp_ids_file"
+                printf '%s\n' "$selection_id" >> "$tmp_ids_file"
             fi
             awk '!seen[$0]++' "$tmp_ids_file" > "$proposed_ids_file"
             rm -f "$tmp_ids_file"
@@ -2320,6 +2404,13 @@ set_subscription_sections_enabled() {
 
     SUBSCRIPTION_APPLY_V2_CHANGED="$changed_count"
     if [ "$changed_count" -eq 0 ]; then
+        if [ -f "$(subscription_reload_pending_file)" ]; then
+            if ! (PODKOP_SUBSCRIPTION_APPLY_NOW=1 subscription_reload_seamless); then
+                subscription_apply_v2_print_result false error reload reload_failed false false 0 false
+                subscription_apply_v2_cleanup
+                return 1
+            fi
+        fi
         subscription_apply_v2_print_result true no_changes complete "" false false 0 false
         subscription_apply_v2_cleanup
         return 0
@@ -2400,6 +2491,7 @@ set_subscription_sections_enabled() {
         return $?
     fi
 
+    rm -f "$(subscription_reload_pending_file)"
     subscription_apply_v2_print_result true success complete "" true false "$changed_count" true
     subscription_apply_v2_cleanup
     return 0
@@ -2547,14 +2639,12 @@ subscription_update() {
 
     if subscription_runtime_busy; then
         echolog "Subscription runtime is busy, skipping subscription update"
-        [ -z "$SUBSCRIPTION_UPDATE_SOURCE_ID" ] || return 1
-        return 0
+        return 75
     fi
 
     if ! subscription_action_lock_acquire "subscription_update"; then
         echolog "Subscription runtime is busy, skipping subscription update"
-        [ -z "$SUBSCRIPTION_UPDATE_SOURCE_ID" ] || return 1
-        return 0
+        return 75
     fi
     trap 'subscription_action_lock_release' EXIT INT TERM
 
@@ -2602,7 +2692,7 @@ subscription_update_json() {
     fi
 
     jq -cn --argjson success "$success" --arg output "$output" --argjson status "$status" \
-        '{success:$success, status:$status, output:$output}'
+        '{success:$success, status:$status, output:$output,error:(if $status==75 then "service_busy" else "" end),retryAfter:(if $status==75 then 3 else 0 end)}'
 }
 
 get_clash_api_base_url() {
@@ -2696,19 +2786,12 @@ get_subscription_benchmark_attempts() {
 }
 
 subscription_runtime_busy() {
-    local status_file state
-
     if subscription_action_lock_busy; then
         return 0
     fi
 
-    status_file="$(subscription_patch_update_status_file)"
-    if [ -s "$status_file" ]; then
-        state="$(jq -r '.state // ""' "$status_file" 2> /dev/null)"
-        [ "$state" = "running" ] && return 0
-    fi
-
-    ps w 2> /dev/null | grep -E "podkop-subscriptions-patch-update-runner|/usr/bin/podkop reload|/etc/init.d/podkop reload" | grep -v grep > /dev/null
+    # Inspect live workers, not an old status file left behind after a crash.
+    ps w 2> /dev/null | grep -E 'podkop-subscriptions-patch-update-runner|podkop-update-manager worker update|(/usr/bin/podkop|/etc/init.d/podkop) (reload|restart|start|main)( |$)' | grep -v grep > /dev/null
 }
 
 subscription_speedtest_restore_mixed_proxy() {
@@ -2785,6 +2868,7 @@ subscription_isolated_test() (
     validate_subscription_section_name "$section" && validate_subscription_urltest_section "$section" || probe_error invalid_section
     validate_subscription_link_id "$item_id" || probe_error invalid_link_id
     case "$mode" in ping|speed) ;; *) probe_error invalid_probe_mode ;; esac
+    subscription_runtime_busy && probe_error service_busy
     subscription_action_lock_acquire "isolated_$mode" || probe_error service_busy
     locked=1
     umask 077
@@ -5663,6 +5747,9 @@ get_subscription_skipped_links)
     ;;
 get_subscription_items)
     get_subscription_items "$2"
+    ;;
+get_subscription_operation_status)
+    get_subscription_operation_status
     ;;
 get_subscription_sources)
     get_subscription_sources "$2"

@@ -20,6 +20,7 @@ subscription_isolated_test() (
     validate_subscription_section_name "$section" && validate_subscription_urltest_section "$section" || probe_error invalid_section
     validate_subscription_link_id "$item_id" || probe_error invalid_link_id
     case "$mode" in ping|speed) ;; *) probe_error invalid_probe_mode ;; esac
+    subscription_runtime_busy && probe_error service_busy
     subscription_action_lock_acquire "isolated_$mode" || probe_error service_busy
     locked=1
     umask 077
