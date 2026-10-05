@@ -852,7 +852,7 @@ has_latest_subscription_backend() {
 		grep -Fqx '# subscription_source_actions_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_selection_v1' /usr/bin/podkop 2>/dev/null &&
-		sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop | grep -q 'set_subscription_sections_enabled' &&
+		sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'set_subscription_sections_enabled' &&
 		grep -q '^get_subscription_operation_status)' /usr/bin/podkop 2>/dev/null &&
 		grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/null &&
