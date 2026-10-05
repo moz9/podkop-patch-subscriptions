@@ -1,0 +1,22 @@
+name: Tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: sudo apt-get update && sudo apt-get install -y jq shellcheck
+      - run: sh tests/run.sh
+      - name: Check router shell scripts
+        run: |
+          shellcheck -s sh -S error i s openwrt/install.sh \
+            openwrt/*.sh openwrt/podkop-dns-failover openwrt/podkop-dns-failover.init \
+            openwrt/podkop-dns-optimizer openwrt/podkop-update-manager \
+            openwrt/runtime-0.7.20/usr/bin/podkop openwrt/runtime-0.7.22/usr/bin/podkop

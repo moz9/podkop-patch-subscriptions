@@ -2,6 +2,80 @@
 # A source is identified by its URL hash, never by its position in the UI.
 # subscription_source_actions_v1
 # subscription_choices_and_busy_v1
+# subscription_selection_v1
+subscription_selection_mode() {
+    local mode=''
+    config_get mode "$1" subscription_selection_mode
+    case "$mode" in selected) printf 'selected\n' ;; *) printf 'all\n' ;; esac
+}
+
+subscription_selected_ids_json() {
+    local ids='' id
+    config_get ids "$1" subscription_selected_link_ids
+    for id in $ids; do
+        case "$id" in *[!a-f0-9]*|'') continue ;; esac
+        [ "${#id}" -ne 32 ] || printf '%s\n' "$id"
+    done | jq -Rsc 'split("\n") | map(select(length > 0)) | unique'
+}
+
+# Freeze the current effective choices before applying a mode transition and row edits.
+subscription_selection_prepare() {
+    local section="$1" changes="$2" items="$3" excluded="$4" dir="$SUBSCRIPTION_APPLY_V2_TMP"
+    local current mode selected id enabled selection_id was_selected count=0
+    current="$(subscription_selection_mode "$section")"
+    mode="$(printf '%s' "$changes" | jq -r --arg current "$current" '.selectionMode // $current')"
+    selected="$(subscription_selected_ids_json "$section")" || return 1
+    if [ "$mode" != "$current" ]; then
+        count=1
+        if [ "$mode" = selected ]; then
+            subscription_items_with_sources "$section" "$items" > "$dir/selection.$section.items" || return 1
+            selected="$(subscription_source_policy "$(subscription_disabled_sources_json "$section")" "$excluded" \
+                "$dir/selection.$section.items" all '[]' | jq -c '[.[] | select(.runtimeEnabled) | .selectionId // .id] | unique')" || return 1
+        fi
+    fi
+    if [ "$mode" = selected ]; then
+        printf '%s' "$changes" | jq -r '.changes[] | [.id,.enabled] | @tsv' > "$dir/selection.$section.changes" || return 1
+        while IFS="$(printf '\t')" read -r id enabled; do
+            [ -n "$id" ] || continue
+            selection_id="$(jq -r --arg id "$id" '.[] | select(.id==$id and .supported) | .selectionId // .id' "$items")"
+            validate_subscription_link_id "$id" && validate_subscription_link_id "$selection_id" || return 1
+            was_selected="$(printf '%s' "$selected" | jq --arg id "$selection_id" 'index($id)!=null')"
+            [ "$was_selected" = "$enabled" ] || count=$((count + 1))
+            selected="$(printf '%s' "$selected" | jq -c --arg id "$selection_id" --argjson enabled "$enabled" \
+                'map(select(.!=$id)) + (if $enabled then [$id] else [] end) | unique')" || return 1
+        done < "$dir/selection.$section.changes"
+    fi
+    printf '%s\n' "$current" > "$dir/selection.$section.current-mode"
+    printf '%s\n' "$mode" > "$dir/selection.$section.mode"
+    printf '%s\n' "$selected" > "$dir/selection.$section.ids"
+    SUBSCRIPTION_SELECTION_MODE="$mode"
+    SUBSCRIPTION_SELECTION_CHANGED="$count"
+}
+
+subscription_selection_stage() {
+    local section="$1" dir="$SUBSCRIPTION_APPLY_V2_TMP" mode current id
+    mode="$(cat "$dir/selection.$section.mode")"
+    current="$(cat "$dir/selection.$section.current-mode")"
+    if [ "$mode" != "$current" ]; then
+        uci -q set "podkop.$section.subscription_selection_mode=$mode" || return 1
+    fi
+    [ "$mode" = selected ] || return 0
+    uci -q delete "podkop.$section.subscription_selected_link_ids" >/dev/null 2>&1 || true
+    jq -r '.[]' "$dir/selection.$section.ids" > "$dir/selection.$section.list" || return 1
+    while IFS= read -r id; do
+        [ -n "$id" ] || continue
+        uci -q add_list "podkop.$section.subscription_selected_link_ids=$id" || return 1
+    done < "$dir/selection.$section.list"
+}
+
+subscription_selection_verify() {
+    local section="$1" dir="$SUBSCRIPTION_APPLY_V2_TMP" mode
+    mode="$(cat "$dir/selection.$section.mode")"
+    [ "$mode" = "$(subscription_selection_mode "$section")" ] || return 1
+    [ "$mode" = selected ] || return 0
+    [ "$(cat "$dir/selection.$section.ids")" = "$(subscription_selected_ids_json "$section")" ]
+}
+
 subscription_connection_key() {
     # Labels and query ordering are not connection changes. Never persist credentials separately.
     local base="${1%%#*}" query
@@ -90,14 +164,16 @@ subscription_cached_source_append() {
 }
 
 subscription_source_policy() {
-    jq -c --argjson disabled "$1" --argjson excluded "$2" '
+    jq -c --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" '
         map(. as $item
-            | .enabled = (.supported == true and ($excluded | index($item.id)) == null and ($excluded | index($item.selectionId // $item.id)) == null)
+            | .enabled = (.supported == true and (if $mode=="selected" then
+                ($selected | index($item.selectionId // $item.id)) != null
+                else ($excluded | index($item.id)) == null and ($excluded | index($item.selectionId // $item.id)) == null end))
             | .sourceEnabled = (if ((.sourceIds // []) | length) > 0 then
                 any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
                 else ($disabled | length) == 0 end)
             | .runtimeEnabled = (.enabled and .sourceEnabled)
-            | if .supported then .reason = (if .enabled then "" else "user_excluded" end) else . end)
+            | if .supported then .reason = (if .enabled then "" elif $mode=="selected" then "user_unselected" else "user_excluded" end) else . end)
     ' "$3"
 }
 
@@ -146,8 +222,13 @@ subscription_items_with_sources() {
 
 subscription_filter_source_links() {
     local items="$1" links="$2" output="$3" disabled="$4" excluded="$5" work link id
+    local mode=all selected='[]'
+    if [ -n "${6:-}" ]; then
+        mode="$(subscription_selection_mode "$6")"
+        selected="$(subscription_selected_ids_json "$6")" || return 1
+    fi
     work="$(mktemp)" || return 1
-    subscription_source_policy "$disabled" "$excluded" "$items" > "$work" || { rm -f "$work"; return 1; }
+    subscription_source_policy "$disabled" "$excluded" "$items" "$mode" "$selected" > "$work" || { rm -f "$work"; return 1; }
     : > "$output"
     while IFS= read -r link || [ -n "$link" ]; do
         [ -n "$link" ] || continue
@@ -162,7 +243,7 @@ subscription_filter_source_links() {
 # Stage and validate source choices inside the existing single-commit transaction.
 subscription_sources_prepare() {
     local section="$1" changes="$2" items="$3" excluded="$4" dir="$SUBSCRIPTION_APPLY_V2_TMP"
-    local sources proposed id enabled current count
+    local sources proposed id enabled current count mode=all selected='[]'
     sources="$(get_subscription_sources "$section")" || return 1
     proposed="$(subscription_disabled_sources_json "$section")"
     printf '%s\n' "$changes" | jq -r '.sources // [] | .[] | [.id,.enabled] | @tsv' > "$dir/sources.$section.changes" || return 1
@@ -176,7 +257,11 @@ subscription_sources_prepare() {
     done < "$dir/sources.$section.changes"
     printf '%s\n' "$proposed" > "$dir/sources.$section.proposed"
     subscription_items_with_sources "$section" "$items" > "$dir/sources.$section.items" || return 1
-    subscription_source_policy "$proposed" "$excluded" "$dir/sources.$section.items" > "$dir/sources.$section.effective" || return 1
+    if [ -s "$dir/selection.$section.mode" ]; then
+        mode="$(cat "$dir/selection.$section.mode")"
+        selected="$(cat "$dir/selection.$section.ids")"
+    fi
+    subscription_source_policy "$proposed" "$excluded" "$dir/sources.$section.items" "$mode" "$selected" > "$dir/sources.$section.effective" || return 1
     SUBSCRIPTION_SOURCES_REMAINING="$(jq '[.[] | select(.runtimeEnabled)] | length' "$dir/sources.$section.effective")"
     SUBSCRIPTION_SOURCES_CHANGED="$count"
 }

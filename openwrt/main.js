@@ -805,10 +805,7 @@ var PodkopShellMethods = {
     [
       JSON.stringify({
         sections: Object.entries(changesBySection).map(
-          ([section, changes]) => ({ section,
-            changes: changes.filter(change => !change.id.startsWith("source:")),
-            sources: changes.filter(change => change.id.startsWith("source:")).map(change => ({...change, id:change.id.slice(7)}))
-          })
+          ([section, changes]) => buildSubscriptionSectionChanges(section, changes)
         )
       })
     ],
@@ -816,6 +813,15 @@ var PodkopShellMethods = {
     3e5
   )
 };
+
+function buildSubscriptionSectionChanges(section, changes) {
+  const mode = changes.find(change => change.id === "selection:mode");
+  return { section,
+    ...(mode ? {selectionMode: mode.enabled ? "selected" : "all"} : {}),
+    changes: changes.filter(change => !change.id.startsWith("source:") && change.id !== "selection:mode"),
+    sources: changes.filter(change => change.id.startsWith("source:")).map(change => ({...change, id:change.id.slice(7)}))
+  };
+}
 
 // src/podkop/methods/custom/getDashboardSections.ts
 function getSubscriptionSkippedReasonLabel(reason) {
@@ -5732,6 +5738,10 @@ function renderSubscriptionSourceActions(section, group, actions) {
       disabled:!stopping && (!group.id || actions.disabled || !group.items.some(item=>item.supported)), onClick:()=>actions.onSpeedtest(target)})
   ]);
 }
+function getEffectiveSelectionMode(pendingChanges, section) {
+  const key = `${section.code}:selection:mode`;
+  return key in pendingChanges ? (pendingChanges[key] ? "selected" : "all") : (section.selectionMode || "all");
+}
 function renderSection({
   section,
   pendingChanges,
@@ -5753,6 +5763,19 @@ function renderSection({
       { class: "pdk_subscriptions-page__section-title" },
       section.displayName
     ),
+    E("label", {style:"display:block;margin:8px 0"}, [
+      E("span", {}, "Конфиги этой секции: "),
+      E("select", {
+        disabled: applying || sourceActions?.modeDisabled ? "disabled" : void 0,
+        change: event => onToggle(section.code, {id:"selection:mode", enabled:section.selectionMode === "selected"}, event.target.value === "selected")
+      }, [
+        E("option", {value:"all", selected:getEffectiveSelectionMode(pendingChanges, section) === "all" ? "selected" : void 0}, "Все, кроме выключенных"),
+        E("option", {value:"selected", selected:getEffectiveSelectionMode(pendingChanges, section) === "selected" ? "selected" : void 0}, "Только выбранные")
+      ]),
+      E("small", {style:"display:block;margin-top:4px"}, getEffectiveSelectionMode(pendingChanges, section) === "selected"
+        ? "Новые конфиги не включаются автоматически. Оставьте галочки только у нужных узлов и нажмите «Применить»."
+        : "Новые конфиги подписок включаются автоматически. Выключенные вручную остаются выключенными.")
+    ]),
     sourceGroups.length === 0 ? renderEmptyState(
       _("Subscription cache is empty. Click refresh to load configs.")
     ) : E(
@@ -5860,6 +5883,7 @@ function renderSubscriptionSections({
       onToggleSource,
       sourceActions: {
         target:actionTarget,
+        modeDisabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running",
         disabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || pendingCount > 0,
         refreshDisabled:applying || loading || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || (!failed && pendingCount > 0),
         speedRunning:action === "speed" && actionStatus === "running",
@@ -6039,6 +6063,7 @@ async function fetchSubscriptionItems(status = "idle", refreshedSource, preserve
         return {
           code: section[".name"],
           displayName: section[".name"],
+          selectionMode: section.subscription_selection_mode || "all",
           items: items.data,
           sources: sources.data
         };
@@ -6084,6 +6109,8 @@ function retainOtherSubscriptionResults(results, sections, target) {
 function rebaseSubscriptionDraft(draft, sections) {
   const remaining = {...draft};
   for (const section of sections) {
+    const modeKey = `${section.code}:selection:mode`;
+    if (modeKey in remaining && remaining[modeKey] === (section.selectionMode === "selected")) delete remaining[modeKey];
     for (const item of section.items) {
       const key = `${section.code}:${item.id}`;
       if (key in remaining && remaining[key] === item.enabled) delete remaining[key];

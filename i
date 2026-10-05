@@ -21,7 +21,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260924-subscription-reliability-v2"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261005-subscription-selection-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -49,7 +49,7 @@ RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
 RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20260924_subscription_reliability_v2"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261005_subscription_selection_v1"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -142,6 +142,13 @@ www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2
 www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2/settings.js
 www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2/dashboard.js
 www/luci-static/resources/view/podkop_patch_20260924_subscription_reliability_v2/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/main.js
+www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/podkop.js
+www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/section.js
+www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/settings.js
+www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -834,7 +841,7 @@ abort_with_restore() {
 
 has_latest_subscription_backend() {
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
-	[ "${count:-0}" -ge 3 ] &&
+	[ "${count:-0}" -ge 2 ] &&
 		grep -q '^case "\$1" in' /usr/bin/podkop 2>/dev/null &&
 		grep -q "get_subscription_items_cached" /usr/bin/podkop 2>/dev/null &&
 		grep -q "set_subscription_links_enabled" /usr/bin/podkop 2>/dev/null &&
@@ -844,8 +851,10 @@ has_latest_subscription_backend() {
 		grep -Fq '# subscription_sources_v1 begin' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_source_actions_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop 2>/dev/null &&
+		grep -Fqx '# subscription_selection_v1' /usr/bin/podkop 2>/dev/null &&
+		sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop | grep -q 'set_subscription_sections_enabled' &&
 		grep -q '^get_subscription_operation_status)' /usr/bin/podkop 2>/dev/null &&
-		grep -Fq '# subscription_isolated_probe_v1 end' /usr/bin/podkop 2>/dev/null &&
+		grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/null &&
 		grep -q 'subscription_deferred_apply_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_seamless_reload end' /usr/bin/podkop 2>/dev/null &&
@@ -1692,7 +1701,9 @@ fi
 
 if ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop ||
-    ! grep -Fqx '# subscription_isolated_probe_v1 end' /usr/bin/podkop; then
+    ! grep -Fqx '# subscription_selection_v1' /usr/bin/podkop ||
+    ! sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop | grep -q 'set_subscription_sections_enabled' ||
+    ! grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop; then
     PODKOP_SOURCES_SOURCE="$tmp_dir/podkop.runtime-0.7.20" \
         sh "$tmp_dir/$SOURCES_UPGRADE_FILE" || abort_with_restore "subscription source controls upgrade failed"
 fi

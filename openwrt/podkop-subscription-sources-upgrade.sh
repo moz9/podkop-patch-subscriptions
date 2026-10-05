@@ -7,7 +7,10 @@ staged="${target}.sources.$$"
 trap 'rm -rf "$work"; rm -f "$staged"' EXIT INT TERM HUP
 [ -f "$target" ] && [ -f "$source_runtime" ]
 sh -n "$source_runtime"
-if grep -Fqx '# subscription_choices_and_busy_v1' "$target" && grep -Fqx '# subscription_isolated_probe_v1 end' "$target"; then
+if grep -Fqx '# subscription_choices_and_busy_v1' "$target" &&
+    grep -Fqx '# subscription_selection_v1' "$target" &&
+    sed -n '/^set_subscription_links_enabled() {/,/^}/p' "$target" | grep -q 'set_subscription_sections_enabled' &&
+    grep -Eq '^# subscription_isolated_probe_v[12] end$' "$target"; then
     echo 'Subscription source controls are already installed.'
     exit 0
 fi
@@ -15,7 +18,7 @@ for block in subscription_sources_v1 subscription_isolated_probe_v1; do
     sed -n "/^# $block begin$/,/^# $block end$/p" "$source_runtime" > "$work/$block"
     [ -s "$work/$block" ]
 done
-names='append_subscription_item filter_working_subscription_proxy_links refresh_subscription_cache load_subscription_proxy_links_for_section apply_subscription_exclusions_to_cached_links set_subscription_sections_enabled subscription_speedtest_stop subscription_update subscription_update_json subscription_runtime_busy'
+names='append_subscription_item filter_working_subscription_proxy_links refresh_subscription_cache load_subscription_proxy_links_for_section apply_subscription_exclusions_to_cached_links set_subscription_links_enabled set_subscription_sections_enabled subscription_speedtest_stop subscription_update subscription_update_json subscription_runtime_busy'
 for name in $names; do
     sed -n "/^$name() {$/,/^}$/p" "$source_runtime" > "$work/$name"
     [ -s "$work/$name" ]
