@@ -280,7 +280,7 @@ fi
 grep -q '^VERSION="20260814-dns-optimizer-v18"$' openwrt/podkop-dns-optimizer ||
     fail_test 'DNS optimizer version was not bumped to v18'
 for installer in i openwrt/install.sh; do
-    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20260924-subscription-reliability-v2"$' "$installer" ||
+    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261005-subscription-selection-v1"$' "$installer" ||
         fail_test "$installer patch marker does not match the current release"
     grep -q '^DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v18"$' "$installer" ||
         fail_test "$installer DNS optimizer version was not bumped to v18"
@@ -288,7 +288,7 @@ for installer in i openwrt/install.sh; do
         fail_test "$installer LuCI namespace does not match the current release"
 done
 
-[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20260924-subscription-reliability-v2' ] ||
+[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20261005-subscription-selection-v1' ] ||
     fail_test 'update manifest does not match the current release'
 
 cmp -s i openwrt/install.sh ||
