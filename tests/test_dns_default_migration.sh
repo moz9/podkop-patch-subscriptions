@@ -284,7 +284,7 @@ for installer in i openwrt/install.sh; do
         fail_test "$installer patch marker does not match the current release"
     grep -q '^DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v18"$' "$installer" ||
         fail_test "$installer DNS optimizer version was not bumped to v18"
-    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20260924_subscription_reliability_v2"$' "$installer" ||
+    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20261005_subscription_selection_v1"$' "$installer" ||
         fail_test "$installer LuCI namespace does not match the current release"
 done
 
