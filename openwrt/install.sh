@@ -15,6 +15,7 @@ PODKOP_PATCH_UPDATE_PODKOP_WAS_SET=0
 PODKOP_PATCH_FORCE_PODKOP_UPDATE_WAS_SET=0
 [ "${PODKOP_PATCH_FORCE_PODKOP_UPDATE+x}" = x ] && PODKOP_PATCH_FORCE_PODKOP_UPDATE_WAS_SET=1
 PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}"
+PODKOP_PATCH_DEFER_SERVICE_START="${PODKOP_PATCH_DEFER_SERVICE_START:-0}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
 V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
@@ -24,7 +25,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261007-pe-v5"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261007-pe-v6"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -52,7 +53,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_PE_PODKOP_FILE="runtime-0.7.23/usr/bin/podkop"
 RUNTIME_PE_PODKOP_JS_FILE="runtime-0.7.23/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261007_pe_v5"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261007_pe_v6"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -160,20 +161,20 @@ www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/s
 www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/dashboard.js
 www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/diagnostic.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/main.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v5/main.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v6/main.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/podkop.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v5/podkop.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v6/podkop.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/section.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v5/section.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v6/section.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v5/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v6/subscriptions.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/settings.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v5/settings.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v6/settings.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v5/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v6/dashboard.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v5/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v5/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v6/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v6/dns_benchmark.js
 
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
@@ -708,6 +709,7 @@ restart_podkop_after_restore() {
 }
 
 restore_patch_service_state() {
+	installer_services_deferred && return 0
 	service_restore_ok=1
 	restart_podkop_after_restore || service_restore_ok=0
 
@@ -728,6 +730,10 @@ restore_patch_service_state() {
 	esac
 
 	[ "$service_restore_ok" -eq 1 ]
+}
+
+installer_services_deferred() {
+	[ "$PODKOP_PATCH_DEFER_SERVICE_START" = 1 ]
 }
 
 restore_runtime() {
@@ -2058,6 +2064,8 @@ fi
 rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*.json
 rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 
+# ACTIVATE_INSTALLED_PATCH
+if ! installer_services_deferred; then
 if [ -x /etc/init.d/podkop ]; then
 	if [ "$light_reload" -eq 1 ] && podkop_dnsmasq_configured; then
 		reload_command="PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload"
@@ -2078,6 +2086,9 @@ fi
 
 /etc/init.d/podkop-dns-failover enable >/dev/null 2>&1 || abort_with_restore "failed to enable DNS failover service"
 /etc/init.d/podkop-dns-failover restart >/dev/null 2>&1 || abort_with_restore "failed to restart DNS failover service"
+else
+	log "PE runtime installed; service activation deferred to the migration coordinator."
+fi
 
 /etc/init.d/rpcd restart >/dev/null 2>&1 || true
 /etc/init.d/uhttpd restart >/dev/null 2>&1 || true

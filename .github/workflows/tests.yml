@@ -16,7 +16,7 @@ jobs:
       - run: sh tests/run.sh
       - name: Check router shell scripts
         run: |
-          shellcheck -s sh -S error a i s scripts/prepare-pe-storage.sh openwrt/install.sh \
+          shellcheck -s sh -S error a i s m scripts/prepare-pe-storage.sh openwrt/install.sh \
             openwrt/*.sh openwrt/podkop-dns-failover openwrt/podkop-dns-failover.init \
             openwrt/podkop-dns-optimizer openwrt/podkop-dns-benchmark openwrt/podkop-update-manager \
             openwrt/runtime-0.7.20/usr/bin/podkop openwrt/runtime-0.7.22/usr/bin/podkop \

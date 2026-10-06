@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const manifestPath = path.join(root, 'openwrt/update-manifest.json');
 const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
-const files = ['a', 'i', 's'];
+const files = ['a', 'i', 's', 'm'];
 
 async function visit(directory) {
   for (const entry of await readdir(path.join(root, directory), { withFileTypes: true })) {

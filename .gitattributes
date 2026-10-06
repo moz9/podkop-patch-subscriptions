@@ -5,6 +5,7 @@
 i text eol=lf
 a text eol=lf
 s text eol=lf
+m text eol=lf
 *.sh text eol=lf
 openwrt/*.init text eol=lf
 openwrt/podkop-dns-failover text eol=lf

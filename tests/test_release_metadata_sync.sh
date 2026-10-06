@@ -25,6 +25,7 @@ for router_executable in \
     a \
     i \
     s \
+    m \
     openwrt/install.sh \
     openwrt/podkop-dns-failover \
     openwrt/podkop-dns-failover.init \
@@ -69,9 +70,9 @@ manifest_patch="$(jq -r '.patchVersion' openwrt/update-manifest.json)"
 manifest_published_at="$(jq -r '.publishedAt' openwrt/update-manifest.json)"
 manifest_recommended="$(jq -r '.recommendedPodkopVersion' openwrt/update-manifest.json)"
 manifest_supported="$(jq -r '.supportedPodkopVersions | join(" ")' openwrt/update-manifest.json)"
-expected_patch_version="20261007-pe-v5"
+expected_patch_version="20261007-pe-v6"
 expected_dns_optimizer_version="20260814-dns-optimizer-v18"
-expected_published_at="2026-10-07T01:00:00+07:00"
+expected_published_at="2026-10-07T01:19:00+07:00"
 expected_google_play_capability="google_play_dns_transport_guard_v1"
 expected_chatgpt_capability="chatgpt_dns_transport_guard_v1"
 
