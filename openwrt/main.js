@@ -5898,6 +5898,9 @@ function getEffectiveSubscriptionTags(pendingChanges, section, kind) {
 }
 function getSubscriptionTagChoices(section, savedTags) {
   const choices = new Map();
+  const regionNames = typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function'
+    ? (() => { try { return new Intl.DisplayNames(['ru'], {type:'region', fallback:'none'}); } catch (_) { return null; } })()
+    : null;
   const literal = value => value.replace(/[\\*?\[\]]/g, '\\$&');
   const flagCode = flag => Array.from(flag).map(char => String.fromCharCode(char.codePointAt(0) - 0x1F1E6 + 65)).join('');
   const savedByCode = new Map(savedTags.flatMap(tag => {
@@ -5911,7 +5914,14 @@ function getSubscriptionTagChoices(section, savedTags) {
     const codes = [...new Set([...flags.map(flagCode),...prefix ? [prefix[1]] : []])];
     for (const code of codes) {
       const value = savedByCode.get(code) || `@prefix:${code}`;
-      choices.set(value, {value, label:code, missing:false});
+      let description = '';
+      if (regionNames) {
+        try {
+          const name = regionNames.of(code);
+          if (name && name !== code && !/unknown|неизвест/i.test(name)) description = name;
+        } catch (_) {}
+      }
+      choices.set(value, {value, label:code, ...(description ? {description} : {}), missing:false});
     }
     if (/^Авто(?:\s|$)/i.test(name)) choices.set('Авто*', {value:'Авто*',label:'Авто',missing:false});
     else if (!codes.length && name) choices.set(literal(name), {value:literal(name),label:name,missing:false});
@@ -5940,7 +5950,7 @@ function renderSubscriptionTagPicker(section, pendingChanges, kind, disabled, on
             const next = event.target.checked ? [...new Set([...selected,choice.value])] : selected.filter(tag => tag !== choice.value);
             onToggle(section.code,{id:`tags:${kind}`,enabled:section[`${kind}Tags`] || []},next);
           }}),
-        E('span', {}, choice.label),
+        E('span', {}, [choice.label, ...(choice.description ? [` — ${choice.description}`] : [])]),
         ...choice.missing ? [E('small', {}, 'Нет совпадений в текущей подписке')] : []
       ])) : [E('small', {}, 'Сначала обновите подписку, чтобы определить теги.')])
     ])
