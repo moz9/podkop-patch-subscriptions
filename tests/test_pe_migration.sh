@@ -7,6 +7,12 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 [ -f "$repo/m" ] || fail 'migration entrypoint is missing'
 sed '/^main "\$@"$/d' "$repo/m" > "$tmp/library"
 . "$tmp/library"
+ROOT=''
+command -v archive_root >/dev/null || fail 'production root archive helper missing'
+[ "$(archive_root)" = / ] || fail 'empty production prefix must archive from /'
+ROOT="$tmp"
+[ "$(archive_root)" = "$tmp" ] || fail 'test filesystem root must be preserved'
+if grep -q 'tar -C "\$ROOT"' "$repo/m"; then fail 'archive still uses empty production root prefix'; fi
 new_case() {
     case_dir="$tmp/$1"; mkdir -p "$case_dir"
     ROOT="$case_dir/root"; mkdir -p "$ROOT/etc/config" "$ROOT/etc/podkop/subscriptions" "$ROOT/etc/init.d" "$ROOT/usr/bin" "$ROOT/usr/lib/podkop" "$ROOT/root" "$ROOT/tmp" "$ROOT/var/lib/zerotier-one"

@@ -15,6 +15,7 @@ RUNTIME='usr/bin/podkop usr/bin/sing-box usr/bin/podkop-dns-optimizer usr/bin/po
 
 log() { printf '%s\n' "$*"; }
 die() { log "ОШИБКА: $*" >&2; exit 1; }
+archive_root() { printf '%s\n' "${ROOT:-/}"; }
 download() {
     case "$1" in https://*) ;; *) return 1 ;; esac
     if command -v curl >/dev/null 2>&1; then
@@ -203,10 +204,10 @@ snapshot() {
     sh -n "$saved/migration.sh" || die 'скрипт восстановления имеет ошибку синтаксиса'
     paths_existing "$PRESERVE" > "$saved/preserve.paths"
     paths_existing "$RUNTIME" > "$saved/runtime.paths"
-    tar -C "$ROOT" -cpf "$saved/preserve.tar" -T "$saved/preserve.paths" || die 'не удалось сохранить настройки'
-    tar -C "$ROOT" -cpf "$saved/runtime.tar" -T "$saved/runtime.paths" || die 'не удалось сохранить runtime'
+    tar -C "$(archive_root)" -cpf "$saved/preserve.tar" -T "$saved/preserve.paths" || die 'не удалось сохранить настройки'
+    tar -C "$(archive_root)" -cpf "$saved/runtime.tar" -T "$saved/runtime.paths" || die 'не удалось сохранить runtime'
     if [ -d "$ROOT/overlay/upper" ]; then
-        tar -C "$ROOT" --exclude=overlay/upper/root/podkop-pe-migration -cpf "$saved/overlay-upper.tar" overlay/upper || die 'не удалось сохранить весь overlay/upper'
+        tar -C "$(archive_root)" --exclude=overlay/upper/root/podkop-pe-migration -cpf "$saved/overlay-upper.tar" overlay/upper || die 'не удалось сохранить весь overlay/upper'
     fi
     apk list --installed --manifest > "$saved/packages.before"
     dns_was_running=0
@@ -239,7 +240,7 @@ snapshot() {
     log "Офлайн-откат: sh $saved/migration.sh --rollback $saved"
     work="$saved"
 }
-restore_preserved() { tar -C "$ROOT" -xpf "$saved/preserve.tar"; }
+restore_preserved() { tar -C "$(archive_root)" -xpf "$saved/preserve.tar"; }
 verify_preserved() { (cd "$ROOT/" && sha256sum -c "$saved/protected-files.sha256") > "$saved/protected-verification.log" 2>&1; }
 verify_subscription_snapshot() { (cd "$ROOT/" && sha256sum -c "$saved/subscription-files.sha256") > "$saved/subscription-verification.log" 2>&1; }
 package_versions_restored() {
@@ -280,9 +281,9 @@ rollback() {
         return 1
     fi
     if [ "$recovery_level" = stock-newer ]; then
-        tar -C "$ROOT" --exclude=usr/bin/sing-box -xpf "$saved/runtime.tar" || { printf 'recovery-required\n' > "$saved/status"; return 1; }
+        tar -C "$(archive_root)" --exclude=usr/bin/sing-box -xpf "$saved/runtime.tar" || { printf 'recovery-required\n' > "$saved/status"; return 1; }
     else
-        tar -C "$ROOT" -xpf "$saved/runtime.tar" || { printf 'recovery-required\n' > "$saved/status"; return 1; }
+        tar -C "$(archive_root)" -xpf "$saved/runtime.tar" || { printf 'recovery-required\n' > "$saved/status"; return 1; }
     fi
     if ! restore_preserved; then
         printf 'recovery-required\n' > "$saved/status"; return 1
