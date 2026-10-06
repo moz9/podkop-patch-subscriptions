@@ -6076,10 +6076,10 @@ function renderSection({
       E("small", {style:"display:block;margin-top:4px"}, getEffectiveSelectionMode(pendingChanges, section) === "selected"
         ? "Новые конфиги не включаются автоматически. Оставьте галочки только у нужных узлов и нажмите «Применить»."
         : "Новые конфиги подписок включаются автоматически. Выключенные вручную остаются выключенными.")
-    ]),
+    ])],
     E("div", {class:"pdk_tag-pickers"}, [
       ...["include","exclude"].map(kind => renderSubscriptionTagPicker(section,pendingChanges,kind,applying || sourceActions?.modeDisabled,onToggle))
-    ])],
+    ]),
     E("small", {style:"display:block;margin:4px 0"}, "Префиксы определены из названий узлов: SE, FI, US и другие. Флаг и буквенный код одной страны считаются одним тегом. Исключение важнее разрешения. При ручном отборе фильтр дополнительно ограничивает ваш выбор."),
     E("small", {style:"display:block;margin:4px 0"}, tagPreview.uncertain
       ? `Сейчас доступно узлов: ${tagPreview.enabled}. После смены режима итоговое число определится при применении.`

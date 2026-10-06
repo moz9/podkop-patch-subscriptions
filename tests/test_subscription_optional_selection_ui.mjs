@@ -32,4 +32,23 @@ assert.ok(choices.some(x=>x.label==='FI'));
 assert.ok(!choices.some(x=>/Швеция|Соединенные/.test(x.label)),'compact codes, not country names');
 assert.match(js,/Ручной отбор конфигов/);
 assert.match(js,/selectionMode: section\.subscription_selection_mode \|\| "auto"/);
+Object.assign(c, {
+  E: (tag, attrs, children) => ({tag, attrs, children}),
+  _: text => text,
+  getSourceGroups: () => [],
+  isSubscriptionSectionCollapsed: () => false,
+  getSectionCollapsedSummary: () => '',
+  renderEmptyState: () => null,
+  renderSubscriptionTagPicker: (_section, _draft, kind) => ({picker:kind})
+});
+vm.runInContext(js.slice(js.indexOf('function renderSection({'),js.indexOf('function renderSections2(')),c);
+function pickers(node) {
+  if (Array.isArray(node)) return node.flatMap(pickers);
+  if (!node || typeof node !== 'object') return [];
+  return node.picker ? [node.picker] : pickers(node.children);
+}
+for (const pending of [draft, {}]) {
+  const tree=c.renderSection({section,pendingChanges:pending,sourceActions:{}});
+  assert.deepEqual(Array.from(pickers(tree)),['include','exclude'],'tag selectors remain visible with or without manual selection');
+}
 console.log('PASS: optional manual selection, real short prefixes, shared legacy flag rules and source/tag priority');
