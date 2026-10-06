@@ -22,6 +22,7 @@ echolog() { :; }
 validate_subscription_section_name() { [ "$1" = main ]; }
 validate_subscription_urltest_section() { [ "$1" = main ]; }
 config_get() { case "$3" in connection_type) eval "$1=proxy";; proxy_config_type) eval "$1=subscription_urltest";; subscription_disabled_source_ids) eval "$1=\$one";; esac; }
+config_list_foreach() { :; } # This fixture has no configured tag lists.
 section_has_subscription_urls() { return 0; }
 config_foreach() { "$1" main; }
 subscription_runtime_busy() { [ "${busy:-0}" -eq 1 ]; }
