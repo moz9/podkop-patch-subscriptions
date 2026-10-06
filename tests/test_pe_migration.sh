@@ -75,7 +75,7 @@ df() { printf 'Filesystem 1K-blocks Used Available Use%% Mounted\n/dev/test 2000
 download() {
     printf 'download %s\n' "$1" >> "$case_dir/events"
     case "$1" in
-      */commits/podkop-pe) printf '{"sha":"1111111111111111111111111111111111111111"}\n' > "$2" ;;
+      */commits/podkop-pe\?t=*) printf '{"sha":"1111111111111111111111111111111111111111"}\n' > "$2" ;;
       */openwrt/update-manifest.json)
         h=$(sha256sum "$case_dir/installer" | awk '{print $1}')
         printf '{"schemaVersion":1,"channel":"podkop-pe","patchVersion":"test-v1","sha256":{"i":"%s","m":"%s","openwrt/asset":"%s"}}\n' "$h" "$(sha256sum "$repo/m" | awk '{print $1}')" "$(printf 'asset\n' | sha256sum | awk '{print $1}')" > "$2" ;;

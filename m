@@ -42,7 +42,7 @@ verify_hash() {
     [ "$(sha256sum "$2" | awk '{print $1}')" = "$1" ] || die "не совпадает SHA-256: $(basename "$2")"
 }
 fetch_release() {
-    download https://api.github.com/repos/moz9/podkop-patch-subscriptions/commits/podkop-pe "$work/commit.json" || die 'не удалось определить релиз PE'
+    download "https://api.github.com/repos/moz9/podkop-patch-subscriptions/commits/podkop-pe?t=$(date +%s)" "$work/commit.json" || die 'не удалось определить релиз PE'
     commit=$(jq -er '.sha' "$work/commit.json") || die 'некорректный коммит релиза'
     [ "${#commit}" = 40 ] || die 'некорректная длина коммита релиза'
     case "$commit" in *[!0-9a-f]*) die 'некорректный коммит релиза' ;; esac

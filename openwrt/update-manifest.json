@@ -11,7 +11,7 @@
   "sha256": {
     "a": "db63a8cb6c8a03d388104307945b5f51402498a997a54526233da813868ff5b2",
     "i": "e07f91e3f53a38962efcfa6acb01c20ef9cf41506487f8fdac6a55f6215dae1f",
-    "m": "ea796e59eeded23eb4d83c01b8e5c467c5ab5bb71aab340d00a41e9e6fbcc432",
+    "m": "b884d024254596d5537fa5dc2490e5e5a489b964854072e6e532f027dddf68ae",
     "openwrt/dashboard.js": "6a075ab405160ecfe2742cca4ca5ef24af2d7fca2108d05c3fb48541c0e639aa",
     "openwrt/diagnostic.js": "25fcfd513a23bd3203a04d64f201e724de01f8584ee6435940e47c358a349ad2",
     "openwrt/dns_benchmark.js": "a80eb548dd2db47d3591ceaa52a0c471e63c7623a6bfdf1606fb868429b55ed5",
