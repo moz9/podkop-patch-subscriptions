@@ -190,4 +190,33 @@ run_web_case noop /ubus installed || fail_test 'valid ubus transport rejected'
     ensure_luci_ubus_transport
 ) || fail_test 'alternative LuCI web server was not left alone'
 grep -q '^ensure_luci_ubus_transport$' "$repo_root/i" || fail_test 'main installer does not enforce LuCI transport dependency'
+(
+    . "$test_root/library"
+    RAW_BASE=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/openwrt
+    printf 'payload' > "$test_root/cache-payload"
+    cache_hash=$(sha256sum "$test_root/cache-payload" | awk '{print $1}')
+    printf '{"sha256":{"openwrt/main.js":"%s"}}' "$cache_hash" > "$test_root/cache-manifest"
+    PATCH_ASSET_MANIFEST="$test_root/cache-manifest"
+    curl() {
+        cache_url=''; cache_out=''
+        while [ "$#" -gt 0 ]; do
+            case "$1" in
+                https://*) cache_url="$1";;
+                -o) shift; cache_out="$1";;
+            esac
+            shift
+        done
+        printf '%s\n' "$cache_url" >> "$test_root/cache-requests"
+        printf '%s' "${CACHE_TEST_PAYLOAD:-payload}" > "$cache_out"
+    }
+    download "$RAW_BASE/main.js" "$test_root/cache-result"
+    grep -Eq '/main.js\?t=[0-9]+$' "$test_root/cache-requests" || fail_test 'mutable PE branch download uses stale CDN cache'
+    download "$RAW_BASE/main.js?t=123" "$test_root/cache-result"
+    [ "$(tail -n 1 "$test_root/cache-requests")" = "$RAW_BASE/main.js?t=123" ] || fail_test 'existing cache token changed'
+    download "file://$test_root/cache-payload" "$test_root/cache-result"
+    [ "$(wc -l < "$test_root/cache-requests")" -eq 2 ] || fail_test 'local source triggered network access'
+    if (CACHE_TEST_PAYLOAD=corrupt; download "$RAW_BASE/main.js" "$test_root/cache-result") >/dev/null 2>&1; then
+        fail_test 'cache bypass disabled release checksum validation'
+    fi
+) || fail_test 'PE download freshness or integrity regression'
 printf 'PASS: PE installer preflight, assets, engine contract and package transaction\n'

@@ -235,6 +235,14 @@ download() {
 			;;
 	esac
 
+	# Mutable branch URLs may serve a complete previous release from CDN cache.
+	# Keep local/immutable sources untouched and retain manifest hash checks.
+	case "$url" in
+		https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/*)
+			case "$url" in *\?*) ;; *) url="$url?t=$(date +%s)" ;; esac
+			;;
+	esac
+
 	case "$url" in
 		*raw.githubusercontent.com*)
 			raw_host="raw.githubusercontent.com"

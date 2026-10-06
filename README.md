@@ -120,7 +120,7 @@ PODKOP_SUBSCRIPTION_APPLY_NOW=1 /usr/bin/podkop subscription_update
 Выполнять уже внутри SSH-сессии на роутере:
 
 ```sh
-wget -O /tmp/podkop-pe https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/i && sh /tmp/podkop-pe
+wget -O /tmp/podkop-pe "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/i?t=$(date +%s)" && sh /tmp/podkop-pe
 ```
 
 Это команда для первой установки и обновления PE. Текущая сборка рассчитана
