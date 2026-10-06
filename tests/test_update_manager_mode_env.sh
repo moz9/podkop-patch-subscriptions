@@ -22,10 +22,20 @@ LOCK_DIR="$STATE_DIR/lock"
 CAPTURE_FILE="$test_root/installer-argv"
 mkdir -p "$STATE_DIR"
 
+# Exercise the real update checksum path with jq's optional regex API absent.
+jq() {
+    for argument in "$@"; do
+        case "$argument" in *'test('*|*'match('*|*'sub('*|*'gsub('*) printf 'jq built without ONIGURUMA\n' >&2; return 5 ;; esac
+    done
+    command jq "$@"
+}
+
 write_status() { :; }
 log_line() { :; }
 download_file() {
     printf '#!/bin/sh\nexit 0\n' > "$2"
+    installer_hash="$(sha256sum "$2" | awk '{print $1}')"
+    jq -cn --arg hash "$installer_hash" '{sha256:{i:$hash}}' > "$STATE_DIR/manifest.json"
 }
 run_with_timeout() {
     shift
@@ -60,8 +70,8 @@ perform_check() {
         > "$DETAILS_FILE"
 }
 
-set_check_result podkop_and_patch 0.7.20 0.7.21 patch-v1 patch-v1
-RESULT_PODKOP_VERSION=0.7.21
+set_check_result podkop_and_patch 0.7.23 0.7.23 patch-v1 patch-v1
+RESULT_PODKOP_VERSION=0.7.23
 RESULT_PATCH_VERSION=patch-v1
 perform_update
 
@@ -72,8 +82,8 @@ if ! grep -Fxq 'PODKOP_PATCH_FORCE_PODKOP_UPDATE=1' "$CAPTURE_FILE"; then
     exit 1
 fi
 
-set_check_result patch 0.7.21 0.7.21 patch-v1 patch-v2
-RESULT_PODKOP_VERSION=0.7.21
+set_check_result patch 0.7.23 0.7.23 patch-v1 patch-v2
+RESULT_PODKOP_VERSION=0.7.23
 RESULT_PATCH_VERSION=patch-v2
 perform_update
 
@@ -84,5 +94,14 @@ if ! grep -Fxq 'PODKOP_PATCH_UPDATE_PODKOP=1' "$CAPTURE_FILE" ||
     sed 's/^/  /' "$CAPTURE_FILE" >&2
     exit 1
 fi
+
+# A valid manifest hash from the last check must not authorize changed code.
+: > "$CAPTURE_FILE"
+download_file() { printf '#!/bin/sh\nexit 99\n' > "$2"; }
+if perform_update; then
+    printf '%s\n' 'FAIL: updater accepted an installer that differs from its manifest hash' >&2
+    exit 1
+fi
+[ ! -s "$CAPTURE_FILE" ] || { printf '%s\n' 'FAIL: modified installer was executed' >&2; exit 1; }
 
 printf '%s\n' 'PASS: updater mode selects the correct Podkop force policy'

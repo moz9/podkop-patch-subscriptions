@@ -67,12 +67,13 @@ PODKOP_SUBSCRIPTION_SEAMLESS_TARGET="$fixture" \
 grep -q 'subscription_deferred_apply_v1' "$fixture" || fail_test 'old soft reload was incorrectly treated as current'
 [ -f "$second_backup" ] || fail_test 'old soft reload upgrade has no backup'
 
-grep -q 'SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"' "$installer" ||
-	fail_test 'installer does not name the seamless reload upgrade asset'
-grep -q 'download "$RAW_BASE/$SEAMLESS_RELOAD_UPGRADE_FILE"' "$installer" ||
-	fail_test 'installer does not prefetch the seamless reload upgrade asset'
-grep -q 'PODKOP_SUBSCRIPTION_SEAMLESS_SOURCE="$seamless_source"' "$installer" ||
-	fail_test 'installer does not pass the canonical runtime to the seamless upgrade'
+# Retrofit assertions above cover the preserved legacy helper only. PE ships
+# the seamless capability in its native runtime, not via that helper.
+grep -q '^subscription_reload_seamless() {' "$repo_root/openwrt/runtime-0.7.23/usr/bin/podkop" ||
+    fail_test 'native PE runtime lacks seamless activation'
+sed -n '/^install_prebuilt_pe_runtime() {/,/^}/p' "$installer" |
+    grep -Fq 'cp "$tmp_dir/podkop.runtime-0.7.23" /usr/bin/podkop' ||
+    fail_test 'PE installer does not deliver native seamless activation'
 sed -n '/^has_latest_subscription_backend() {/,/^}/p' "$installer" |
 	grep -q 'subscription_reload_seamless' ||
 	fail_test 'installer no-op capability does not require seamless subscription activation'
@@ -80,4 +81,4 @@ sed -n '/^has_latest_subscription_backend() {/,/^}/p' "$installer" |
 	grep -q 'subscription_reload_pending_file' ||
 	fail_test 'installer no-op capability does not require deferred activation recovery'
 
-printf '%s\n' 'PASS: existing routers receive seamless subscription refresh through the patch installer'
+printf '%s\n' 'PASS: PE seamless runtime delivery and historical retrofit regressions'

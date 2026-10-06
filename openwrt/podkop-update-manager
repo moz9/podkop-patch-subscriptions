@@ -6,9 +6,9 @@ STATUS_FILE="$STATE_DIR/status.json"
 DETAILS_FILE="$STATE_DIR/details.json"
 LOG_FILE="$STATE_DIR/update.log"
 LOCK_DIR="$STATE_DIR/lock"
-MANIFEST_URL="${PODKOP_PATCH_MANIFEST_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/update-manifest.json}"
-RELEASE_URL="${PODKOP_OFFICIAL_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/latest}"
-INSTALLER_URL="${PODKOP_PATCH_INSTALLER_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i}"
+MANIFEST_URL="${PODKOP_PATCH_MANIFEST_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/openwrt/update-manifest.json}"
+RELEASE_URL="${PODKOP_OFFICIAL_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/tags/0.7.23}"
+INSTALLER_URL="${PODKOP_PATCH_INSTALLER_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/i}"
 
 mkdir -p "$STATE_DIR"
 
@@ -174,7 +174,7 @@ download_file() {
         fi
     fi
     if command -v wget >/dev/null 2>&1; then
-        if run_with_timeout 45 wget --no-check-certificate -T 30 -O "$output" "$url"; then
+        if run_with_timeout 45 wget -T 30 -O "$output" "$url"; then
             [ -s "$output" ] && return 0
         fi
     fi
@@ -186,11 +186,6 @@ download_file() {
             if command -v curl >/dev/null 2>&1 && run_with_timeout 45 curl -fsSL \
                 --connect-timeout 10 -m 30 --resolve "raw.githubusercontent.com:443:$ip" \
                 -o "$output" "$url"; then
-                [ -s "$output" ] && return 0
-            fi
-            if command -v wget >/dev/null 2>&1 && run_with_timeout 45 wget -T 30 \
-                --no-check-certificate --header="Host: raw.githubusercontent.com" \
-                -O "$output" "https://$ip/$raw_path"; then
                 [ -s "$output" ] && return 0
             fi
         done
@@ -225,7 +220,7 @@ perform_check() {
     log_line "Checking Podkop and subscription patch updates."
 
     if ! download_file "$MANIFEST_URL?t=$cache_buster" "$manifest" ||
-        ! jq -e '.schemaVersion == 1 and (.patchVersion | type == "string" and length > 0) and (.supportedPodkopVersions | type == "array")' "$manifest" >/dev/null 2>&1; then
+        ! jq -e '.schemaVersion == 1 and .channel == "podkop-pe" and (.patchVersion | type == "string" and length > 0) and .supportedPodkopVersions == ["0.7.23"] and (.sha256 | type == "object")' "$manifest" >/dev/null 2>&1; then
         log_line "Compatibility manifest download or validation failed."
         write_status "error" "manifest_failed"
         return 1
@@ -328,12 +323,22 @@ perform_update() {
         write_status "error" "download_failed"
         return 1
     fi
+    expected_installer_hash="$(jq -er '.sha256.i | select(type == "string" and length == 64)' "$STATE_DIR/manifest.json")" || return 1
+    case "$expected_installer_hash" in
+        *[!0123456789abcdef]*) write_status "error" "installer_checksum_failed"; return 1 ;;
+    esac
+    if [ "$(sha256sum "$installer" | awk '{print $1}')" != "$expected_installer_hash" ]; then
+        log_line "PE installer checksum mismatch; installation refused."
+        write_status "error" "installer_checksum_failed"
+        return 1
+    fi
 
     log_line "Starting transactional update in mode: $mode."
     force_podkop_update=0
     [ "$mode" = "podkop_and_patch" ] && force_podkop_update=1
     if ! run_with_timeout 900 env \
         PODKOP_PATCH_UPDATE_PODKOP=1 \
+        PODKOP_PATCH_VERSION=podkop-pe \
         PODKOP_PATCH_FORCE_PODKOP_UPDATE="$force_podkop_update" \
         sh "$installer"; then
         log_line "Installer returned an error. Existing backup and rollback rules remain active."

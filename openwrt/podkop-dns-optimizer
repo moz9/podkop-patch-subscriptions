@@ -1974,6 +1974,8 @@ Commands:
 EOF
 }
 
+[ "${PODKOP_DNS_OPTIMIZER_LIBRARY_ONLY:-0}" != 1 ] || return 0
+
 case "${1:-}" in
     benchmark_start)
         start_worker "benchmark" "${2:-auto}"

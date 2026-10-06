@@ -3,7 +3,7 @@ set -eu
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT INT TERM
-for version in 0.7.20 0.7.22; do
+for version in 0.7.20 0.7.22 0.7.23; do
     sed -n '/^# subscription_seamless_reload begin$/,/^# subscription_seamless_reload end$/p' \
         "$repo_root/openwrt/runtime-$version/usr/bin/podkop" > "$test_root/block"
     . "$test_root/block"

@@ -5,7 +5,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 # Model the download fallback installed into the stock helper library.
 printf '%s\n' 'raw.githubusercontent.com:443' > "$work/helpers"
-for version in 0.7.20 0.7.22; do
+for version in 0.7.20 0.7.22 0.7.23; do
     cp "$repo/openwrt/runtime-$version/usr/bin/podkop" "$work/runtime"
     sed -i 's/wget -T 30 -t 1 /wget -T 30 /g' "$work/runtime"
     PODKOP_MAINTENANCE_TARGET="$work/runtime" PODKOP_MAINTENANCE_HELPERS_TARGET="$work/helpers" \

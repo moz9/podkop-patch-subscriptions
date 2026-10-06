@@ -120,7 +120,7 @@ if (
     }
 
     trap 'installer_exit_handler "$?"' EXIT
-    update_official_podkop_if_requested
+    legacy_update_official_podkop_if_requested
     transaction_phase="prepatch"
     backup_runtime
 
@@ -208,7 +208,7 @@ run_rejected_official_result() {
             [ "$result" = success ]
         }
 
-        update_official_podkop_if_requested
+        legacy_update_official_podkop_if_requested
         : > "$case_root/unexpected-success"
     ) > "$case_root/output" 2>&1; then
         record_failure "$scenario official result unexpectedly proceeded to the patch phase"
@@ -270,7 +270,7 @@ if [ -z "$global_pending_line" ] || [ -z "$pending_line" ] || [ -z "$prefetch_li
     record_failure 'pending UCI changes and all patch downloads are not gated before the official package phase'
 fi
 official_function="$test_root/official-function.sh"
-sed -n '/^update_official_podkop_if_requested() {/,/^}/p' "$repo_root/i" > "$official_function"
+sed -n '/^legacy_update_official_podkop_if_requested() {/,/^}/p' "$repo_root/i" > "$official_function"
 official_guard_line="$(grep -n 'ensure_no_pending_podkop_changes ||' "$official_function" | cut -d: -f1 || true)"
 official_global_guard_line="$(grep -n 'ensure_no_pending_uci_changes ||' "$official_function" | cut -d: -f1 || true)"
 official_run_line="$(grep -n 'run_official_podkop_installer' "$official_function" | cut -d: -f1 || true)"

@@ -39,6 +39,6 @@ assert.match(diagnostics, /patchUpdateAvailable/);
 assert.match(source, /kind === "check" \? await PodkopShellMethods.checkSubscriptionPatchUpdate\(\) : await PodkopShellMethods.updateSubscriptionPatch\(\)/);
 const manager = fs.readFileSync(new URL('../openwrt/podkop-update-manager', import.meta.url), 'utf8');
 const readme = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
-const installerUrl = 'https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i';
+const installerUrl = 'https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/i';
 assert.ok(manager.includes(installerUrl) && readme.includes(installerUrl), 'Diagnostics and README must use the same universal installer');
 console.log('PASS: patch update is available through Diagnostics/universal installer only');

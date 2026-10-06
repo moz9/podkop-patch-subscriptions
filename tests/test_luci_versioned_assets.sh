@@ -44,7 +44,7 @@ abort_with_restore() {
 }
 
 tmp_dir="$asset_tmp"
-for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
     cp "$repo_root/openwrt/$asset" "$tmp_dir/$asset"
 done
 
@@ -83,7 +83,7 @@ versioned_luci_assets_current || fail_test 'versioned assets or menu do not veri
 [ "$LUCI_VIEW_ROOT" = "$view_root" ] || fail_test 'view-root override was ignored'
 [ "$LUCI_MENU_FILE" = "$menu_file" ] || fail_test 'menu-path override was ignored'
 
-for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
     cmp -s "$view_root/podkop/$asset" "$tmp_dir/$asset" ||
         fail_test "unversioned $asset differs from the release asset"
     cmp -s "$view_root/$LUCI_MODULE_NAMESPACE/$asset" "$versioned_tmp/$asset" ||
@@ -157,7 +157,7 @@ for required in \
         fail_test "backup/rollback inventory omits $required"
 done
 
-for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
     required="www/luci-static/resources/view/$LUCI_MODULE_NAMESPACE/$asset"
     printf '%s\n' "$RUNTIME_FILES" | grep -Fxq "$required" ||
         fail_test "current versioned asset is missing from backup/rollback inventory: $required"

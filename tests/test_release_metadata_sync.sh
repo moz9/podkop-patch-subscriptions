@@ -37,7 +37,11 @@ for router_executable in \
     openwrt/podkop-subscription-sources-upgrade.sh \
     openwrt/podkop-update-manager \
     openwrt/runtime-0.7.20/usr/bin/podkop \
-    openwrt/runtime-0.7.22/usr/bin/podkop
+    openwrt/runtime-0.7.22/usr/bin/podkop \
+    openwrt/runtime-0.7.23/usr/bin/podkop \
+    openwrt/runtime-0.7.23/usr/lib/podkop/helpers.sh \
+    openwrt/runtime-0.7.23/usr/lib/podkop/sing_box_config_facade.sh \
+    openwrt/runtime-0.7.23/usr/lib/podkop/sing_box_config_manager.sh
 do
     assert_lf_only "$router_executable"
 done
@@ -51,8 +55,8 @@ manager_version="$(normalize openwrt/podkop-update-manager | sed -n 's/^VERSION=
 installer_manager_version="$(normalize i | sed -n 's/^UPDATE_MANAGER_VERSION="\([^"]*\)"$/\1/p')"
 install_marker="$(normalize i | sed -n 's/^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=\([^"]*\)"$/\1/p')"
 luci_module_namespace="$(normalize i | sed -n 's/^LUCI_MODULE_NAMESPACE="\([^"]*\)"$/\1/p')"
-installer_target="$(normalize i | sed -n 's/^PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-\([^"]*\)}"$/\1/p')"
-installer_supported="$(normalize i | sed -n 's/^PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS="${PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS:-\([^"]*\)}"$/\1/p')"
+installer_target="$(normalize i | sed -n 's/^PODKOP_PATCH_TARGET_PODKOP_VERSION=//p')"
+installer_supported="$(normalize i | sed -n 's/^PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS=//p')"
 dns_optimizer_version="$(normalize openwrt/podkop-dns-optimizer | sed -n 's/^VERSION="\([^"]*\)"$/\1/p')"
 installer_dns_optimizer_version="$(normalize i | sed -n 's/^DNS_OPTIMIZER_VERSION="\([^"]*\)"$/\1/p')"
 dns_optimizer_google_play_capability="$(normalize openwrt/podkop-dns-optimizer | sed -n 's/^GOOGLE_PLAY_GUARD_CAPABILITY="\([^"]*\)"$/\1/p')"
@@ -65,9 +69,9 @@ manifest_patch="$(jq -r '.patchVersion' openwrt/update-manifest.json)"
 manifest_published_at="$(jq -r '.publishedAt' openwrt/update-manifest.json)"
 manifest_recommended="$(jq -r '.recommendedPodkopVersion' openwrt/update-manifest.json)"
 manifest_supported="$(jq -r '.supportedPodkopVersions | join(" ")' openwrt/update-manifest.json)"
-expected_patch_version="20261006-subscription-tags-v1"
+expected_patch_version="20261006-pe-v2"
 expected_dns_optimizer_version="20260814-dns-optimizer-v18"
-expected_published_at="2026-10-06T17:34:25+07:00"
+expected_published_at="2026-10-06T22:00:00+07:00"
 expected_google_play_capability="google_play_dns_transport_guard_v1"
 expected_chatgpt_capability="chatgpt_dns_transport_guard_v1"
 

@@ -57,7 +57,7 @@ BYEDPI_SHA256="$(cut -d ' ' -f 1 "$test_root/fixtures/byedpi.sha256")"
 WARP_SHA256="$(cut -d ' ' -f 1 "$test_root/fixtures/warp.sha256")"
 ZEROTIER_SHA256="$(cut -d ' ' -f 1 "$test_root/fixtures/zerotier.sha256")"
 actual_i_hash="$(sha256sum "$test_root/fixtures/i" | cut -d ' ' -f 1)"
-printf '{"sha256":{"i":"%s"}}\n' "$actual_i_hash" > "$test_root/fixtures/manifest"
+printf '{"channel":"podkop-pe","recommendedPodkopVersion":"0.7.23","sha256":{"i":"%s"}}\n' "$actual_i_hash" > "$test_root/fixtures/manifest"
 
 # These functions stand in for external interfaces, not installer logic.
 id() { [ "$1" = -u ] || exit 90; printf '%s\n' "${TEST_UID:-0}"; }
@@ -70,7 +70,10 @@ has_cmd() {
         *) command -v "$1" >/dev/null 2>&1 ;;
     esac
 }
-package_installed() { [ "${TEST_MISSING:-}" != "$1" ] || [ -e "$CASE_DIR/$1-ready" ]; }
+package_installed() {
+    [ "$1" != zerotier ] || { [ "${TEST_ZT_INSTALLED:-0}" = 1 ]; return; }
+    [ "${TEST_MISSING:-}" != "$1" ] || [ -e "$CASE_DIR/$1-ready" ]
+}
 apk() {
     printf 'apk %s\n' "$*" >> "$CASE_DIR/packages"
     [ "${TEST_PKG_FAIL:-0}" = 0 ] || return 1
@@ -85,7 +88,7 @@ download() {
     url=$1 dest=$2
     printf '%s\n' "$url" >> "$CASE_DIR/downloads"
     case "$url" in
-        https://api.github.com/repos/moz9/podkop-patch-subscriptions/commits/main) source_name=api ;;
+        https://api.github.com/repos/moz9/podkop-patch-subscriptions/commits/podkop-pe) source_name=api ;;
         "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$sha/openwrt/update-manifest.json") source_name=manifest ;;
         "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$sha/i") source_name=i ;;
         https://raw.githubusercontent.com/moz9/luci-app-byedpi/e28e8ec1419fc0b73f03bf6192c252021ac6792e/install.sh) source_name=byedpi ;;
@@ -104,7 +107,7 @@ download() {
         printf '{"sha256":{}}\n' > "$dest"
     elif [ "${TEST_BAD_SYNTAX:-}" = i ] && [ "$source_name" = manifest ]; then
         invalid_hash="$(printf 'if then\n' | sha256sum | cut -d ' ' -f 1)"
-        printf '{"sha256":{"i":"%s"}}\n' "$invalid_hash" > "$dest"
+        printf '{"channel":"podkop-pe","recommendedPodkopVersion":"0.7.23","sha256":{"i":"%s"}}\n' "$invalid_hash" > "$dest"
     else
         cp "$test_root/fixtures/$source_name" "$dest"
     fi
@@ -132,7 +135,7 @@ run_case() {
     STACK_TMP_TEMPLATE="$CASE_DIR/work.XXXXXX"
     TEST_MANAGER=apk TEST_MISSING= TEST_UID=0 TEST_PENDING= TEST_UCI_ERROR=0
     TEST_PKG_FAIL=0 TEST_BAD_SHA=0 TEST_BAD_HASH= TEST_BAD_MANIFEST=0
-    TEST_MISSING_DOWNLOAD= TEST_BAD_SYNTAX= FAIL_CHILD=
+    TEST_MISSING_DOWNLOAD= TEST_BAD_SYNTAX= FAIL_CHILD= TEST_ZT_INSTALLED=0
     export OPENWRT_RELEASE_FILE STACK_LOCK_DIR STACK_TMP_TEMPLATE
     for setting in "$@"; do eval "$setting"; done
     export FAIL_CHILD
@@ -144,9 +147,11 @@ run_case success
 printf 'Podkop\nByeDPI\nWARP\nZeroTier\n' > "$CASE_DIR/expected"
 cmp -s "$CASE_DIR/expected" "$CASE_DIR/children" || fail_test 'child order or environment incorrect'
 [ ! -d "$STACK_LOCK_DIR" ] || fail_test 'own lock not released'
-run_case rerun
+run_case rerun 'TEST_ZT_INSTALLED=1'
 [ "$result" -eq 0 ] || fail_test 'rerun did not complete'
 assert_empty "$CASE_DIR/packages"
+printf 'Podkop\nByeDPI\nWARP\n' > "$CASE_DIR/expected"
+cmp -s "$CASE_DIR/expected" "$CASE_DIR/children" || fail_test 'installed ZeroTier identity was not preserved'
 ! grep -Eiq 'join|network.?id|default.?route|PODKOP_RESTART=1|BYEDPI_START=1' "$CASE_DIR/downloads" || fail_test 'forced private network or global route'
 run_case inherited_disabled 'export PODKOP_PATCH_UPDATE_PODKOP=0 BYEDPI_AUTO_INSTALL=0 PODKOP_PATCH_FORCE_PODKOP_UPDATE=1'
 [ "$result" -eq 0 ] || fail_test 'inherited environment disabled requested components or forced an update'

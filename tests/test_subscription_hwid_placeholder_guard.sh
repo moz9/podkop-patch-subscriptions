@@ -2,7 +2,7 @@
 set -eu
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-runtime="$repo_root/openwrt/runtime-0.7.22/usr/bin/podkop"
+runtime="$repo_root/openwrt/runtime-0.7.23/usr/bin/podkop"
 test_root="$(mktemp -d)"
 library="$test_root/library.sh"
 failures=0
@@ -113,10 +113,9 @@ installer="$repo_root/i"
 sed -n '/^has_latest_subscription_backend() {$/,/^}$/p' "$installer" |
 	grep -q 'subscription_hwid_placeholder_guard begin' ||
 	record_failure 'installer no-op predicate does not require the HWID/placeholder guard'
-grep -q 'hwid_runtime_source=.*podkop.runtime-0.7.22' "$installer" ||
-	record_failure 'installer does not deliver the guarded runtime to Podkop 0.7.22'
-grep -q 'hwid_runtime_source=.*podkop.runtime-0.7.20' "$installer" ||
-	record_failure 'installer does not deliver the guarded runtime to older supported Podkop versions'
+sed -n '/^install_prebuilt_pe_runtime() {/,/^}/p' "$installer" |
+    grep -Fq 'cp "$tmp_dir/podkop.runtime-0.7.23" /usr/bin/podkop' ||
+    record_failure 'installer does not deliver the guarded native PE runtime'
 cmp -s "$installer" "$repo_root/openwrt/install.sh" ||
 	record_failure 'root and OpenWrt installers differ after HWID guard integration'
 

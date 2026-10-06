@@ -1,0 +1,393 @@
+#!/bin/sh
+# Standalone PE DNS measurement. No UCI writes or service reload in probes.
+set -eu
+DB_SELF="$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")"
+PODKOP_DNS_OPTIMIZER_LIBRARY_ONLY=1
+export PODKOP_DNS_OPTIMIZER_LIBRARY_ONLY
+# shellcheck disable=SC1090
+. "${PODKOP_DNS_BENCHMARK_OPTIMIZER:-/usr/bin/podkop-dns-optimizer}"
+DB_DIR="${PODKOP_DNS_BENCHMARK_STATE_DIR:-/tmp/podkop-dns-benchmark}"
+DB_PERSIST="${PODKOP_DNS_BENCHMARK_PERSIST_DIR:-/etc/podkop/dns-benchmark}"
+DB_STATUS="$DB_DIR/status.json"
+DB_REPORT="$DB_PERSIST/report.json"
+DB_PROOF="$DB_PERSIST/pair-proof.json"
+DB_LOCK="$DB_DIR/lock"
+DB_DNS_PORT=19553
+DB_PROXY_PORT=19554
+db_child_pid=''
+db_worker_pid=0
+db_work=''
+db_results='[]'
+db_bootstrap_results='[]'
+db_pair_json='null'
+db_action=benchmark
+db_report_id=''
+db_deadline=0
+
+db_prepare() { mkdir -p "$DB_DIR" "$DB_PERSIST"; chmod 700 "$DB_DIR" "$DB_PERSIST"; }
+db_reply() { jq -cn --arg error "${1:-}" '{success:($error==""),error:(if $error=="" then null else $error end)}'; }
+db_fingerprint() {
+    local path exported
+    exported="$(uci export podkop 2>/dev/null)" || return 1
+    path="$(uci -q get podkop.settings.config_path 2>/dev/null || true)"
+    [ -n "$path" ] || path=/etc/sing-box/config.json
+    { printf '%s\n' "$exported"; [ ! -s "$path" ] || sha256sum "$path"; } | sha256sum | awk '{print $1}'
+}
+db_reload_busy() {
+    [ ! -d /tmp/podkop-dns-failover/switch.lock ] || return 0
+    ps w | grep -E '[/]usr/bin/podkop (start|restart|reload)|[/]etc/init.d/podkop (start|restart|reload)' | grep -v grep >/dev/null
+}
+db_busy() {
+    local holder
+    if [ -d "$PODKOP_MUTATION_LOCK_DIR" ]; then
+        holder="$(awk 'NR==1 {print $1}' "$PODKOP_MUTATION_LOCK_DIR/owner" 2>/dev/null || true)"
+        [ -n "$holder" ] && ! podkop_mutation_lock_pid_alive "$holder" || return 0
+    fi
+    podkop_mutation_legacy_lock_busy && return 0
+    db_reload_busy && return 0
+    return 1
+}
+db_state() {
+    local state="$1" message="$3" done="$5" total="$6" error="${7:-}" backup=false
+    if [ "$state" = running ] && [ -f "$DB_DIR/cancel" ]; then return 1; fi
+    [ ! -s "$PREVIOUS_FILE" ] || backup=true
+    jq -cn --arg state "$state" --arg action "$2" --arg message "$message" --arg error "$error" \
+      --arg reportId "$db_report_id" --argjson progress "$4" --argjson completed "$done" --argjson total "$total" \
+      --argjson results "$db_results" --argjson bootstrapResults "$db_bootstrap_results" --argjson pairResult "$db_pair_json" \
+      --argjson pid "$db_worker_pid" --argjson backupAvailable "$backup" \
+      '{state:$state,action:$action,message:$message,error:(if $error=="" then null else $error end),reportId:$reportId,progress:$progress,completed:$completed,total:$total,results:$results,bootstrapResults:$bootstrapResults,pairResult:$pairResult,pid:$pid,backupAvailable:$backupAvailable}' \
+      > "$DB_STATUS.tmp.$$"
+    mv "$DB_STATUS.tmp.$$" "$DB_STATUS"
+}
+db_status() {
+    local pid state
+    db_prepare
+    if [ ! -s "$DB_STATUS" ] && [ -s "$DB_REPORT" ]; then cp "$DB_REPORT" "$DB_STATUS"; fi
+    if [ ! -s "$DB_STATUS" ]; then db_state idle benchmark idle 0 0 0 ''; fi
+    state="$(jq -r '.state' "$DB_STATUS")"; pid="$(jq -r '.pid//0' "$DB_STATUS")"
+    if [ "$state" = running ] && [ "$pid" != 0 ] && ! pid_alive "$pid"; then
+        jq '.state="error" | .error="worker_stopped" | .message="worker_stopped"' "$DB_STATUS" > "$DB_STATUS.tmp.$$"
+        mv "$DB_STATUS.tmp.$$" "$DB_STATUS"
+    fi
+    jq --argjson backupAvailable "$( [ -s "$PREVIOUS_FILE" ] && echo true || echo false )" '.backupAvailable=$backupAvailable' "$DB_STATUS"
+}
+db_validate_pair() {
+    local protocol="$1" id="$2" server="$3" bootstrap="$4" host line
+    case "$protocol" in udp|doh|dot) :;; *) return 1;; esac
+    case "$id" in ''|*[!A-Za-z0-9_-]*) return 1;; esac
+    case "$server" in ''|*[!A-Za-z0-9./_-]*) return 1;; esac
+    host="$(candidate_host "$server")"
+    if [ "$protocol" = udp ]; then is_ipv4 "$host" && [ "$server" = "$host" ] || return 1; fi
+    is_ipv4 "$bootstrap" || return 1
+    line="$(lookup_main_candidate "$protocol" "$id" || true)"
+    [ -n "$line" ] && [ "$(printf '%s' "$line" | cut -d '|' -f3)" = "$server" ] || return 1
+    candidate_is_primary_eligible "$id" "$(printf '%s' "$line" | cut -d '|' -f2)" "$server" || return 1
+    bootstrap_is_allowed "$bootstrap"
+}
+db_pair_object() { jq -cn --arg protocol "$1" --arg id "$2" --arg dnsServer "$3" --arg bootstrapDnsServer "$4" --argjson success "$5" '{protocol:$protocol,id:$id,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer,success:$success}'; }
+db_write_proof() {
+    local fingerprint
+    fingerprint="${2:-}"
+    [ -n "$fingerprint" ] || fingerprint="$(db_fingerprint)" || return 1
+    jq -cn --argjson pair "$1" --arg reportId "$db_report_id" --arg fingerprint "$fingerprint" --argjson testedAt "$(date +%s)" \
+      '{pair:$pair,reportId:$reportId,fingerprint:$fingerprint,testedAt:$testedAt}' > "$DB_PROOF.tmp.$$"
+    mv "$DB_PROOF.tmp.$$" "$DB_PROOF"
+}
+db_proof_valid() {
+    local fingerprint
+    [ -s "$DB_PROOF" ] && [ -s "$DB_REPORT" ] || return 1
+    fingerprint="$(db_fingerprint)" || return 1
+    jq -e --arg protocol "$1" --arg id "$2" --arg server "$3" --arg bootstrap "$4" --arg fingerprint "$fingerprint" \
+      --argjson now "$(date +%s)" --slurpfile report "$DB_REPORT" \
+      '.pair.success==true and .pair.protocol==$protocol and .pair.id==$id and .pair.dnsServer==$server and .pair.bootstrapDnsServer==$bootstrap and .fingerprint==$fingerprint and .testedAt<= $now and ($now-.testedAt)<=300 and .reportId==$report[0].reportId and $report[0].pairResult.success==true' "$DB_PROOF" >/dev/null
+}
+db_make_config() {
+    local protocol="$1" server="$2" bootstrap="$3" out="$4" host path
+    host="$(candidate_host "$server")"; path="$(candidate_path "$server")"
+    jq -cn --arg protocol "$protocol" --arg host "$host" --arg path "$path" --arg bootstrap "$bootstrap" \
+      --argjson dnsPort "$DB_DNS_PORT" --argjson proxyPort "$DB_PROXY_PORT" \
+      '{log:{level:"error"},dns:{disable_cache:true,servers:[{type:"udp",tag:"bootstrap",server:$bootstrap,server_port:53},
+      ({type:({udp:"udp",doh:"https",dot:"tls"}[$protocol]),tag:"main",server:$host,server_port:({udp:53,doh:443,dot:853}[$protocol]),domain_resolver:"bootstrap"}
+      + (if $protocol=="doh" then {path:$path} else {} end))],final:"main",strategy:"ipv4_only"},
+      inbounds:[{type:"direct",tag:"dns-in",listen:"127.0.0.1",listen_port:$dnsPort,network:"udp"},{type:"mixed",tag:"http-in",listen:"127.0.0.1",listen_port:$proxyPort}],
+      outbounds:[{type:"direct",tag:"direct",domain_resolver:"main"}],route:{default_mark:2097152,default_domain_resolver:"main",rules:[{inbound:["dns-in"],action:"hijack-dns"}],final:"direct"}}' > "$out"
+}
+db_child_stop() {
+    local attempts=0
+    if [ -n "$db_child_pid" ]; then
+        kill "$db_child_pid" 2>/dev/null || true
+        while kill -0 "$db_child_pid" 2>/dev/null && [ "$attempts" -lt 3 ]; do sleep 1; attempts=$((attempts+1)); done
+        kill -KILL "$db_child_pid" 2>/dev/null || true
+        wait "$db_child_pid" 2>/dev/null || true; db_child_pid=''
+    fi
+    rm -f "$DB_DIR/child.pid"
+}
+db_child_start() {
+    local tries=0
+    db_child_stop
+    command -v netstat >/dev/null 2>&1 || return 1
+    # Refuse a pre-existing listener rather than attributing its DNS responses
+    # to our child. netstat is provided by the supported OpenWrt base image.
+    if netstat -ln 2>/dev/null | awk -v dns=":$DB_DNS_PORT" -v proxy=":$DB_PROXY_PORT" '$4 ~ (dns "$") || $4 ~ (proxy "$") {found=1} END {exit !found}'; then return 1; fi
+    db_make_config "$1" "$2" "$3" "$db_work/child.json"
+    sing-box check -c "$db_work/child.json" > "$db_work/check.log" 2>&1 || return 1
+    sing-box run -c "$db_work/child.json" > "$db_work/child.log" 2>&1 &
+    db_child_pid=$!; printf '%s\n' "$db_child_pid" > "$DB_DIR/child.pid"
+    sleep 1
+    while [ "$tries" -lt 5 ]; do
+        kill -0 "$db_child_pid" 2>/dev/null || return 1
+        if dig @127.0.0.1 -p "$DB_DNS_PORT" example.com A +time=1 +tries=1 +short 2>/dev/null | grep -q '^[0-9]'; then kill -0 "$db_child_pid" 2>/dev/null; return; fi
+        tries=$((tries+1)); sleep 1
+    done
+    return 1
+}
+db_query() {
+    local output status ms
+    output="$(dig @127.0.0.1 -p "$DB_DNS_PORT" "$1" A +timeout=2 +tries=1 +stats 2>/dev/null || true)"
+    status="$(printf '%s\n' "$output" | query_status)"
+    if [ "$status" = NXDOMAIN ]; then printf 'NXDOMAIN\n'; return 0; fi
+    [ "$status" = NOERROR ] && printf '%s\n' "$output" | dns_output_has_usable_a 1.1.1.1 || return 1
+    ms="$(printf '%s\n' "$output" | query_time)"; case "$ms" in ''|*[!0-9]*) return 1;; esac
+    printf 'NOERROR|%s\n' "$ms"
+}
+db_query_progress() {
+    [ ! -f "$DB_DIR/cancel" ] || return 1
+    jq --argjson completed "$1" --argjson total "$2" \
+      'if .state=="running" then .queryCompleted=$completed | .queryTotal=$total |
+      .progress=(if .action=="pair_test" and $total>0 then 10+(80*$completed/$total|floor) else .progress end) else . end' \
+      "$DB_STATUS" > "$DB_STATUS.query.$$"
+    mv "$DB_STATUS.query.$$" "$DB_STATUS"
+}
+db_measure() {
+    local output domain n=0 successes=0 sum=0 ms error='' nx=false queries
+    # Both service groups and the old optimizer's selected-community probes stay
+    # load-bearing. Each record is attempted twice to expose unstable resolvers.
+    write_compatibility_domains "$db_work/domains" "$db_work/community"
+    queries=$((2* $(wc -l < "$db_work/domains")+1))
+    while IFS='|' read -r scope service domain; do
+        [ -n "$domain" ] || continue
+        for repeat in 1 2; do
+            if [ "$db_deadline" -gt 0 ] && [ "$(date +%s)" -ge "$db_deadline" ]; then error=measurement_timeout; break; fi
+            [ ! -f "$DB_DIR/cancel" ] || { error=cancelled; break; }
+            n=$((n+1)); output="$(db_query "$domain" || true)"
+            db_query_progress "$n" "$queries"
+            case "$output" in NOERROR\|*) successes=$((successes+1)); ms="${output#*|}"; sum=$((sum+ms));; *) [ "$scope" = advisory ] || error=dns_query_failed;; esac
+        done
+    done < "$db_work/domains"
+    output="$(db_query "podkop-pe-$(date +%s)-$$.invalid" || true)"
+    db_query_progress "$((n+1))" "$queries"
+    [ "$output" != NXDOMAIN ] || nx=true
+    [ "$nx" = true ] || error=nxdomain_check_failed
+    jq -cn --argjson successCount "$successes" --argjson totalQueries "$n" --argjson sum "$sum" --argjson nxdomainOk "$nx" --arg error "$error" \
+      '{successCount:$successCount,totalQueries:$totalQueries,averageMs:(if $successCount>0 then $sum/$successCount else null end),nxdomainOk:$nxdomainOk,reliable:($error=="" and $successCount>0),error:(if $error=="" then null else $error end)}'
+}
+db_transport_guards() {
+    local url statuses policy code bytes file request_ok reason
+    file="$db_work/canary"
+    rm -f "$DB_DIR/transport-error.json"
+    { google_play_transport_endpoints | sed 's/$/|200 206|required/'; chatgpt_transport_endpoints; } > "$db_work/endpoints"
+    while IFS='|' read -r url statuses policy; do
+        [ "$db_deadline" -eq 0 ] || [ "$(date +%s)" -lt "$db_deadline" ] || return 1
+        rm -f "$file"
+        # This checks CURRENT Podkop HTTPS routing. The exact candidate DNS pair
+        # is checked separately through the marked isolated DNS child. A second
+        # production-path guard runs after explicit apply and rolls back failures.
+        request_ok=0
+        if code="$(curl -sSL --connect-timeout 5 --max-time 12 --max-filesize 65536 --range 0-4095 -w '%{http_code}' -o "$file" "$url" 2>/dev/null)"; then request_ok=1; fi
+        bytes=0; [ ! -f "$file" ] || bytes="$(wc -c < "$file" | tr -d ' ')"
+        if [ "$request_ok" != 1 ] || [ "$bytes" -lt 64 ] || ! transport_status_is_expected "$code" "$statuses"; then
+            if [ "$policy" = required ]; then
+                reason=unexpected_status
+                if [ "$request_ok" != 1 ]; then reason=curl_failed; elif [ "$bytes" -lt 64 ]; then reason=response_too_small; fi
+                jq -cn --arg url "$url" --arg httpStatus "$code" --arg reason "$reason" --argjson bytes "$bytes" \
+                  '{url:$url,httpStatus:$httpStatus,reason:$reason,bytes:$bytes,path:"current_podkop"}' > "$DB_DIR/transport-error.json"
+                return 1
+            fi
+        fi
+    done < "$db_work/endpoints"
+}
+db_measure_bootstrap() {
+    local domain output n=0 successes=0 sum=0 ms nx=false
+    printf 'example.com\n' > "$db_work/bootstrap-domains"
+    while IFS='|' read -r protocol id provider server profile; do
+        domain="$(candidate_host "$server")"
+        if ! is_ipv4 "$domain"; then printf '%s\n' "$domain" >> "$db_work/bootstrap-domains"; fi
+    done < "$db_work/main"
+    sort -u "$db_work/bootstrap-domains" > "$db_work/bootstrap-domains.unique"
+    while IFS= read -r domain; do
+        for repeat in 1 2; do
+            [ ! -f "$DB_DIR/cancel" ] || return 1
+            [ "$db_deadline" -eq 0 ] || [ "$(date +%s)" -lt "$db_deadline" ] || return 1
+            n=$((n+1)); output="$(db_query "$domain" || true)"
+            case "$output" in NOERROR\|*) successes=$((successes+1)); ms="${output#*|}"; sum=$((sum+ms));; esac
+        done
+    done < "$db_work/bootstrap-domains.unique"
+    output="$(db_query "podkop-pe-$(date +%s)-$$.invalid" || true)"; [ "$output" != NXDOMAIN ] || nx=true
+    jq -cn --argjson successCount "$successes" --argjson totalQueries "$n" --argjson sum "$sum" --argjson nx "$nx" \
+      '{successCount:$successCount,totalQueries:$totalQueries,averageMs:(if $successCount>0 then $sum/$successCount else null end),reliable:($successCount==$totalQueries and $successCount>0 and $nx),error:(if $successCount==$totalQueries and $nx then null else "bootstrap_query_failed" end)}'
+}
+db_pair_test() {
+    local stats success=false error='pair_test_failed' fingerprint
+    db_pair_json="$(db_pair_object "$1" "$2" "$3" "$4" false)"
+    rm -f "$DB_PROOF" "$DB_DIR/transport-error.json"
+    fingerprint="$(db_fingerprint)"
+    db_state running pair_test testing_pair 10 0 1 ''
+    if db_child_start "$1" "$3" "$4"; then
+        stats="$(db_measure)"
+        if printf '%s' "$stats" | jq -e '.reliable' >/dev/null; then
+            if db_transport_guards; then success=true; error=''; else error=service_transport_failed; fi
+        fi
+    fi
+    db_child_stop
+    if [ "$fingerprint" != "$(db_fingerprint)" ] || db_busy; then success=false; error=configuration_changed; fi
+    db_pair_json="$(db_pair_object "$1" "$2" "$3" "$4" "$success")"
+    if [ "$error" = service_transport_failed ] && [ -s "$DB_DIR/transport-error.json" ]; then
+        db_pair_json="$(printf '%s' "$db_pair_json" | jq --slurpfile context "$DB_DIR/transport-error.json" '.transportError=$context[0]')"
+    fi
+    if [ "$success" = true ]; then
+        db_state done pair_test pair_verified 100 1 1 ''
+        cp "$DB_STATUS" "$DB_REPORT"
+        db_write_proof "$db_pair_json" "$fingerprint"
+    else
+        db_state error pair_test pair_test_failed 100 1 1 "$error"
+        return 1
+    fi
+}
+db_benchmark() {
+    local protocol id provider server profile stats total completed=0 primary protocols bootstrap current
+    : > "$db_work/main"; : > "$db_work/bootstrap"
+    protocols="$(uci -q get podkop.settings.dns_optimizer_protocols 2>/dev/null || true)"
+    protocols="$(normalize_benchmark_protocols "${protocols:-auto}")" || { db_state error benchmark invalid_protocol 100 0 0 invalid_protocol; return 1; }
+    for protocol in $protocols; do
+        write_main_candidates "$protocol" "$db_work/catalog"
+        while IFS= read -r line; do printf '%s|%s\n' "$protocol" "$line" >> "$db_work/main"; done < "$db_work/catalog"
+    done
+    write_bootstrap_candidates "$db_work/bootstrap"
+    total=$(( $(wc -l < "$db_work/main") + $(wc -l < "$db_work/bootstrap") ))
+    if [ "$total" = 0 ]; then db_state error benchmark no_candidates 100 0 0 no_candidates; return 1; fi
+    rm -f "$DB_PROOF"
+    # Bootstrap DNS has a different job: resolve encrypted DNS endpoints. It
+    # must not be rejected merely because it filters client service names.
+    while IFS='|' read -r id provider server profile; do
+        if [ "$(date +%s)" -ge "$db_deadline" ]; then db_state error benchmark measurement_timeout 100 "$completed" "$total" measurement_timeout; return 1; fi
+        stats='{"successCount":0,"totalQueries":0,"averageMs":null,"reliable":false,"error":"child_failed"}'
+        if db_child_start udp "$server" "$server"; then stats="$(db_measure_bootstrap)"; fi
+        db_child_stop
+        db_bootstrap_results="$(jq -cn --argjson list "$db_bootstrap_results" --argjson stats "$stats" --arg id "$id" --arg provider "$provider" --arg server "$server" '$list+[$stats+{id:$id,provider:$provider,server:$server}]')"
+        completed=$((completed+1)); db_state running benchmark measuring "$((100*completed/total))" "$completed" "$total" ''
+    done < "$db_work/bootstrap"
+    current="$(uci -q get podkop.settings.bootstrap_dns_server 2>/dev/null || true)"
+    bootstrap="$(printf '%s' "$db_bootstrap_results" | jq -r --arg current "$current" '[.[]|select(.reliable)] | sort_by(if .server==$current then -1 else .averageMs end) | .[0].server//empty')"
+    while IFS='|' read -r protocol id provider server profile; do
+        if [ "$(date +%s)" -ge "$db_deadline" ]; then db_state error benchmark measurement_timeout 100 "$completed" "$total" measurement_timeout; return 1; fi
+        primary="$(candidate_primary_eligible_json "$id" "$provider" "$server")"
+        stats='{"successCount":0,"totalQueries":0,"averageMs":null,"reliable":false,"error":"bootstrap_unavailable"}'
+        if [ -n "$bootstrap" ]; then
+            stats='{"successCount":0,"totalQueries":0,"averageMs":null,"reliable":false,"error":"child_failed"}'
+            if db_child_start "$protocol" "$server" "$bootstrap"; then stats="$(db_measure)"; fi
+        fi
+        db_child_stop
+        db_results="$(jq -cn --argjson list "$db_results" --argjson stats "$stats" --arg protocol "$protocol" --arg id "$id" --arg provider "$provider" --arg dnsServer "$server" --argjson primaryEligible "$primary" '$list+[$stats+{protocol:$protocol,id:$id,provider:$provider,dnsServer:$dnsServer,primaryEligible:$primaryEligible}]')"
+        completed=$((completed+1)); db_state running benchmark measuring "$((100*completed/total))" "$completed" "$total" ''
+    done < "$db_work/main"
+    db_state done benchmark benchmark_complete 100 "$completed" "$total" ''
+    cp "$DB_STATUS" "$DB_REPORT"
+}
+db_apply() {
+    local changed=0
+    podkop_mutation_lock_acquire dns_benchmark_apply || { db_state error apply busy 100 0 1 busy; return 1; }
+    # Check after acquiring the shared mutation lock, not only at RPC admission.
+    if ! db_proof_valid "$@" || db_reload_busy || [ -n "$(uci changes podkop 2>/dev/null)" ]; then db_state error apply stale_proof 100 0 1 stale_proof; return 1; fi
+    db_state running apply applying 10 0 1 ''
+    ensure_state_dir
+    save_previous_dns || { db_state error apply backup_failed 100 0 1 backup_failed; return 1; }
+    if uci set "podkop.settings.dns_type=$1" && uci set "podkop.settings.dns_server=$3" && uci set "podkop.settings.bootstrap_dns_server=$4" && uci set podkop.settings.dns_failover_active_slot=primary && uci commit podkop; then changed=1; fi
+    rm -f "$DB_PROOF"
+    if [ "$changed" = 1 ] && restart_podkop && validate_podkop_dns && validate_google_play_transport && validate_chatgpt_transport; then db_state done apply apply_complete 100 1 1 ''; return 0; fi
+    if restore_previous_dns && restart_podkop && validate_podkop_dns; then db_state error apply apply_failed_rolled_back 100 1 1 apply_failed_rolled_back; else db_state error apply rollback_failed 100 1 1 rollback_failed; fi
+    return 1
+}
+db_rollback() {
+    podkop_mutation_lock_acquire dns_benchmark_rollback || { db_state error rollback busy 100 0 1 busy; return 1; }
+    db_state running rollback restoring 10 0 1 ''
+    ensure_state_dir
+    rm -f "$DB_PROOF"
+    if [ -s "$PREVIOUS_FILE" ] && restore_previous_dns && restart_podkop && validate_podkop_dns; then db_state done rollback rollback_complete 100 1 1 ''; else db_state error rollback rollback_failed 100 1 1 rollback_failed; return 1; fi
+}
+db_cleanup() {
+    db_child_stop
+    podkop_mutation_lock_release
+    if [ -n "$db_work" ]; then rm -rf "$db_work"; fi
+    if [ -f "$DB_LOCK/owner" ] && [ "$(cat "$DB_LOCK/owner")" = "$$" ]; then rm -f "$DB_LOCK/owner"; rmdir "$DB_LOCK" 2>/dev/null || true; fi
+}
+db_worker() {
+    db_action="$1"; shift
+    local ready_wait=0
+    while [ ! -f "$DB_DIR/start.ready" ] && [ "$ready_wait" -lt 5 ]; do sleep 1; ready_wait=$((ready_wait+1)); done
+    [ -f "$DB_DIR/start.ready" ] || return 1
+    db_worker_pid=$$; printf '%s\n' "$$" > "$DB_LOCK/owner"
+    db_report_id="$(date +%s)-$$"; db_work="$(mktemp -d "$DB_DIR/work.XXXXXX")"
+    if [ "$db_action" = benchmark ]; then db_deadline=$(( $(date +%s)+600 )); else db_deadline=$(( $(date +%s)+180 )); fi
+    trap 'db_cleanup' EXIT
+    trap 'db_state cancelled "$db_action" cancelled 100 0 0 cancelled; exit 130' INT TERM HUP
+    if [ -s "$DB_STATUS" ]; then
+        db_results="$(jq -c '.results//[]' "$DB_STATUS")"
+        db_bootstrap_results="$(jq -c '.bootstrapResults//[]' "$DB_STATUS")"
+    fi
+    if [ "$db_action" = benchmark ]; then db_results='[]'; db_bootstrap_results='[]'; fi
+    case "$db_action" in benchmark) db_benchmark;; pair_test) db_pair_test "$@";; apply) db_apply "$@";; rollback) db_rollback;; esac
+}
+db_start() {
+    local action="$1" pid holder
+    shift; db_prepare
+    if db_busy; then db_reply busy; return 1; fi
+    if [ "$action" = pair_test ] || [ "$action" = apply ]; then
+        db_validate_pair "$@" || { db_reply invalid_pair; return 1; }
+        if [ "$action" = apply ] && ! db_proof_valid "$@"; then db_reply stale_proof; return 1; fi
+    fi
+    if ! mkdir "$DB_LOCK" 2>/dev/null; then
+        holder="$(cat "$DB_LOCK/owner" 2>/dev/null || true)"
+        if [ -z "$holder" ] || pid_alive "$holder"; then db_reply busy; return 1; fi
+        rm -f "$DB_LOCK/owner"; rmdir "$DB_LOCK" 2>/dev/null || { db_reply busy; return 1; }
+        mkdir "$DB_LOCK" 2>/dev/null || { db_reply busy; return 1; }
+    fi
+    rm -f "$DB_DIR/cancel" "$DB_DIR/start.ready"
+    db_worker_pid=0; db_action="$action"
+    if [ -s "$DB_STATUS" ]; then
+        db_results="$(jq -c '.results//[]' "$DB_STATUS")"; db_bootstrap_results="$(jq -c '.bootstrapResults//[]' "$DB_STATUS")"
+    fi
+    db_state running "$action" starting 0 0 1 ''
+    # Never put proofs or benchmark output in argv. Only validated public tuple.
+    sh "$DB_SELF" __worker "$action" "$@" > "$DB_DIR/worker.log" 2>&1 < /dev/null &
+    pid=$!; printf '%s\n' "$pid" > "$DB_LOCK/owner"
+    jq --argjson pid "$pid" 'if .state=="running" then .pid=$pid else . end' "$DB_STATUS" > "$DB_STATUS.pid.$$"
+    mv "$DB_STATUS.pid.$$" "$DB_STATUS"
+    : > "$DB_DIR/start.ready"
+    db_reply
+}
+db_cancel() {
+    local action pid state
+    db_prepare
+    [ -s "$DB_STATUS" ] || { db_reply; return 0; }
+    action="$(jq -r '.action' "$DB_STATUS")"; state="$(jq -r '.state' "$DB_STATUS")"; pid="$(jq -r '.pid//0' "$DB_STATUS")"
+    if [ "$state" = running ] && { [ "$action" = apply ] || [ "$action" = rollback ]; }; then db_reply busy; return 1; fi
+    : > "$DB_DIR/cancel"
+    if [ "$state" = running ] && [ "$pid" != 0 ] && pid_alive "$pid"; then kill "$pid" 2>/dev/null || true; fi
+    rm -f "$DB_PROOF"
+    jq '.state="cancelled" | .message="cancelled" | .error="cancelled"' "$DB_STATUS" > "$DB_STATUS.tmp.$$"; mv "$DB_STATUS.tmp.$$" "$DB_STATUS"
+    db_reply
+}
+
+[ "${PODKOP_DNS_BENCHMARK_LIBRARY_ONLY:-0}" != 1 ] || return 0
+case "${1:-}" in
+    status) db_status;;
+    benchmark_start) db_start benchmark;;
+    pair_test_start|apply_start)
+        [ "$#" = 5 ] || { db_reply arguments_required; exit 1; }
+        if [ "$1" = pair_test_start ]; then db_action=pair_test; else db_action=apply; fi
+        shift; db_start "$db_action" "$@";;
+    rollback_start) db_start rollback;;
+    cancel) db_cancel;;
+    __worker) shift; db_worker "$@";;
+    *) db_reply invalid_command; exit 1;;
+esac

@@ -167,7 +167,7 @@ run_case() {
         }
 
         latest_official_podkop_version() {
-            printf '%s\n' 0.7.22
+            printf '%s\n' 0.7.23
         }
 
         update_manager_v1_requested_podkop_upgrade() {
@@ -190,7 +190,7 @@ run_case() {
             restore_done=1
         }
 
-        update_official_podkop_if_requested
+        legacy_update_official_podkop_if_requested
         : > "$case_root/patch-phase"
     ) > "$case_root/output" 2>&1; then
         actual_status=0
@@ -228,9 +228,9 @@ run_case() {
     fi
 }
 
-run_case supported 0.7.22 success
+run_case supported 0.7.23 success
 run_case unsupported 0.8.0 failure
-run_case failure 0.7.22 failure
+run_case failure 0.7.23 failure
 run_case stale 0.7.20 failure
 
 forced_stale_root="$test_root/forced-stale-update"
@@ -247,12 +247,12 @@ if (
     transaction_phase="preflight"
     PODKOP_PATCH_UPDATE_PODKOP=1
     PODKOP_PATCH_FORCE_PODKOP_UPDATE=1
-    PODKOP_PATCH_TARGET_PODKOP_VERSION=0.7.22
+    PODKOP_PATCH_TARGET_PODKOP_VERSION=0.7.23
 
     podkop_runtime_exists() { return 0; }
     podkop_persistent_state_exists() { return 0; }
     current_podkop_version() { printf '%s\n' 0.7.20; }
-    latest_official_podkop_version() { printf '%s\n' 0.7.22; }
+    latest_official_podkop_version() { printf '%s\n' 0.7.23; }
     update_manager_v1_requested_podkop_upgrade() { return 1; }
     download() { : > "$2"; }
     installed_package_version() {
@@ -275,7 +275,7 @@ if (
     }
     restore_missing_persistent_paths() { :; }
 
-    update_official_podkop_if_requested
+    legacy_update_official_podkop_if_requested
 ) > "$forced_stale_root/output" 2>&1; then
     fail_test 'forced update accepted an older supported Podkop version after the official installer reported success'
 fi
@@ -289,11 +289,11 @@ grep -q 'official Podkop installed unsupported version 0.8.0' "$test_root/unsupp
     fail_test 'unsupported fresh version did not report that the patch was withheld'
 grep -q 'official Podkop installation failed' "$test_root/failure/output" ||
     fail_test 'failed fresh official installation did not report an error'
-grep -q 'below target 0.7.22' "$test_root/stale/output" &&
+grep -q 'official Podkop installed unsupported version 0.7.20' "$test_root/stale/output" &&
     grep -q 'Subscription URLTest patch was not applied' "$test_root/stale/output" ||
     fail_test 'stale fresh Podkop version did not report that the target was missed and the patch was withheld'
 
 cmp -s "$repo_root/i" "$repo_root/openwrt/install.sh" ||
     fail_test 'root and OpenWrt installers are not byte-identical'
 
-printf '%s\n' 'PASS: unified command installs Podkop first and gates the patch on a supported result'
+printf '%s\n' 'PASS: preserved historical upstream installer gates unsupported package results; PE transaction is separately tested'

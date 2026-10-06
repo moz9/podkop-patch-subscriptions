@@ -632,6 +632,7 @@ var Podkop;
     AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_STATUS"] = "get_subscription_patch_update_status";
     AvailableMethods2["GET_SUBSCRIPTION_PATCH_UPDATE_LOG"] = "get_subscription_patch_update_log";
     AvailableMethods2["GET_SYSTEM_INFO"] = "get_system_info";
+    AvailableMethods2["GET_SING_BOX_FEATURES"] = "get_sing_box_features";
     AvailableMethods2["GET_SUBSCRIPTION_CACHED_LINKS"] = "get_subscription_cached_links";
     AvailableMethods2["GET_SUBSCRIPTION_SKIPPED_LINKS"] = "get_subscription_skipped_links";
     AvailableMethods2["GET_SUBSCRIPTION_ITEMS"] = "get_subscription_items";
@@ -768,6 +769,7 @@ var PodkopShellMethods = {
   getSystemInfo: async () => callBaseMethod(
     Podkop.AvailableMethods.GET_SYSTEM_INFO
   ),
+  getSingBoxFeatures: async () => callBaseMethod(Podkop.AvailableMethods.GET_SING_BOX_FEATURES),
   getSubscriptionCachedLinks: async (section) => callBaseMethod(
     Podkop.AvailableMethods.GET_SUBSCRIPTION_CACHED_LINKS,
     [section]
@@ -819,7 +821,7 @@ function buildSubscriptionSectionChanges(section, changes) {
   const include = changes.find(change => change.id === "tags:include");
   const exclude = changes.find(change => change.id === "tags:exclude");
   return { section,
-    ...(mode ? {selectionMode: mode.enabled ? "selected" : "all"} : {}),
+    ...(mode ? {selectionMode: typeof mode.enabled === "string" ? mode.enabled : mode.enabled ? "selected" : "all"} : {}),
     ...(include ? {includeTags:include.enabled} : {}),
     ...(exclude ? {excludeTags:exclude.enabled} : {}),
     changes: changes.filter(change => !change.id.startsWith("source:") && !change.id.startsWith("tags:") && change.id !== "selection:mode"),
@@ -850,6 +852,15 @@ function normalizeProxyLinks(value) {
     return splitProxyString(value);
   }
   return [];
+}
+function getDashboardLatencyInfo(proxy) {
+  const delay = proxy?.history?.[0]?.delay;
+  if (proxy?.alive === false || (Number.isFinite(delay) && delay <= 0)) {
+    return {latency:0, latencyState:"unavailable"};
+  }
+  return Number.isFinite(delay) && delay > 0
+    ? {latency:delay, latencyState:"available"}
+    : {latency:0, latencyState:"unknown"};
 }
 async function getDashboardSections() {
   const configSections = await getConfigSections();
@@ -904,7 +915,7 @@ async function getDashboardSections() {
             {
               code: outbound?.code || section[".name"],
               displayName: proxyDisplayName,
-              latency: outbound?.value?.history?.[0]?.delay || 0,
+              ...getDashboardLatencyInfo(outbound?.value),
               type: outbound?.value?.type || "",
               selected: true
             }
@@ -928,7 +939,7 @@ async function getDashboardSections() {
             {
               code: outbound?.code || section[".name"],
               displayName: proxyDisplayName,
-              latency: outbound?.value?.history?.[0]?.delay || 0,
+              ...getDashboardLatencyInfo(outbound?.value),
               type: outbound?.value?.type || "",
               selected: true
             }
@@ -948,7 +959,7 @@ async function getDashboardSections() {
         })).map((item) => ({
           code: item?.outbound?.code || "",
           displayName: getProxyUrlName(item.link) || item?.outbound?.value?.name || "",
-          latency: item?.outbound?.value?.history?.[0]?.delay || 0,
+          ...getDashboardLatencyInfo(item?.outbound?.value),
           type: item?.outbound?.value?.type || "",
           selected: selector?.value?.now === item?.outbound?.code
         }));
@@ -971,11 +982,12 @@ async function getDashboardSections() {
         const activeLinks = section.proxy_config_type === "subscription_urltest" ? [
           ...normalizeProxyLinks(section.urltest_proxy_links),
           ...subscriptionCachedLinks.get(section[".name"]) ?? []
-        ] : section.urltest_proxy_links ?? [];
+        ] : normalizeProxyLinks(section.urltest_proxy_links);
+        activeLinks.push(...normalizeProxyLinks(section.urltest_fallback_links));
         const outbounds = (outbound?.value?.all ?? []).map((code) => proxies.find((item) => item.code === code)).map((item, index) => ({
           code: item?.code || "",
           displayName: getProxyUrlName(activeLinks[index]) || item?.value?.name || `Server ${index + 1}`,
-          latency: item?.value?.history?.[0]?.delay || 0,
+          ...getDashboardLatencyInfo(item?.value),
           type: item?.value?.type || "",
           selected: selector?.value?.now === item?.code
         }));
@@ -989,7 +1001,8 @@ async function getDashboardSections() {
             {
               code: outbound?.code || "",
               displayName: _("Fastest"),
-              latency: outbound?.value?.history?.[0]?.delay || 0,
+              isGroup:true,
+              ...getDashboardLatencyInfo(outbound?.value),
               type: outbound?.value?.type || "",
               selected: selector?.value?.now === outbound?.code
             },
@@ -1012,7 +1025,7 @@ async function getDashboardSections() {
           {
             code: outbound?.code || section[".name"],
             displayName: section.interface || outbound?.value?.name || "",
-            latency: outbound?.value?.history?.[0]?.delay || 0,
+            ...getDashboardLatencyInfo(outbound?.value),
             type: outbound?.value?.type || "",
             selected: true
           }
@@ -1062,10 +1075,15 @@ async function getClashApiSecret() {
 }
 
 // src/podkop/methods/custom/index.ts
+async function getSingBoxFeatures() {
+  const { data, success } = await PodkopShellMethods.getSingBoxFeatures();
+  return success && Array.isArray(data) ? data : [];
+}
 var CustomPodkopMethods = {
   getConfigSections,
   getDashboardSections,
-  getClashApiSecret
+  getClashApiSecret,
+  getSingBoxFeatures
 };
 
 // src/constants.ts
@@ -1138,6 +1156,12 @@ var DNS_SERVER_OPTIONS = {
   "dns.adguard-dns.com": "dns.adguard-dns.com (AdGuard Default)",
   "unfiltered.adguard-dns.com": "unfiltered.adguard-dns.com (AdGuard Unfiltered)",
   "family.adguard-dns.com": "family.adguard-dns.com (AdGuard Family)"
+};
+var URLTEST_DOWNLOAD_URL_OPTIONS = {
+  "https://speed.cloudflare.com/__down?bytes=65536": "Cloudflare — 64 КиБ",
+  "https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js": "Google — jQuery",
+  "https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js": "jsDelivr — jQuery",
+  "https://cachefly.cachefly.net/1mb.test": "CacheFly — 1 МиБ"
 };
 var BOOTSTRAP_DNS_SERVER_OPTIONS = {
   "77.88.8.8": "77.88.8.8 (Yandex DNS)",
@@ -1603,6 +1627,7 @@ var initialStore = {
     latencyFetching: false,
     data: []
   },
+  dashboardDisplayFilters: loadDashboardDisplayFilters(),
   subscriptionItemsWidget: {
     loading: true,
     failed: false,
@@ -1953,6 +1978,52 @@ var SocketManager = class _SocketManager {
 var socket = SocketManager.getInstance();
 
 // src/podkop/tabs/dashboard/partials/renderSections.ts
+function loadDashboardDisplayFilters() {
+  const defaults = {hideUnavailable:false, hideSlow:false, maxLatency:1000};
+  try {
+    const saved = JSON.parse(localStorage.getItem("podkop_dashboard_display_filters") || "{}");
+    return {hideUnavailable:saved.hideUnavailable === true, hideSlow:saved.hideSlow === true,
+      maxLatency:Number.isInteger(saved.maxLatency) && saved.maxLatency >= 1 && saved.maxLatency <= 60000
+        ? saved.maxLatency : 1000};
+  } catch (_) { return defaults; }
+}
+function saveDashboardDisplayFilters(filters) {
+  try { localStorage.setItem("podkop_dashboard_display_filters", JSON.stringify(filters)); } catch (_) {}
+}
+function isDashboardOutboundVisible(outbound, filters = {}) {
+  if (outbound.selected || outbound.isGroup) return true;
+  if (filters.hideUnavailable && (outbound.reason || outbound.latencyState === "unavailable")) {
+    return false;
+  }
+  const limit = Number.isInteger(filters.maxLatency) && filters.maxLatency >= 1 && filters.maxLatency <= 60000
+    ? filters.maxLatency : 1000;
+  return !filters.hideSlow || !(outbound.latency > limit);
+}
+function renderDashboardFilters(filters, onChange) {
+  const checkbox = (name, label) => E("label", {class:"pdk-dashboard-filters__control"}, [
+    E("input", {type:"checkbox", checked:filters[name] ? "checked" : null,
+      change:event => onChange({[name]:event.target.checked})}),
+    " ", label,
+  ]);
+  return E("div", {class:"pdk-dashboard-filters"}, [
+    checkbox("hideUnavailable", "Скрыть недоступные"),
+    checkbox("hideSlow", "Скрыть медленные"),
+    E("label", {class:"pdk-dashboard-filters__control"}, [
+      "Макс. задержка ",
+      E("input", {type:"number", min:1, max:60000, step:1, value:filters.maxLatency,
+        class:"cbi-input-text pdk-dashboard-filters__limit", "aria-label":"Максимальная задержка, мс",
+        change:event => {
+          const value = Number(event.target.value);
+          const valid = event.target.value !== "" && Number.isInteger(value) && value >= 1 && value <= 60000;
+          event.target.setCustomValidity(valid ? "" : "Введите целое число от 1 до 60000 мс.");
+          if (valid) onChange({maxLatency:value});
+          else event.target.reportValidity?.();
+        }}),
+      " мс",
+    ]),
+    E("small", {class:"pdk-dashboard-filters__hint"}, "Только отображение. Активные и непроверенные узлы не скрываются."),
+  ]);
+}
 function renderFailedState() {
   return E(
     "div",
@@ -1974,8 +2045,10 @@ function renderDefaultState({
   section,
   onChooseOutbound,
   onTestLatency,
-  latencyFetching
+  latencyFetching,
+  displayFilters = {}
 }) {
+  const visibleOutbounds = section.outbounds.filter(outbound => !section.withTagSelect || isDashboardOutboundVisible(outbound, displayFilters));
   function testLatency() {
     if (section.canTestLatency === false) {
       return;
@@ -2017,7 +2090,8 @@ function renderDefaultState({
           E(
             "div",
             { class: getLatencyClass() },
-            outbound.reason || (outbound.latency ? `${outbound.latency}ms` : "N/A")
+            outbound.reason || (outbound.latency ? `${outbound.latency} мс` :
+              outbound.latencyState === "unavailable" ? "Нет ответа" : "Не проверен")
           )
         ])
       ]
@@ -2042,13 +2116,17 @@ function renderDefaultState({
         },
         _("Test latency")
       )
-    ]),
+    ].filter(child => child != null)),
+    visibleOutbounds.length === section.outbounds.length ? null : E("small", {},
+      `Показано: ${visibleOutbounds.length} из ${section.outbounds.length}`),
     E(
       "div",
       { class: "pdk_dashboard-page__outbound-grid" },
-      section.outbounds.map((outbound) => renderOutbound(outbound))
+      visibleOutbounds.length || !section.outbounds.length
+        ? visibleOutbounds.map((outbound) => renderOutbound(outbound))
+        : E("div", {class:"pdk-dashboard-filters__empty"}, "Все узлы скрыты фильтрами. Измените фильтры выше.")
     )
-  ]);
+  ].filter(child => child != null));
 }
 function renderSections(props) {
   if (props.failed) {
@@ -2155,6 +2233,11 @@ function render() {
         )
       ]),
       // All outbounds
+      renderDashboardFilters(store.get().dashboardDisplayFilters, patch => {
+        const filters = {...store.get().dashboardDisplayFilters, ...patch};
+        saveDashboardDisplayFilters(filters);
+        store.set({dashboardDisplayFilters:filters});
+      }),
       E(
         "div",
         { id: "dashboard-sections-grid" },
@@ -2379,6 +2462,7 @@ async function renderSectionsWidget() {
       loading: sectionsWidget.loading,
       failed: sectionsWidget.failed,
       section,
+      displayFilters:store.get().dashboardDisplayFilters,
       latencyFetching: sectionsWidget.latencyFetching,
       onTestLatency: (tag) => {
         if (section.withTagSelect) {
@@ -2516,7 +2600,7 @@ async function renderServicesInfoWidget() {
   container.replaceChildren(renderedWidget);
 }
 async function onStoreUpdate(next, prev, diff) {
-  if (diff.sectionsWidget) {
+  if (diff.sectionsWidget || diff.dashboardDisplayFilters) {
     renderSectionsWidget();
   }
   if (diff.bandwidthWidget) {
@@ -2600,6 +2684,32 @@ var styles = `
     width: 100%;
     min-width: 0;
     --dashboard-grid-columns: 4;
+}
+
+.pdk-dashboard-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem 1rem;
+    margin-block: .75rem;
+}
+.pdk-dashboard-filters__control {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    margin: 0;
+}
+.pdk-dashboard-filters__limit {
+    width: 6rem;
+    min-width: 0;
+}
+.pdk-dashboard-filters__hint {
+    flex-basis: 100%;
+    opacity: .75;
+}
+.pdk-dashboard-filters__empty {
+    grid-column: 1 / -1;
+    padding-block: .5rem;
 }
 
 @media (max-width: 900px) {
@@ -5255,6 +5365,9 @@ function getEffectiveEnabled(pendingChanges, sectionCode, item) {
   const rowId = getRowId(sectionCode, item.id);
   return rowId in pendingChanges ? pendingChanges[rowId] : item.enabled;
 }
+function getEffectiveSubscriptionItemEnabled(pendingChanges, section, item) {
+  return getEffectiveSelectionMode(pendingChanges, section) === "auto" ? item.supported : getEffectiveEnabled(pendingChanges, section.code, item);
+}
 function getReasonLabel(reason) {
   const labels = {
     user_excluded: _("Excluded"),
@@ -5334,22 +5447,22 @@ function getSourceSummary({
   group,
   pendingChanges
 }) {
-  const modeChanging = hasPendingSubscriptionModeChange(section, pendingChanges);
+  const modeChanging = hasPendingSubscriptionModeChange(section, pendingChanges) && getEffectiveSelectionMode(pendingChanges, section) !== "auto";
   const draft = modeChanging ? {} : pendingChanges;
   const supportedCount = group.items.filter((item) => item.supported).length;
   const selectedCount = group.items.filter(
-    (item) => item.supported && getEffectiveEnabled(draft, section.code, item)
+    (item) => item.supported && getEffectiveSubscriptionItemEnabled(draft, section, item)
   ).length;
   const sourceEnabled = getEffectiveSourceEnabled(draft, section.code, group);
   const includeTags = getEffectiveSubscriptionTags(draft, section, "include");
   const excludeTags = getEffectiveSubscriptionTags(draft, section, "exclude");
   const runtimeCount = sourceEnabled ? group.items.filter(item =>
-    item.supported && getEffectiveEnabled(draft, section.code, item) &&
+    item.supported && getEffectiveSubscriptionItemEnabled(draft, section, item) &&
     !isSubscriptionTagFiltered(item, includeTags, excludeTags)).length : 0;
   const unsupportedCount = group.items.length - supportedCount;
   const parts = [
     `Конфигов: ${group.items.length}`,
-    `${modeChanging ? "Выбрано сейчас" : "Выбрано"}: ${selectedCount}/${supportedCount}`,
+    ...(getEffectiveSelectionMode(pendingChanges,section) === "auto" ? [] : [`${modeChanging ? "Выбрано сейчас" : "Выбрано"}: ${selectedCount}/${supportedCount}`]),
     `${modeChanging ? "Доступно сейчас" : "Доступно"}: ${runtimeCount}`
   ];
   if (modeChanging) parts.push("После смены режима — после применения");
@@ -5371,11 +5484,12 @@ function getToolbarMessage({
   runtimeStatus
 }) {
   if (loading) {
-    return _("Loading subscription configs");
+    return actionMessage || _("Loading subscription configs");
   }
   if (failed) {
     return actionMessage || _("Failed to load subscription configs");
   }
+  if (actionStatus === "verifying") return actionMessage || "Проверяем результат применения на роутере. Повторное применение не запускается.";
   if (applying || status === "applying") {
     return _("Applying changes. Podkop will be restarted once.");
   }
@@ -5406,7 +5520,7 @@ function getToolbarClass(status, actionStatus, pendingCount) {
   if (status === "applying") {
     return "pdk_subscriptions-page__toolbar--applying";
   }
-  if (actionStatus === "running") {
+  if (actionStatus === "running" || actionStatus === "verifying") {
     return "pdk_subscriptions-page__toolbar--applying";
   }
   if (status === "error" || actionStatus === "error") {
@@ -5423,6 +5537,7 @@ function getToolbarClass(status, actionStatus, pendingCount) {
 function renderToolbar({
   loading,
   failed,
+  applyUnconfirmed,
   applying,
   status,
   action,
@@ -5436,12 +5551,12 @@ function renderToolbar({
   onSpeedtest,
   runtimeStatus
 }) {
-  const actionRunning = actionStatus === "running";
+  const actionRunning = actionStatus === "running" || actionStatus === "verifying";
   const speedRunning = action === "speed" && actionRunning;
   const blocked = runtimeStatus?.busy || runtimeStatus?.unknown;
   const canRunAction = !loading && !failed && !applying && !actionRunning && !blocked;
   const canRunSubscriptionAction = canRunAction && pendingCount === 0;
-  const canRefresh = !loading && !applying && !actionRunning && !blocked && (failed || pendingCount === 0);
+  const canRefresh = !loading && !applying && !actionRunning && !blocked && (failed || applyUnconfirmed || pendingCount === 0);
   const canApply = (pendingCount > 0 || runtimeStatus?.pending) && canRunAction;
   const canReset = pendingCount > 0 && !applying && !actionRunning;
   return E(
@@ -5471,8 +5586,8 @@ function renderToolbar({
       E("div", { class: "pdk_subscriptions-page__toolbar-actions" }, [
         renderButton({
           text: _("Refresh"),
-          title: _("Refresh subscription configs"),
-          ariaLabel: _("Refresh subscription configs"),
+          title: failed || applyUnconfirmed ? "Повторить чтение подписок" : _("Refresh subscription configs"),
+          ariaLabel: failed || applyUnconfirmed ? "Повторить чтение подписок" : _("Refresh subscription configs"),
           icon: renderRotateCcwIcon24,
           hideText: true,
           onClick: onRefresh,
@@ -5528,16 +5643,12 @@ function renderRow({
 }) {
   const rowId = getRowId(section.code, item.id);
   const pending = hasPendingChange(pendingChanges, section.code, item);
-  const effectiveEnabled = getEffectiveEnabled(
-    pendingChanges,
-    section.code,
-    item
-  );
+  const effectiveEnabled = getEffectiveSubscriptionItemEnabled(pendingChanges, section, item);
   const tagFiltered = isSubscriptionTagFiltered(item,
     getEffectiveSubscriptionTags(pendingChanges, section, "include"),
     getEffectiveSubscriptionTags(pendingChanges, section, "exclude"));
   const isLastEnabled = item.supported && effectiveEnabled && !item.subscriptionDisabled && !tagFiltered && enabledSupportedCount <= 1;
-  const disabled = !item.supported || applying || isLastEnabled;
+  const disabled = !item.supported || applying || isLastEnabled || getEffectiveSelectionMode(pendingChanges, section) === "auto";
   const latency = latencyByRow[rowId];
   const speed = speedByRow[rowId];
   function renderLatency() {
@@ -5581,7 +5692,7 @@ function renderRow({
               type: "checkbox",
               checked: effectiveEnabled ? "checked" : void 0,
               disabled: disabled ? "disabled" : void 0,
-              title: `${_("On")}: ${getItemName(item, index)}`,
+              title: getEffectiveSelectionMode(pendingChanges, section) === "auto" ? "Выбор определяется тегами. Для отдельных галочек включите ручной отбор конфигов." : `${_("On")}: ${getItemName(item, index)}`,
               "aria-label": `${_("On")}: ${getItemName(item, index)}`,
               change: (event) => {
                 const target = event.target;
@@ -5769,11 +5880,11 @@ function renderSubscriptionSourceActions(section, group, actions) {
 }
 function getEffectiveSelectionMode(pendingChanges, section) {
   const key = `${section.code}:selection:mode`;
-  return key in pendingChanges ? (pendingChanges[key] ? "selected" : "all") : (section.selectionMode || "all");
+  return key in pendingChanges ? (typeof pendingChanges[key] === "string" ? pendingChanges[key] : pendingChanges[key] ? "selected" : "all") : (section.selectionMode || "auto");
 }
 function hasPendingSubscriptionModeChange(section, pendingChanges) {
   const key = `${section.code}:selection:mode`;
-  return key in pendingChanges && getEffectiveSelectionMode(pendingChanges, section) !== (section.selectionMode || "all");
+  return key in pendingChanges && getEffectiveSelectionMode(pendingChanges, section) !== (section.selectionMode || "auto");
 }
 function parseSubscriptionTagList(value) {
   return String(value || "").split(/\r?\n/).filter(tag => tag.trim().length > 0);
@@ -5785,7 +5896,63 @@ function getEffectiveSubscriptionTags(pendingChanges, section, kind) {
   const key = `${section.code}:tags:${kind}`;
   return key in pendingChanges ? pendingChanges[key] : (section[`${kind}Tags`] || []);
 }
+function getSubscriptionTagChoices(section, savedTags) {
+  const choices = new Map();
+  const literal = value => value.replace(/[\\*?\[\]]/g, '\\$&');
+  const flagCode = flag => Array.from(flag).map(char => String.fromCharCode(char.codePointAt(0) - 0x1F1E6 + 65)).join('');
+  const savedByCode = new Map(savedTags.flatMap(tag => {
+    const flag = tag.match(/^\*([\u{1F1E6}-\u{1F1FF}]{2})\*$/u);
+    return flag ? [[flagCode(flag[1]),tag]] : [];
+  }));
+  for (const item of section.items) {
+    const name = (item.name || item.tag || '').trim();
+    const flags = name.match(/[\u{1F1E6}-\u{1F1FF}]{2}/gu) || [];
+    const prefix = name.match(/^([A-Z]{2})(?=\s|[._:\/-]|$)/);
+    const codes = [...new Set([...flags.map(flagCode),...prefix ? [prefix[1]] : []])];
+    for (const code of codes) {
+      const value = savedByCode.get(code) || `@prefix:${code}`;
+      choices.set(value, {value, label:code, missing:false});
+    }
+    if (/^Авто(?:\s|$)/i.test(name)) choices.set('Авто*', {value:'Авто*',label:'Авто',missing:false});
+    else if (!codes.length && name) choices.set(literal(name), {value:literal(name),label:name,missing:false});
+  }
+  for (const tag of savedTags) if (!choices.has(tag)) {
+    choices.set(tag, {value:tag, label:`${tag} — сохранённый шаблон`, missing:!section.items.some(item => subscriptionTagMatches(tag,item.name || item.tag || ''))});
+  }
+  return [...choices.values()].sort((a,b) => a.label.localeCompare(b.label, 'ru'));
+}
+var subscriptionTagPickerOpen = {};
+function renderSubscriptionTagPicker(section, pendingChanges, kind, disabled, onToggle) {
+  const selected = getEffectiveSubscriptionTags(pendingChanges, section, kind);
+  const choices = getSubscriptionTagChoices(section, selected);
+  const key = `${section.code}:${kind}`;
+  const picked = choices.filter(choice => selected.includes(choice.value));
+  return E('div', {class:'pdk_tag-picker'}, [
+    E('span', {class:'pdk_tag-picker__label'}, kind === 'include' ? 'Разрешённые теги' : 'Исключённые теги'),
+    E('details', {class:'pdk_tag-picker__dropdown', open:subscriptionTagPickerOpen[key] ? 'open' : void 0,
+      toggle:event => { subscriptionTagPickerOpen[key] = event.target.open; }}, [
+      E('summary', {}, picked.length ? picked.map(choice => choice.label).join(' · ') : (kind === 'include' ? 'Все теги' : 'Не исключать')),
+      E('div', {class:'pdk_tag-picker__choices'}, choices.length ? choices.map(choice => E('label', {class:'pdk_tag-picker__choice'}, [
+        E('input', {type:'checkbox', value:choice.value, checked:selected.includes(choice.value) ? 'checked' : void 0,
+          disabled:disabled ? 'disabled' : void 0,
+          change:event => {
+            subscriptionTagPickerOpen[key] = true;
+            const next = event.target.checked ? [...new Set([...selected,choice.value])] : selected.filter(tag => tag !== choice.value);
+            onToggle(section.code,{id:`tags:${kind}`,enabled:section[`${kind}Tags`] || []},next);
+          }}),
+        E('span', {}, choice.label),
+        ...choice.missing ? [E('small', {}, 'Нет совпадений в текущей подписке')] : []
+      ])) : [E('small', {}, 'Сначала обновите подписку, чтобы определить теги.')])
+    ])
+  ]);
+}
 function subscriptionTagMatches(pattern, name) {
+  const flag = pattern.match(/^\*([\u{1F1E6}-\u{1F1FF}]{2})\*$/u);
+  const code = pattern.startsWith('@prefix:') ? pattern.slice(8) : flag ? Array.from(flag[1]).map(char => String.fromCharCode(char.codePointAt(0) - 0x1F1E6 + 65)).join('') : '';
+  if (/^[A-Z]{2}$/.test(code)) {
+    const expectedFlag = Array.from(code).map(char => String.fromCodePoint(0x1F1E6 + char.charCodeAt(0) - 65)).join('');
+    return String(name || '').includes(expectedFlag) || new RegExp(`^${code}(?=\\s|[._:\\/-]|$)`).test(String(name || '').trim());
+  }
   const chars = Array.from(pattern);
   const value = Array.from(name || "");
   const tokens = [];
@@ -5836,11 +6003,11 @@ function isSubscriptionTagFiltered(item, includeTags, excludeTags) {
     excludeTags.some(tag => subscriptionTagMatches(tag, name));
 }
 function getTagFilterPreview(section, pendingChanges) {
-  const uncertain = hasPendingSubscriptionModeChange(section, pendingChanges);
+  const uncertain = hasPendingSubscriptionModeChange(section, pendingChanges) && getEffectiveSelectionMode(pendingChanges, section) !== "auto";
   const draft = uncertain ? {} : pendingChanges;
   const include = getEffectiveSubscriptionTags(draft, section, "include");
   const exclude = getEffectiveSubscriptionTags(draft, section, "exclude");
-  const chosen = section.items.filter(item => item.supported && getEffectiveEnabled(draft, section.code, item));
+  const chosen = section.items.filter(item => item.supported && getEffectiveSubscriptionItemEnabled(draft, section, item));
   const filtered = chosen.filter(item => isSubscriptionTagFiltered(item, include, exclude)).length;
   const enabled = chosen.filter(item => {
     if (isSubscriptionTagFiltered(item, include, exclude)) return false;
@@ -5878,7 +6045,6 @@ function renderSection({
   const tagPreview = getTagFilterPreview(section, pendingChanges);
   const enabledSupportedCount = tagPreview.enabled;
   const sourceGroups = getSourceGroups(section);
-  const tagNames = [...new Set(section.items.map(item => item.name || item.tag).filter(Boolean))].sort((a,b) => a.localeCompare(b));
   const collapsed = isSubscriptionSectionCollapsed(collapsedSections, section.code);
   return E("div", { class: "pdk_subscriptions-page__section" }, [
     E("button", {type:"button", class:"pdk_subscriptions-page__section-title",
@@ -5889,11 +6055,20 @@ function renderSection({
       click:()=>onToggleSection(section.code)},
       `${collapsed ? "▸" : "▾"} ${section.displayName} · ${getSectionCollapsedSummary(section, pendingChanges)}`),
     ...collapsed ? [] : [
-    E("label", {style:"display:block;margin:8px 0"}, [
+    E("label", {style:"display:flex;align-items:center;gap:8px;margin:8px 0"}, [
+      E("input", {type:"checkbox", checked:getEffectiveSelectionMode(pendingChanges, section) !== "auto" ? "checked" : void 0,
+        disabled:applying || sourceActions?.modeDisabled ? "disabled" : void 0,
+        "aria-label":"Ручной отбор конфигов",
+        change:event => onToggle(section.code,{id:"selection:mode",enabled:section.selectionMode || "auto"},event.target.checked ? (section.selectionMode === "selected" ? "selected" : "all") : "auto")}),
+      E("span", {}, "Ручной отбор конфигов")
+    ]),
+    ...getEffectiveSelectionMode(pendingChanges, section) === "auto" ? [
+      E("small", {style:"display:block;margin:4px 0"}, "Все поддерживаемые конфиги включённых подписок участвуют автоматически. В работу попадают только прошедшие фильтр тегов. Сохранённые ручные исключения сейчас не действуют.")
+    ] : [E("label", {style:"display:block;margin:8px 0"}, [
       E("span", {}, "Конфиги этой секции: "),
       E("select", {
         disabled: applying || sourceActions?.modeDisabled ? "disabled" : void 0,
-        change: event => onToggle(section.code, {id:"selection:mode", enabled:section.selectionMode === "selected"}, event.target.value === "selected")
+        change: event => onToggle(section.code, {id:"selection:mode", enabled:section.selectionMode || "auto"}, event.target.value)
       }, [
         E("option", {value:"all", selected:getEffectiveSelectionMode(pendingChanges, section) === "all" ? "selected" : void 0}, "Все, кроме выключенных"),
         E("option", {value:"selected", selected:getEffectiveSelectionMode(pendingChanges, section) === "selected" ? "selected" : void 0}, "Только выбранные")
@@ -5902,23 +6077,15 @@ function renderSection({
         ? "Новые конфиги не включаются автоматически. Оставьте галочки только у нужных узлов и нажмите «Применить»."
         : "Новые конфиги подписок включаются автоматически. Выключенные вручную остаются выключенными.")
     ]),
-    E("div", {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:8px 0"}, [
-      ...[["include","Включать теги"],["exclude","Исключать теги"]].map(([kind,label]) => E("label", {}, [
-        E("span", {style:"display:block"}, label),
-        E("textarea", {rows:2, style:"width:100%;box-sizing:border-box", disabled:applying || sourceActions?.modeDisabled ? "disabled" : void 0,
-          placeholder:"Один тег или шаблон на строку",
-          change:event => onToggle(section.code,{id:`tags:${kind}`,enabled:section[`${kind}Tags`] || []},parseSubscriptionTagList(event.target.value))},
-          getEffectiveSubscriptionTags(pendingChanges,section,kind).join("\n"))
-      ]))
-    ]),
-    E("small", {style:"display:block;margin:4px 0"}, "Фильтр по имени узла: * — любое число символов, ? — один, [abc] — один из списка. Исключение имеет приоритет. Пустой список включения не ограничивает узлы."),
+    E("div", {class:"pdk_tag-pickers"}, [
+      ...["include","exclude"].map(kind => renderSubscriptionTagPicker(section,pendingChanges,kind,applying || sourceActions?.modeDisabled,onToggle))
+    ])],
+    E("small", {style:"display:block;margin:4px 0"}, "Префиксы определены из названий узлов: SE, FI, US и другие. Флаг и буквенный код одной страны считаются одним тегом. Исключение важнее разрешения. При ручном отборе фильтр дополнительно ограничивает ваш выбор."),
     E("small", {style:"display:block;margin:4px 0"}, tagPreview.uncertain
       ? `Сейчас доступно узлов: ${tagPreview.enabled}. После смены режима итоговое число определится при применении.`
       : tagPreview.enabled === 0
       ? "После применения не останется активных узлов — сохранение будет отклонено."
       : `После фильтра останется активных узлов: ${tagPreview.enabled}; отфильтровано: ${tagPreview.filtered}.`),
-    tagNames.length ? E("details", {style:"margin:4px 0 8px"}, [E("summary", {}, "Доступные имена узлов"),
-      E("small", {}, tagNames.join(" · "))]) : null,
     sourceGroups.length === 0 ? renderEmptyState(
       _("Subscription cache is empty. Click refresh to load configs.")
     ) : E(
@@ -5982,6 +6149,7 @@ function renderSections2({
 function renderSubscriptionSections({
   loading,
   failed,
+  applyUnconfirmed,
   applying,
   status,
   action,
@@ -6009,6 +6177,7 @@ function renderSubscriptionSections({
     renderToolbar({
       loading,
       failed,
+      applyUnconfirmed,
       applying,
       status,
       action,
@@ -6029,15 +6198,15 @@ function renderSubscriptionSections({
       collapsedSources,
       latencyByRow,
       speedByRow,
-      applying: applying || loading || failed || actionStatus === "running",
+      applying: applying || loading || failed || actionStatus === "running" || actionStatus === "verifying",
       onToggle,
       onToggleSection,
       onToggleSource,
       sourceActions: {
         target:actionTarget,
-        modeDisabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running",
-        disabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || pendingCount > 0,
-        refreshDisabled:applying || loading || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || (!failed && pendingCount > 0),
+        modeDisabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying",
+        disabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || pendingCount > 0,
+        refreshDisabled:applying || loading || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || (!failed && !applyUnconfirmed && pendingCount > 0),
         speedRunning:action === "speed" && actionStatus === "running",
         onRefresh, onPing, onSpeedtest
       }
@@ -6100,6 +6269,7 @@ var subscriptionStatusTimer;
 var subscriptionStatusGeneration = 0;
 function subscriptionStateLabel(widget) {
   if (widget.applying) return ["busy", "Применяется", "Сохраняем выбор и применяем настройки. Повторное нажатие не требуется."];
+  if (widget.actionStatus === "verifying") return ["busy", "Проверяем результат", "Ответ на применение задержался. Ждём завершения операции и сверяем сохранённые настройки. Повторно применять не нужно."];
   if (widget.actionStatus === "running") return ["busy", widget.action === "refresh" ? "Обновляется" : "Тестируется", "Дождитесь завершения текущей операции. Бенчмарк можно остановить его кнопкой."];
   if (widget.runtimeStatus?.unknown) return ["unknown", "Нет статуса", "Не удалось получить состояние роутера. Проверка повторяется автоматически; при истёкшей сессии войдите заново."];
   if (widget.runtimeStatus?.busy) return ["busy", "Podkop занят", "Применяются настройки или выполняется другая операция. Кнопки станут доступны после завершения; повторять нажатие не нужно."];
@@ -6120,9 +6290,10 @@ async function refreshSubscriptionRuntimeStatus() {
     if (!result.success || typeof result.data?.busy !== "boolean") throw new Error("status_failed");
     const widget = store.get().subscriptionItemsWidget;
     const recovered = widget.actionError === "service_busy" && !result.data.busy;
-    if (!recovered && JSON.stringify(widget.runtimeStatus) === JSON.stringify(result.data)) return;
+    if (!recovered && !widget.applyVerification && JSON.stringify(widget.runtimeStatus) === JSON.stringify(result.data)) return;
     store.set({subscriptionItemsWidget:{...widget,runtimeStatus:result.data,
       ...(recovered ? {actionStatus:"idle",actionError:"",actionMessage:"Podkop готов. Повторите действие; ваш выбор сохранён."} : {})}});
+    if (widget.applyVerification && !result.data.busy && !widget.applyVerificationReading) await reconcileSubscriptionApplyTimeout(widget.applyVerification,generation);
   } catch (_) {
     if (generation === subscriptionStatusGeneration && !store.get().subscriptionItemsWidget.runtimeStatus?.unknown) store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,runtimeStatus:{unknown:true}}});
   }
@@ -6130,6 +6301,36 @@ async function refreshSubscriptionRuntimeStatus() {
 async function pollSubscriptionRuntimeStatus(generation) {
   await refreshSubscriptionRuntimeStatus();
   if (generation === subscriptionStatusGeneration) subscriptionStatusTimer = setTimeout(()=>pollSubscriptionRuntimeStatus(generation),3000);
+}
+async function reconcileSubscriptionApplyTimeout(snapshot, generation) {
+  if (generation !== subscriptionStatusGeneration) return;
+  const widget = store.get().subscriptionItemsWidget;
+  if (widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown) return;
+  store.set({subscriptionItemsWidget:{...widget,applyVerificationReading:true,applyVerificationReadingGeneration:generation}});
+  try {
+    const data = await readSubscriptionSectionsWithRetry();
+    if (generation !== subscriptionStatusGeneration || store.get().subscriptionItemsWidget.applyVerification !== snapshot) { releaseSubscriptionApplyRead(snapshot,generation); return; }
+    const current = store.get().subscriptionItemsWidget;
+    const remaining = rebaseSubscriptionDraft(snapshot.pendingChanges,data);
+    const confirmed = Object.keys(remaining).length === 0 && current.runtimeStatus?.busy === false && current.runtimeStatus?.pending === false;
+    store.set({subscriptionItemsWidget:{...current,data,loading:false,failed:false,applying:false,
+      applyVerification:null,applyVerificationReading:false,applyUnconfirmed:confirmed ? null : snapshot,
+      pendingChanges:rebaseSubscriptionDraft(current.pendingChanges,data),status:confirmed ? "success" : "error",
+      action:"apply",actionStatus:confirmed ? "success" : "error",actionError:confirmed ? "" : "apply_unconfirmed",
+      actionMessage:confirmed ? "Применено. Сохранённые настройки проверены; Podkop завершил операцию."
+        : current.runtimeStatus?.pending
+        ? "Настройки прочитаны, но новые конфиги ещё не применены. Ваш выбор сохранён. Проверьте его перед повторным применением."
+        : "Podkop завершил операцию, но часть выбранных настроек не подтверждена. Ваш оставшийся выбор сохранён. Проверьте его перед повторным применением."}});
+  } catch (_) {
+    if (generation !== subscriptionStatusGeneration || store.get().subscriptionItemsWidget.applyVerification !== snapshot) { releaseSubscriptionApplyRead(snapshot,generation); return; }
+    store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,loading:false,failed:true,applying:false,
+      applyVerification:null,applyVerificationReading:false,applyUnconfirmed:snapshot,status:"error",actionStatus:"error",actionError:"apply_unconfirmed",
+      actionMessage:"Не удалось прочитать результат применения. Ваш выбор сохранён. Нажмите «Повторить чтение подписок» — это не запускает повторное применение."}});
+  }
+}
+function releaseSubscriptionApplyRead(snapshot, generation) {
+  const widget = store.get().subscriptionItemsWidget;
+  if (widget.applyVerification === snapshot && widget.applyVerificationReadingGeneration === generation) store.set({subscriptionItemsWidget:{...widget,applyVerificationReading:false}});
 }
 function getRowId2(sectionCode, itemId) {
   return `${sectionCode}:${itemId}`;
@@ -6163,11 +6364,11 @@ function isSpeedtestRunning() {
 }
 function canRunServiceAction() {
   const widget = store.get().subscriptionItemsWidget;
-  return !widget.loading && !widget.failed && !widget.applying && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && getPendingCount2(widget.pendingChanges) === 0;
+  return !widget.loading && !widget.failed && !widget.applying && !widget.applyVerification && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && getPendingCount2(widget.pendingChanges) === 0;
 }
 function canRefreshSubscriptions() {
   const widget = store.get().subscriptionItemsWidget;
-  return !widget.loading && !widget.applying && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && (widget.failed || getPendingCount2(widget.pendingChanges) === 0);
+  return !widget.loading && !widget.applying && !widget.applyVerification && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && (widget.failed || getPendingCount2(widget.pendingChanges) === 0 || !!widget.applyUnconfirmed);
 }
 function setActionState({
   action,
@@ -6188,44 +6389,55 @@ function setActionState({
     }
   });
 }
+async function readSubscriptionSections() {
+  // The backend commits selection/tag changes outside LuCI's cached UCI object.
+  // Bypass cached load without unloading local unsaved form changes.
+  const configSections = Object.values(await uci.callLoad("podkop"));
+  return Promise.all(configSections.filter(section =>
+    section.connection_type === "proxy" && section.proxy_config_type === "subscription_urltest"
+  ).map(async section => {
+    const [items, sources] = await Promise.all([
+      PodkopShellMethods.getSubscriptionItemsCached(section[".name"]),
+      PodkopShellMethods.getSubscriptionSources(section[".name"]),
+    ]);
+    if (!sources.success) throw new Error(sources.error || "subscription_items_load_failed");
+    if (!Array.isArray(sources.data)) throw new Error(sources.data?.error || "source_support_missing");
+    if (!items.success || !Array.isArray(items.data)) {
+      throw new Error(items.success ? items.data?.error || "invalid_subscription_items" : items.error);
+    }
+    return {code:section[".name"], displayName:section[".name"],
+      selectionMode: section.subscription_selection_mode || "auto",
+      includeTags:normalizeSubscriptionTags(section.subscription_include_tags),
+      excludeTags:normalizeSubscriptionTags(section.subscription_exclude_tags),
+      items:items.data, sources:sources.data};
+  }));
+}
+async function readSubscriptionSectionsWithRetry(onRetry) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try { return await readSubscriptionSections(); }
+    catch (error) {
+      if (attempt === 2 || /source_support_missing|access.?denied|permission|unauthori[sz]ed|login/i.test(error?.message || "")) throw error;
+      onRetry?.(attempt + 1, error);
+      await sleep(1500);
+    }
+  }
+}
 async function fetchSubscriptionItems(status = "idle", refreshedSource, preserveDraft = true) {
   const prev = store.get().subscriptionItemsWidget;
   store.set({
     subscriptionItemsWidget: {
       ...prev,
       loading: true,
-      failed: false
+      failed: false,
+      applying: false,
+      actionMessage:status === "success" ? "Выбор применён. Читаем сохранённое состояние подписок." : "Читаем сохранённое состояние подписок."
     }
   });
   try {
-    const configSections = await CustomPodkopMethods.getConfigSections();
-    const subscriptionSections = configSections.filter(
-      (section) => section.connection_type === "proxy" && section.proxy_config_type === "subscription_urltest"
-    );
-    const data = await Promise.all(
-      subscriptionSections.map(async (section) => {
-        const [items, sources] = await Promise.all([
-          PodkopShellMethods.getSubscriptionItemsCached(section[".name"]),
-          PodkopShellMethods.getSubscriptionSources(section[".name"])
-        ]);
-        if (!sources.success) throw new Error(sources.error || "subscription_items_load_failed");
-        if (!Array.isArray(sources.data)) throw new Error("source_support_missing");
-        if (!items.success || !Array.isArray(items.data)) {
-          throw new Error(
-            items.success ? "invalid_subscription_items" : items.error
-          );
-        }
-        return {
-          code: section[".name"],
-          displayName: section[".name"],
-          selectionMode: section.subscription_selection_mode || "all",
-          includeTags: normalizeSubscriptionTags(section.subscription_include_tags),
-          excludeTags: normalizeSubscriptionTags(section.subscription_exclude_tags),
-          items: items.data,
-          sources: sources.data
-        };
-      })
-    );
+    const data = await readSubscriptionSectionsWithRetry(attempt => {
+      store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,
+        actionMessage:`${status === "success" ? "Выбор применён. " : ""}Связь при чтении прервалась. Повторяем чтение (${attempt + 1}/3), без перезапуска Podkop.`}});
+    });
     store.set({
       subscriptionItemsWidget: {
         ...store.get().subscriptionItemsWidget,
@@ -6244,7 +6456,7 @@ async function fetchSubscriptionItems(status = "idle", refreshedSource, preserve
     });
     return true;
   } catch (error) {
-    logger.error("[SUBSCRIPTIONS]", "failed to fetch subscription items");
+    logger.error("[SUBSCRIPTIONS]", "failed to fetch subscription items", error?.message);
     store.set({
       subscriptionItemsWidget: {
         ...store.get().subscriptionItemsWidget,
@@ -6253,7 +6465,9 @@ async function fetchSubscriptionItems(status = "idle", refreshedSource, preserve
         applying: false,
         status: "error",
         actionStatus: "error",
-        actionMessage: getSubscriptionActionErrorMessage(error, "Не удалось прочитать подписки. Последний список сохранён; попробуйте обновить страницу.")
+        actionMessage: status === "success"
+          ? "Выбор применён, но не удалось обновить отображение подписок. Последний список и ваш выбор сохранены. Повторите чтение; повторное применение не требуется."
+          : getSubscriptionActionErrorMessage(error, "Не удалось прочитать подписки после трёх попыток. Последний список и ваш выбор сохранены. Повторите чтение подписок.")
       }
     });
   }
@@ -6267,7 +6481,7 @@ function rebaseSubscriptionDraft(draft, sections) {
   const remaining = {...draft};
   for (const section of sections) {
     const modeKey = `${section.code}:selection:mode`;
-    if (modeKey in remaining && remaining[modeKey] === (section.selectionMode === "selected")) delete remaining[modeKey];
+    if (modeKey in remaining && getEffectiveSelectionMode(remaining,section) === (section.selectionMode || "auto")) delete remaining[modeKey];
     for (const kind of ["include","exclude"]) {
       const key = `${section.code}:tags:${kind}`;
       if (key in remaining && JSON.stringify(remaining[key]) === JSON.stringify(section[`${kind}Tags`] || [])) delete remaining[key];
@@ -6310,6 +6524,7 @@ function handleReset() {
       action: "none",
       actionStatus: "idle",
       actionMessage: "",
+      applyUnconfirmed: null,
       pendingChanges: {}
     }
   });
@@ -6356,13 +6571,14 @@ function getChangesBySection(pendingChanges) {
 async function handleApply() {
   const widget = store.get().subscriptionItemsWidget;
   const pendingChanges = widget.pendingChanges;
-  if ((getPendingCount2(pendingChanges) === 0 && !widget.runtimeStatus?.pending) || widget.applying || widget.loading || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown || isActionRunning()) {
+  if ((getPendingCount2(pendingChanges) === 0 && !widget.runtimeStatus?.pending) || widget.applying || widget.loading || widget.applyVerification || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown || isActionRunning()) {
     return;
   }
   store.set({
     subscriptionItemsWidget: {
       ...widget,
       applying: true,
+      applyUnconfirmed: null,
       status: "applying"
     }
   });
@@ -6387,6 +6603,12 @@ async function handleApply() {
   } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to apply subscription changes");
     logger.error("[SUBSCRIPTIONS]", error);
+    if (/timeout|timed out/i.test(error?.message || "")) {
+      store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,applying:false,status:"verifying",action:"apply",actionStatus:"verifying",
+        actionError:"",applyVerification:{pendingChanges:{...pendingChanges},data:widget.data},
+        actionMessage:"Ответ на применение задержался. Проверяем результат на роутере автоматически; повторно применять не нужно."}});
+      return;
+    }
     showToast(
       getSubscriptionActionErrorMessage(error, _("Failed to save!")),
       "error"
@@ -6400,6 +6622,17 @@ async function handleApply() {
 }
 async function handleRefreshSubscriptions(target) {
   if (!canRefreshSubscriptions()) {
+    return;
+  }
+  if (store.get().subscriptionItemsWidget.failed || store.get().subscriptionItemsWidget.applyUnconfirmed) {
+    // Recover the display, not the subscription or working proxy configuration.
+    const snapshot = store.get().subscriptionItemsWidget.applyUnconfirmed;
+    if (snapshot) {
+      store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,failed:false,applyVerification:snapshot,actionStatus:"verifying"}});
+      await refreshSubscriptionRuntimeStatus();
+      return;
+    }
+    await fetchSubscriptionItems("idle");
     return;
   }
   setActionState({
@@ -6744,6 +6977,7 @@ async function renderSubscriptionItemsWidget() {
   const renderedWidget = renderSubscriptionSections({
     loading: subscriptionItemsWidget.loading,
     failed: subscriptionItemsWidget.failed,
+    applyUnconfirmed: subscriptionItemsWidget.applyUnconfirmed,
     applying: subscriptionItemsWidget.applying,
     status: subscriptionItemsWidget.status,
     action: subscriptionItemsWidget.action,
@@ -6780,12 +7014,14 @@ async function onPageMount3() {
   store.subscribe(onStoreUpdate3);
   store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,runtimeStatus:{unknown:true}}});
   pollSubscriptionRuntimeStatus(subscriptionStatusGeneration);
-  if (!isActionRunning() && !store.get().subscriptionItemsWidget.applying) await fetchSubscriptionItems();
+  if (!isActionRunning() && !store.get().subscriptionItemsWidget.applying && !store.get().subscriptionItemsWidget.applyVerification) await fetchSubscriptionItems();
 }
 function onPageUnmount3() {
   store.unsubscribe(onStoreUpdate3);
   clearTimeout(subscriptionStatusTimer);
   subscriptionStatusGeneration++;
+  const widget = store.get().subscriptionItemsWidget;
+  if (widget.applyVerificationReading) store.set({subscriptionItemsWidget:{...widget,applyVerificationReading:false}});
 }
 function onSubscriptionTabChange(next, prev, diff) {
   if (diff.tabService && next.tabService.current !== prev.tabService.current) {
@@ -6853,6 +7089,18 @@ var styles5 = `
     min-width: 0;
 }
 
+.pdk-pe-page #maincontent {
+    width: 100%; max-width: 1800px; min-width: 0; box-sizing: border-box;
+}
+.pdk-pe-page #view, .pdk-pe-page #cbi-podkop {
+    width: 100%; min-width: 0; box-sizing: border-box;
+}
+.pdk-pe-page #cbi-podkop .cbi-value > output {
+    flex: 1 1 0; min-width: 0; width: 100%; max-width: 100%;
+}
+.pdk-pe-page #subscriptions-status {
+    width: 100%; min-width: 0; box-sizing: border-box;
+}
 .pdk_subscriptions-page__content {
     width: 100%;
     min-width: 0;
@@ -6934,7 +7182,21 @@ var styles5 = `
     color: var(--text-color-high);
     font-weight: 700;
     margin-bottom: 10px;
+    background: var(--background-color-high, #1c222b);
+    border: 1px solid var(--background-color-low, #343c49);
+    white-space: normal;
+    overflow-wrap: anywhere;
 }
+
+.pdk_tag-pickers { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr)); gap: 12px; margin: 10px 0; }
+.pdk_tag-picker { min-width: 0; }
+.pdk_tag-picker__label { display: block; margin-bottom: 4px; font-weight: 600; }
+.pdk_tag-picker__dropdown { border: 1px solid var(--background-color-low, #343c49); border-radius: 6px; background: var(--background-color-high, #1c222b); }
+.pdk_tag-picker__dropdown summary { padding: 10px 12px; cursor: pointer; white-space: normal; overflow-wrap: anywhere; }
+.pdk_tag-picker__choices { max-height: 240px; overflow-y: auto; border-top: 1px solid var(--background-color-low, #343c49); padding: 4px; }
+.pdk_tag-picker__choice { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px; cursor: pointer; }
+.pdk_tag-picker__choice span { min-width: 0; overflow-wrap: anywhere; }
+.pdk_tag-picker__choice small { width: 100%; color: var(--warn-color-medium, #ffca66); }
 
 .pdk_subscriptions-page__source-groups {
     display: grid;
@@ -7495,6 +7757,7 @@ function insertIfObj(condition, object) {
 if (typeof structuredClone !== "function")
   globalThis.structuredClone = (obj) => JSON.parse(JSON.stringify(obj));
 return baseclass.extend({
+  URLTEST_DOWNLOAD_URL_OPTIONS,
   ALLOWED_WITH_RUSSIA_INSIDE,
   BOOTSTRAP_DNS_SERVER_OPTIONS,
   BUTTON_FEEDBACK_TIMEOUT,

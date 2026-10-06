@@ -5,7 +5,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 . "$repo/openwrt/podkop-subscription-sources.sh"
 for name in refresh_subscription_cache subscription_update_section_handler subscription_update subscription_update_json; do
-    sed -n "/^$name() {$/,/^}$/p" "$repo/openwrt/runtime-0.7.22/usr/bin/podkop" >> "$work/functions"
+    sed -n "/^$name() {$/,/^}$/p" "$repo/openwrt/runtime-0.7.23/usr/bin/podkop" >> "$work/functions"
 done
 . "$work/functions"
 get_subscription_link_id() { printf '%s' "$1" | md5sum | cut -d ' ' -f 1; }

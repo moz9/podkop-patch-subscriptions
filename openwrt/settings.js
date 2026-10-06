@@ -5,6 +5,7 @@
 "require baseclass";
 "require tools.widgets as widgets";
 "require view.podkop.main as main";
+"require view.podkop.dns_benchmark as dnsBenchmark";
 
 const DNS_OPTIMIZER_COMMAND = "/usr/bin/podkop-dns-optimizer";
 const DNS_PRIMARY_POLICY = {
@@ -380,6 +381,45 @@ function injectDnsOptimizerStyles() {
       display: inline-block;
     }
     /* DNS optimizer MultiValue intrinsic containment end */
+    /* Native LuCI dropdowns keep their keyboard, validation and value handling. */
+    #view .pdk-settings-multivalue {
+      box-sizing: border-box;
+      /* Defeat the older containment rule and theme intrinsic sizing. */
+      width: min(100%, 30rem) !important;
+      max-width: min(100%, 30rem) !important;
+      min-width: 0 !important;
+    }
+    #view .pdk-settings-multivalue > ul:not(.dropdown),
+    #view .pdk-settings-multivalue > .more {
+      display: none !important;
+    }
+    #view .pdk-settings-multivalue > .pdk-settings-multivalue__summary {
+      display: block;
+      padding: 0.3rem 1.5rem 0.3rem 0.5rem;
+      min-width: 0;
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    #view .pdk-settings-multivalue > ul > li,
+    #view .pdk-settings-multivalue > ul > li > label {
+      min-width: 0;
+      max-width: 100%;
+      white-space: normal;
+      overflow-wrap: anywhere;
+    }
+    #view .pdk-settings-multivalue:not([open]) > ul > li > form,
+    #view .pdk-settings-multivalue[open] > ul.preview > li > form {
+      display: none;
+    }
+    #view .pdk-settings-multivalue[open] > ul.dropdown {
+      box-sizing: border-box;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
+      left: 0 !important;
+      right: 0 !important;
+    }
     @media (max-width: 800px) {
       .pdk-dns-optimizer { padding: 10px; }
       .pdk-dns-optimizer__actions { width: 100%; }
@@ -1739,8 +1779,70 @@ function writePrimaryDnsOption(sectionId, value) {
   uci.set("podkop", sectionId, "dns_failover_active_slot", "primary");
 }
 
+function configureDnsBenchmarkMultiValue(option) {
+  option.display_size = 1;
+  option.dropdown_size = 8;
+  const renderWidget = option.renderWidget;
+  option.renderWidget = function (...args) {
+    const node = renderWidget.apply(this, args);
+    node.classList.add("pdk-settings-multivalue");
+    const list = node.querySelector("ul");
+    const summary = document.createElement("span");
+    summary.className = "pdk-settings-multivalue__summary";
+    // Keep LuCI's hidden-value container as the last child: native saveValues
+    // and getValue depend on that position. The menu itself is not replaced.
+    node.insertBefore(summary, node.firstChild);
+    // LuCI initially creates unchecked inputs even for li[selected]. Themes
+    // can expose those inputs before openDropdown() synchronizes them.
+    const syncChecks = () => {
+      node.querySelectorAll("li[data-value]").forEach((item) => {
+        const input = item.querySelector('input[type="checkbox"]');
+        if (input) {
+          input.checked = item.hasAttribute("selected");
+          input.defaultChecked = input.checked;
+        }
+      });
+      const selected = Array.from(list.querySelectorAll("li[data-value]"))
+        .filter((item) => item.hasAttribute("selected"));
+      const labels = selected.map((item) => {
+        const index = this.keylist.indexOf(item.getAttribute("data-value"));
+        return this.vallist[index] || item.getAttribute("data-value");
+      });
+      summary.textContent = this.option === "dns_optimizer_protocols"
+        ? labels.join(", ") || "Не выбрано"
+        : `Выбрано: ${selected.length} из ${this.keylist.length}`;
+      summary.title = labels.join(", ");
+    };
+    syncChecks();
+    node.addEventListener("cbi-dropdown-open", syncChecks);
+    node.addEventListener("cbi-dropdown-change", () => {
+      syncChecks();
+      // LuCI cancels checkbox clicks. Browser cancelled-activation restores
+      // the old checked property AFTER this synchronous change notification.
+      // A new task (not a microtask) observes the final native selection.
+      window.setTimeout(syncChecks, 0);
+    });
+    return node;
+  };
+}
+
 function createSettingsContent(section) {
-  let o = section.option(
+  injectDnsOptimizerStyles();
+  section.tab("dns", "DNS");
+  section.tab("benchmark", "Проверка DNS");
+  section.tab("service", "Дополнительно");
+  const settingsOption = (type, name, ...args) => {
+    const tab = name.startsWith("dns_optimizer_") || name === "_dns_benchmark"
+      ? "benchmark"
+      : name.startsWith("dns_") || name.startsWith("secondary_") ||
+          name === "bootstrap_dns_server" || name === "_dns_failover_active"
+        ? "dns"
+        : "service";
+    const option = section.taboption(tab, type, name, ...args);
+    if (type === form.MultiValue) configureDnsBenchmarkMultiValue(option);
+    return option;
+  };
+  let o = settingsOption(
     form.ListValue,
     "dns_type",
     _("DNS Protocol Type"),
@@ -1754,7 +1856,7 @@ function createSettingsContent(section) {
   dnsOptimizerState.protocolOption = o;
   o.write = writePrimaryDnsOption;
 
-  o = section.option(
+  o = settingsOption(
     form.Value,
     "dns_server",
     _("DNS Server"),
@@ -1780,7 +1882,7 @@ function createSettingsContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = settingsOption(
     form.Value,
     "bootstrap_dns_server",
     _("Bootstrap DNS server"),
@@ -1805,7 +1907,7 @@ function createSettingsContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "dns_failover_enabled",
     "Автоматический резервный DNS",
@@ -1815,7 +1917,7 @@ function createSettingsContent(section) {
   o.rmempty = false;
   dnsOptimizerState.failoverEnabledOption = o;
 
-  o = section.option(form.DummyValue, "_dns_failover_active", "Сейчас активна");
+  o = settingsOption(form.DummyValue, "_dns_failover_active", "Сейчас активна");
   o.depends("dns_failover_enabled", "1");
   o.cfgvalue = function (sectionId) {
     return uci.get("podkop", sectionId, "dns_failover_active_slot") ===
@@ -1824,7 +1926,7 @@ function createSettingsContent(section) {
       : "Предпочтительная пара";
   };
 
-  o = section.option(
+  o = settingsOption(
     form.ListValue,
     "secondary_dns_type",
     "Протокол резервного DNS",
@@ -1837,7 +1939,7 @@ function createSettingsContent(section) {
   o.depends("dns_failover_enabled", "1");
   dnsOptimizerState.secondaryProtocolOption = o;
 
-  o = section.option(
+  o = settingsOption(
     form.Value,
     "secondary_dns_server",
     "Резервный DNS-сервер",
@@ -1857,7 +1959,7 @@ function createSettingsContent(section) {
     return validation.valid ? true : validation.message;
   };
 
-  o = section.option(
+  o = settingsOption(
     form.Value,
     "secondary_bootstrap_dns_server",
     "Bootstrap резервной пары",
@@ -1875,11 +1977,11 @@ function createSettingsContent(section) {
     return validation.valid ? true : validation.message;
   };
 
-  o = section.option(
+  o = settingsOption(
     form.MultiValue,
     "dns_optimizer_protocols",
     "Режимы для проверки",
-    "По умолчанию один тест последовательно сравнивает UDP, DoH и DoT и выбирает лучшую полную связку. Оставьте один или два режима, если нужна более быстрая проверка.",
+    "Протоколы для бенчмарка основного DNS. Основной и bootstrap DNS измеряются отдельно; перед применением проверяется выбранная пара.",
   );
   o.value("udp", "UDP");
   o.value("doh", "DoH");
@@ -1894,7 +1996,7 @@ function createSettingsContent(section) {
   };
   dnsOptimizerState.benchmarkProtocolsOption = o;
 
-  o = section.option(
+  o = settingsOption(
     form.MultiValue,
     "dns_optimizer_candidates",
     "DNS для проверки",
@@ -1925,7 +2027,7 @@ function createSettingsContent(section) {
       : DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES;
   };
 
-  o = section.option(
+  o = settingsOption(
     form.MultiValue,
     "dns_optimizer_bootstrap_candidates",
     "Bootstrap DNS для проверки",
@@ -1937,7 +2039,7 @@ function createSettingsContent(section) {
   o.default = DEFAULT_BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES;
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "dns_optimizer_include_current",
     "Сравнивать текущую пару",
@@ -1946,7 +2048,7 @@ function createSettingsContent(section) {
   o.default = "1";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "dns_optimizer_include_wan",
     "Сравнивать DNS провайдера",
@@ -1961,7 +2063,7 @@ function createSettingsContent(section) {
     ["dot", "dns_optimizer_custom_dot", "Свои DNS для DoT"],
   ];
   customDnsOptions.forEach(([protocol, optionName, label]) => {
-    const customOption = section.option(
+    const customOption = settingsOption(
       form.DynamicList,
       optionName,
       label,
@@ -1988,19 +2090,13 @@ function createSettingsContent(section) {
     };
   });
 
-  o = section.option(form.DummyValue, "_dns_optimizer");
+  o = settingsOption(form.DummyValue, "_dns_benchmark", "Бенчмарк DNS");
   o.rawhtml = true;
-  o.cfgvalue = () => {
-    if (dnsOptimizerState.pollTimer) {
-      window.clearTimeout(dnsOptimizerState.pollTimer);
-      dnsOptimizerState.pollTimer = null;
-    }
-    dnsOptimizerState.node = renderDnsOptimizer();
-    window.setTimeout(refreshDnsOptimizerStatus, 0);
-    return dnsOptimizerState.node;
+  o.renderWidget = function () {
+    return dnsBenchmark.renderOpenButton(this.map);
   };
 
-  o = section.option(
+  o = settingsOption(
     form.Value,
     "dns_rewrite_ttl",
     _("DNS Rewrite TTL"),
@@ -2021,7 +2117,7 @@ function createSettingsContent(section) {
     return true;
   };
 
-  o = section.option(
+  o = settingsOption(
     widgets.DeviceSelect,
     "source_network_interfaces",
     _("Source Network Interface"),
@@ -2058,7 +2154,7 @@ function createSettingsContent(section) {
     return !isWireless;
   };
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "enable_output_network_interface",
     _("Enable Output Network Interface"),
@@ -2067,7 +2163,7 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     widgets.DeviceSelect,
     "output_network_interface",
     _("Output Network Interface"),
@@ -2119,7 +2215,7 @@ function createSettingsContent(section) {
     return !isWireless;
   };
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "enable_badwan_interface_monitoring",
     _("Interface Monitoring"),
@@ -2128,7 +2224,7 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     widgets.NetworkSelect,
     "badwan_monitored_interfaces",
     _("Monitored Interfaces"),
@@ -2151,7 +2247,7 @@ function createSettingsContent(section) {
     return true;
   };
 
-  o = section.option(
+  o = settingsOption(
     form.Value,
     "badwan_reload_delay",
     _("Interface Monitoring Delay"),
@@ -2167,7 +2263,7 @@ function createSettingsContent(section) {
     return true;
   };
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "enable_yacd",
     _("Enable YACD"),
@@ -2176,7 +2272,7 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "enable_yacd_wan_access",
     _("Enable YACD WAN Access"),
@@ -2188,7 +2284,7 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.Value,
     "yacd_secret_key",
     _("YACD Secret Key"),
@@ -2199,7 +2295,7 @@ function createSettingsContent(section) {
   o.depends("enable_yacd_wan_access", "1");
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "disable_quic",
     _("Disable QUIC"),
@@ -2210,7 +2306,7 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.ListValue,
     "update_interval",
     _("List Update Frequency"),
@@ -2222,7 +2318,7 @@ function createSettingsContent(section) {
   o.default = "1d";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "download_lists_via_proxy",
     _("Download Lists via Proxy/VPN"),
@@ -2231,7 +2327,7 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.ListValue,
     "download_lists_via_proxy_section",
     _("Download Lists via specific proxy section"),
@@ -2264,7 +2360,7 @@ function createSettingsContent(section) {
     return Promise.resolve();
   };
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "dont_touch_dhcp",
     _("Dont Touch My DHCP!"),
@@ -2273,7 +2369,7 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.ListValue,
     "config_path",
     _("Config File Path"),
@@ -2286,7 +2382,7 @@ function createSettingsContent(section) {
   o.default = "/etc/sing-box/config.json";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.Value,
     "cache_path",
     _("Cache File Path"),
@@ -2322,7 +2418,7 @@ function createSettingsContent(section) {
     return true;
   };
 
-  o = section.option(
+  o = settingsOption(
     form.ListValue,
     "log_level",
     _("Log Level"),
@@ -2338,7 +2434,7 @@ function createSettingsContent(section) {
   o.default = "warn";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.Flag,
     "exclude_ntp",
     _("Exclude NTP"),
@@ -2349,7 +2445,7 @@ function createSettingsContent(section) {
   o.default = "0";
   o.rmempty = false;
 
-  o = section.option(
+  o = settingsOption(
     form.DynamicList,
     "routing_excluded_ips",
     _("Routing Excluded IPs"),

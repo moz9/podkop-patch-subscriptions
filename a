@@ -1,5 +1,5 @@
 #!/bin/sh
-# One-command OpenWrt stack: official Podkop + this patch, ByeDPI, WARP, ZeroTier.
+# One-command OpenWrt PE stack: Podkop 0.7.23 + pinned PE, ByeDPI, WARP, ZeroTier.
 set -eu
 umask 077
 
@@ -12,7 +12,7 @@ STACK_COMPLETED=
 STACK_ACTIVE=
 
 PODKOP_REPO=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions
-PODKOP_MAIN_API=https://api.github.com/repos/moz9/podkop-patch-subscriptions/commits/main
+PODKOP_MAIN_API=https://api.github.com/repos/moz9/podkop-patch-subscriptions/commits/podkop-pe
 BYEDPI_REF=e28e8ec1419fc0b73f03bf6192c252021ac6792e
 BYEDPI_SHA256=5e4c2e9491311c864da9ee2e5edd673e03e2eb9af72c46a247d1212a9693ebf9
 WARP_REF=72cfeef7f1838ad991ed6242188621df2691e86a
@@ -127,6 +127,7 @@ fetch_and_verify_entries() {
     valid_hex 40 "$release_sha" || fail 'GitHub API вернул некорректный SHA main.'
     podkop_base="$PODKOP_REPO/$release_sha"
     fetch "$podkop_base/openwrt/update-manifest.json" "$STACK_WORK_DIR/manifest.json"
+    jq -e '.channel == "podkop-pe" and .recommendedPodkopVersion == "0.7.23"' "$STACK_WORK_DIR/manifest.json" >/dev/null || fail 'Манифест не принадлежит PE-каналу Podkop 0.7.23.'
     podkop_i_sha="$(jq -er '.sha256.i | strings' "$STACK_WORK_DIR/manifest.json")" || fail 'В закреплённом манифесте нет SHA-256 для i.'
     valid_hex 64 "$podkop_i_sha" || fail 'В закреплённом манифесте некорректный SHA-256 для i.'
 
@@ -166,10 +167,14 @@ run_children() {
     WARP_BUNDLE_DIR= sh "$STACK_WORK_DIR/warp" </dev/null || fail 'Установка WARP завершилась ошибкой.'
     STACK_COMPLETED="$STACK_COMPLETED, WARP"
 
-    log 'Устанавливаем ZeroTier без присоединения к частной сети...'
-    STACK_ACTIVE=ZeroTier
-    ZRS_BASE_URL="https://raw.githubusercontent.com/moz9/zerotier-router-support/$ZEROTIER_REF" ZRS_PUBKEY= \
-        sh "$STACK_WORK_DIR/zerotier" </dev/null || fail 'Установка ZeroTier завершилась ошибкой.'
+    if package_installed zerotier; then
+        log 'ZeroTier уже установлен; идентичность и членство сетей не изменяем.'
+    else
+        log 'Устанавливаем ZeroTier без присоединения к частной сети...'
+        STACK_ACTIVE=ZeroTier
+        ZRS_BASE_URL="https://raw.githubusercontent.com/moz9/zerotier-router-support/$ZEROTIER_REF" ZRS_PUBKEY= \
+            sh "$STACK_WORK_DIR/zerotier" </dev/null || fail 'Установка ZeroTier завершилась ошибкой.'
+    fi
     STACK_COMPLETED="$STACK_COMPLETED, ZeroTier"
     STACK_ACTIVE=
 }

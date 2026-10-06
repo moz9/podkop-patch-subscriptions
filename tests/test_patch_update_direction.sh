@@ -58,7 +58,7 @@ expect_update 'legacy-marker-v1' 'legacy-marker-v2'
 mkdir -p "$STATE_DIR"
 fixture_manifest="$test_root/fixture-manifest.json"
 fixture_release="$test_root/fixture-release.json"
-TEST_CURRENT_PODKOP='0.7.21'
+TEST_CURRENT_PODKOP='0.7.23'
 TEST_CURRENT_PATCH='20260813-reliability-responsive-v1'
 
 current_podkop_version() {
@@ -84,9 +84,9 @@ download_file() {
 }
 
 cat > "$fixture_manifest" <<'JSON'
-{"schemaVersion":1,"patchVersion":"20260720-update-center-force-v1","supportedPodkopVersions":["0.7.21","0.7.22"]}
+{"schemaVersion":1,"channel":"podkop-pe","patchVersion":"20260720-update-center-force-v1","supportedPodkopVersions":["0.7.23"],"sha256":{}}
 JSON
-printf '%s\n' '{"tag_name":"v0.7.21"}' > "$fixture_release"
+printf '%s\n' '{"tag_name":"v0.7.23"}' > "$fixture_release"
 
 perform_check 1
 if ! jq -e '.updateMode == "none" and .canUpdate == false and .message == "up_to_date" and .patchUpdateAvailable == false' "$STATUS_FILE" >/dev/null; then
@@ -95,7 +95,7 @@ if ! jq -e '.updateMode == "none" and .canUpdate == false and .message == "up_to
     exit 1
 fi
 
-printf '%s\n' '{"tag_name":"v0.7.22"}' > "$fixture_release"
+printf '%s\n' '{"tag_name":"v0.7.24"}' > "$fixture_release"
 
 perform_check 1
 if ! jq -e '.updateMode == "blocked" and .canUpdate == false and .message == "published_patch_older" and .patchUpdateAvailable == false' "$STATUS_FILE" >/dev/null; then
@@ -125,5 +125,14 @@ if ! jq -e '.state == "error" and .message == "manifest_failed"' "$STATUS_FILE" 
     cat "$STATUS_FILE" >&2
     exit 1
 fi
+
+cat > "$fixture_manifest" <<'JSON'
+{"schemaVersion":1,"channel":"main","patchVersion":"20261006-pe-v2","supportedPodkopVersions":["0.7.23"],"sha256":{}}
+JSON
+if perform_check 1; then
+    printf 'FAIL: PE update center accepted a normal-channel manifest\n' >&2
+    exit 1
+fi
+jq -e '.state == "error" and .message == "manifest_failed"' "$STATUS_FILE" >/dev/null || exit 1
 
 printf '%s\n' 'PASS: patch update direction rejects older manifests and accepts real upgrades'

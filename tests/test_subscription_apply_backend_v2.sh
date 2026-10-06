@@ -2,7 +2,7 @@
 set -eu
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-runtime="$repo_root/openwrt/runtime-0.7.20/usr/bin/podkop"
+runtime="$repo_root/openwrt/runtime-0.7.23/usr/bin/podkop"
 upgrade="$repo_root/openwrt/podkop-subscription-apply-v2-upgrade.sh"
 
 fail() {
@@ -285,6 +285,8 @@ if ! sh -x "$tmp/harness.sh" "$tmp" > "$tmp/harness.log" 2>&1; then
     fail 'v2 transaction/rollback harness failed'
 fi
 
+# Historical upgrade helpers are preserved for regression only. PE ships its
+# native backend and does not run these legacy-version retrofit paths.
 for version in 0.7.19 0.7.20 0.7.21 0.7.22; do
     fixture="$tmp/podkop-$version"
     backup="$tmp/podkop-$version.backup"
@@ -373,4 +375,4 @@ FIXTURE_EOF
         fail "v2 upgrade did not report no-op for Podkop $version"
 done
 
-printf '%s\n' 'PASS: subscription apply backend v2 validates, commits once, rolls back, and upgrades 0.7.19-0.7.22'
+printf '%s\n' 'PASS: PE apply v2 validates, commits once and rolls back; historical retrofit regressions pass'

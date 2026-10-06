@@ -22,28 +22,30 @@
 
 const EntryPoint = {
   async render() {
+    document.body.classList.add("pdk-pe-page");
     main.injectGlobalStyles();
+    const singBoxFeatures = await main.CustomPodkopMethods.getSingBoxFeatures();
 
     const podkopMap = new form.Map(
       "podkop",
-      _("Podkop Settings"),
-      _("Configuration for Podkop service"),
+      "Podkop PE — настройки",
+      "Экспериментальная версия на Podkop 0.7.23 и podkop-engine. Канал обновлений PE.",
     );
     // Enable tab views
     podkopMap.tabbed = true;
 
     // Sections tab
     const sectionsSection = podkopMap.section(
-      form.TypedSection,
+      form.GridSection,
       "section",
       _("Sections"),
     );
     sectionsSection.anonymous = false;
     sectionsSection.addremove = true;
-    sectionsSection.template = "cbi/simpleform";
+    sectionsSection.nodescriptions = true;
 
     // Render section content
-    section.createSectionContent(sectionsSection);
+    section.createSectionContent(sectionsSection, singBoxFeatures);
 
     // Settings tab
     const settingsSection = podkopMap.section(

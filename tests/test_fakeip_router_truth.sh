@@ -11,7 +11,7 @@ fail() {
 
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT INT TERM
-runtime="openwrt/runtime-0.7.20/usr/bin/podkop"
+runtime="openwrt/runtime-0.7.23/usr/bin/podkop"
 runtime_functions="$test_root/runtime-functions.sh"
 dig_log="$test_root/dig.log"
 curl_log="$test_root/curl.log"

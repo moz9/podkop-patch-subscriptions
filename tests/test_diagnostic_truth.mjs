@@ -22,7 +22,7 @@ assert.match(js,/poolCode: selector\?\.code \|\| ""/,'URLTest pool must be probe
 assert.match(js,/section\.activeCandidateCode \|\| section\.code/,'active member, not group tag, must be probed');
 assert.match(js,/section\.poolCode \|\| section\.code/,'pool probing must be explicit and separate');
 assert.match(js,/cp\.cloudflare\.com\/generate_204/,'fallback probe URL must remain available');
-for (const runtime of ['0.7.20','0.7.22']) {
+for (const runtime of ['0.7.20','0.7.22','0.7.23']) {
   const shell=fs.readFileSync(new URL(`../openwrt/runtime-${runtime}/usr/bin/podkop`,import.meta.url),'utf8');
   assert.match(shell,/local test_url="\$\{4:-\$TEST_URL\}"/,'diagnostic fallback URL must reach the backend');
   assert.match(shell,/unsupported_test_url/,'backend must reject arbitrary diagnostic destinations');

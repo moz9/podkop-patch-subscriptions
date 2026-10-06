@@ -1,11 +1,14 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-podkop-pe}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 PODKOP_OFFICIAL_INSTALL_URL="${PODKOP_OFFICIAL_INSTALL_URL:-https://raw.githubusercontent.com/itdoginfo/podkop/main/install.sh}"
-PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-0.7.22}"
-PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS="${PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS:-0.7.19 0.7.20 0.7.21 0.7.22}"
+PODKOP_PATCH_TARGET_PODKOP_VERSION=0.7.23
+PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS=0.7.23
+PE_OPENWRT_RELEASE_FILE="${PE_OPENWRT_RELEASE_FILE:-/etc/openwrt_release}"
+PE_ENGINE_VERSION=1.13.21
+PE_ENGINE_RELEASE=r11
 PODKOP_PATCH_LATEST_RELEASE_URL="${PODKOP_PATCH_LATEST_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/latest}"
 PODKOP_PATCH_UPDATE_PODKOP_WAS_SET=0
 [ "${PODKOP_PATCH_UPDATE_PODKOP+x}" = x ] && PODKOP_PATCH_UPDATE_PODKOP_WAS_SET=1
@@ -21,7 +24,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261006-subscription-tags-v1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261006-pe-v2"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -34,6 +37,8 @@ DASHBOARD_JS_FILE="dashboard.js"
 DIAGNOSTIC_JS_FILE="diagnostic.js"
 PODKOP_JS_FILE="podkop.js"
 DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
+DNS_BENCHMARK_FILE="podkop-dns-benchmark"
+DNS_BENCHMARK_JS_FILE="dns_benchmark.js"
 DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v18"
 DNS_OPTIMIZER_GOOGLE_PLAY_GUARD_CAPABILITY="google_play_dns_transport_guard_v1"
 DNS_OPTIMIZER_CHATGPT_GUARD_CAPABILITY="chatgpt_dns_transport_guard_v1"
@@ -45,11 +50,9 @@ UPDATE_MANAGER_FILE="podkop-update-manager"
 UPDATE_MANAGER_VERSION="20260813-update-manager-v3"
 UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
-RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
-RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
-RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
-RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261006_subscription_tags_v1"
+RUNTIME_PE_PODKOP_FILE="runtime-0.7.23/usr/bin/podkop"
+RUNTIME_PE_PODKOP_JS_FILE="runtime-0.7.23/www/luci-static/resources/view/podkop/podkop.js"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261006_pe_v2"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -59,10 +62,14 @@ BACKUP_ROOT="${PODKOP_PATCH_BACKUP_ROOT:-/root}"
 PODKOP_INIT_SCRIPT="${PODKOP_PATCH_PODKOP_INIT_SCRIPT:-/etc/init.d/podkop}"
 PODKOP_RUNTIME_BIN="${PODKOP_PATCH_PODKOP_RUNTIME_BIN:-/usr/bin/podkop}"
 DNS_FAILOVER_INIT_SCRIPT="${PODKOP_PATCH_DNS_FAILOVER_INIT_SCRIPT:-/etc/init.d/podkop-dns-failover}"
+LUCI_UHTTPD_CONFIG_FILE="${PODKOP_PATCH_UHTTPD_CONFIG_FILE:-/etc/config/uhttpd}"
+LUCI_UHTTPD_INIT_SCRIPT="${PODKOP_PATCH_UHTTPD_INIT_SCRIPT:-/etc/init.d/uhttpd}"
+LUCI_UHTTPD_UBUS_MODULE="${PODKOP_PATCH_UHTTPD_UBUS_MODULE:-/usr/lib/uhttpd_ubus.so}"
 
 RUNTIME_FILES="
 usr/bin/podkop
 usr/bin/podkop-dns-optimizer
+usr/bin/podkop-dns-benchmark
 usr/bin/podkop-dns-failover
 usr/bin/podkop-update-manager
 etc/init.d/podkop-dns-failover
@@ -70,6 +77,7 @@ etc/rc.d/K10podkop-dns-failover
 etc/rc.d/S100podkop-dns-failover
 usr/lib/podkop/helpers.sh
 usr/lib/podkop/sing_box_config_facade.sh
+usr/lib/podkop/sing_box_config_manager.sh
 usr/share/rpcd/acl.d/luci-app-podkop.json
 usr/share/luci/menu.d/luci-app-podkop.json
 www/luci-static/resources/view/podkop/main.js
@@ -79,6 +87,8 @@ www/luci-static/resources/view/podkop/subscriptions.js
 www/luci-static/resources/view/podkop/settings.js
 www/luci-static/resources/view/podkop/dashboard.js
 www/luci-static/resources/view/podkop/diagnostic.js
+www/luci-static/resources/view/podkop/dns_benchmark.js
+
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/main.js
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/podkop.js
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/section.js
@@ -150,12 +160,21 @@ www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/s
 www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/dashboard.js
 www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/diagnostic.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/main.js
+www/luci-static/resources/view/podkop_patch_20261006_pe_v2/main.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/podkop.js
+www/luci-static/resources/view/podkop_patch_20261006_pe_v2/podkop.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/section.js
+www/luci-static/resources/view/podkop_patch_20261006_pe_v2/section.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261006_pe_v2/subscriptions.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/settings.js
+www/luci-static/resources/view/podkop_patch_20261006_pe_v2/settings.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261006_pe_v2/dashboard.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261006_pe_v2/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261006_pe_v2/dns_benchmark.js
+
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -176,6 +195,21 @@ fail() {
 	exit 1
 }
 
+verify_patch_download() {
+	[ -n "${PATCH_ASSET_MANIFEST:-}" ] || return 0
+	case "$1" in
+		"$RAW_BASE/"*) ;;
+		*) return 0 ;;
+	esac
+	asset_rel="${1#"$RAW_BASE/"}"
+	asset_rel="${asset_rel%%\?*}"
+	asset_expected="$(jq -er --arg path "openwrt/$asset_rel" '.sha256[$path] | select(type == "string" and length == 64)' "$PATCH_ASSET_MANIFEST")" ||
+		fail "release checksum is missing for $asset_rel"
+	case "$asset_expected" in *[!0123456789abcdef]*) fail "release checksum is invalid for $asset_rel" ;; esac
+	asset_actual="$(sha256sum "$2" | awk '{print $1}')" || fail "cannot checksum $asset_rel"
+	[ "$asset_actual" = "$asset_expected" ] || fail "release checksum mismatch for $asset_rel"
+}
+
 download() {
 	url="$1"
 	out="$2"
@@ -189,12 +223,14 @@ download() {
 			[ -s "$src" ] || fail "local source not found: $src"
 			cp "$src" "$out" || fail "failed to copy $src"
 			[ -s "$out" ] || fail "local source is empty: $src"
+			verify_patch_download "$url" "$out"
 			return 0
 			;;
 		/*)
 			[ -s "$url" ] || fail "local source not found: $url"
 			cp "$url" "$out" || fail "failed to copy $url"
 			[ -s "$out" ] || fail "local source is empty: $url"
+			verify_patch_download "$url" "$out"
 			return 0
 			;;
 	esac
@@ -223,20 +259,11 @@ download() {
 	if [ "$download_ok" -ne 1 ] && command -v wget >/dev/null 2>&1; then
 		if wget -T 30 -q -O "$out" "$url" >> "$download_log" 2>&1; then
 			download_ok=1
-		elif [ "$raw_host" = "raw.githubusercontent.com" ]; then
-			clean_path="${url#https://raw.githubusercontent.com/}"
-			clean_path="${clean_path%%\?*}"
-			for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
-				if wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
-					-q -O "$out" "https://$ip/$clean_path" >> "$download_log" 2>&1; then
-					download_ok=1
-					break
-				fi
-			done
 		fi
 	fi
 
 	[ "$download_ok" -eq 1 ] && [ -s "$out" ] || fail "failed to download $url"
+	verify_patch_download "$url" "$out"
 }
 
 ensure_jq() {
@@ -285,19 +312,23 @@ apply_runtime_patch() {
 	patch -l --batch -d / -p1 < "$patch_file"
 }
 
-install_prebuilt_0720_runtime() {
+install_prebuilt_pe_runtime() {
 	mkdir -p /usr/bin "$LUCI_VIEW_ROOT/podkop"
-	cp "$tmp_dir/podkop.runtime-0.7.20" /usr/bin/podkop
-	cp "$tmp_dir/podkop.js.runtime-0.7.20" "$LUCI_VIEW_ROOT/podkop/podkop.js"
-}
-
-install_prebuilt_0722_runtime() {
-	mkdir -p /usr/bin "$LUCI_VIEW_ROOT/podkop"
-	cp "$tmp_dir/podkop.runtime-0.7.22" /usr/bin/podkop
-	cp "$tmp_dir/podkop.js.runtime-0.7.22" "$LUCI_VIEW_ROOT/podkop/podkop.js"
+	cp "$tmp_dir/podkop.runtime-0.7.23" /usr/bin/podkop || return 1
+	cp "$tmp_dir/podkop.js.runtime-0.7.23" "$LUCI_VIEW_ROOT/podkop/podkop.js" || return 1
+	mkdir -p /usr/lib/podkop || return 1
+	for pe_library in helpers.sh sing_box_config_facade.sh sing_box_config_manager.sh; do
+		cp "$tmp_dir/$pe_library" "/usr/lib/podkop/$pe_library" || return 1
+	done
 }
 
 prefetch_patch_assets() {
+	command -v sha256sum >/dev/null 2>&1 || fail "sha256sum utility is required"
+	download "$RAW_BASE/update-manifest.json" "$tmp_dir/update-manifest.json"
+	jq -e --arg version "${INSTALL_MARKER#PODKOP_SUBSCRIPTIONS_PATCH_VERSION=}" \
+		'.schemaVersion == 1 and .channel == "podkop-pe" and .patchVersion == $version and (.sha256 | type == "object")' \
+		"$tmp_dir/update-manifest.json" >/dev/null || fail "release manifest does not match this installer"
+	PATCH_ASSET_MANIFEST="$tmp_dir/update-manifest.json"
 	download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 	download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 	download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
@@ -307,6 +338,8 @@ prefetch_patch_assets() {
 	download "$RAW_BASE/$DIAGNOSTIC_JS_FILE" "$tmp_dir/$DIAGNOSTIC_JS_FILE"
 	download "$RAW_BASE/$PODKOP_JS_FILE" "$tmp_dir/$PODKOP_JS_FILE"
 	download "$RAW_BASE/$DNS_OPTIMIZER_FILE" "$tmp_dir/$DNS_OPTIMIZER_FILE"
+	download "$RAW_BASE/$DNS_BENCHMARK_FILE" "$tmp_dir/$DNS_BENCHMARK_FILE"
+	download "$RAW_BASE/$DNS_BENCHMARK_JS_FILE" "$tmp_dir/$DNS_BENCHMARK_JS_FILE"
 	download "$RAW_BASE/$DNS_FAILOVER_FILE" "$tmp_dir/$DNS_FAILOVER_FILE"
 	download "$RAW_BASE/$DNS_FAILOVER_INIT_FILE" "$tmp_dir/$DNS_FAILOVER_INIT_FILE"
 	download "$RAW_BASE/$DNS_FAILOVER_UPGRADE_FILE" "$tmp_dir/$DNS_FAILOVER_UPGRADE_FILE"
@@ -320,10 +353,11 @@ prefetch_patch_assets() {
 	download "$RAW_BASE/$V0719_PATCH_FILE" "$tmp_dir/$V0719_PATCH_FILE"
 	download "$RAW_BASE/$MAINTENANCE_UPGRADE_FILE" "$tmp_dir/$MAINTENANCE_UPGRADE_FILE"
 	download "$RAW_BASE/$UPDATE_CENTER_UPGRADE_FILE" "$tmp_dir/$UPDATE_CENTER_UPGRADE_FILE"
-	download "$RAW_BASE/$RUNTIME_0720_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.20"
-	download "$RAW_BASE/$RUNTIME_0720_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.20"
-	download "$RAW_BASE/$RUNTIME_0722_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.22"
-	download "$RAW_BASE/$RUNTIME_0722_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.22"
+	download "$RAW_BASE/$RUNTIME_PE_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.23"
+	download "$RAW_BASE/$RUNTIME_PE_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.23"
+	for pe_library in helpers.sh sing_box_config_facade.sh sing_box_config_manager.sh; do
+		download "$RAW_BASE/runtime-0.7.23/usr/lib/podkop/$pe_library" "$tmp_dir/$pe_library"
+	done
 }
 
 stop_stale_list_update_downloads() {
@@ -954,7 +988,7 @@ prepare_versioned_luci_assets() {
 	rm -rf "$versioned_tmp_dir"
 	mkdir -p "$versioned_tmp_dir" || return 1
 
-	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
 		[ -s "$tmp_dir/$asset" ] || return 1
 		sed "s/require view\\.podkop\\./require view.$LUCI_MODULE_NAMESPACE./g" \
 			"$tmp_dir/$asset" > "$versioned_tmp_dir/$asset" || return 1
@@ -963,7 +997,7 @@ prepare_versioned_luci_assets() {
 }
 
 base_luci_assets_current() {
-	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
 		[ -f "$LUCI_VIEW_ROOT/podkop/$asset" ] || return 1
 		cmp -s "$LUCI_VIEW_ROOT/podkop/$asset" "$tmp_dir/$asset" || return 1
 	done
@@ -973,7 +1007,7 @@ versioned_luci_assets_current() {
 	versioned_tmp_dir="$tmp_dir/luci-versioned/$LUCI_MODULE_NAMESPACE"
 	versioned_view_dir="$LUCI_VIEW_ROOT/$LUCI_MODULE_NAMESPACE"
 
-	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
 		[ -f "$versioned_view_dir/$asset" ] || return 1
 		cmp -s "$versioned_view_dir/$asset" "$versioned_tmp_dir/$asset" || return 1
 	done
@@ -1004,7 +1038,7 @@ install_versioned_luci_assets() {
 	mkdir -p "$LUCI_VIEW_ROOT/podkop" "$versioned_view_dir" "$(dirname "$LUCI_MENU_FILE")" ||
 		abort_with_restore "failed to create Podkop LuCI asset directories"
 
-	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
 		cp "$tmp_dir/$asset" "$LUCI_VIEW_ROOT/podkop/$asset" ||
 			abort_with_restore "failed to install Podkop LuCI asset: $asset"
 		cp "$versioned_tmp_dir/$asset" "$versioned_view_dir/$asset" ||
@@ -1028,6 +1062,8 @@ luci_assets_current() {
 		[ -x /usr/bin/podkop-dns-optimizer ] &&
 		dns_optimizer_has_google_play_guard /usr/bin/podkop-dns-optimizer &&
 		cmp -s /usr/bin/podkop-dns-optimizer "$tmp_dir/$DNS_OPTIMIZER_FILE" &&
+		[ -x /usr/bin/podkop-dns-benchmark ] &&
+		cmp -s /usr/bin/podkop-dns-benchmark "$tmp_dir/$DNS_BENCHMARK_FILE" &&
 		[ -x /usr/bin/podkop-dns-failover ] &&
 		cmp -s /usr/bin/podkop-dns-failover "$tmp_dir/$DNS_FAILOVER_FILE" &&
 		[ -x /etc/init.d/podkop-dns-failover ] &&
@@ -1046,7 +1082,7 @@ ensure_dns_optimizer_acl() {
 	acl_tmp="$tmp_dir/luci-app-podkop.json"
 
 	[ -f "$acl_file" ] || abort_with_restore "Podkop RPC ACL is missing"
-	jq '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] = ["exec"] | .["luci-app-podkop"].read.file["/usr/bin/podkop-update-manager"] = ["exec"]' "$acl_file" > "$acl_tmp" ||
+	jq '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-benchmark"] = ["exec"] | .["luci-app-podkop"].write.file["/usr/bin/podkop-dns-benchmark"] = ["exec"] | .["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] = ["exec"] | .["luci-app-podkop"].read.file["/usr/bin/podkop-update-manager"] = ["exec"]' "$acl_file" > "$acl_tmp" ||
 		abort_with_restore "failed to update Podkop RPC ACL"
 	jq -e . "$acl_tmp" >/dev/null 2>&1 || abort_with_restore "Podkop RPC ACL validation failed"
 	cp "$acl_tmp" "$acl_file" || abort_with_restore "failed to install Podkop RPC ACL"
@@ -1426,7 +1462,7 @@ download_optional() {
 	fi
 
 	if command -v wget >/dev/null 2>&1 &&
-		wget --no-check-certificate -T 30 -q -O "$out" "$url" >/dev/null 2>&1; then
+		wget -T 30 -q -O "$out" "$url" >/dev/null 2>&1; then
 		[ -s "$out" ] && return 0
 	fi
 
@@ -1466,7 +1502,151 @@ update_manager_v1_requested_podkop_upgrade() {
 		"$state_dir/details.json" >/dev/null 2>&1
 }
 
+pe_preflight() {
+	pe_arch="$(sed -n "s/^DISTRIB_ARCH='\([^']*\)'/\1/p" "$PE_OPENWRT_RELEASE_FILE")"
+	[ "$pe_arch" = aarch64_cortex-a53 ] || fail "PE supports only aarch64_cortex-a53; no changes made"
+	command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required for PE"
+	if command -v apk >/dev/null 2>&1; then
+		[ "$(apk --print-arch)" = aarch64 ] || fail "PE APK requires aarch64; no changes made"
+		PE_PACKAGE_MANAGER=apk
+	elif command -v opkg >/dev/null 2>&1; then
+		PE_PACKAGE_MANAGER=opkg
+		# Stock opkg packages conflict with PE. Do not remove a working
+		# binary with --force-depends in an unattended patch transaction.
+		for pe_stock in sing-box sing-box-tiny; do
+			if opkg status "$pe_stock" 2>/dev/null | grep -q 'Status: .* installed'; then
+				fail "opkg stock $pe_stock requires explicit PE migration first; no changes made"
+			fi
+		done
+	else
+		fail "PE requires apk or opkg; no changes made"
+	fi
+	pe_current="$(current_podkop_version)"
+	[ -z "$pe_current" ] || [ "$pe_current" = 0.7.23 ] || fail "PE supports installed Podkop 0.7.23 only; migrate explicitly first"
+}
+
+pe_engine_version_output() { sing-box version 2>/dev/null; }
+
+pe_engine_usable() {
+	pe_output="$(pe_engine_version_output)" || return 1
+	pe_identity="$(printf '%s\n' "$pe_output" | sed -n 's/^sing-box version \([0-9][0-9.]*\)-pdk-r\([0-9][0-9]*\)$/\1 \2/p')"
+	[ -n "$pe_identity" ] || return 1
+	set -- $pe_identity
+	version_ge "$1" "$PE_ENGINE_VERSION" && [ "$2" -ge 11 ] || return 1
+	for pe_feature in urltest.fallbacks urltest.download_url transport.xhttp tools.decode-link; do
+		printf '%s\n' "$pe_output" | sed -n 's/^Features:[[:space:]]*//p' | tr ',' '\n' | grep -Fxq "$pe_feature" || return 1
+	done
+}
+
+pe_fetch_verified_package() {
+	pe_url="$1"; pe_out="$2"; pe_expected="$3"
+	download "$pe_url" "$pe_out"
+	pe_actual="$(sha256sum "$pe_out" | awk '{print $1}')"
+	[ "$pe_actual" = "$pe_expected" ] || fail "pinned package SHA-256 mismatch: $pe_url"
+}
+
+pe_install_pinned_packages() {
+	pe_engine_root=https://github.com/FiyeroT/podkop-engine/releases/download/v1.13.21-r11
+	pe_podkop_root=https://github.com/itdoginfo/podkop/releases/download/0.7.23
+	if [ "$PE_PACKAGE_MANAGER" = apk ]; then
+		pe_engine_file=podkop-engine_1.13.21-r11_openwrt_aarch64_cortex-a53.apk
+		pe_engine_hash=822fd8b821614bbdb2f42c9e91d0c8d86d7288a46a10a88fa73cddebcf0209a0
+		pe_podkop_file=podkop-0.7.23-r1.apk
+		pe_podkop_hash=784993aa190fb8f70bbd91baabc5e6373175ae5f27ccd31729645e7610b124ff
+		pe_luci_file=luci-app-podkop-0.7.23-r1.apk
+		pe_luci_hash=ff39cf4415c350567b6f369133f41cc07f374af5fa9d3ce7d9a518acc7f807a8
+	else
+		pe_engine_file=podkop-engine_1.13.21-r11_openwrt_aarch64_cortex-a53.ipk
+		pe_engine_hash=b753b3f53167cc23a417d9bc4b0b2242688a820fd6c3aecfd5aa782f605bebe7
+		pe_podkop_file=podkop-v0.7.23-r1-all.ipk
+		pe_podkop_hash=7dc233d3d5fd98245109b7a9539609d7f98f8eea3422c4a867a74f2b0aec55e0
+		pe_luci_file=luci-app-podkop-v0.7.23-r1-all.ipk
+		pe_luci_hash=5f9edd1da5498056ab5d1ddb42d21317d3c412e0d9fe3a93ffaa1b37961037d6
+	fi
+	pe_fetch_verified_package "$pe_engine_root/$pe_engine_file" "$tmp_dir/$pe_engine_file" "$pe_engine_hash"
+	pe_fetch_verified_package "$pe_podkop_root/$pe_podkop_file" "$tmp_dir/$pe_podkop_file" "$pe_podkop_hash"
+	pe_fetch_verified_package "$pe_podkop_root/$pe_luci_file" "$tmp_dir/$pe_luci_file" "$pe_luci_hash"
+	if [ "$PE_PACKAGE_MANAGER" = apk ]; then
+		apk add --allow-untrusted "$tmp_dir/$pe_engine_file" "$tmp_dir/$pe_podkop_file" "$tmp_dir/$pe_luci_file"
+	else
+		opkg install "$tmp_dir/$pe_engine_file" "$tmp_dir/$pe_podkop_file" "$tmp_dir/$pe_luci_file"
+	fi
+}
+
 update_official_podkop_if_requested() {
+	pe_current="$(current_podkop_version)"
+	if [ "$pe_current" = 0.7.23 ] && podkop_packages_match_runtime 0.7.23 && pe_engine_usable; then return 0; fi
+	[ "$PODKOP_PATCH_UPDATE_PODKOP" = 1 ] || fail "PE packages missing; package updates disabled"
+	ensure_no_pending_uci_changes || fail "UCI changed before PE package transaction"
+	if podkop_persistent_state_exists; then backup_persistent_paths; fi
+	transaction_phase=official_update
+	pe_install_pinned_packages || reject_official_podkop_result "PE package transaction failed; package state may be partial; runtime was not replaced"
+	pe_engine_usable || reject_official_podkop_result "installed engine lacks PE r11 features; runtime was not replaced"
+	podkop_runtime_exists && [ "$(current_podkop_version)" = 0.7.23 ] && podkop_packages_match_runtime 0.7.23 ||
+		reject_official_podkop_result "PE transaction did not install matching Podkop 0.7.23 packages"
+	restore_missing_persistent_paths "$persistent_backup_dir" || fail "failed to restore missing Podkop state"
+}
+
+restart_luci_web_service() {
+	[ -x "$LUCI_UHTTPD_INIT_SCRIPT" ] || return 1
+	"$LUCI_UHTTPD_INIT_SCRIPT" restart
+}
+
+restore_luci_web_config() {
+	uci revert uhttpd >/dev/null 2>&1 || true
+	cp -a "$luci_ubus_config_backup" "$LUCI_UHTTPD_CONFIG_FILE" || return 1
+	restart_luci_web_service >/dev/null 2>&1 || true
+}
+
+ensure_luci_ubus_transport() {
+	# Alternative LuCI web servers remain untouched. This dependency is only
+	# required when LuCI is actually hosted by the installed uhttpd package.
+	luci_uhttpd_version="$(installed_package_version uhttpd)" || return 0
+	installed_package_version luci-app-podkop >/dev/null 2>&1 || return 0
+	ensure_no_pending_uci_changes || fail "UCI changes are pending or unreadable before LuCI transport repair"
+	[ "$(uci -q get uhttpd.main 2>/dev/null || true)" = uhttpd ] ||
+		fail "uhttpd.main is missing; configure the custom LuCI ubus transport explicitly"
+	luci_ubus_prefix="$(uci -q get uhttpd.main.ubus_prefix 2>/dev/null || true)"
+	luci_ubus_module_ready=0
+	luci_ubus_module_version="$(installed_package_version uhttpd-mod-ubus 2>/dev/null || true)"
+	if [ "$luci_ubus_module_version" = "$luci_uhttpd_version" ] && [ -f "$LUCI_UHTTPD_UBUS_MODULE" ]; then
+		luci_ubus_module_ready=1
+	fi
+	[ "$luci_ubus_module_ready" = 0 ] || [ -z "$luci_ubus_prefix" ] || return 0
+	[ -f "$LUCI_UHTTPD_CONFIG_FILE" ] || fail "uhttpd config is missing; LuCI transport repair refused"
+	ensure_backup_dir
+	luci_ubus_config_backup="$backup_dir/pre-luci-uhttpd.config"
+	cp -a "$LUCI_UHTTPD_CONFIG_FILE" "$luci_ubus_config_backup" || fail "failed to back up uhttpd config"
+	if [ "$luci_ubus_module_ready" = 0 ]; then
+		log "Installing a compatible official uhttpd and HTTP-to-ubus module pair..."
+		if command -v apk >/dev/null 2>&1; then
+			apk add --upgrade uhttpd uhttpd-mod-ubus || fail "failed to install compatible uhttpd / uhttpd-mod-ubus packages"
+		else
+			opkg update && opkg install uhttpd uhttpd-mod-ubus || fail "failed to install compatible uhttpd / uhttpd-mod-ubus packages"
+		fi
+		luci_uhttpd_version="$(installed_package_version uhttpd)" || fail "uhttpd package is missing after the web dependency transaction"
+		luci_ubus_module_version="$(installed_package_version uhttpd-mod-ubus)" || fail "uhttpd-mod-ubus package is missing after the web dependency transaction"
+		[ "$luci_ubus_module_version" = "$luci_uhttpd_version" ] && [ -f "$LUCI_UHTTPD_UBUS_MODULE" ] ||
+			fail "web dependency transaction did not provide a matching uhttpd / ubus module pair"
+	fi
+	ensure_no_pending_uci_changes || fail "UCI changed before configuring LuCI ubus transport"
+	# Re-read after the package step so a committed custom prefix stays intact.
+	luci_ubus_prefix="$(uci -q get uhttpd.main.ubus_prefix 2>/dev/null || true)"
+	if [ -z "$luci_ubus_prefix" ]; then
+		if ! uci set 'uhttpd.main.ubus_prefix=/ubus' || ! uci commit uhttpd ||
+			[ "$(uci -q get uhttpd.main.ubus_prefix 2>/dev/null || true)" != /ubus ]; then
+			restore_luci_web_config || fail "failed to restore uhttpd config after ubus transport error"
+			fail "failed to configure standard LuCI ubus prefix; previous web config restored"
+		fi
+	fi
+	if ! restart_luci_web_service; then
+		restore_luci_web_config || fail "failed to restore uhttpd config after web restart error"
+		fail "LuCI web restart failed; previous uhttpd config restored"
+	fi
+	log "LuCI ubus transport packages/configuration are ready; web config backup: $luci_ubus_config_backup"
+}
+
+legacy_update_official_podkop_if_requested() {
 	[ "${PODKOP_PATCH_UPDATE_PODKOP:-1}" = "1" ] || return 0
 	force_podkop_update="${PODKOP_PATCH_FORCE_PODKOP_UPDATE:-0}"
 	podkop_was_installed=0
@@ -1570,6 +1750,7 @@ trap 'installer_signal_handler 143' TERM
 trap 'installer_signal_handler 129' HUP
 
 command -v base64 >/dev/null 2>&1 || fail "base64 utility is required"
+pe_preflight
 
 installer_mutation_lock_acquire || fail "another Podkop change is already running; retry after it finishes"
 
@@ -1582,6 +1763,7 @@ dns_optimizer_has_google_play_guard "$tmp_dir/$DNS_OPTIMIZER_FILE" ||
 	fail "downloaded DNS optimizer lacks the Google Play or ChatGPT/OpenAI guard capability"
 prepare_versioned_luci_assets || fail "failed to prepare versioned Podkop LuCI assets"
 update_official_podkop_if_requested
+ensure_luci_ubus_transport
 ensure_no_pending_uci_changes || fail "the router UCI state changed or became unreadable before patching; apply or revert pending changes and retry"
 ensure_no_pending_podkop_changes || fail "Podkop UCI state changed or became unreadable before patching; apply or revert pending changes and retry"
 transaction_phase="prepatch"
@@ -1598,64 +1780,15 @@ if [ "${PODKOP_PATCH_FORCE:-0}" != "1" ] && has_install_marker && has_latest_sub
 	exit 0
 fi
 
-if has_latest_subscription_backend; then
-	log "Subscription URLTest backend is already up to date; refreshing LuCI files."
+if has_install_marker && has_latest_subscription_backend; then
+	log "PE backend is up to date; refreshing LuCI files."
 	backup_runtime
 	light_reload=1
-elif needs_prebuilt_0720_runtime; then
-	log "Installing Subscription URLTest runtime for Podkop 0.7.20."
-	backup_runtime
-	rm -f "$LUCI_VIEW_ROOT/podkop/subscriptions.js"
-
-	if ! install_prebuilt_0720_runtime; then
-		abort_with_restore "runtime install failed"
-	fi
-elif needs_prebuilt_0722_runtime; then
-	log "Installing Subscription URLTest runtime for Podkop 0.7.22."
-	backup_runtime
-	rm -f "$LUCI_VIEW_ROOT/podkop/subscriptions.js"
-
-	if ! install_prebuilt_0722_runtime; then
-		abort_with_restore "runtime install failed"
-	fi
-elif has_cache_only_subscription_backend; then
-	log "Subscription URLTest backend is installed; applying speedtest maintenance upgrade."
-	backup_runtime
-	light_reload=1
-elif has_subscription_backend; then
-	log "Subscription URLTest backend is installed; applying maintenance upgrade."
-	backup_runtime
-	light_reload=1
-elif has_actions_subscription_backend; then
-	backup_runtime
-
-	if ! sh "$tmp_dir/$UI_FIX_BACKEND_FILE"; then
-		abort_with_restore "runtime UI fix backend upgrade failed"
-	fi
-elif has_batch_subscription_backend; then
-	backup_runtime
-
-	if ! apply_runtime_patch "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"; then
-		abort_with_restore "runtime actions upgrade patch failed"
-	fi
-elif has_legacy_subscription_backend; then
-	backup_runtime
-
-	if ! apply_runtime_patch "$tmp_dir/$LEGACY_UPGRADE_PATCH_FILE"; then
-		abort_with_restore "runtime legacy upgrade patch failed"
-	fi
-elif has_v0719_package_backend; then
-	backup_runtime
-
-	if ! apply_runtime_patch "$tmp_dir/$V0719_PATCH_FILE"; then
-		abort_with_restore "runtime v0.7.19 patch failed"
-	fi
 else
+	log "Installing PE runtime for Podkop 0.7.23."
 	backup_runtime
-	rm -f "$LUCI_VIEW_ROOT/podkop/subscriptions.js"
-
-	if ! install_prebuilt_0720_runtime; then
-		abort_with_restore "runtime install failed"
+	if ! install_prebuilt_pe_runtime; then
+		abort_with_restore "PE runtime install failed"
 	fi
 fi
 
@@ -1664,8 +1797,8 @@ if ! grep -Fqx '# subscription_hwid_placeholder_guard begin' /usr/bin/podkop 2>/
 	! grep -q '^get_subscription_request_hwid() {' /usr/bin/podkop 2>/dev/null ||
 	! grep -q '^normalize_subscription_proxy_link() {' /usr/bin/podkop 2>/dev/null; then
 	case "$(current_podkop_version)" in
-	0.7.22) hwid_runtime_source="$tmp_dir/podkop.runtime-0.7.22" ;;
-	*) hwid_runtime_source="$tmp_dir/podkop.runtime-0.7.20" ;;
+	0.7.22) hwid_runtime_source="$tmp_dir/podkop.runtime-0.7.23" ;;
+	*) hwid_runtime_source="$tmp_dir/podkop.runtime-0.7.23" ;;
 	esac
 	cp "$hwid_runtime_source" /usr/bin/podkop ||
 		abort_with_restore "subscription HWID and placeholder guard runtime install failed"
@@ -1701,7 +1834,7 @@ if ! grep -q '^set_subscription_sections_enabled() {' /usr/bin/podkop 2>/dev/nul
 	! grep -q '^set_subscription_sections_enabled)' /usr/bin/podkop 2>/dev/null ||
 	! grep -q 'subscription_apply_v2' /usr/bin/podkop 2>/dev/null; then
 	apply_v2_source="$tmp_dir/podkop.subscription-apply-v2-source"
-	cp "$tmp_dir/podkop.runtime-0.7.20" "$apply_v2_source" || abort_with_restore "failed to prepare subscription apply v2 source"
+	cp "$tmp_dir/podkop.runtime-0.7.23" "$apply_v2_source" || abort_with_restore "failed to prepare subscription apply v2 source"
 	if ! PODKOP_SUBSCRIPTION_APPLY_V2_SOURCE="$apply_v2_source" \
 		sh "$tmp_dir/$APPLY_V2_UPGRADE_FILE"; then
 		abort_with_restore "subscription apply v2 runtime upgrade failed"
@@ -1717,7 +1850,7 @@ if ! grep -Fqx '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/nul
 	! sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'subscription_reload_pending' ||
 	sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q '/usr/bin/podkop reload'; then
 	seamless_source="$tmp_dir/podkop.subscription-seamless-source"
-	cp "$tmp_dir/podkop.runtime-0.7.20" "$seamless_source" || abort_with_restore "failed to prepare seamless subscription source"
+	cp "$tmp_dir/podkop.runtime-0.7.23" "$seamless_source" || abort_with_restore "failed to prepare seamless subscription source"
 	if ! PODKOP_SUBSCRIPTION_SEAMLESS_SOURCE="$seamless_source" \
 		sh "$tmp_dir/$SEAMLESS_RELOAD_UPGRADE_FILE"; then
 		abort_with_restore "seamless subscription reload runtime upgrade failed"
@@ -1731,7 +1864,7 @@ if ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_tag_glob_portable_v1' /usr/bin/podkop ||
     ! sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop | grep -q 'set_subscription_sections_enabled' ||
     ! grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop; then
-    PODKOP_SOURCES_SOURCE="$tmp_dir/podkop.runtime-0.7.20" \
+    PODKOP_SOURCES_SOURCE="$tmp_dir/podkop.runtime-0.7.23" \
         sh "$tmp_dir/$SOURCES_UPGRADE_FILE" || abort_with_restore "subscription source controls upgrade failed"
 fi
 
@@ -1849,6 +1982,9 @@ install_versioned_luci_assets
 base_luci_assets_current && versioned_luci_assets_current ||
 	abort_with_restore "versioned Podkop LuCI asset verification failed"
 cp "$tmp_dir/$DNS_OPTIMIZER_FILE" /usr/bin/podkop-dns-optimizer
+cp "$tmp_dir/$DNS_BENCHMARK_FILE" /usr/bin/podkop-dns-benchmark
+chmod 755 /usr/bin/podkop-dns-benchmark
+ash -n /usr/bin/podkop-dns-benchmark || abort_with_restore "DNS benchmark syntax check failed"
 cp "$tmp_dir/$DNS_FAILOVER_FILE" /usr/bin/podkop-dns-failover
 cp "$tmp_dir/$DNS_FAILOVER_INIT_FILE" /etc/init.d/podkop-dns-failover
 cp "$tmp_dir/$UPDATE_MANAGER_FILE" /usr/bin/podkop-update-manager

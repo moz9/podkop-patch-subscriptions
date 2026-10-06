@@ -9,15 +9,17 @@ fail() {
     exit 1
 }
 
-installer_target="$(sed -n 's/^PODKOP_PATCH_TARGET_PODKOP_VERSION="${PODKOP_PATCH_TARGET_PODKOP_VERSION:-\([^"]*\)}"$/\1/p' i)"
-installer_supported="$(sed -n 's/^PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS="${PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS:-\([^"]*\)}"$/\1/p' i)"
+# The preserved historical runtime remains checked, but PE must not advertise
+# compatibility with its unsupported 0.7.22 installation generation.
+installer_target="$(sed -n 's/^PODKOP_PATCH_TARGET_PODKOP_VERSION=//p' i)"
+installer_supported="$(sed -n 's/^PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS=//p' i)"
 manifest_target="$(jq -r '.recommendedPodkopVersion' openwrt/update-manifest.json)"
 manifest_supported="$(jq -r '.supportedPodkopVersions | join(" ")' openwrt/update-manifest.json)"
 
-[ "$installer_target" = 0.7.22 ] || fail "installer target is $installer_target instead of 0.7.22"
-[ "$manifest_target" = 0.7.22 ] || fail "manifest target is $manifest_target instead of 0.7.22"
-printf '%s\n' "$installer_supported" | tr ' ' '\n' | grep -Fxq 0.7.22 || fail 'installer does not support 0.7.22'
-printf '%s\n' "$manifest_supported" | tr ' ' '\n' | grep -Fxq 0.7.22 || fail 'manifest does not support 0.7.22'
+[ "$installer_target" = 0.7.23 ] || fail "PE installer target is $installer_target instead of 0.7.23"
+[ "$manifest_target" = 0.7.23 ] || fail "PE manifest target is $manifest_target instead of 0.7.23"
+[ "$installer_supported" = 0.7.23 ] || fail 'PE installer advertises unsupported legacy versions'
+[ "$manifest_supported" = 0.7.23 ] || fail 'PE manifest advertises unsupported legacy versions'
 
 runtime='openwrt/runtime-0.7.22/usr/bin/podkop'
 runtime_js='openwrt/runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js'
@@ -31,15 +33,12 @@ grep -Fq 'PODKOP_SUBSCRIPTIONS_PATCH_VERSION=' "$runtime" ||
 grep -Fq 'subscription_apply_v2' "$runtime" ||
     fail '0.7.22 runtime does not contain the current subscription apply backend'
 
-grep -Fq 'RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"' i ||
-    fail 'installer does not declare the 0.7.22 backend runtime'
-grep -Fq 'RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"' i ||
-    fail 'installer does not declare the 0.7.22 LuCI runtime'
-grep -Fq 'install_prebuilt_0722_runtime' i ||
-    fail 'installer does not have a dedicated 0.7.22 runtime path'
+if grep -Eq '^RUNTIME_0722_|^install_prebuilt_0722_runtime\(' i; then
+    fail 'PE installer must not deliver the historical 0.7.22 runtime'
+fi
 
 cmp -s i openwrt/install.sh || fail 'i and openwrt/install.sh differ'
 sh -n i || fail 'installer syntax is invalid'
 sh -n "$runtime" || fail '0.7.22 runtime syntax is invalid'
 
-printf '%s\n' 'PASS: Podkop 0.7.22 has a dedicated compatible runtime and release metadata'
+printf '%s\n' 'PASS: historical 0.7.22 runtime is intact and excluded from PE support'

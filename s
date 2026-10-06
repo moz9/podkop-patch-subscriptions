@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}"
+PATCH_VERSION="${PODKOP_PATCH_VERSION:-podkop-pe}"
 RAW_ROOT="${PODKOP_PATCH_RAW_ROOT:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION}"
 RAW_BASE="$RAW_ROOT/openwrt"
 WORK_DIR="${PODKOP_PATCH_SAFE_WORK_DIR:-/tmp/podkop-patch-safe-update}"
@@ -18,6 +18,7 @@ log() {
 
 fail() {
 	log "ERROR: $*" >&2
+	printf 'failed %s reason=%s\n' "$(date +%s 2>/dev/null || date)" "$*" > "$STATUS_FILE" 2>/dev/null || true
 	exit 1
 }
 
@@ -34,6 +35,15 @@ download() {
 	esac
 
 	mkdir -p "$(dirname "$out")"
+	case "$url" in
+		file://*)
+			local_path="${url#file://}"
+			local_path="${local_path%%\?*}"
+			[ -s "$local_path" ] || fail "local source not found: $local_path"
+			cp "$local_path" "$out" || fail "failed to copy $local_path"
+			return 0
+			;;
+	esac
 
 	if command -v curl >/dev/null 2>&1; then
 		if curl -fsSL --connect-timeout 10 -m 40 "$url" -o "$out"; then
@@ -51,19 +61,8 @@ download() {
 	fi
 
 	if [ "$ok" -ne 1 ] && command -v wget >/dev/null 2>&1; then
-		if wget --no-check-certificate -T 40 -O "$out" "$url"; then
+		if wget -T 40 -O "$out" "$url"; then
 			ok=1
-		elif [ "$raw_host" = "raw.githubusercontent.com" ]; then
-			clean_path="${url#https://raw.githubusercontent.com/}"
-			clean_path="${clean_path%%\?*}"
-			for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
-				if wget --no-check-certificate -T 40 \
-					--header="Host: raw.githubusercontent.com" \
-					-O "$out" "https://$ip/$clean_path"; then
-					ok=1
-					break
-				fi
-			done
 		fi
 	fi
 
@@ -73,14 +72,30 @@ download() {
 fetch_asset() {
 	rel="$1"
 	download "$RAW_BASE/$rel?t=$(date +%s)" "$ASSET_DIR/$rel"
+	verify_release_file "openwrt/$rel" "$ASSET_DIR/$rel"
 }
 
-rm -rf "$WORK_DIR"
+verify_release_file() {
+	file_expected="$(jq -er --arg path "$1" '.sha256[$path] | select(type == "string" and length == 64)' "$MANIFEST")" ||
+		fail "release checksum is missing for $1"
+	case "$file_expected" in *[!0123456789abcdef]*) fail "release checksum is invalid for $1" ;; esac
+	file_actual="$(sha256sum "$2" | awk '{print $1}')" || fail "cannot checksum $1"
+	[ "$file_actual" = "$file_expected" ] || fail "release checksum mismatch for $1"
+}
+
+# Fetch only known files; never recursively delete a caller-supplied directory.
 mkdir -p "$ASSET_DIR"
 : > "$LOG_FILE"
 printf 'prefetch %s\n' "$(date +%s 2>/dev/null || date)" > "$STATUS_FILE"
 
+command -v jq >/dev/null 2>&1 || fail "jq utility is required"
+command -v sha256sum >/dev/null 2>&1 || fail "sha256sum utility is required"
+MANIFEST="$ASSET_DIR/update-manifest.json"
+download "$RAW_BASE/update-manifest.json?t=$(date +%s)" "$MANIFEST"
+jq -e '.schemaVersion == 1 and .channel == "podkop-pe" and (.patchVersion | type == "string") and (.sha256 | type == "object")' "$MANIFEST" >/dev/null ||
+	fail "invalid release manifest"
 download "$RAW_ROOT/i?t=$(date +%s)" "$INSTALLER"
+verify_release_file i "$INSTALLER"
 chmod 755 "$INSTALLER"
 
 for rel in \
@@ -89,18 +104,30 @@ for rel in \
 	main.js \
 	section.js \
 	settings.js \
+	dashboard.js \
+	diagnostic.js \
+	podkop.js \
 	podkop-dns-optimizer \
+	podkop-dns-benchmark \
+	dns_benchmark.js \
+	podkop-dns-failover \
+	podkop-dns-failover.init \
+	podkop-dns-failover-upgrade.sh \
+	podkop-subscription-apply-v2-upgrade.sh \
+	podkop-subscription-sources-upgrade.sh \
+	podkop-subscription-seamless-reload-upgrade.sh \
+	podkop-update-manager \
 	podkop-subscription-maintenance-upgrade.sh \
-	podkop-subscription-urltest-runtime.patch \
+	podkop-update-center-upgrade.sh \
 	podkop-subscription-v0719-runtime.patch \
-	podkop-subscription-cache-only-upgrade.patch \
 	podkop-subscription-actions-upgrade.patch \
 	podkop-subscription-legacy-upgrade.patch \
 	podkop-actions-ui-fix.sh \
-	runtime-0.7.20/usr/bin/podkop \
-	runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js \
-	runtime-0.7.22/usr/bin/podkop \
-	runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js
+	runtime-0.7.23/usr/bin/podkop \
+	runtime-0.7.23/www/luci-static/resources/view/podkop/podkop.js \
+	runtime-0.7.23/usr/lib/podkop/helpers.sh \
+	runtime-0.7.23/usr/lib/podkop/sing_box_config_facade.sh \
+	runtime-0.7.23/usr/lib/podkop/sing_box_config_manager.sh
 do
 	fetch_asset "$rel"
 done

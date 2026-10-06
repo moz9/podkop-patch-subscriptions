@@ -3,7 +3,7 @@ set -eu
 repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 . "$repo/openwrt/podkop-subscription-sources.sh"
-sed -n '/^subscription_runtime_busy() {$/,/^}$/p' "$repo/openwrt/runtime-0.7.22/usr/bin/podkop" > "$work/busy"
+sed -n '/^subscription_runtime_busy() {$/,/^}$/p' "$repo/openwrt/runtime-0.7.23/usr/bin/podkop" > "$work/busy"
 . "$work/busy"
 subscription_action_lock_busy() { [ "${locked:-0}" = 1 ]; }
 subscription_reload_pending_file() { echo "$work/pending"; }

@@ -2,7 +2,7 @@
 set -eu
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-runtime="$repo_root/openwrt/runtime-0.7.22/usr/bin/podkop"
+runtime="$repo_root/openwrt/runtime-0.7.23/usr/bin/podkop"
 test_root="$(mktemp -d)"
 block="$test_root/seamless.block"
 
