@@ -127,7 +127,7 @@ if ! jq -e '.state == "error" and .message == "manifest_failed"' "$STATUS_FILE" 
 fi
 
 cat > "$fixture_manifest" <<'JSON'
-{"schemaVersion":1,"channel":"main","patchVersion":"20261006-pe-v2","supportedPodkopVersions":["0.7.23"],"sha256":{}}
+{"schemaVersion":1,"channel":"main","patchVersion":"20261007-pe-v3","supportedPodkopVersions":["0.7.23"],"sha256":{}}
 JSON
 if perform_check 1; then
     printf 'FAIL: PE update center accepted a normal-channel manifest\n' >&2

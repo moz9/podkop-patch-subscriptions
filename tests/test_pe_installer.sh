@@ -28,7 +28,7 @@ grep -q '/podkop-pe/openwrt/update-manifest.json' "$repo_root/openwrt/podkop-upd
 tmp_dir="$test_root/assets"
 mkdir -p "$tmp_dir"
 download() {
-    case "$1" in */update-manifest.json) printf '{"schemaVersion":1,"patchVersion":"20261006-pe-v2","channel":"podkop-pe","sha256":{}}\n' > "$2" ;; *) printf 'payload\n' > "$2" ;; esac
+    case "$1" in */update-manifest.json) printf '{"schemaVersion":1,"patchVersion":"20261007-pe-v3","channel":"podkop-pe","sha256":{}}\n' > "$2" ;; *) printf 'payload\n' > "$2" ;; esac
 }
 prefetch_patch_assets
 for asset in podkop.runtime-0.7.23 podkop.js.runtime-0.7.23 helpers.sh sing_box_config_facade.sh sing_box_config_manager.sh podkop-dns-benchmark dns_benchmark.js; do

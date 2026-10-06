@@ -7089,9 +7089,6 @@ var styles5 = `
     min-width: 0;
 }
 
-.pdk-pe-page #maincontent {
-    width: 100%; max-width: 1800px; min-width: 0; box-sizing: border-box;
-}
 .pdk-pe-page #view, .pdk-pe-page #cbi-podkop {
     width: 100%; min-width: 0; box-sizing: border-box;
 }
