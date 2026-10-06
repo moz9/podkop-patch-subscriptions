@@ -207,7 +207,8 @@ snapshot() {
     tar -C "$(archive_root)" -cpf "$saved/preserve.tar" -T "$saved/preserve.paths" || die 'не удалось сохранить настройки'
     tar -C "$(archive_root)" -cpf "$saved/runtime.tar" -T "$saved/runtime.paths" || die 'не удалось сохранить runtime'
     if [ -d "$ROOT/overlay/upper" ]; then
-        tar -C "$(archive_root)" --exclude=overlay/upper/root/podkop-pe-migration -cpf "$saved/overlay-upper.tar" overlay/upper || die 'не удалось сохранить весь overlay/upper'
+        printf '%s\n' overlay/upper/root/podkop-pe-migration > "$saved/overlay.exclude"
+        tar -C "$(archive_root)" -X "$saved/overlay.exclude" -cpf "$saved/overlay-upper.tar" overlay/upper || die 'не удалось сохранить весь overlay/upper'
     fi
     apk list --installed --manifest > "$saved/packages.before"
     dns_was_running=0
@@ -281,7 +282,8 @@ rollback() {
         return 1
     fi
     if [ "$recovery_level" = stock-newer ]; then
-        tar -C "$(archive_root)" --exclude=usr/bin/sing-box -xpf "$saved/runtime.tar" || { printf 'recovery-required\n' > "$saved/status"; return 1; }
+        printf '%s\n' usr/bin/sing-box > "$saved/stock-runtime.exclude"
+        tar -C "$(archive_root)" -X "$saved/stock-runtime.exclude" -xpf "$saved/runtime.tar" || { printf 'recovery-required\n' > "$saved/status"; return 1; }
     else
         tar -C "$(archive_root)" -xpf "$saved/runtime.tar" || { printf 'recovery-required\n' > "$saved/status"; return 1; }
     fi
