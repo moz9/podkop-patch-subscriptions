@@ -3,6 +3,8 @@
 # OpenWrt executes these files directly with BusyBox/ash. Keep their shebangs
 # and shell syntax safe regardless of the contributor's host OS.
 i text eol=lf
+a text eol=lf
+s text eol=lf
 *.sh text eol=lf
 openwrt/*.init text eol=lf
 openwrt/podkop-dns-failover text eol=lf

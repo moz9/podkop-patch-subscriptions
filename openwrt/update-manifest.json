@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "patchVersion": "20261005-subscription-selection-v1",
+  "patchVersion": "20261006-subscription-tags-v1",
   "supportedPodkopVersions": [
     "0.7.19",
     "0.7.20",
@@ -8,5 +8,42 @@
     "0.7.22"
   ],
   "recommendedPodkopVersion": "0.7.22",
-  "publishedAt": "2026-10-05T17:30:00+07:00"
+  "publishedAt": "2026-10-06T17:34:25+07:00",
+  "sha256": {
+    "a": "3ce23b373162941e23be70a682e82561d1c19ea42725739c59199e728d7e1165",
+    "i": "a8e930af31345c01a46105b00f2ce46974a310653626bc7a0381307337865bdd",
+    "openwrt/dashboard.js": "6a075ab405160ecfe2742cca4ca5ef24af2d7fca2108d05c3fb48541c0e639aa",
+    "openwrt/diagnostic.js": "25fcfd513a23bd3203a04d64f201e724de01f8584ee6435940e47c358a349ad2",
+    "openwrt/install.sh": "a8e930af31345c01a46105b00f2ce46974a310653626bc7a0381307337865bdd",
+    "openwrt/main.js": "088bddca4d04f84f0aaada516bf0dd697c502708ff4937dbfec66c2aa60b253b",
+    "openwrt/podkop-actions-ui-fix.sh": "2bc17d2a3cbc365d21d080612e4d5463ffee12c8b818fa2f6c839ee0645d605f",
+    "openwrt/podkop-dns-failover": "71d45845a1f397ec11dd1ae73c1d9fccc848a468e2b9dea23ba47aea0bf48ddd",
+    "openwrt/podkop-dns-failover-upgrade.sh": "eba79e97ac99e33b5875a2727385db649994b9e0188499cb0e00cd28d22d6b59",
+    "openwrt/podkop-dns-failover.init": "e893c5490e53ecd9aac5da36f568b2d86f4d980df2cff98055d4605eb885b475",
+    "openwrt/podkop-dns-optimizer": "8f427f784c94d03e9fc6f5765402f078091c87d40f2acf3d94a2a64d0f62d2bf",
+    "openwrt/podkop-subscription-actions-upgrade.patch": "d23eba72ea7bb0b7bd27a05a976e14d1069c1c98bb3fd58b7b8ae8e6a3a62cff",
+    "openwrt/podkop-subscription-apply-v2-upgrade.sh": "567c34d545362819632317a13c3b950933657924ddf20399badc34ac3751aa8b",
+    "openwrt/podkop-subscription-cache-only-upgrade.patch": "10ea576a041296f330089f4bd8fdd7566dd338ccadc619eae1bcdede6b47dc9c",
+    "openwrt/podkop-subscription-legacy-upgrade.patch": "a67f2cdc24b0283a2e2bad4a62bddfa66b4d1f18f609cb0946479108884197a8",
+    "openwrt/podkop-subscription-maintenance-upgrade.sh": "8561b8a64cebcfec04151bcf4ff45c763db09c2471f48f5f71706bef6001f0f5",
+    "openwrt/podkop-subscription-probe.sh": "b74572355c4811dcc74c130633245b8120f97207f63bbc64c676512d4c9aa047",
+    "openwrt/podkop-subscription-seamless-reload-upgrade.sh": "c200a6790dbd3928bc0f6059ba5bb964d6701454aecd8d756a4fa2c7b64fe133",
+    "openwrt/podkop-subscription-sources-upgrade.sh": "0e07a03e9e2cfc21690e14e7274bf2b8ca3d14dbd26e7b8c8a4e054e46aba535",
+    "openwrt/podkop-subscription-sources.sh": "6d8987491b4cefaad044aff6547331aa48cda132b9c8ef5eda45431c75e1915a",
+    "openwrt/podkop-subscription-ui-fix-upgrade.patch": "d812269b444ca13d803d3456a85c4fbf6ce826e3ac4f11834296f08826db1f96",
+    "openwrt/podkop-subscription-urltest-runtime.patch": "f4e140556fdcb4820c3b0644b05a51cd8ac8e8df309a1d4955ce8add3e72876d",
+    "openwrt/podkop-subscription-v0719-runtime.patch": "aeb033ce99b233fb46f9d7f3dcd0cdca807aca4760dd51ac7114c2c6ac61ef4a",
+    "openwrt/podkop-update-center-upgrade.sh": "3caa131a3e7a082181db9eb6c63e5b220bd9d5a2486f49957bc32a857d1c4e05",
+    "openwrt/podkop-update-manager": "e61ec59d46c8743bd1b4d0d7f4784088616982ea56b058706e2b78ef14f0bf9e",
+    "openwrt/podkop.js": "c6e97e5e66c17508f2ecf21d99ee33e96cbdacb2b53c3daccdae6fa9f4942ae8",
+    "openwrt/podkop.ru.lmo.base64": "5b2bb340ddb4213363d6b994dad530ebfebb4f08bd853d4d0c45be192bbe2c83",
+    "openwrt/runtime-0.7.20/usr/bin/podkop": "3cb54b90aad854b735d53ab86571254c85ab1662eb8f58978480da24ed3166c7",
+    "openwrt/runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js": "c6e97e5e66c17508f2ecf21d99ee33e96cbdacb2b53c3daccdae6fa9f4942ae8",
+    "openwrt/runtime-0.7.22/usr/bin/podkop": "861ee2cbbd46584330e152732c7d7f945d91532706b600dfcc9d92f2cff46129",
+    "openwrt/runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js": "c6e97e5e66c17508f2ecf21d99ee33e96cbdacb2b53c3daccdae6fa9f4942ae8",
+    "openwrt/section.js": "127042e59969a06902ad39cdc3b9d6fdd1b616d0f7315dcb767e4fe23e413d55",
+    "openwrt/settings.js": "2c7c6710f36b12b589e2842c083bf1bbf63803b4b583deafd788aa48854dc722",
+    "openwrt/subscriptions.js": "3ffd19eed69a6d061a0205ee29095b54ace314849b0c40ae78b4452d934e33b1",
+    "s": "38689515a0a9339aea1ab7e0515b837051a08a0d38e283fbe52790fad5c75715"
+  }
 }

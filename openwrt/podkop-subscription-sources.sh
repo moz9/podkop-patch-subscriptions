@@ -3,6 +3,50 @@
 # subscription_source_actions_v1
 # subscription_choices_and_busy_v1
 # subscription_selection_v1
+# subscription_tag_filters_v1
+# subscription_tag_glob_portable_v1
+subscription_tag_values_append() {
+    SUBSCRIPTION_TAG_VALUES="$(printf '%s' "$SUBSCRIPTION_TAG_VALUES" | jq -c --arg value "$1" '. + [$value]')"
+}
+
+subscription_tags_json() {
+    SUBSCRIPTION_TAG_VALUES='[]'
+    config_list_foreach "$1" "$2" subscription_tag_values_append
+    printf '%s\n' "$SUBSCRIPTION_TAG_VALUES"
+}
+
+subscription_tags_prepare() {
+    local section="$1" changes="$2" dir="$SUBSCRIPTION_APPLY_V2_TMP" option value current proposed
+    SUBSCRIPTION_TAGS_CHANGED=0
+    for option in include exclude; do
+        current="$(subscription_tags_json "$section" "subscription_${option}_tags")" || return 1
+        proposed="$(printf '%s' "$changes" | jq -c --arg option "${option}Tags" --argjson current "$current" '.[$option] // $current')" || return 1
+        printf '%s\n' "$proposed" > "$dir/tags.$section.$option" || return 1
+        [ "$current" = "$proposed" ] || SUBSCRIPTION_TAGS_CHANGED=$((SUBSCRIPTION_TAGS_CHANGED + 1))
+    done
+}
+
+subscription_tags_stage() {
+    local section="$1" option value proposed current
+    for option in include exclude; do
+        proposed="$(cat "$SUBSCRIPTION_APPLY_V2_TMP/tags.$section.$option")" || return 1
+        current="$(subscription_tags_json "$section" "subscription_${option}_tags")" || return 1
+        [ "$proposed" != "$current" ] || continue
+        uci -q delete "podkop.$section.subscription_${option}_tags" >/dev/null 2>&1 || true
+        printf '%s' "$proposed" | jq -r '.[]' > "$SUBSCRIPTION_APPLY_V2_TMP/tags.$section.$option.list" || return 1
+        while IFS= read -r value; do
+            uci -q add_list "podkop.$section.subscription_${option}_tags=$value" || return 1
+        done < "$SUBSCRIPTION_APPLY_V2_TMP/tags.$section.$option.list"
+    done
+}
+
+subscription_tags_verify() {
+    local section="$1" option
+    for option in include exclude; do
+        [ "$(subscription_tags_json "$section" "subscription_${option}_tags")" = "$(cat "$SUBSCRIPTION_APPLY_V2_TMP/tags.$section.$option")" ] || return 1
+    done
+}
+
 subscription_selection_mode() {
     local mode=''
     config_get mode "$1" subscription_selection_mode
@@ -164,7 +208,47 @@ subscription_cached_source_append() {
 }
 
 subscription_source_policy() {
-    jq -c --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" '
+    jq -c --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
+        --argjson include "${6:-[]}" --argjson exclude "${7:-[]}" '
+        def glob_tokens:
+            explode as $chars
+            | reduce range(0; $chars|length) as $i
+                ({tokens:[],skip:-1};
+                 if $i <= .skip then .
+                 elif $chars[$i] == 92 and $i+1 < ($chars|length) then
+                    .tokens += [{kind:"literal",value:$chars[$i+1]}] | .skip=$i+1
+                 elif $chars[$i] == 91 then
+                    ([range($i+1; $chars|length) | select($chars[.] == 93)] | .[0] // -1) as $close
+                    | if $close > $i+1 then
+                        .tokens += [{kind:"class",value:$chars[$i+1:$close]}] | .skip=$close
+                      else .tokens += [{kind:"literal",value:91}] end
+                 elif $chars[$i] == 42 then .tokens += [{kind:"star"}]
+                 elif $chars[$i] == 63 then .tokens += [{kind:"any"}]
+                 else .tokens += [{kind:"literal",value:$chars[$i]}] end)
+            | .tokens;
+        def class_has($class; $code):
+            (($class[0] == 33) or ($class[0] == 94)) as $negated
+            | (if $negated then $class[1:] else $class end) as $body
+            | any(range(0; $body|length); . as $i
+                | if $body[$i] == 45 and $i > 0 and $i+1 < ($body|length) then false
+                  elif $i+2 < ($body|length) and $body[$i+1] == 45 then
+                    $code >= $body[$i] and $code <= $body[$i+2]
+                  else $code == $body[$i] end) as $hit
+            | if $negated then ($hit|not) else $hit end;
+        def glob_matches($glob; $name):
+            ($glob | glob_tokens) as $tokens
+            | ($name | explode) as $chars
+            | reduce $tokens[] as $token ([0];
+                if length == 0 then []
+                elif $token.kind == "star" then [range(min; ($chars|length)+1)]
+                else [.[] | select(. < ($chars|length))
+                    | . as $pos
+                    | select(if $token.kind == "any" then true
+                             elif $token.kind == "class" then class_has($token.value; $chars[$pos])
+                             else $token.value == $chars[$pos] end)
+                    | .+1] | unique end)
+            | index($chars|length) != null;
+        def matches($patterns; $name): any($patterns[]; glob_matches(.; $name));
         map(. as $item
             | .enabled = (.supported == true and (if $mode=="selected" then
                 ($selected | index($item.selectionId // $item.id)) != null
@@ -172,8 +256,9 @@ subscription_source_policy() {
             | .sourceEnabled = (if ((.sourceIds // []) | length) > 0 then
                 any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
                 else ($disabled | length) == 0 end)
-            | .runtimeEnabled = (.enabled and .sourceEnabled)
-            | if .supported then .reason = (if .enabled then "" elif $mode=="selected" then "user_unselected" else "user_excluded" end) else . end)
+            | .tagExcluded = ((($include|length)>0 and (matches($include; $item.name // $item.tag // "")|not)) or matches($exclude; $item.name // $item.tag // ""))
+            | .runtimeEnabled = (.enabled and .sourceEnabled and (.tagExcluded|not))
+            | if .supported then .reason = (if .enabled and .tagExcluded then "tag_filtered" elif .enabled then "" elif $mode=="selected" then "user_unselected" else "user_excluded" end) else . end)
     ' "$3"
 }
 
@@ -222,13 +307,15 @@ subscription_items_with_sources() {
 
 subscription_filter_source_links() {
     local items="$1" links="$2" output="$3" disabled="$4" excluded="$5" work link id
-    local mode=all selected='[]'
+    local mode=all selected='[]' include='[]' exclude='[]'
     if [ -n "${6:-}" ]; then
         mode="$(subscription_selection_mode "$6")"
         selected="$(subscription_selected_ids_json "$6")" || return 1
+        include="$(subscription_tags_json "$6" subscription_include_tags)" || return 1
+        exclude="$(subscription_tags_json "$6" subscription_exclude_tags)" || return 1
     fi
     work="$(mktemp)" || return 1
-    subscription_source_policy "$disabled" "$excluded" "$items" "$mode" "$selected" > "$work" || { rm -f "$work"; return 1; }
+    subscription_source_policy "$disabled" "$excluded" "$items" "$mode" "$selected" "$include" "$exclude" > "$work" || { rm -f "$work"; return 1; }
     : > "$output"
     while IFS= read -r link || [ -n "$link" ]; do
         [ -n "$link" ] || continue
@@ -243,7 +330,7 @@ subscription_filter_source_links() {
 # Stage and validate source choices inside the existing single-commit transaction.
 subscription_sources_prepare() {
     local section="$1" changes="$2" items="$3" excluded="$4" dir="$SUBSCRIPTION_APPLY_V2_TMP"
-    local sources proposed id enabled current count mode=all selected='[]'
+    local sources proposed id enabled current count mode=all selected='[]' include='[]' exclude='[]'
     sources="$(get_subscription_sources "$section")" || return 1
     proposed="$(subscription_disabled_sources_json "$section")"
     printf '%s\n' "$changes" | jq -r '.sources // [] | .[] | [.id,.enabled] | @tsv' > "$dir/sources.$section.changes" || return 1
@@ -261,7 +348,9 @@ subscription_sources_prepare() {
         mode="$(cat "$dir/selection.$section.mode")"
         selected="$(cat "$dir/selection.$section.ids")"
     fi
-    subscription_source_policy "$proposed" "$excluded" "$dir/sources.$section.items" "$mode" "$selected" > "$dir/sources.$section.effective" || return 1
+    include="$(cat "$dir/tags.$section.include")" || return 1
+    exclude="$(cat "$dir/tags.$section.exclude")" || return 1
+    subscription_source_policy "$proposed" "$excluded" "$dir/sources.$section.items" "$mode" "$selected" "$include" "$exclude" > "$dir/sources.$section.effective" || return 1
     SUBSCRIPTION_SOURCES_REMAINING="$(jq '[.[] | select(.runtimeEnabled)] | length' "$dir/sources.$section.effective")"
     SUBSCRIPTION_SOURCES_CHANGED="$count"
 }

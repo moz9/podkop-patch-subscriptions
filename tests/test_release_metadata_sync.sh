@@ -3,6 +3,7 @@ set -eu
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 cd "$repo_root"
+node scripts/update-release-hashes.mjs --check
 test_root="$(mktemp -d)"
 trap 'rm -rf "$test_root"' EXIT INT TERM
 
@@ -21,6 +22,7 @@ assert_lf_only() {
 }
 
 for router_executable in \
+    a \
     i \
     s \
     openwrt/install.sh \
@@ -63,9 +65,9 @@ manifest_patch="$(jq -r '.patchVersion' openwrt/update-manifest.json)"
 manifest_published_at="$(jq -r '.publishedAt' openwrt/update-manifest.json)"
 manifest_recommended="$(jq -r '.recommendedPodkopVersion' openwrt/update-manifest.json)"
 manifest_supported="$(jq -r '.supportedPodkopVersions | join(" ")' openwrt/update-manifest.json)"
-expected_patch_version="20261005-subscription-selection-v1"
+expected_patch_version="20261006-subscription-tags-v1"
 expected_dns_optimizer_version="20260814-dns-optimizer-v18"
-expected_published_at="2026-10-05T17:30:00+07:00"
+expected_published_at="2026-10-06T17:34:25+07:00"
 expected_google_play_capability="google_play_dns_transport_guard_v1"
 expected_chatgpt_capability="chatgpt_dns_transport_guard_v1"
 

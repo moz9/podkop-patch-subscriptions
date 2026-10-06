@@ -21,7 +21,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261005-subscription-selection-v1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261006-subscription-tags-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -49,7 +49,7 @@ RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
 RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261005_subscription_selection_v1"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261006_subscription_tags_v1"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -149,6 +149,13 @@ www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/s
 www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/settings.js
 www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/dashboard.js
 www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/main.js
+www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/podkop.js
+www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/section.js
+www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/settings.js
+www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
 
@@ -230,6 +237,22 @@ download() {
 	fi
 
 	[ "$download_ok" -eq 1 ] && [ -s "$out" ] || fail "failed to download $url"
+}
+
+ensure_jq() {
+	command -v jq >/dev/null 2>&1 && return 0
+
+	if command -v apk >/dev/null 2>&1; then
+		log "Installing jq utility with apk..."
+		apk update >/dev/null 2>&1 || true
+		apk add jq >/dev/null 2>&1 || true
+	elif command -v opkg >/dev/null 2>&1; then
+		log "Installing jq utility with opkg..."
+		opkg update >/dev/null 2>&1 || true
+		opkg install jq >/dev/null 2>&1 || true
+	fi
+
+	command -v jq >/dev/null 2>&1 || fail "jq utility is required"
 }
 
 require_patch() {
@@ -852,6 +875,8 @@ has_latest_subscription_backend() {
 		grep -Fqx '# subscription_source_actions_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_selection_v1' /usr/bin/podkop 2>/dev/null &&
+		grep -Fqx '# subscription_tag_filters_v1' /usr/bin/podkop 2>/dev/null &&
+		grep -Fqx '# subscription_tag_glob_portable_v1' /usr/bin/podkop 2>/dev/null &&
 		sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'set_subscription_sections_enabled' &&
 		grep -q '^get_subscription_operation_status)' /usr/bin/podkop 2>/dev/null &&
 		grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop 2>/dev/null &&
@@ -1545,12 +1570,12 @@ trap 'installer_signal_handler 143' TERM
 trap 'installer_signal_handler 129' HUP
 
 command -v base64 >/dev/null 2>&1 || fail "base64 utility is required"
-command -v jq >/dev/null 2>&1 || fail "jq utility is required"
 
 installer_mutation_lock_acquire || fail "another Podkop change is already running; retry after it finishes"
 
 ensure_no_pending_uci_changes || fail "the router has pending or unreadable UCI changes; apply or revert them before updating Podkop or the patch"
 ensure_no_pending_podkop_changes || fail "Podkop has pending UCI changes; apply or revert them before updating Podkop or the patch"
+ensure_jq
 require_patch
 prefetch_patch_assets
 dns_optimizer_has_google_play_guard "$tmp_dir/$DNS_OPTIMIZER_FILE" ||
@@ -1702,6 +1727,8 @@ fi
 if ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_selection_v1' /usr/bin/podkop ||
+    ! grep -Fqx '# subscription_tag_filters_v1' /usr/bin/podkop ||
+    ! grep -Fqx '# subscription_tag_glob_portable_v1' /usr/bin/podkop ||
     ! sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop | grep -q 'set_subscription_sections_enabled' ||
     ! grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop; then
     PODKOP_SOURCES_SOURCE="$tmp_dir/podkop.runtime-0.7.20" \

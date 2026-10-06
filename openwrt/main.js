@@ -816,9 +816,13 @@ var PodkopShellMethods = {
 
 function buildSubscriptionSectionChanges(section, changes) {
   const mode = changes.find(change => change.id === "selection:mode");
+  const include = changes.find(change => change.id === "tags:include");
+  const exclude = changes.find(change => change.id === "tags:exclude");
   return { section,
     ...(mode ? {selectionMode: mode.enabled ? "selected" : "all"} : {}),
-    changes: changes.filter(change => !change.id.startsWith("source:") && change.id !== "selection:mode"),
+    ...(include ? {includeTags:include.enabled} : {}),
+    ...(exclude ? {excludeTags:exclude.enabled} : {}),
+    changes: changes.filter(change => !change.id.startsWith("source:") && !change.id.startsWith("tags:") && change.id !== "selection:mode"),
     sources: changes.filter(change => change.id.startsWith("source:")).map(change => ({...change, id:change.id.slice(7)}))
   };
 }
@@ -1608,6 +1612,7 @@ var initialStore = {
     actionStatus: "idle",
     actionMessage: "",
     pendingChanges: {},
+    collapsedSections: {},
     collapsedSources: {},
     latencyByRow: {},
     speedByRow: {},
@@ -5221,8 +5226,14 @@ var DiagnosticTab = {
 function getRowId(sectionCode, itemId) {
   return `${sectionCode}:${itemId}`;
 }
-function getSourceId(sectionCode, sourceIndex) {
-  return `${sectionCode}:${sourceIndex}`;
+function getSourceId(sectionCode, source) {
+  return `${sectionCode}:${source.id || `index:${source.sourceIndex}`}`;
+}
+function isSubscriptionSectionCollapsed(collapsedSections, sectionCode) {
+  return collapsedSections?.[sectionCode] !== false;
+}
+function isSubscriptionSourceCollapsed(collapsedSources, sectionCode, source) {
+  return collapsedSources?.[getSourceId(sectionCode, source)] !== false;
 }
 function formatMbitPerSecond(bytesPerSecond) {
   const mbitPerSecond = bytesPerSecond * 8 / 1e6;
@@ -5247,6 +5258,7 @@ function getEffectiveEnabled(pendingChanges, sectionCode, item) {
 function getReasonLabel(reason) {
   const labels = {
     user_excluded: _("Excluded"),
+    tag_filtered: "Не подходит под фильтр тегов",
     unsupported_protocol: _("Unsupported protocol"),
     unsupported_transport: _("Not supported"),
     unsupported_security: _("Unsupported security"),
@@ -5260,12 +5272,14 @@ function getItemName(item, index) {
 function getStatusLabel({
   item,
   pending,
-  effectiveEnabled
+  effectiveEnabled,
+  tagFiltered
 }) {
   if (!item.supported) {
     return getReasonLabel(item.reason);
   }
   if (item.subscriptionDisabled) return "Подписка отключена";
+  if (effectiveEnabled && tagFiltered) return "Исключён фильтром тегов";
   if (pending) {
     return effectiveEnabled ? _("Will be included") : _("Will be excluded");
   }
@@ -5274,9 +5288,10 @@ function getStatusLabel({
 function getStatusClass({
   item,
   pending,
-  effectiveEnabled
+  effectiveEnabled,
+  tagFiltered
 }) {
-  if (item.subscriptionDisabled && item.supported) return "pdk_subscriptions-page__status--excluded";
+  if ((item.subscriptionDisabled || (effectiveEnabled && tagFiltered)) && item.supported) return "pdk_subscriptions-page__status--excluded";
   if (!item.supported) {
     return "pdk_subscriptions-page__status--unsupported";
   }
@@ -5319,15 +5334,26 @@ function getSourceSummary({
   group,
   pendingChanges
 }) {
+  const modeChanging = hasPendingSubscriptionModeChange(section, pendingChanges);
+  const draft = modeChanging ? {} : pendingChanges;
   const supportedCount = group.items.filter((item) => item.supported).length;
-  const enabledCount = group.items.filter(
-    (item) => item.supported && getEffectiveEnabled(pendingChanges, section.code, item)
+  const selectedCount = group.items.filter(
+    (item) => item.supported && getEffectiveEnabled(draft, section.code, item)
   ).length;
+  const sourceEnabled = getEffectiveSourceEnabled(draft, section.code, group);
+  const includeTags = getEffectiveSubscriptionTags(draft, section, "include");
+  const excludeTags = getEffectiveSubscriptionTags(draft, section, "exclude");
+  const runtimeCount = sourceEnabled ? group.items.filter(item =>
+    item.supported && getEffectiveEnabled(draft, section.code, item) &&
+    !isSubscriptionTagFiltered(item, includeTags, excludeTags)).length : 0;
   const unsupportedCount = group.items.length - supportedCount;
   const parts = [
-    `${_("Configs")}: ${group.items.length}`,
-    `${_("Included")}: ${enabledCount}/${supportedCount}`
+    `Конфигов: ${group.items.length}`,
+    `${modeChanging ? "Выбрано сейчас" : "Выбрано"}: ${selectedCount}/${supportedCount}`,
+    `${modeChanging ? "Доступно сейчас" : "Доступно"}: ${runtimeCount}`
   ];
+  if (modeChanging) parts.push("После смены режима — после применения");
+  if (!sourceEnabled) parts.push("Выключена");
   if (unsupportedCount > 0) {
     parts.push(`${_("Unsupported")}: ${unsupportedCount}`);
   }
@@ -5507,7 +5533,10 @@ function renderRow({
     section.code,
     item
   );
-  const isLastEnabled = item.supported && effectiveEnabled && !item.subscriptionDisabled && enabledSupportedCount <= 1;
+  const tagFiltered = isSubscriptionTagFiltered(item,
+    getEffectiveSubscriptionTags(pendingChanges, section, "include"),
+    getEffectiveSubscriptionTags(pendingChanges, section, "exclude"));
+  const isLastEnabled = item.supported && effectiveEnabled && !item.subscriptionDisabled && !tagFiltered && enabledSupportedCount <= 1;
   const disabled = !item.supported || applying || isLastEnabled;
   const latency = latencyByRow[rowId];
   const speed = speedByRow[rowId];
@@ -5595,10 +5624,11 @@ function renderRow({
           class: `pdk_subscriptions-page__status ${getStatusClass({
             item,
             pending,
-            effectiveEnabled
+            effectiveEnabled,
+            tagFiltered
           })}`
         },
-        getStatusLabel({ item, pending, effectiveEnabled })
+        getStatusLabel({ item, pending, effectiveEnabled, tagFiltered })
       )
     ]
   );
@@ -5661,9 +5691,7 @@ function renderSourceGroup({
   onToggleSource,
   sourceActions
 }) {
-  const collapsed = Boolean(
-    collapsedSources[getSourceId(section.code, group.sourceIndex)]
-  );
+  const collapsed = isSubscriptionSourceCollapsed(collapsedSources, section.code, group);
   const actionLabel = collapsed ? _("Expand subscription") : _("Collapse subscription");
   return E(
     "div",
@@ -5688,7 +5716,8 @@ function renderSourceGroup({
           class: "pdk_subscriptions-page__source-header",
           title: actionLabel,
           "aria-label": actionLabel,
-          click: () => onToggleSource(section.code, group.sourceIndex)
+          "aria-expanded": collapsed ? "false" : "true",
+          click: () => onToggleSource(section.code, group)
         },
         [
           E("span", { class: "pdk_subscriptions-page__source-caret" }),
@@ -5742,27 +5771,124 @@ function getEffectiveSelectionMode(pendingChanges, section) {
   const key = `${section.code}:selection:mode`;
   return key in pendingChanges ? (pendingChanges[key] ? "selected" : "all") : (section.selectionMode || "all");
 }
+function hasPendingSubscriptionModeChange(section, pendingChanges) {
+  const key = `${section.code}:selection:mode`;
+  return key in pendingChanges && getEffectiveSelectionMode(pendingChanges, section) !== (section.selectionMode || "all");
+}
+function parseSubscriptionTagList(value) {
+  return String(value || "").split(/\r?\n/).filter(tag => tag.trim().length > 0);
+}
+function normalizeSubscriptionTags(value) {
+  return Array.isArray(value) ? value : value ? [value] : [];
+}
+function getEffectiveSubscriptionTags(pendingChanges, section, kind) {
+  const key = `${section.code}:tags:${kind}`;
+  return key in pendingChanges ? pendingChanges[key] : (section[`${kind}Tags`] || []);
+}
+function subscriptionTagMatches(pattern, name) {
+  const chars = Array.from(pattern);
+  const value = Array.from(name || "");
+  const tokens = [];
+  for (let i = 0; i < chars.length; i++) {
+    if (chars[i] === "\\" && i + 1 < chars.length) tokens.push({kind:"literal",value:chars[++i]});
+    else if (chars[i] === "[") {
+      const close = chars.indexOf("]", i + 1);
+      if (close > i + 1) { tokens.push({kind:"class",value:chars.slice(i + 1, close)}); i = close; }
+      else tokens.push({kind:"literal",value:"["});
+    } else if (chars[i] === "*") tokens.push({kind:"star"});
+    else if (chars[i] === "?") tokens.push({kind:"any"});
+    else tokens.push({kind:"literal",value:chars[i]});
+  }
+  const classHas = (members, character) => {
+    const negated = members[0] === "!" || members[0] === "^";
+    const body = negated ? members.slice(1) : members;
+    const code = character.codePointAt(0);
+    let hit = false;
+    for (let i = 0; i < body.length; i++) {
+      if (body[i] === "-" && i > 0 && i + 1 < body.length) continue;
+      if (i + 2 < body.length && body[i + 1] === "-" &&
+          code >= body[i].codePointAt(0) && code <= body[i + 2].codePointAt(0)) hit = true;
+      else if (body[i] === character) hit = true;
+    }
+    return negated ? !hit : hit;
+  };
+  let positions = new Set([0]);
+  for (const token of tokens) {
+    const next = new Set();
+    if (token.kind === "star") {
+      if (positions.size) {
+        let minimum = value.length;
+        for (const position of positions) if (position < minimum) minimum = position;
+        for (let i = minimum; i <= value.length; i++) next.add(i);
+      }
+    } else for (const position of positions) {
+      if (position < value.length && (token.kind === "any" ||
+          (token.kind === "class" ? classHas(token.value, value[position]) : token.value === value[position]))) next.add(position + 1);
+    }
+    positions = next;
+    if (!positions.size) return false;
+  }
+  return positions.has(value.length);
+}
+function isSubscriptionTagFiltered(item, includeTags, excludeTags) {
+  const name = item.name || item.tag || "";
+  return (includeTags.length > 0 && !includeTags.some(tag => subscriptionTagMatches(tag, name))) ||
+    excludeTags.some(tag => subscriptionTagMatches(tag, name));
+}
+function getTagFilterPreview(section, pendingChanges) {
+  const uncertain = hasPendingSubscriptionModeChange(section, pendingChanges);
+  const draft = uncertain ? {} : pendingChanges;
+  const include = getEffectiveSubscriptionTags(draft, section, "include");
+  const exclude = getEffectiveSubscriptionTags(draft, section, "exclude");
+  const chosen = section.items.filter(item => item.supported && getEffectiveEnabled(draft, section.code, item));
+  const filtered = chosen.filter(item => isSubscriptionTagFiltered(item, include, exclude)).length;
+  const enabled = chosen.filter(item => {
+    if (isSubscriptionTagFiltered(item, include, exclude)) return false;
+    const sources = section.sources || [];
+    if (!sources.length) return !item.subscriptionDisabled;
+    return sources.some(source =>
+      (item.sourceIds?.length ? item.sourceIds.includes(source.id) : (item.sourceIndex || 1) === source.sourceIndex) &&
+      getEffectiveSourceEnabled(draft, section.code, source));
+  }).length;
+  return {enabled,filtered,uncertain};
+}
+function getSectionCollapsedSummary(section, pendingChanges) {
+  const preview = getTagFilterPreview(section, pendingChanges);
+  const parts = [`${section.items.length} конфигов`, `${preview.uncertain ? "доступно сейчас" : "доступно"} ${preview.enabled}`];
+  if (preview.uncertain) parts.push("после смены режима — после применения");
+  if (getEffectiveSelectionMode(pendingChanges, section) === "selected") parts.push("только выбранные");
+  if (getEffectiveSubscriptionTags(pendingChanges, section, "include").length ||
+      getEffectiveSubscriptionTags(pendingChanges, section, "exclude").length) parts.push("фильтр тегов");
+  if (section.sources?.some(source => source.error)) parts.push("Ошибка подписки");
+  return parts.join(" · ");
+}
 function renderSection({
   section,
   pendingChanges,
+  collapsedSections,
   collapsedSources,
   latencyByRow,
   speedByRow,
   applying,
   onToggle,
+  onToggleSection,
   onToggleSource,
   sourceActions
 }) {
-  const enabledSupportedCount = section.items.filter(
-    (item) => item.supported && getEffectiveEnabled(pendingChanges, section.code, item)
-  ).length;
+  const tagPreview = getTagFilterPreview(section, pendingChanges);
+  const enabledSupportedCount = tagPreview.enabled;
   const sourceGroups = getSourceGroups(section);
+  const tagNames = [...new Set(section.items.map(item => item.name || item.tag).filter(Boolean))].sort((a,b) => a.localeCompare(b));
+  const collapsed = isSubscriptionSectionCollapsed(collapsedSections, section.code);
   return E("div", { class: "pdk_subscriptions-page__section" }, [
-    E(
-      "div",
-      { class: "pdk_subscriptions-page__section-title" },
-      section.displayName
-    ),
+    E("button", {type:"button", class:"pdk_subscriptions-page__section-title",
+      style:"display:block;width:100%;text-align:left;cursor:pointer",
+      title:collapsed ? "Развернуть секцию" : "Свернуть секцию",
+      "aria-label":`${collapsed ? "Развернуть" : "Свернуть"} секцию ${section.displayName}`,
+      "aria-expanded":collapsed ? "false" : "true",
+      click:()=>onToggleSection(section.code)},
+      `${collapsed ? "▸" : "▾"} ${section.displayName} · ${getSectionCollapsedSummary(section, pendingChanges)}`),
+    ...collapsed ? [] : [
     E("label", {style:"display:block;margin:8px 0"}, [
       E("span", {}, "Конфиги этой секции: "),
       E("select", {
@@ -5776,6 +5902,23 @@ function renderSection({
         ? "Новые конфиги не включаются автоматически. Оставьте галочки только у нужных узлов и нажмите «Применить»."
         : "Новые конфиги подписок включаются автоматически. Выключенные вручную остаются выключенными.")
     ]),
+    E("div", {style:"display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin:8px 0"}, [
+      ...[["include","Включать теги"],["exclude","Исключать теги"]].map(([kind,label]) => E("label", {}, [
+        E("span", {style:"display:block"}, label),
+        E("textarea", {rows:2, style:"width:100%;box-sizing:border-box", disabled:applying || sourceActions?.modeDisabled ? "disabled" : void 0,
+          placeholder:"Один тег или шаблон на строку",
+          change:event => onToggle(section.code,{id:`tags:${kind}`,enabled:section[`${kind}Tags`] || []},parseSubscriptionTagList(event.target.value))},
+          getEffectiveSubscriptionTags(pendingChanges,section,kind).join("\n"))
+      ]))
+    ]),
+    E("small", {style:"display:block;margin:4px 0"}, "Фильтр по имени узла: * — любое число символов, ? — один, [abc] — один из списка. Исключение имеет приоритет. Пустой список включения не ограничивает узлы."),
+    E("small", {style:"display:block;margin:4px 0"}, tagPreview.uncertain
+      ? `Сейчас доступно узлов: ${tagPreview.enabled}. После смены режима итоговое число определится при применении.`
+      : tagPreview.enabled === 0
+      ? "После применения не останется активных узлов — сохранение будет отклонено."
+      : `После фильтра останется активных узлов: ${tagPreview.enabled}; отфильтровано: ${tagPreview.filtered}.`),
+    tagNames.length ? E("details", {style:"margin:4px 0 8px"}, [E("summary", {}, "Доступные имена узлов"),
+      E("small", {}, tagNames.join(" · "))]) : null,
     sourceGroups.length === 0 ? renderEmptyState(
       _("Subscription cache is empty. Click refresh to load configs.")
     ) : E(
@@ -5797,16 +5940,19 @@ function renderSection({
         })
       )
     )
+    ]
   ]);
 }
 function renderSections2({
   sections,
   pendingChanges,
+  collapsedSections,
   collapsedSources,
   latencyByRow,
   speedByRow,
   applying,
   onToggle,
+  onToggleSection,
   onToggleSource,
   sourceActions
 }) {
@@ -5820,11 +5966,13 @@ function renderSections2({
       (section) => renderSection({
         section,
         pendingChanges,
+        collapsedSections,
         collapsedSources,
         latencyByRow,
         speedByRow,
         applying,
         onToggle,
+        onToggleSection,
         onToggleSource,
         sourceActions
       })
@@ -5840,11 +5988,13 @@ function renderSubscriptionSections({
   actionStatus,
   actionMessage,
   pendingChanges,
+  collapsedSections,
   collapsedSources,
   latencyByRow,
   speedByRow,
   sections,
   onToggle,
+  onToggleSection,
   onApply,
   onReset,
   onRefresh,
@@ -5875,11 +6025,13 @@ function renderSubscriptionSections({
     loading && !sections.length ? renderEmptyState(_("Loading")) : failed && !sections.length ? renderEmptyState(actionMessage || _("Failed to load subscription configs")) : renderSections2({
       sections,
       pendingChanges,
+      collapsedSections,
       collapsedSources,
       latencyByRow,
       speedByRow,
       applying: applying || loading || failed || actionStatus === "running",
       onToggle,
+      onToggleSection,
       onToggleSource,
       sourceActions: {
         target:actionTarget,
@@ -5914,11 +6066,14 @@ function render3() {
           actionStatus: "idle",
           actionMessage: "",
           pendingChanges: {},
+          collapsedSections: {},
           collapsedSources: {},
           latencyByRow: {},
           speedByRow: {},
           sections: [],
           onToggle: () => {
+          },
+          onToggleSection: () => {
           },
           onApply: () => {
           },
@@ -6064,6 +6219,8 @@ async function fetchSubscriptionItems(status = "idle", refreshedSource, preserve
           code: section[".name"],
           displayName: section[".name"],
           selectionMode: section.subscription_selection_mode || "all",
+          includeTags: normalizeSubscriptionTags(section.subscription_include_tags),
+          excludeTags: normalizeSubscriptionTags(section.subscription_exclude_tags),
           items: items.data,
           sources: sources.data
         };
@@ -6111,6 +6268,10 @@ function rebaseSubscriptionDraft(draft, sections) {
   for (const section of sections) {
     const modeKey = `${section.code}:selection:mode`;
     if (modeKey in remaining && remaining[modeKey] === (section.selectionMode === "selected")) delete remaining[modeKey];
+    for (const kind of ["include","exclude"]) {
+      const key = `${section.code}:tags:${kind}`;
+      if (key in remaining && JSON.stringify(remaining[key]) === JSON.stringify(section[`${kind}Tags`] || [])) delete remaining[key];
+    }
     for (const item of section.items) {
       const key = `${section.code}:${item.id}`;
       if (key in remaining && remaining[key] === item.enabled) delete remaining[key];
@@ -6127,7 +6288,7 @@ function handleToggle(sectionCode, item, enabled) {
   const widget = store.get().subscriptionItemsWidget;
   const rowId = getRowId2(sectionCode, item.id);
   const pendingChanges = { ...widget.pendingChanges };
-  if (enabled === item.enabled) {
+  if (JSON.stringify(enabled) === JSON.stringify(item.enabled)) {
     delete pendingChanges[rowId];
   } else {
     pendingChanges[rowId] = enabled;
@@ -6153,14 +6314,14 @@ function handleReset() {
     }
   });
 }
-function handleToggleSource(sectionCode, sourceIndex) {
+function handleToggleSource(sectionCode, source) {
   const widget = store.get().subscriptionItemsWidget;
-  const sourceId = `${sectionCode}:${sourceIndex}`;
+  const sourceId = getSourceId(sectionCode, source);
   const collapsedSources = { ...widget.collapsedSources };
-  if (collapsedSources[sourceId]) {
+  if (collapsedSources[sourceId] === false) {
     delete collapsedSources[sourceId];
   } else {
-    collapsedSources[sourceId] = true;
+    collapsedSources[sourceId] = false;
   }
   store.set({
     subscriptionItemsWidget: {
@@ -6168,6 +6329,13 @@ function handleToggleSource(sectionCode, sourceIndex) {
       collapsedSources
     }
   });
+}
+function handleToggleSection(sectionCode) {
+  const widget = store.get().subscriptionItemsWidget;
+  const collapsedSections = {...widget.collapsedSections};
+  if (collapsedSections[sectionCode] === false) delete collapsedSections[sectionCode];
+  else collapsedSections[sectionCode] = false;
+  store.set({subscriptionItemsWidget:{...widget,collapsedSections}});
 }
 function getChangesBySection(pendingChanges) {
   return Object.entries(pendingChanges).reduce(
@@ -6582,11 +6750,13 @@ async function renderSubscriptionItemsWidget() {
     actionStatus: subscriptionItemsWidget.actionStatus,
     actionMessage: subscriptionItemsWidget.actionMessage,
     pendingChanges: subscriptionItemsWidget.pendingChanges,
+    collapsedSections: subscriptionItemsWidget.collapsedSections,
     collapsedSources: subscriptionItemsWidget.collapsedSources,
     latencyByRow: subscriptionItemsWidget.latencyByRow,
     speedByRow: subscriptionItemsWidget.speedByRow,
     sections: subscriptionItemsWidget.data,
     onToggle: handleToggle,
+    onToggleSection: handleToggleSection,
     onApply: handleApply,
     onReset: handleReset,
     onRefresh: handleRefreshSubscriptions,

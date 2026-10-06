@@ -5,6 +5,9 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 . "$repo/openwrt/podkop-subscription-sources.sh"
 fail() { echo "FAIL: $*" >&2; exit 1; }
+if sed -n '/^subscription_source_policy() {/,/^}/p' "$repo/openwrt/podkop-subscription-sources.sh" | grep -Eq '(^|[^[:alnum:]_])(gsub|test|match|sub)\('; then
+ fail 'tag policy must not require jq regex builtins (router jq lacks Oniguruma)'
+fi
 printf '%s\n' '[{"id":"current","selectionId":"stable","supported":true,"sourceIds":["s"]},{"id":"new","supported":true,"sourceIds":["s"]}]' > "$work/policy.items"
 subscription_source_policy '[]' '[]' "$work/policy.items" selected '["stable"]' | jq -e '.[0].enabled and (.[1].enabled|not)' >/dev/null || fail 'selected mode must enable only stable selected identities'
 subscription_source_policy '["s"]' '[]' "$work/policy.items" selected '["stable"]' | jq -e '.[0].enabled and (.[0].runtimeEnabled|not)' >/dev/null || fail 'disabled source must retain selected choice'
@@ -13,6 +16,21 @@ jq '.[0] += {name:"Node",protocol:"vless",connectionKey:"connection"}' "$work/po
 jq '.[0] += {id:"rotated",name:"Renamed",protocol:"vless",connectionKey:"connection"}' "$work/policy.items" > "$work/identity.new"
 subscription_reconcile_choices "$work/identity.old" "$work/identity.new" > "$work/identity.result"
 subscription_source_policy '[]' '[]' "$work/identity.result" selected '["stable"]' | jq -e '.[0].selectionId=="stable" and .[0].enabled and (.[1].enabled|not)' >/dev/null || fail 'rotated identity lost its selected preference'
+
+printf '%s\n' '[{"id":"one","name":"🇷🇺 Москва 1","supported":true},{"id":"two","name":"US [fast] $HOME; touch nope","supported":true},{"id":"three","name":"🇷🇺 Москва 2","supported":true}]' > "$work/tag.items"
+subscription_source_policy '[]' '[]' "$work/tag.items" all '[]' '["🇷🇺 Москва ?","US [fast] $HOME; touch nope"]' '["*2"]' \
+ | jq -e '.[0].runtimeEnabled and (.[1].runtimeEnabled|not) and (.[2].runtimeEnabled|not) and .[1].tagExcluded and .[2].tagExcluded and .[0].enabled and .[1].enabled and .[2].enabled' >/dev/null || fail 'tag glob policy must gate runtime without changing node choices'
+subscription_source_policy '[]' '[]' "$work/tag.items" all '[]' '["*","US [fast] $HOME; touch nope"]' '["🇷🇺 Москва [12]"]' \
+ | jq -e '.[0].tagExcluded and (.[1].tagExcluded|not) and .[2].tagExcluded' >/dev/null || fail 'excluded character class must win and literal shell text must remain data'
+printf '%s\n' '[{"id":"poland","name":"🇵🇱 Польша ⚡️ ","supported":true}]' > "$work/trailing.items"
+subscription_source_policy '[]' '[]' "$work/trailing.items" all '[]' '["🇵🇱 Польша ⚡️ "]' '[]' \
+ | jq -e '.[0].runtimeEnabled' >/dev/null || fail 'exact source name with trailing whitespace must match'
+printf '%s\n' '[{"id":"unicode","name":"🇷🇺 Россия","supported":true},{"id":"range","name":"Node 7","supported":true},{"id":"literal","name":"Cost $HOME;*?","supported":true},{"id":"bracket","name":"A[bc","supported":true}]' > "$work/glob.items"
+subscription_source_policy '[]' '[]' "$work/glob.items" all '[]' '["?? Россия","Node [0-9]","Cost $HOME;[*][?]","A[bc"]' '[]' \
+ | jq -e 'all(.[]; .runtimeEnabled)' >/dev/null || fail 'regex-free glob must match Unicode codepoints, ranges, class literals and unmatched bracket literally'
+printf '%s\n' '[{"id":"tag-only","tag":"Node x","supported":true},{"id":"bracket","name":"A[bc]","supported":true}]' > "$work/tag-fallback.items"
+subscription_source_policy '[]' '[]' "$work/tag-fallback.items" all '[]' '["Node [!0-9]","A\\[bc\\]"]' '[]' \
+ | jq -e 'all(.[]; .runtimeEnabled)' >/dev/null || fail 'tag fallback, negated class and escaped brackets must match'
 
 # Exercise the real transaction and cache policy; only UCI and reload are private substitutes.
 for version in 0.7.20 0.7.22; do
@@ -30,6 +48,11 @@ for version in 0.7.20 0.7.22; do
    local value
    value="$(jq -r --arg s "$2" --arg k "$3" '.[$s][$k] // "" | if type=="array" then join(" ") else . end' "$PODKOP_CONFIG")"
    eval "$1=\$value"
+ }
+ config_list_foreach() {
+   local entry
+   jq -r --arg s "$1" --arg k "$2" '.[$s][$k] // [] | .[]' "$PODKOP_CONFIG" > "$PODKOP_CONFIG.list"
+   while IFS= read -r entry; do "$3" "$entry"; done < "$PODKOP_CONFIG.list"
  }
  config_load() { :; }
  uci() {
@@ -111,14 +134,34 @@ for version in 0.7.20 0.7.22; do
  set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"all","changes":[]}]}' | jq -e '.success' >/dev/null
  jq -e '.main.subscription_selection_mode=="all"' "$PODKOP_CONFIG" >/dev/null
  [ "$(cat "$SUBSCRIPTION_CACHE_DIR/main.links")" = "$(printf 'alpha\nbeta\ndelta')" ] || fail 'all mode must restore normal blacklist policy'
+ # Tag-only edits share the transaction; filters never erase individual choices.
+ jq --arg a "$a" --arg b "$b" --arg c "$c" --arg d "$d" 'map(.name=(if .id==$a then "🇷🇺 Москва 1" elif .id==$b then "US West" elif .id==$c then "🇷🇺 Москва 2" elif .id==$d then "US East" else .name end))' "$SUBSCRIPTION_CACHE_DIR/main.items" > "$work/items"; mv "$work/items" "$SUBSCRIPTION_CACHE_DIR/main.items"
+ before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")"
+ result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","includeTags":["NO MATCH"],"changes":[]}]} ' || true)"
+ printf '%s' "$result" | jq -e '.error=="cannot_disable_last_enabled_link" and .committed==false' >/dev/null || fail 'empty tag pool must be guarded'
+ [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")" ] || fail 'empty tag pool changed state'
+ payload='{"sections":[{"section":"main","includeTags":["🇷🇺 Москва ?"],"excludeTags":["*2"],"changes":[]}]}'
+ result="$(set_subscription_sections_enabled "$payload")"
+ printf '%s' "$result" | jq -e '.success and .changed==2' >/dev/null || fail 'tag lists did not commit together'
+ jq -e '.main.subscription_include_tags==["🇷🇺 Москва ?"] and .main.subscription_exclude_tags==["*2"]' "$PODKOP_CONFIG" >/dev/null || fail 'tag values with spaces were not persisted'
+ [ "$(cat "$SUBSCRIPTION_CACHE_DIR/main.links")" = alpha ] || fail 'tag policy did not gate runtime links'
+ jq -e --arg b "$b" 'any(.[]; .id==$b and .enabled and .tagExcluded and .reason=="tag_filtered")' "$SUBSCRIPTION_CACHE_DIR/main.items" >/dev/null || fail 'excluded node lost individual choice or visibility'
+ [ "$peer_before" = "$(jq -c '.peer' "$PODKOP_CONFIG")" ] || fail 'tag policy leaked to peer section'
+ before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")"
+ : > "$work/fail-reload"
+ result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","excludeTags":["US*"],"changes":[]}]} ' || true)"
+ printf '%s' "$result" | jq -e '.state=="rolled_back" and .rolledBack' >/dev/null || fail 'tag reload failure must roll back'
+ [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")" ] || fail 'tag rollback mismatch'
+ result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","includeTags":["bad\nnewline"],"changes":[]}]} ' || true)"
+ printf '%s' "$result" | jq -e '.phase=="validation" and .error=="invalid_payload"' >/dev/null || fail 'newline tag must be rejected'
  rm -f "$work/commits" "$work/reloads"
 done
 # Existing installations need the complete policy, transaction and legacy toggle retrofit.
 for version in 0.7.20 0.7.22; do
  runtime="$repo/openwrt/runtime-$version/usr/bin/podkop"
- sed '/^# subscription_selection_v1$/d' "$runtime" > "$work/delivery"
+ sed '/^# subscription_tag_glob_portable_v1$/d' "$runtime" > "$work/delivery"
  PODKOP_SOURCES_TARGET="$work/delivery" PODKOP_SOURCES_SOURCE="$runtime" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
- grep -Fqx '# subscription_selection_v1' "$work/delivery" || fail 'existing modern runtime skipped allowlist upgrade'
+ grep -Fqx '# subscription_tag_glob_portable_v1' "$work/delivery" || fail 'existing modern runtime skipped portable-glob upgrade'
  for name in set_subscription_links_enabled set_subscription_sections_enabled apply_subscription_exclusions_to_cached_links refresh_subscription_cache; do
    sed -n "/^$name() {$/,/^}$/p" "$work/delivery" > "$work/delivered.function"
    sed -n "/^$name() {$/,/^}$/p" "$runtime" > "$work/canonical.function"

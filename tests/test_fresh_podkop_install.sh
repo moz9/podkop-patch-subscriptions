@@ -30,6 +30,67 @@ sed \
 [ "$PODKOP_PATCH_UPDATE_PODKOP_WAS_SET" = 0 ] ||
     fail_test 'the implicit default was incorrectly treated as an explicit update request'
 
+check_jq_bootstrap() {
+    scenario="$1"
+    manager="$2"
+    expected_status="$3"
+    case_root="$test_root/jq-$scenario"
+    mkdir -p "$case_root"
+
+    if (
+        command() {
+            [ "$1" = -v ] || return 1
+            case "$2" in
+                jq) [ -e "$case_root/jq-ready" ] ;;
+                apk|opkg) [ "$2" = "$manager" ] ;;
+                *) return 1 ;;
+            esac
+        }
+        apk() {
+            printf '%s\n' "$*" >> "$case_root/package-commands"
+            [ "$1" != add ] || : > "$case_root/jq-ready"
+        }
+        opkg() {
+            printf '%s\n' "$*" >> "$case_root/package-commands"
+            [ "$1" != install ] || : > "$case_root/jq-ready"
+        }
+        ensure_jq
+    ) > "$case_root/output" 2>&1; then
+        actual_status=0
+    else
+        actual_status=$?
+    fi
+
+    if [ "$expected_status" = success ]; then
+        [ "$actual_status" -eq 0 ] && [ -e "$case_root/jq-ready" ] ||
+            fail_test "$scenario did not bootstrap jq on a cold router"
+        grep -q 'jq' "$case_root/package-commands" ||
+            fail_test "$scenario did not request the jq package"
+    else
+        [ "$actual_status" -ne 0 ] && [ ! -e "$case_root/package-commands" ] ||
+            fail_test "$scenario guessed a package manager or reported success without jq"
+        grep -q 'jq utility is required' "$case_root/output" ||
+            fail_test "$scenario did not explain the missing jq prerequisite"
+    fi
+}
+
+check_jq_bootstrap opkg opkg success
+check_jq_bootstrap apk apk success
+check_jq_bootstrap no-manager none failure
+
+main_flow="$test_root/main-flow.sh"
+sed -n '/^tmp_dir="$(mktemp -d)"$/,$p' "$repo_root/i" > "$main_flow"
+lock_line="$(grep -n '^installer_mutation_lock_acquire || fail' "$main_flow" | cut -d: -f1)"
+uci_line="$(grep -n '^ensure_no_pending_podkop_changes || fail' "$main_flow" | head -n 1 | cut -d: -f1)"
+jq_line="$(grep -n '^ensure_jq$' "$main_flow" | cut -d: -f1)"
+prefetch_line="$(grep -n '^prefetch_patch_assets$' "$main_flow" | cut -d: -f1)"
+official_line="$(grep -n '^update_official_podkop_if_requested$' "$main_flow" | cut -d: -f1)"
+[ -n "$lock_line" ] && [ -n "$uci_line" ] && [ -n "$jq_line" ] &&
+    [ -n "$prefetch_line" ] && [ -n "$official_line" ] &&
+    [ "$lock_line" -lt "$uci_line" ] && [ "$uci_line" -lt "$jq_line" ] &&
+    [ "$jq_line" -lt "$prefetch_line" ] && [ "$prefetch_line" -lt "$official_line" ] ||
+    fail_test 'jq bootstrap must follow lock and UCI checks but precede patch verification and official installation'
+
 cat > "$official_fixture" <<'OFFICIAL_FIXTURE_EOF'
 #!/bin/sh
 set -eu

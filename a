@@ -1,0 +1,192 @@
+#!/bin/sh
+# One-command OpenWrt stack: official Podkop + this patch, ByeDPI, WARP, ZeroTier.
+set -eu
+umask 077
+
+OPENWRT_RELEASE_FILE=/etc/openwrt_release
+STACK_LOCK_DIR=/tmp/podkop-full-stack-install.lock.d
+STACK_TMP_TEMPLATE=/tmp/podkop-full-stack.XXXXXX
+STACK_WORK_DIR=
+STACK_LOCK_OWNED=0
+STACK_COMPLETED=
+STACK_ACTIVE=
+
+PODKOP_REPO=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions
+PODKOP_MAIN_API=https://api.github.com/repos/moz9/podkop-patch-subscriptions/commits/main
+BYEDPI_REF=e28e8ec1419fc0b73f03bf6192c252021ac6792e
+BYEDPI_SHA256=5e4c2e9491311c864da9ee2e5edd673e03e2eb9af72c46a247d1212a9693ebf9
+WARP_REF=72cfeef7f1838ad991ed6242188621df2691e86a
+WARP_SHA256=515d77116e422b1f83baf398fc798bc7378eed29040925203d3c8a583d54592e
+ZEROTIER_REF=0946938730624f04f42b30216ad4b698c5502e1f
+ZEROTIER_SHA256=5470d10ed78edc44d3f97feecb40361f0e0470ecc3ed941c7b321abfb489b0cf
+
+log() { printf '%s\n' "$*"; }
+fail() {
+    printf 'ОШИБКА: %s\n' "$*" >&2
+    printf 'Завершены: %s. Полного отката всего стека нет; проверьте состояние перед повторным запуском.\n' "${STACK_COMPLETED:-нет}" >&2
+    [ -z "$STACK_ACTIVE" ] || printf 'Компонент %s мог быть установлен частично.\n' "$STACK_ACTIVE" >&2
+    exit 1
+}
+has_cmd() { command -v "$1" >/dev/null 2>&1; }
+
+cleanup() {
+    if [ -n "$STACK_WORK_DIR" ] && [ -d "$STACK_WORK_DIR" ]; then
+        rm -rf -- "$STACK_WORK_DIR"
+    fi
+    if [ "$STACK_LOCK_OWNED" = 1 ]; then
+        rmdir "$STACK_LOCK_DIR" 2>/dev/null || true
+    fi
+}
+
+valid_hex() {
+    expected_length=$1
+    value=$2
+    [ "${#value}" -eq "$expected_length" ] || return 1
+    case "$value" in *[!0123456789abcdef]*|'') return 1 ;; esac
+}
+
+preflight() {
+    [ "$(id -u)" = 0 ] || fail 'Запустите установку от root.'
+    [ -f "$OPENWRT_RELEASE_FILE" ] || fail 'Нужен OpenWrt: /etc/openwrt_release не найден.'
+    grep -qx "DISTRIB_ID='OpenWrt'" "$OPENWRT_RELEASE_FILE" || fail 'Нужна система OpenWrt.'
+    arch="$(sed -n "s/^DISTRIB_ARCH='\([^']*\)'/\1/p" "$OPENWRT_RELEASE_FILE")"
+    [ "$arch" = aarch64_cortex-a53 ] || fail "Архитектура $arch не поддерживается WARP (нужна aarch64_cortex-a53); изменений нет."
+    has_cmd uci || fail 'Утилита uci не найдена.'
+    pending="$(uci changes 2>/dev/null)" || fail 'Не удалось прочитать изменения UCI; ничего не устанавливаем.'
+    [ -z "$pending" ] || fail 'Есть несохранённые изменения UCI; сохраните или отмените их в LuCI перед установкой.'
+    has_cmd sha256sum || fail 'Утилита sha256sum необходима для проверки установщиков.'
+    has_cmd mktemp || fail 'Утилита mktemp не найдена.'
+}
+
+package_installed() {
+    if [ "$package_manager" = apk ]; then
+        apk info -e "$1" >/dev/null 2>&1
+    else
+        opkg status "$1" 2>/dev/null | grep -q 'Status: .* installed'
+    fi
+}
+
+install_prerequisite() {
+    package=$1
+    log "Устанавливаем недостающую зависимость: $package"
+    if [ "$package_manager" = apk ]; then
+        apk add "$package" || fail "Не удалось установить $package через apk."
+    else
+        opkg update || fail 'Не удалось обновить список пакетов opkg.'
+        opkg install "$package" || fail "Не удалось установить $package через opkg."
+    fi
+}
+
+ensure_prerequisites() {
+    if has_cmd apk; then
+        package_manager=apk
+    elif has_cmd opkg; then
+        package_manager=opkg
+    else
+        fail 'Нужен пакетный менеджер apk или opkg.'
+    fi
+    if ! has_cmd jq; then
+        install_prerequisite jq
+        has_cmd jq || fail 'jq всё ещё недоступен после установки.'
+    fi
+    if ! package_installed ca-bundle; then
+        install_prerequisite ca-bundle
+        package_installed ca-bundle || fail 'ca-bundle всё ещё недоступен после установки.'
+    fi
+    if ! has_cmd curl; then
+        install_prerequisite curl
+        has_cmd curl || fail 'curl всё ещё недоступен после установки.'
+    fi
+}
+
+download() {
+    # Both the initial request and every redirect must retain certificate validation.
+    curl --proto '=https' --proto-redir '=https' -fSL --connect-timeout 10 --max-time 120 --retry 2 \
+        "$1" -o "$2"
+}
+
+fetch() {
+    url=$1
+    destination=$2
+    download "$url" "$destination" || fail "Не удалось безопасно скачать $url"
+    [ -s "$destination" ] || fail "Пустой файл: $url"
+}
+
+verify_sha256() {
+    expected=$1
+    file=$2
+    label=$3
+    valid_hex 64 "$expected" || fail "Некорректный SHA-256 для $label."
+    actual="$(sha256sum "$file" | awk '{print $1}')" || fail "Не удалось вычислить SHA-256 для $label."
+    [ "$actual" = "$expected" ] || fail "SHA-256 не совпадает: $label."
+}
+
+fetch_and_verify_entries() {
+    fetch "$PODKOP_MAIN_API" "$STACK_WORK_DIR/main.json"
+    release_sha="$(jq -er '.sha | strings' "$STACK_WORK_DIR/main.json")" || fail 'GitHub API не вернул SHA main.'
+    valid_hex 40 "$release_sha" || fail 'GitHub API вернул некорректный SHA main.'
+    podkop_base="$PODKOP_REPO/$release_sha"
+    fetch "$podkop_base/openwrt/update-manifest.json" "$STACK_WORK_DIR/manifest.json"
+    podkop_i_sha="$(jq -er '.sha256.i | strings' "$STACK_WORK_DIR/manifest.json")" || fail 'В закреплённом манифесте нет SHA-256 для i.'
+    valid_hex 64 "$podkop_i_sha" || fail 'В закреплённом манифесте некорректный SHA-256 для i.'
+
+    fetch "$podkop_base/i" "$STACK_WORK_DIR/i"
+    fetch "https://raw.githubusercontent.com/moz9/luci-app-byedpi/$BYEDPI_REF/install.sh" "$STACK_WORK_DIR/byedpi"
+    fetch "https://raw.githubusercontent.com/moz9/cloudflare-warp-openwrt-podkop/$WARP_REF/install-podkop.sh" "$STACK_WORK_DIR/warp"
+    fetch "https://raw.githubusercontent.com/moz9/zerotier-router-support/$ZEROTIER_REF/router-direct-install.sh" "$STACK_WORK_DIR/zerotier"
+
+    verify_sha256 "$podkop_i_sha" "$STACK_WORK_DIR/i" Podkop
+    verify_sha256 "$BYEDPI_SHA256" "$STACK_WORK_DIR/byedpi" ByeDPI
+    verify_sha256 "$WARP_SHA256" "$STACK_WORK_DIR/warp" WARP
+    verify_sha256 "$ZEROTIER_SHA256" "$STACK_WORK_DIR/zerotier" ZeroTier
+    for entry in i byedpi warp zerotier; do
+        sh -n "$STACK_WORK_DIR/$entry" || fail "Некорректный синтаксис установщика $entry."
+    done
+}
+
+run_children() {
+    log 'Устанавливаем официальный Podkop и патч...'
+    STACK_ACTIVE=Podkop
+    PODKOP_PATCH_VERSION="$release_sha" \
+        PODKOP_PATCH_RAW_BASE="$podkop_base/openwrt" \
+        PODKOP_PATCH_UPDATE_PODKOP=1 PODKOP_PATCH_FORCE_PODKOP_UPDATE=0 \
+        sh "$STACK_WORK_DIR/i" </dev/null || fail 'Установка Podkop или патча завершилась ошибкой.'
+    STACK_COMPLETED=Podkop
+
+    log 'Устанавливаем ByeDPI...'
+    STACK_ACTIVE=ByeDPI
+    REF="$BYEDPI_REF" \
+        ARCHIVE_URL="https://github.com/moz9/luci-app-byedpi/archive/$BYEDPI_REF.tar.gz" \
+        PODKOP_CONFIGURE=1 PODKOP_RESTART=0 BYEDPI_START=auto BYEDPI_AUTO_INSTALL=1 \
+        sh "$STACK_WORK_DIR/byedpi" </dev/null || fail 'Установка ByeDPI завершилась ошибкой.'
+    STACK_COMPLETED="$STACK_COMPLETED, ByeDPI"
+
+    log 'Устанавливаем WARP...'
+    STACK_ACTIVE=WARP
+    WARP_BUNDLE_DIR= sh "$STACK_WORK_DIR/warp" </dev/null || fail 'Установка WARP завершилась ошибкой.'
+    STACK_COMPLETED="$STACK_COMPLETED, WARP"
+
+    log 'Устанавливаем ZeroTier без присоединения к частной сети...'
+    STACK_ACTIVE=ZeroTier
+    ZRS_BASE_URL="https://raw.githubusercontent.com/moz9/zerotier-router-support/$ZEROTIER_REF" ZRS_PUBKEY= \
+        sh "$STACK_WORK_DIR/zerotier" </dev/null || fail 'Установка ZeroTier завершилась ошибкой.'
+    STACK_COMPLETED="$STACK_COMPLETED, ZeroTier"
+    STACK_ACTIVE=
+}
+
+main() {
+    preflight
+    mkdir "$STACK_LOCK_DIR" 2>/dev/null || fail 'Установка стека уже выполняется или оставила блокировку; проверьте процесс и повторите позже.'
+    STACK_LOCK_OWNED=1
+    trap cleanup 0
+    trap 'exit 129' 1
+    trap 'exit 130' 2
+    trap 'exit 143' 15
+    STACK_WORK_DIR="$(mktemp -d "$STACK_TMP_TEMPLATE")" || fail 'Не удалось создать приватный временный каталог.'
+    ensure_prerequisites
+    fetch_and_verify_entries
+    run_children
+    log 'Установлены все компоненты. Частную сеть ZeroTier подключите вручную в LuCI; глобальный маршрут через WARP не включался.'
+}
+
+main "$@"
