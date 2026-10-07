@@ -7,6 +7,15 @@
 
 Оригинальный проект: [itdoginfo/podkop](https://github.com/itdoginfo/podkop).
 
+Каталоги DNS основаны на метаданных пакета
+[ZeroBlock 0.8.5-r44](https://packages.routerich.ru/25.12/mediatek/filogic/routerich/zeroblock-0.8.5-r44.apk)
+(SHA-256 `4ef5f470687d545c7fda6f4d09247c182df0802c21a4e8ca86e0b940aaf26975`).
+В метаданных пакета указаны лицензия MIT, автор/сопровождающий
+`ZeroBlock <support@routerich.ru>` и [upstream](https://git.routerich.ru/routerich/zeroblock).
+Исходные JSON не содержат отдельного copyright-уведомления; Git-коммит upstream
+не подтверждён. В PE добавлены идентификаторы, совместимые старые адреса и
+транспортные endpoint-метаданные; интерфейс и проверяющий процесс реализованы отдельно.
+
 PE сохраняет режим «Микс», управление подписками, фильтры тегов и центр
 обновлений. DNS-бенчмарк использует схему выбора и проверки пары из ZeroBlock.
 Полный установщик добавляет ByeDPI, WARP и ZeroTier.
