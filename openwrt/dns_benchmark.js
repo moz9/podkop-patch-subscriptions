@@ -89,10 +89,10 @@ function ensureStyle() {
     .pdk-dns-benchmark__tabs .btn[aria-pressed="true"] {background:var(--primary-color,#568fff);color:#fff}
     .pdk-dns-benchmark [hidden] {display:none!important}
     .pdk-dns-benchmark__scroll {overflow:auto;max-height:min(320px,40vh)}
-    #modal_overlay .pdk-dns-benchmark table {display:table!important;width:100%;min-width:560px;table-layout:auto}
-    #modal_overlay .pdk-dns-benchmark thead {display:table-header-group!important}
-    #modal_overlay .pdk-dns-benchmark tbody {display:table-row-group!important}
-    #modal_overlay .pdk-dns-benchmark tr {display:table-row!important}
+    #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll table {display:table!important;width:100%;min-width:560px;table-layout:auto}
+    #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll thead {display:table-header-group!important}
+    #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll tbody {display:table-row-group!important}
+    #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll tr {display:table-row!important}
     #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll th,#modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll td {display:table-cell!important}
     #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll td::before {display:none!important}
     .pdk-dns-benchmark th,.pdk-dns-benchmark td {padding:6px 8px;word-break:normal;overflow-wrap:normal;white-space:nowrap;font-size:13px}
