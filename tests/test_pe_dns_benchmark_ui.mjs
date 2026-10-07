@@ -31,11 +31,12 @@ class Node {
  replaceChildren(...children){this.children=[];this.append(...children);}
  addEventListener(name,handler){this.listeners[name]=handler;}
  querySelector(){return null;}
+ setAttribute(name,value){this.attrs[name]=value;}
  click(){return (this.listeners.click||this.attrs.click)?.({preventDefault(){}});}
 }
 let modal,pending=false,reloaded=false,failureCommand='',statusFailure=false,status={state:'idle'},nextStatus=status;const calls=[];
 const good={...candidate,successCount:4,reliable:true};
-const complete={state:'done',action:'benchmark',results:[good],bootstrapResults:report.bootstrapResults,progress:100};
+const complete={state:'done',action:'benchmark',results:[good,{...candidate,error:'dns_query_failed'}],bootstrapResults:report.bootstrapResults,progress:100};
 const walk=node=>node instanceof Node?[node,...node.children.flatMap(walk)]:[];
 const button=label=>walk(modal).find(n=>n.tag==='button'&&n.children.includes(label));
 const flush=()=>new Promise(r=>setImmediate(r));
@@ -62,12 +63,26 @@ assert.ok(!calls.some(a=>a[0]==='benchmark_start'),'pending settings block measu
 pending=false;await button('Проверить DNS').click();await flush();
 assert.ok(calls.some(a=>a[0]==='benchmark_start'));
 assert.equal(button('Применить пару').disabled,true,'unverified pair cannot be applied');
+const panels=walk(modal).filter(n=>n.tag==='section');
+assert.equal(panels.length,2);
+assert.ok(walk(panels[0]).some(n=>n.tag==='summary'&&n.children.includes('Есть ошибки')),'errors are compact but expandable');
+assert.ok(walk(panels[0]).some(n=>n.tag==='p'&&n.children.includes(exported.errorMessage('dns_query_failed'))),'full error reason is retained');
+assert.equal(panels.filter(n=>!n.hidden).length,1,'only one full-width result table is visible');
+await button('Bootstrap DNS (UDP)').click();
+assert.equal(panels[0].hidden,true);
+assert.equal(panels[1].hidden,false);
+await button('Основной DNS').click();
+assert.equal(panels[0].hidden,false);
+assert.equal(button('Применить пару').disabled,true,'view switch does not verify or apply DNS');
 await button('Проверить пару').click();await flush();
 assert.equal(button('Применить пару').disabled,false,'successful exact pair unlocks Apply');
 await button('Применить пару').click();await flush();
 assert.ok(calls.some(a=>a[0]==='apply_start'));
 assert.equal(button('Применить пару').disabled,true,'Apply consumes verification');
 assert.equal(reloaded,true,'server-side apply reloads LuCI to avoid saving a stale form');
+reloaded=false;
+exported.renderOpenButton({root:new Node('root')}).click();await flush();
+assert.equal(reloaded,false,'historical completed apply must not close a newly opened modal');
 status=nextStatus={state:'idle'}; failureCommand='benchmark_start';
 exported.renderOpenButton({root:new Node('root')}).click();await flush();
 await button('Проверить DNS').click();await flush();

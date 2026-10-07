@@ -81,23 +81,39 @@ function ensureStyle() {
   if (document.getElementById("pdk-dns-benchmark-style")) return;
   const style = document.createElement("style"); style.id = "pdk-dns-benchmark-style";
   style.textContent = `
-    .pdk-dns-benchmark {width:100%;min-width:0;box-sizing:border-box}
+    .pdk-dns-benchmark {width:100%;min-width:0;box-sizing:border-box;container-type:inline-size;font-size:13px}
     .pdk-dns-benchmark__toolbar,.pdk-dns-benchmark__footer {display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:12px 0}
-    .pdk-dns-benchmark__tables,.pdk-dns-benchmark__pair {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
-    .pdk-dns-benchmark__scroll {overflow-x:auto;max-height:300px;overflow-y:auto}
-    .pdk-dns-benchmark table {width:100%;table-layout:auto}
-    .pdk-dns-benchmark th,.pdk-dns-benchmark td {padding:7px;overflow-wrap:anywhere;white-space:normal}
+    .pdk-dns-benchmark__pair {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+    .pdk-dns-benchmark__tabs {display:flex;flex-wrap:wrap;gap:6px;margin:10px 0}
+    .pdk-dns-benchmark__tabs .btn[aria-pressed="false"] {background:transparent!important;color:inherit!important}
+    .pdk-dns-benchmark__tabs .btn[aria-pressed="true"] {background:var(--primary-color,#568fff);color:#fff}
+    .pdk-dns-benchmark [hidden] {display:none!important}
+    .pdk-dns-benchmark__scroll {overflow:auto;max-height:min(320px,40vh)}
+    #modal_overlay .pdk-dns-benchmark table {display:table!important;width:100%;min-width:560px;table-layout:auto}
+    #modal_overlay .pdk-dns-benchmark thead {display:table-header-group!important}
+    #modal_overlay .pdk-dns-benchmark tbody {display:table-row-group!important}
+    #modal_overlay .pdk-dns-benchmark tr {display:table-row!important}
+    #modal_overlay .pdk-dns-benchmark th,#modal_overlay .pdk-dns-benchmark td {display:table-cell!important}
+    #modal_overlay .pdk-dns-benchmark td::before {display:none!important}
+    .pdk-dns-benchmark th,.pdk-dns-benchmark td {padding:6px 8px;word-break:normal;overflow-wrap:normal;white-space:nowrap;font-size:13px}
+    .pdk-dns-benchmark td:first-child {min-width:12em;white-space:normal}
+    .pdk-dns-benchmark td:first-child small {display:block;overflow-wrap:anywhere}
+    .pdk-dns-benchmark td:last-child {width:28%;white-space:normal}
+    .pdk-dns-benchmark summary {white-space:nowrap;cursor:pointer}
+    .pdk-dns-benchmark details p {margin:6px 0;line-height:1.4;white-space:normal}
+    .pdk-dns-benchmark progress {max-width:140px}
     .pdk-dns-benchmark select {display:block;width:100%;max-width:100%;margin:6px 0}
     .pdk-dns-benchmark__error {color:var(--error-color,#ff5555);overflow-wrap:anywhere}
     .pdk-dns-benchmark__notice {color:var(--text-color-secondary,#94a3b8);margin:8px 0}
-    @media(max-width:800px) {.pdk-dns-benchmark__tables,.pdk-dns-benchmark__pair{grid-template-columns:1fr}}
+    @container(max-width:560px) {.pdk-dns-benchmark__pair{grid-template-columns:1fr}}
+    @media(max-width:600px) {.pdk-dns-benchmark__pair{grid-template-columns:1fr}}
   `;
   document.head.appendChild(style);
 }
 
 function openBenchmark(map) {
   ensureStyle();
-  const state = {open: true, running: false, pending: false, needsReload: false, action: "", report: null, verified: "", timer: null, backup: false};
+  const state = {open: true, running: false, pending: false, needsReload: false, action: "", report: null, verified: "", timer: null, backup: false, activeTable: 0};
   const message = E("div", {"aria-live": "polite"}, "Готов к проверке");
   const error = E("div", {class: "pdk-dns-benchmark__error", role: "alert"});
   const progress = E("progress", {max: 100, value: 0});
@@ -125,18 +141,29 @@ function openBenchmark(map) {
   bootstrapSelect.addEventListener("change", resetVerification);
   function renderResults(raw) {
     state.report = normalizeReport(raw);
-    resultTables.replaceChildren(...[["Основной DNS",state.report.results,false],["Bootstrap DNS (UDP)",state.report.bootstrapResults,true]].map(([title,rows,bootstrap]) => E("section",{},[
-      E("h4",{},title),E("div",{class:"pdk-dns-benchmark__scroll"},E("table",{},[
+    const groups=[["Основной DNS",state.report.results,false],["Bootstrap DNS (UDP)",state.report.bootstrapResults,true]];
+    const panels=groups.map(([title,rows,bootstrap]) => E("section",{"aria-label":title},[
+      E("div",{class:"pdk-dns-benchmark__scroll",tabindex:0,"aria-label":title+": результаты"},E("table",{},[
         E("thead",{},E("tr",{},["Сервер","Протокол","Ответы","Среднее","Состояние"].map(text=>E("th",{},text)))),
         E("tbody",{},rows.map(row=>E("tr",{},[
-          E("td",{},[String(row.provider || "")," · ",String(bootstrap?row.server:row.dnsServer)]),
+          E("td",{},[E("strong",{},String(row.provider || "DNS")),E("small",{},String(bootstrap?row.server:row.dnsServer))]),
           E("td",{},bootstrap?"UDP":row.protocol.toUpperCase()),
           E("td",{},row.successCount+" / "+row.totalQueries),
           E("td",{},row.averageMs == null ? "—" : row.averageMs.toFixed(1)+" мс"),
-          E("td",{},row.reliable ? "Работает" : row.error ? errorMessage(row.error) : "Проверка не пройдена"),
+          E("td",{},row.reliable ? "Работает" : E("details",{},[
+            E("summary",{},row.totalQueries ? "Есть ошибки" : "Недоступен"),
+            E("p",{},row.error ? errorMessage(row.error) : "Проверка не пройдена"),
+          ])),
         ]))),
       ])),
-    ])));
+    ]));
+    const tabs=groups.map(([title],index)=>E("button",{class:"btn",type:"button",click:()=>showTable(index)},title));
+    function showTable(index) {
+      state.activeTable=index;
+      panels.forEach((panel,i)=>{panel.hidden=i!==index;tabs[i].setAttribute("aria-pressed",String(i===index));});
+    }
+    showTable(state.activeTable);
+    resultTables.replaceChildren(E("div",{class:"pdk-dns-benchmark__tabs","aria-label":"Результаты DNS"},tabs),...panels);
     const previousMain=mainSelect.value, previousBootstrap=bootstrapSelect.value;
     const mains=state.report.results.filter(row=>row.reliable && row.primaryEligible !== false);
     const bootstraps=state.report.bootstrapResults.filter(row=>row.reliable);
@@ -150,6 +177,7 @@ function openBenchmark(map) {
     stopPoll();
     try {
       const status=await request(["status"]); if (!state.open) return;
+      const reloadAfterCompletion=state.running && ["apply","rollback"].includes(state.action);
       if (!["idle","running","done","error","cancelled"].includes(status.state)) throw new Error(ERRORS.request_failed);
       state.running=status.state === "running"; state.action=status.action || ""; state.backup=!!status.backupAvailable;
       progress.value=Math.min(100,Math.max(0,Number(status.progress)||0));
@@ -172,6 +200,7 @@ function openBenchmark(map) {
         message.textContent="Проверка пары завершена";
       } else if (["apply","rollback"].includes(status.action) && status.state === "done") {
         state.verified=""; message.textContent=status.action === "apply" ? "DNS-пара применена" : "Предыдущие DNS восстановлены";
+        if (!reloadAfterCompletion) { actions(); return; }
         state.needsReload=true;
         uci.unload("podkop"); await uci.load("podkop");
         // Server-side apply changed UCI. Reload before allowing LuCI to save its stale form.
