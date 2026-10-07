@@ -12,14 +12,22 @@ assert.equal(report.results[0].averageMs,22.5);
 for(const invalid of [{...candidate,successCount:5},{...candidate,averageMs:-1},{...candidate,protocol:'unknown'},{...candidate,dnsServer:''}]){
  assert.throws(()=>exported.normalizeReport({results:[invalid],bootstrapResults:[]}));
 }
-assert.throws(()=>exported.normalizeReport({results:Array(161).fill(candidate),bootstrapResults:[]}));
+assert.throws(()=>exported.normalizeReport({results:Array(257).fill(candidate),bootstrapResults:[]}));
 const pair={protocol:'doh',id:'google',dnsServer:'dns.google',bootstrapDnsServer:'8.8.8.8'};
 assert.equal(exported.pairMatches(pair,{...pair,success:true}),true);
 assert.equal(exported.pairMatches(pair,{...pair,bootstrapDnsServer:'1.1.1.1',success:true}),false);
 assert.equal(exported.pairMatches(pair,{...pair,success:false}),false);
+assert.equal(exported.pairMatches({...pair,bootstrapProtocol:'dot'},{...pair,bootstrapProtocol:'udp',success:true}),false,'bootstrap transport binds verification');
+assert.equal(exported.normalizeReport({results:[{...candidate,protocol:'tcp'}],bootstrapResults:[],pairResults:[]}).results[0].protocol,'tcp');
+assert.throws(()=>exported.normalizeReport({results:[],bootstrapResults:[],pairResults:Array(25).fill({...pair,success:true})}));
+assert.throws(()=>exported.normalizeReport({results:[],bootstrapResults:[],pairResults:[{...pair,success:true,stats:{successCount:1,totalQueries:1,averageMs:NaN}}]}));
 for(const code of ['busy','pair_not_verified','verification_expired','configuration_changed','worker_stopped','cancelled','invalid_pair']){
  assert.match(exported.errorMessage(code),/[А-Яа-яЁё]/,code+' readable in Russian');
 }
+assert.match(exported.errorMessage('unsupported_client_routing'),/IP клиента/,'client-specific routing refusal explains the limitation');
+assert.match(exported.errorMessage('active_selection_unavailable'),/выбор прокси/,'actual worker selection error is actionable');
+for(const code of ['unsupported_ruleset_routing','rules_cache_unavailable','netstat_unavailable','bootstrap_query_failed'])
+ assert.notEqual(exported.errorMessage(code),exported.errorMessage('unknown'),'actionable worker error: '+code);
 const settings=fs.readFileSync(new URL('../openwrt/settings.js',import.meta.url),'utf8');
 assert.match(settings,/require view\.podkop\.dns_benchmark as dnsBenchmark/);
 assert.match(settings,/dnsBenchmark\.renderOpenButton\(this\.map\)/);
@@ -51,6 +59,7 @@ const ctx=vm.createContext({baseclass:{extend:x=>(exported=x)},
    if(command==='status'&&statusFailure)return {code:1,stdout:'not-json'};
    if(command==='status')status=nextStatus;
    if(command==='benchmark_start')nextStatus=complete;
+   if(command==='pairs_start')nextStatus={...complete,action:'pairs',pairResults:[{...pair,bootstrapProtocol:'udp',success:true,stats:{successCount:4,totalQueries:4,averageMs:20}}]};
    if(command==='pair_test_start')nextStatus={...complete,action:'pair_test',pairResult:{...pair,success:true}};
    if(command==='apply_start')nextStatus={...complete,action:'apply'};
    return {code:0,stdout:JSON.stringify(command==='status'?status:{success:true})};
@@ -68,12 +77,19 @@ assert.equal(panels.length,2);
 assert.ok(walk(panels[0]).some(n=>n.tag==='summary'&&n.children.includes('Есть ошибки')),'errors are compact but expandable');
 assert.ok(walk(panels[0]).some(n=>n.tag==='p'&&n.children.includes(exported.errorMessage('dns_query_failed'))),'full error reason is retained');
 assert.equal(panels.filter(n=>!n.hidden).length,1,'only one full-width result table is visible');
-await button('Bootstrap DNS (UDP)').click();
+await button('Bootstrap DNS').click();
 assert.equal(panels[0].hidden,true);
 assert.equal(panels[1].hidden,false);
 await button('Основной DNS').click();
 assert.equal(panels[0].hidden,false);
 assert.equal(button('Применить пару').disabled,true,'view switch does not verify or apply DNS');
+await button('2. Пары через Podkop').click();
+assert.equal(button('Проверить пары').disabled,false,'measured working candidates enable matrix');
+await button('Проверить пары').click();await flush();
+assert.ok(calls.some(a=>a[0]==='pairs_start'),'matrix has a separate backend action');
+assert.equal(button('Применить пару').disabled,true,'bulk pair results never grant Apply proof');
+await button('Выбрать').click();
+assert.equal(button('Применить пару').disabled,true,'choosing a matrix row still needs a single-pair recheck');
 await button('Проверить пару').click();await flush();
 assert.equal(button('Применить пару').disabled,false,'successful exact pair unlocks Apply');
 await button('Применить пару').click();await flush();

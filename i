@@ -25,7 +25,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261007-pe-v7"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261007-pe-v8"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -40,6 +40,8 @@ PODKOP_JS_FILE="podkop.js"
 DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
 DNS_BENCHMARK_FILE="podkop-dns-benchmark"
 DNS_BENCHMARK_JS_FILE="dns_benchmark.js"
+DNS_MAIN_CATALOG_FILE="dns-main.json"
+DNS_BOOTSTRAP_CATALOG_FILE="dns-bootstrap.json"
 DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v18"
 DNS_OPTIMIZER_GOOGLE_PLAY_GUARD_CAPABILITY="google_play_dns_transport_guard_v1"
 DNS_OPTIMIZER_CHATGPT_GUARD_CAPABILITY="chatgpt_dns_transport_guard_v1"
@@ -53,7 +55,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_PE_PODKOP_FILE="runtime-0.7.23/usr/bin/podkop"
 RUNTIME_PE_PODKOP_JS_FILE="runtime-0.7.23/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261007_pe_v7"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261007_pe_v8"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -71,6 +73,8 @@ RUNTIME_FILES="
 usr/bin/podkop
 usr/bin/podkop-dns-optimizer
 usr/bin/podkop-dns-benchmark
+usr/share/podkop/dns-main.json
+usr/share/podkop/dns-bootstrap.json
 usr/bin/podkop-dns-failover
 usr/bin/podkop-update-manager
 etc/init.d/podkop-dns-failover
@@ -161,20 +165,20 @@ www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/s
 www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/dashboard.js
 www/luci-static/resources/view/podkop_patch_20261005_subscription_selection_v1/diagnostic.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/main.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v7/main.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v8/main.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/podkop.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v7/podkop.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v8/podkop.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/section.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v7/section.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v8/section.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v7/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v8/subscriptions.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/settings.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v7/settings.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v8/settings.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v7/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v8/dashboard.js
 www/luci-static/resources/view/podkop_patch_20261006_subscription_tags_v1/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v7/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261007_pe_v7/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v8/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261007_pe_v8/dns_benchmark.js
 
 usr/lib/lua/luci/i18n/podkop.ru.lmo
 "
@@ -349,6 +353,8 @@ prefetch_patch_assets() {
 	download "$RAW_BASE/$DNS_OPTIMIZER_FILE" "$tmp_dir/$DNS_OPTIMIZER_FILE"
 	download "$RAW_BASE/$DNS_BENCHMARK_FILE" "$tmp_dir/$DNS_BENCHMARK_FILE"
 	download "$RAW_BASE/$DNS_BENCHMARK_JS_FILE" "$tmp_dir/$DNS_BENCHMARK_JS_FILE"
+	download "$RAW_BASE/$DNS_MAIN_CATALOG_FILE" "$tmp_dir/$DNS_MAIN_CATALOG_FILE"
+	download "$RAW_BASE/$DNS_BOOTSTRAP_CATALOG_FILE" "$tmp_dir/$DNS_BOOTSTRAP_CATALOG_FILE"
 	download "$RAW_BASE/$DNS_FAILOVER_FILE" "$tmp_dir/$DNS_FAILOVER_FILE"
 	download "$RAW_BASE/$DNS_FAILOVER_INIT_FILE" "$tmp_dir/$DNS_FAILOVER_INIT_FILE"
 	download "$RAW_BASE/$DNS_FAILOVER_UPGRADE_FILE" "$tmp_dir/$DNS_FAILOVER_UPGRADE_FILE"
@@ -1078,6 +1084,8 @@ luci_assets_current() {
 		cmp -s /usr/bin/podkop-dns-optimizer "$tmp_dir/$DNS_OPTIMIZER_FILE" &&
 		[ -x /usr/bin/podkop-dns-benchmark ] &&
 		cmp -s /usr/bin/podkop-dns-benchmark "$tmp_dir/$DNS_BENCHMARK_FILE" &&
+		cmp -s /usr/share/podkop/dns-main.json "$tmp_dir/$DNS_MAIN_CATALOG_FILE" &&
+		cmp -s /usr/share/podkop/dns-bootstrap.json "$tmp_dir/$DNS_BOOTSTRAP_CATALOG_FILE" &&
 		[ -x /usr/bin/podkop-dns-failover ] &&
 		cmp -s /usr/bin/podkop-dns-failover "$tmp_dir/$DNS_FAILOVER_FILE" &&
 		[ -x /etc/init.d/podkop-dns-failover ] &&
@@ -1997,6 +2005,12 @@ base_luci_assets_current && versioned_luci_assets_current ||
 	abort_with_restore "versioned Podkop LuCI asset verification failed"
 cp "$tmp_dir/$DNS_OPTIMIZER_FILE" /usr/bin/podkop-dns-optimizer
 cp "$tmp_dir/$DNS_BENCHMARK_FILE" /usr/bin/podkop-dns-benchmark
+mkdir -p /usr/share/podkop
+for catalog in "$DNS_MAIN_CATALOG_FILE" "$DNS_BOOTSTRAP_CATALOG_FILE"; do
+	jq -e '.version == 1 and (.servers | type == "array" and length > 0)' "$tmp_dir/$catalog" >/dev/null || abort_with_restore "DNS catalog validation failed"
+	cp "$tmp_dir/$catalog" "/usr/share/podkop/$catalog" || abort_with_restore "DNS catalog installation failed"
+	chmod 644 "/usr/share/podkop/$catalog"
+done
 chmod 755 /usr/bin/podkop-dns-benchmark
 ash -n /usr/bin/podkop-dns-benchmark || abort_with_restore "DNS benchmark syntax check failed"
 cp "$tmp_dir/$DNS_FAILOVER_FILE" /usr/bin/podkop-dns-failover

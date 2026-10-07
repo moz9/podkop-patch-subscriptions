@@ -169,6 +169,39 @@ candidate_path() {
     esac
 }
 
+# Public catalog metadata is transport-specific; aliases must not guess support.
+dns_catalog_endpoint() {
+    local protocol="$1" value="$2" kind="${3:-main}" catalog
+    case "$protocol" in
+        udp|tcp|doh|dot) ;;
+        *) printf 'unsupported_engine_protocol: %s\n' "$protocol" >&2; return 1;;
+    esac
+    catalog="${PODKOP_DNS_CATALOG_DIR:-/usr/share/podkop}/dns-$kind.json"
+    if [ -s "$catalog" ]; then
+        jq -ce --arg value "$value" --arg protocol "$protocol" '
+          [.servers[] | select(.value==$value or ((.aliases//[])|index($value)))] as $rows |
+          if ($rows|length)>0 then
+            [$rows[]|select(.protocols|index($protocol))][0] as $row |
+            if $row==null then error("unsupported catalog protocol") else
+              ($row.endpoints[$protocol] // {host:$row.value,port:53})
+            end
+          else {host:($value|split("/")[0]|split(":")[0]),
+            port:(if ($value|split("/")[0]|contains(":")) then ($value|split("/")[0]|split(":")[1]|tonumber) else {udp:53,tcp:53,doh:443,dot:853,doq:853,h3:443}[$protocol] end),
+            path:(if ($value|contains("/")) then "/"+($value|split("/")[1:]|join("/")) else "/dns-query" end)} end' "$catalog"
+    else
+        jq -cn --arg host "$(candidate_host "$value")" --arg path "$(candidate_path "$value")" --arg protocol "$protocol" \
+          '{host:$host,path:$path,port:({udp:53,tcp:53,doh:443,dot:853,doq:853,h3:443}[$protocol])}'
+    fi
+}
+
+write_catalog_candidates() {
+    local protocol="$1" file="$2" kind="${3:-main}" catalog
+    case "$protocol" in udp|tcp|doh|dot) ;; *) printf 'unsupported_engine_protocol: %s\n' "$protocol" >&2; return 1;; esac
+    catalog="${PODKOP_DNS_CATALOG_DIR:-/usr/share/podkop}/dns-$kind.json"
+    [ -s "$catalog" ] || return 1
+    jq -r --arg protocol "$protocol" '.servers[] | select(.protocols|index($protocol)) | [.id,.label,.value,.profile] | join("|")' "$catalog" > "$file"
+}
+
 append_unique_candidate() {
     local file="$1"
     local id="$2"
@@ -218,13 +251,13 @@ append_saved_custom_candidates() {
     for value in $values; do
         host="$(candidate_host "$value")"
         case "$protocol" in
-            udp)
+            udp|tcp)
                 is_ipv4 "$host" || continue
                 ;;
-            doh)
+            doh|h3)
                 is_ipv4 "$host" || echo "$host" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
                 ;;
-            dot)
+            dot|doq)
                 case "$value" in */*) continue ;; esac
                 is_ipv4 "$host" || echo "$host" | grep -Eq '^[A-Za-z0-9.-]+$' || continue
                 ;;
@@ -243,7 +276,7 @@ write_main_candidates() {
 
     : > "$file"
     case "$protocol" in
-        udp)
+        udp|tcp)
             cat >> "$file" <<'EOF'
 cloudflare|Cloudflare|1.1.1.1|unfiltered
 google|Google|8.8.8.8|unfiltered
@@ -253,7 +286,7 @@ adguard_unfiltered|AdGuard Unfiltered|94.140.14.140|unfiltered
 controld_unfiltered|Control D Unfiltered|76.76.2.0|unfiltered
 EOF
             ;;
-        doh)
+        doh|h3)
             cat >> "$file" <<'EOF'
 cloudflare|Cloudflare|1.1.1.1|unfiltered
 google|Google|8.8.8.8|unfiltered
@@ -264,7 +297,7 @@ controld_unfiltered|Control D Unfiltered|freedns.controld.com/p0|unfiltered
 mullvad|Mullvad|dns.mullvad.net/dns-query|privacy
 EOF
             ;;
-        dot)
+        dot|doq)
             cat >> "$file" <<'EOF'
 cloudflare|Cloudflare|1.1.1.1|unfiltered
 google|Google|8.8.8.8|unfiltered
@@ -280,6 +313,20 @@ EOF
             ;;
     esac
 
+    if ! write_catalog_candidates "$protocol" "$file" main; then
+        # Legacy fallback is only authoritative for the three old transports.
+        # Do not turn a DoT/DoH row into an assumed DoQ/H3 provider.
+        case "$protocol" in doq|h3) : > "$file"; return 1;; esac
+    fi
+    # Preserve the established Yandex upstream exclusion; bootstrap is separate.
+    local eligible_file="$file.eligible"
+    : > "$eligible_file"
+    while IFS='|' read -r catalog_id catalog_provider catalog_value catalog_profile; do
+        if candidate_is_primary_eligible "$catalog_id" "$catalog_provider" "$catalog_value"; then
+            printf '%s|%s|%s|%s\n' "$catalog_id" "$catalog_provider" "$catalog_value" "$catalog_profile" >> "$eligible_file"
+        fi
+    done < "$file"
+    mv "$eligible_file" "$file"
     filter_selected_candidates "$file" "dns_optimizer_candidates"
     append_saved_custom_candidates "$protocol" "$file"
 
@@ -311,6 +358,7 @@ EOF
 
 write_bootstrap_candidates() {
     local file="$1"
+    local protocol="${2:-udp}"
     local current current_pair active_slot index dns include_current include_wan
 
     cat > "$file" <<'EOF'
@@ -326,6 +374,7 @@ adguard_unfiltered|AdGuard Unfiltered|94.140.14.140|unfiltered
 controld_unfiltered|Control D Unfiltered|76.76.2.0|unfiltered
 EOF
 
+    write_catalog_candidates "$protocol" "$file" bootstrap || { [ "$protocol" = udp ] || { : > "$file"; return 1; }; }
     filter_selected_candidates "$file" "dns_optimizer_bootstrap_candidates"
 
     include_current="$(uci -q get podkop.settings.dns_optimizer_include_current 2> /dev/null || echo 1)"
@@ -726,24 +775,34 @@ run_dns_query() {
     local path="$4"
     local domain="$5"
     local expected="$6"
+    local endpoint_port="${7:-}"
     local output status elapsed
+
+    if [ -z "$endpoint_port" ]; then
+        case "$protocol" in doh) endpoint_port=443;; dot) endpoint_port=853;; *) endpoint_port=53;; esac
+    fi
+    case "$endpoint_port" in *[!0-9]*) return 1;; esac
+    [ "$endpoint_port" -ge 1 ] && [ "$endpoint_port" -le 65535 ] || return 1
 
     case "$protocol" in
         udp)
-            output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +timeout=2 +tries=1 +stats 2>&1 || true)"
+            output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +timeout=2 +tries=1 +stats 2>&1 || true)"
+            ;;
+        tcp)
+            output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +tcp +timeout=2 +tries=1 +stats 2>&1 || true)"
             ;;
         doh)
             if [ -n "$tls_hostname" ]; then
-                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +https="$path" +tls-hostname="$tls_hostname" +timeout=2 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +https="$path" +tls-hostname="$tls_hostname" +timeout=2 +tries=1 +stats 2>&1 || true)"
             else
-                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +https="$path" +timeout=2 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +https="$path" +timeout=2 +tries=1 +stats 2>&1 || true)"
             fi
             ;;
         dot)
             if [ -n "$tls_hostname" ]; then
-                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +tls +tls-hostname="$tls_hostname" +timeout=2 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +tls +tls-hostname="$tls_hostname" +timeout=2 +tries=1 +stats 2>&1 || true)"
             else
-                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +tls +timeout=2 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +tls +timeout=2 +tries=1 +stats 2>&1 || true)"
             fi
             ;;
         *)
@@ -813,6 +872,25 @@ probe_configured_pair() {
     local slot="$1"
     local pair protocol dns_server bootstrap host endpoint_ip tls_hostname path domain elapsed successes total
     local play_dns_available chatgpt_dns_available chatgpt_api_dns_available error
+    local bootstrap_protocol prefix benchmark endpoint endpoint_port
+
+    prefix=''; [ "$slot" != secondary ] || prefix=secondary_
+    bootstrap_protocol="$(uci -q get "podkop.settings.${prefix}bootstrap_dns_type" 2>/dev/null || true)"
+    protocol="$(uci -q get "podkop.settings.${prefix}dns_type" 2>/dev/null || true)"
+    case "$protocol:${bootstrap_protocol:-udp}" in
+        doq:*|h3:*|*:doq|*:h3)
+            jq -cn --arg slot "$slot" '{success:false,slot:$slot,error:"unsupported_engine_protocol"}'
+            return 1
+            ;;
+    esac
+    case "$protocol:${bootstrap_protocol:-udp}" in
+        *:tcp|*:doh|*:dot)
+            benchmark="${PODKOP_DNS_BENCHMARK_COMMAND:-/usr/bin/podkop-dns-benchmark}"
+            [ -x "$benchmark" ] || return 1
+            sh "$benchmark" probe_pair "$slot"
+            return $?
+            ;;
+    esac
 
     pair="$(read_configured_pair "$slot" || true)"
     if [ -z "$pair" ]; then
@@ -822,13 +900,18 @@ probe_configured_pair() {
     protocol="$(printf '%s\n' "$pair" | cut -d '|' -f 1)"
     dns_server="$(printf '%s\n' "$pair" | cut -d '|' -f 2)"
     bootstrap="$(printf '%s\n' "$pair" | cut -d '|' -f 3)"
-    host="$(candidate_host "$dns_server")"
-    path="$(candidate_path "$dns_server")"
+    endpoint="$(dns_catalog_endpoint "$protocol" "$dns_server" main)" || {
+        jq -cn --arg slot "$slot" '{success:false,slot:$slot,error:"unsupported_catalog_protocol"}'
+        return 1
+    }
+    host="$(printf '%s' "$endpoint" | jq -r '.host')"
+    endpoint_port="$(printf '%s' "$endpoint" | jq -r '.port')"
+    path="$(printf '%s' "$endpoint" | jq -r '.path//"/dns-query"')"
     endpoint_ip="$host"
-    tls_hostname=""
+    tls_hostname="$(printf '%s' "$endpoint" | jq -r '.server_name//empty')"
     if ! is_ipv4 "$host"; then
         endpoint_ip="$(resolve_host "$bootstrap" "$host")"
-        tls_hostname="$host"
+        [ -n "$tls_hostname" ] || tls_hostname="$host"
     fi
     if ! is_ipv4 "$endpoint_ip"; then
         jq -cn --arg slot "$slot" --arg protocol "$protocol" '{success:false,slot:$slot,protocol:$protocol,error:"bootstrap_failed"}'
@@ -841,7 +924,7 @@ probe_configured_pair() {
     chatgpt_dns_available=0
     chatgpt_api_dns_available=0
     for domain in example.com github.com play.googleapis.com chatgpt.com api.openai.com; do
-        elapsed="$(run_dns_query "$protocol" "$endpoint_ip" "$tls_hostname" "$path" "$domain" NOERROR 2> /dev/null || true)"
+        elapsed="$(run_dns_query "$protocol" "$endpoint_ip" "$tls_hostname" "$path" "$domain" NOERROR "$endpoint_port" 2> /dev/null || true)"
         if [ -n "$elapsed" ]; then
             successes=$((successes + 1))
             [ "$domain" != "play.googleapis.com" ] || play_dns_available=1
@@ -1221,7 +1304,7 @@ normalize_benchmark_protocols() {
     protocols=""
     for candidate_protocol in $requested; do
         case "$candidate_protocol" in
-            udp|doh|dot) ;;
+            udp|tcp|doh|dot) ;;
             *) return 1 ;;
         esac
         case " $protocols " in
@@ -1412,6 +1495,7 @@ run_with_timeout() {
 save_previous_dns() {
     local tmp dns_type dns_server bootstrap_dns_server failover_enabled active_slot
     local secondary_dns_type secondary_dns_server secondary_bootstrap_dns_server
+    local bootstrap_dns_type secondary_bootstrap_dns_type
 
     mkdir -p "$PERSIST_DIR"
     chmod 700 "$PERSIST_DIR" 2> /dev/null || true
@@ -1419,6 +1503,8 @@ save_previous_dns() {
     dns_type="$(uci -q get podkop.settings.dns_type 2> /dev/null || true)"
     dns_server="$(uci -q get podkop.settings.dns_server 2> /dev/null || true)"
     bootstrap_dns_server="$(uci -q get podkop.settings.bootstrap_dns_server 2> /dev/null || true)"
+    bootstrap_dns_type="$(uci -q get podkop.settings.bootstrap_dns_type 2> /dev/null || true)"
+    secondary_bootstrap_dns_type="$(uci -q get podkop.settings.secondary_bootstrap_dns_type 2> /dev/null || true)"
     failover_enabled="$(uci -q get podkop.settings.dns_failover_enabled 2> /dev/null || true)"
     active_slot="$(uci -q get podkop.settings.dns_failover_active_slot 2> /dev/null || true)"
     secondary_dns_type="$(uci -q get podkop.settings.secondary_dns_type 2> /dev/null || true)"
@@ -1429,8 +1515,9 @@ save_previous_dns() {
         --arg failoverEnabled "$failover_enabled" --arg activeSlot "$active_slot" \
         --arg secondaryDnsType "$secondary_dns_type" --arg secondaryDnsServer "$secondary_dns_server" \
         --arg secondaryBootstrapDnsServer "$secondary_bootstrap_dns_server" \
+        --arg bootstrapDnsType "$bootstrap_dns_type" --arg secondaryBootstrapDnsType "$secondary_bootstrap_dns_type" \
         --arg savedAt "$(updated_at)" \
-        '{dnsType:$dnsType,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer,failoverEnabled:$failoverEnabled,activeSlot:$activeSlot,secondaryDnsType:$secondaryDnsType,secondaryDnsServer:$secondaryDnsServer,secondaryBootstrapDnsServer:$secondaryBootstrapDnsServer,savedAt:$savedAt}' \
+        '{dnsType:$dnsType,dnsServer:$dnsServer,bootstrapDnsServer:$bootstrapDnsServer,bootstrapDnsType:$bootstrapDnsType,secondaryBootstrapDnsType:$secondaryBootstrapDnsType,failoverEnabled:$failoverEnabled,activeSlot:$activeSlot,secondaryDnsType:$secondaryDnsType,secondaryDnsServer:$secondaryDnsServer,secondaryBootstrapDnsServer:$secondaryBootstrapDnsServer,savedAt:$savedAt}' \
         > "$tmp" && mv "$tmp" "$PREVIOUS_FILE"
     chmod 600 "$PREVIOUS_FILE"
 }
@@ -1477,6 +1564,7 @@ verify_restored_dns_values() {
 restore_previous_dns() {
     local dns_type dns_server bootstrap_dns_server failover_enabled active_slot
     local secondary_dns_type secondary_dns_server secondary_bootstrap_dns_server
+    local bootstrap_dns_type secondary_bootstrap_dns_type
 
     [ -s "$PREVIOUS_FILE" ] || return 1
     dns_type="$(jq -r '.dnsType // empty' "$PREVIOUS_FILE")"
@@ -1487,6 +1575,8 @@ restore_previous_dns() {
     secondary_dns_type="$(jq -r '.secondaryDnsType // empty' "$PREVIOUS_FILE")"
     secondary_dns_server="$(jq -r '.secondaryDnsServer // empty' "$PREVIOUS_FILE")"
     secondary_bootstrap_dns_server="$(jq -r '.secondaryBootstrapDnsServer // empty' "$PREVIOUS_FILE")"
+    bootstrap_dns_type="$(jq -r '.bootstrapDnsType // empty' "$PREVIOUS_FILE")"
+    secondary_bootstrap_dns_type="$(jq -r '.secondaryBootstrapDnsType // empty' "$PREVIOUS_FILE")"
     [ -n "$dns_type" ] && [ -n "$dns_server" ] && [ -n "$bootstrap_dns_server" ] || return 1
 
     uci set "podkop.settings.dns_type=$dns_type" || return 1
@@ -1497,7 +1587,11 @@ restore_previous_dns() {
     restore_optional_uci_value "secondary_dns_type" "$secondary_dns_type" || return 1
     restore_optional_uci_value "secondary_dns_server" "$secondary_dns_server" || return 1
     restore_optional_uci_value "secondary_bootstrap_dns_server" "$secondary_bootstrap_dns_server" || return 1
+    restore_optional_uci_value "bootstrap_dns_type" "$bootstrap_dns_type" || return 1
+    restore_optional_uci_value "secondary_bootstrap_dns_type" "$secondary_bootstrap_dns_type" || return 1
     uci commit podkop || return 1
+    restored_uci_value_matches "bootstrap_dns_type" "$bootstrap_dns_type" &&
+    restored_uci_value_matches "secondary_bootstrap_dns_type" "$secondary_bootstrap_dns_type" &&
     verify_restored_dns_values \
         "$dns_type" "$dns_server" "$bootstrap_dns_server" "$failover_enabled" "$active_slot" \
         "$secondary_dns_type" "$secondary_dns_server" "$secondary_bootstrap_dns_server"

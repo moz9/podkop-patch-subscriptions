@@ -3882,14 +3882,19 @@ sing_box_configure_dns() {
     config_get dns_type "settings" "dns_type" "doh"
     config_get dns_server "settings" "dns_server" "1.1.1.1"
     config_get bootstrap_dns_server "settings" "bootstrap_dns_server" "77.88.8.8"
+    local bootstrap_dns_type
+    config_get bootstrap_dns_type "settings" "bootstrap_dns_type" "udp"
+    if [ "${ACTIVE_DNS_SLOT:-primary}" = secondary ]; then
+        config_get bootstrap_dns_type "settings" "secondary_bootstrap_dns_type" "udp"
+    fi
 
     dns_server_address="$(url_get_host "$dns_server")"
     if ! is_ipv4 "$dns_server_address"; then
         dns_domain_resolver=$SB_BOOTSTRAP_SERVER_TAG
     fi
 
-    config=$(sing_box_cm_add_udp_dns_server "$config" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" 53)
-    config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver")
+    config=$(sing_box_cf_add_dns_server "$config" "$bootstrap_dns_type" "$SB_BOOTSTRAP_SERVER_TAG" "$bootstrap_dns_server" "" "") || return 1
+    config=$(sing_box_cf_add_dns_server "$config" "$dns_type" "$SB_DNS_SERVER_TAG" "$dns_server" "$dns_domain_resolver") || return 1
     config=$(sing_box_cm_add_fakeip_dns_server "$config" "$SB_FAKEIP_DNS_SERVER_TAG" "$SB_FAKEIP_INET4_RANGE")
 
     log "Adding DNS Rules"
@@ -5115,7 +5120,19 @@ check_dns_available() {
         display_dns_server="dns.nextdns.io/$masked_path"
     fi
 
-    if [ "$dns_type" = "doh" ]; then
+    local bootstrap_dns_type probe_typed_dns=0
+    if [ "${ACTIVE_DNS_SLOT:-primary}" = secondary ]; then
+        config_get bootstrap_dns_type "settings" "secondary_bootstrap_dns_type" "udp"
+    else
+        config_get bootstrap_dns_type "settings" "bootstrap_dns_type" "udp"
+    fi
+    case "$dns_type:${bootstrap_dns_type:-udp}" in doh:*|dot:*|doq:*|h3:*|*:tcp|*:doh|*:dot|*:doq|*:h3) probe_typed_dns=1;; esac
+    if [ "$probe_typed_dns" = 1 ]; then
+        if "${PODKOP_DNS_BENCHMARK_COMMAND:-/usr/bin/podkop-dns-benchmark}" probe_pair "${ACTIVE_DNS_SLOT:-primary}" >/dev/null 2>&1; then
+            dns_status=1
+            bootstrap_dns_status=1
+        fi
+    elif [ "$dns_type" = "doh" ]; then
         # Check if dns_server already contains a path
         local doh_path="/dns-query"
         if echo "$dns_server" | grep -q "/"; then
@@ -5131,6 +5148,8 @@ check_dns_available() {
         if dig @"$dns_server" "$domain" +tls +timeout=2 +tries=1 > /dev/null 2>&1; then
             dns_status=1
         fi
+    elif [ "$dns_type" = "tcp" ]; then
+        if dig @"$dns_server" "$domain" +tcp +timeout=2 +tries=1 > /dev/null 2>&1; then dns_status=1; fi
     elif [ "$dns_type" = "udp" ]; then
         if dig @"$dns_server" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1; then
             dns_status=1
@@ -5143,7 +5162,7 @@ check_dns_available() {
     fi
 
     # Check bootstrap DNS server
-    if [ -n "$bootstrap_dns_server" ]; then
+    if [ -n "$bootstrap_dns_server" ] && [ "$probe_typed_dns" = 0 ]; then
         if dig @"$bootstrap_dns_server" "$domain" +timeout=2 +tries=1 > /dev/null 2>&1; then
             bootstrap_dns_status=1
         fi

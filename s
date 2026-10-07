@@ -110,6 +110,8 @@ for rel in \
 	podkop-dns-optimizer \
 	podkop-dns-benchmark \
 	dns_benchmark.js \
+	dns-main.json \
+	dns-bootstrap.json \
 	podkop-dns-failover \
 	podkop-dns-failover.init \
 	podkop-dns-failover-upgrade.sh \

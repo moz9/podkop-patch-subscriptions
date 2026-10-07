@@ -1,8 +1,7 @@
 #!/bin/sh
 set -eu
 repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+if [ "${1:-}" = __signal ]; then work="$2"; else work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT; fi
 export PODKOP_DNS_BENCHMARK_LIBRARY_ONLY=1 PODKOP_DNS_OPTIMIZER_LIBRARY_ONLY=1
 export PODKOP_DNS_BENCHMARK_OPTIMIZER="$repo/openwrt/podkop-dns-optimizer"
 export PODKOP_DNS_BENCHMARK_STATE_DIR="$work/state" PODKOP_DNS_BENCHMARK_PERSIST_DIR="$work/persist"
@@ -10,6 +9,44 @@ export PODKOP_DNS_OPTIMIZER_STATE_DIR="$work/optimizer-state" PODKOP_DNS_OPTIMIZ
 export PODKOP_MUTATION_LOCK_DIR="$work/mutation" PODKOP_MUTATION_LEGACY_LOCK_FILE="$work/legacy"
 . "$repo/openwrt/podkop-dns-benchmark"
 fail() { echo "FAIL: $*" >&2; exit 1; }
+if [ "${1:-}" = __signal ]; then
+    signal="$3"; rollback_failure="$4"; phase="$5"
+    mkdir -p "$work"
+    jq -n '{dns_type:"udp",dns_server:"9.9.9.9",bootstrap_dns_server:"8.8.4.4",bootstrap_dns_type:"udp",dns_failover_enabled:"1",dns_failover_active_slot:"secondary",secondary_dns_type:"dot",secondary_dns_server:"dns.quad9.net",secondary_bootstrap_dns_server:"8.8.8.8",secondary_bootstrap_dns_type:"tcp"}' > "$work/uci.json"
+    cp "$work/uci.json" "$work/original.json"
+    uci() {
+        local action argument key value file
+        [ "${1:-}" != -q ] || shift
+        action="$1"; argument="${2:-}"
+        case "$action" in
+            export) jq -cS . "$work/uci.json";;
+            changes) [ ! -s "$work/staged.json" ] || echo staged;;
+            get) file="$work/uci.json"; [ ! -s "$work/staged.json" ] || file="$work/staged.json"; jq -er --arg key "${argument##*.}" '.[$key]//empty' "$file";;
+            set|delete)
+                [ -s "$work/staged.json" ] || cp "$work/uci.json" "$work/staged.json"
+                key="${argument%%=*}"; key="${key##*.}"; value="${argument#*=}"
+                if [ "$action" = set ]; then jq --arg key "$key" --arg value "$value" '.[$key]=$value' "$work/staged.json" > "$work/change.json"; else jq --arg key "$key" 'del(.[$key])' "$work/staged.json" > "$work/change.json"; fi
+                mv "$work/change.json" "$work/staged.json"
+                if [ "$phase" = after_set ] && [ ! -f "$work/signalled" ]; then : > "$work/signalled"; kill -"$signal" "$$"; fi;;
+            commit)
+                if [ -f "$work/signalled" ]; then [ -d "$PODKOP_MUTATION_LOCK_DIR" ] && [ -d "$DB_LOCK" ] || fail 'recovery released locks before restoring previous DNS'; fi
+                if [ -f "$work/signalled" ] && [ "$rollback_failure" = yes ]; then return 1; fi
+                cp "$work/staged.json" "$work/uci.json"; rm -f "$work/staged.json"
+                if [ ! -f "$work/signalled" ]; then : > "$work/signalled"; kill -"$signal" "$$"; fi;;
+            *) return 1;;
+        esac
+    }
+    db_busy() { return 1; }; db_reload_busy() { return 1; }
+    restart_podkop() { [ -d "$PODKOP_MUTATION_LOCK_DIR" ] && [ -d "$DB_LOCK" ] || fail 'recovery restarted without mutation lock'; : > "$work/restarted"; if [ "$phase" = repeated_signal ]; then kill -"$signal" "$$"; fi; }
+    validate_podkop_dns() { cmp "$work/original.json" "$work/uci.json"; }
+    validate_google_play_transport() { :; }; validate_chatgpt_transport() { :; }
+    db_prepare; db_report_id=signal-proof
+    db_pair_json="$(db_pair_object udp cloudflare 1.1.1.1 8.8.8.8 true)"
+    db_state done pair_test verified 100 1 1 ''; cp "$DB_STATUS" "$DB_REPORT"; db_write_proof "$db_pair_json"
+    mkdir "$DB_LOCK"; : > "$DB_DIR/start.ready"
+    db_worker apply udp cloudflare 1.1.1.1 8.8.8.8
+    fail 'interrupted mutation returned without exiting'
+fi
 uci() { case "$*" in *export*) echo 'config settings';; *changes*) :;; *) return 1;; esac; }
 db_busy() { return 1; }
 db_reload_busy() { return 1; }
@@ -27,6 +64,7 @@ cp "$DB_STATUS" "$DB_REPORT"
 db_write_proof "$db_pair_json"
 db_proof_valid udp cloudflare 1.1.1.1 8.8.8.8 || fail 'fresh proof rejected'
 if db_proof_valid udp cloudflare 1.0.0.1 8.8.8.8; then fail 'different pair allowed'; fi
+if db_proof_valid udp cloudflare 1.1.1.1 8.8.8.8 tcp; then fail 'different bootstrap protocol allowed'; fi
 uci() { case "$*" in *export*) echo 'changed config';; *changes*) :;; *) return 1;; esac; }
 if db_proof_valid udp cloudflare 1.1.1.1 8.8.8.8; then fail 'stale config proof allowed'; fi
 uci() { case "$*" in *export*) echo 'config settings';; *changes*) :;; *) return 1;; esac; }
@@ -35,12 +73,21 @@ if db_proof_valid udp cloudflare 1.1.1.1 8.8.8.8; then fail 'expired proof allow
 db_make_config doh cloudflare-dns.com/dns-query 8.8.8.8 "$work/child.json"
 jq -e '.dns.servers[0].type=="udp" and .dns.servers[1].type=="https" and .dns.servers[1].domain_resolver=="bootstrap" and .inbounds[0].listen=="127.0.0.1" and .route.rules[0].action=="hijack-dns"' "$work/child.json" >/dev/null
 jq -e '.route.default_mark==2097152' "$work/child.json" >/dev/null || fail 'isolated DNS child lacks the native Podkop WAN bypass mark'
+db_query() { echo NXDOMAIN; }
+db_deadline=$(( $(date +%s)-1 ))
+db_measure | jq -e '.error=="measurement_timeout" and .totalQueries==0 and .nxdomainOk==false' >/dev/null || fail 'expired deadline still queried NXDOMAIN or lost timeout reason'
+: > "$work/main"
+bootstrap_stats="$(db_measure_bootstrap || true)"
+[ -n "$bootstrap_stats" ] || fail 'bootstrap timeout stopped worker without structured reason'
+printf '%s' "$bootstrap_stats" | jq -e '.error=="measurement_timeout" and .reliable==false' >/dev/null || fail 'bootstrap timeout reason lost'
+db_deadline=0
 db_child_start() { :; }; db_child_stop() { :; }
 http_mock_mode=ok
 curl() {
     local output='' endpoint='' previous='' argument
     for argument in "$@"; do
-        case "$argument" in --proxy|--noproxy) return 22;; esac
+        if [ "$previous" = --proxy ] && [ "$argument" != socks5h://127.0.0.1:19554 ]; then return 22; fi
+        if [ "$previous" = --noproxy ] && [ -n "$argument" ]; then return 22; fi
         if [ "$previous" = -o ]; then output="$argument"; fi
         case "$argument" in https://*) endpoint="$argument";; esac
         previous="$argument"
@@ -50,12 +97,12 @@ curl() {
     if [ "$http_mock_mode" = denied ]; then printf '403'; return 0; fi
     case "$endpoint" in */v1/models) printf '401';; *) printf '206';; esac
 }
-db_transport_guards || fail 'HTTPS guards force isolated WAN instead of current Podkop route'
+db_transport_guards || fail 'HTTPS guards do not use isolated copied Podkop routes'
 http_mock_mode=denied
 if db_transport_guards; then fail 'required HTTP403 was accepted'; fi
 http_mock_mode=partial
 if db_transport_guards; then fail 'partial HTTP200 with curl failure was accepted'; fi
-jq -e '.reason=="curl_failed" and .httpStatus=="200" and .bytes==64 and .path=="current_podkop" and (.url|startswith("https://"))' "$DB_DIR/transport-error.json" >/dev/null
+jq -e '.reason=="curl_failed" and .httpStatus=="200" and .bytes==64 and .path=="candidate_podkop" and (.url|startswith("https://"))' "$DB_DIR/transport-error.json" >/dev/null
 http_mock_mode=ok
 db_query() { case "$1" in *.invalid) echo NXDOMAIN;; *) printf 'NOERROR|12\n';; esac; }
 db_transport_guards() { return 0; }
@@ -131,10 +178,34 @@ validate_chatgpt_transport() { return 0; }
 db_apply udp cloudflare 1.1.1.1 8.8.8.8
 podkop_mutation_lock_release
 db_status | jq -e '.state=="done" and .action=="apply"' >/dev/null
-[ "$(wc -l < "$work/uci-writes")" = 4 ] || fail 'apply did not write exactly the requested pair and slot'
+[ "$(wc -l < "$work/uci-writes")" = 5 ] || fail 'apply did not write exactly the requested pair, bootstrap protocol and slot'
 [ "$(wc -l < "$work/restarts")" = 1 ] || fail 'explicit apply did not restart once'
 if db_apply udp cloudflare 1.1.1.1 8.8.8.8; then fail 'consumed proof allowed second apply'; fi
 podkop_mutation_lock_release
-[ "$(wc -l < "$work/uci-writes")" = 4 ] || fail 'unverified apply wrote config'
+[ "$(wc -l < "$work/uci-writes")" = 5 ] || fail 'unverified apply wrote config'
 [ "$(wc -l < "$work/restarts")" = 1 ] || fail 'unverified apply restarted Podkop'
+for signal in TERM INT HUP; do
+    case_work="$work/signal-$signal"
+    if sh "$0" __signal "$case_work" "$signal" no after_commit; then fail 'interrupted apply returned success'; else case_rc=$?; fi
+    [ "$case_rc" = 130 ] || fail "unexpected interrupted apply exit $case_rc"
+    cmp "$case_work/original.json" "$case_work/uci.json" || fail "$signal after commit left candidate DNS applied"
+    jq -e '.state=="error" and .error=="apply_interrupted_rolled_back"' "$case_work/state/status.json" >/dev/null || fail 'interrupted rollback status not explicit'
+    [ ! -d "$case_work/mutation" ] && [ ! -d "$case_work/state/lock" ] || fail 'interrupted worker retained locks'
+    [ ! -s "$case_work/persist/pair-proof.json" ] || fail 'interrupted mutation retained apply proof'
+done
+case_work="$work/signal-during-repair"
+if sh "$0" __signal "$case_work" TERM no repeated_signal; then fail 'repeated signal returned success'; else case_rc=$?; fi
+[ "$case_rc" = 130 ] || fail 'second catchable signal interrupted rollback'
+cmp "$case_work/original.json" "$case_work/uci.json" || fail 'second catchable signal left candidate DNS'
+case_work="$work/signal-failed-rollback"
+if sh "$0" __signal "$case_work" TERM yes after_commit; then fail 'failed interrupted rollback returned success'; else case_rc=$?; fi
+[ "$case_rc" = 130 ] || fail 'failed interrupted rollback exit differs'
+jq -e '.state=="error" and .error=="rollback_failed" and .backupAvailable' "$case_work/state/status.json" >/dev/null || fail 'failed interrupted rollback was hidden'
+[ -s "$case_work/optimizer-persist/previous-dns.json" ] || fail 'failed rollback discarded recovery backup'
+[ ! -d "$case_work/mutation" ] && [ ! -d "$case_work/state/lock" ] || fail 'failed interrupted rollback retained locks'
+case_work="$work/signal-before-commit"
+if sh "$0" __signal "$case_work" TERM no after_set; then fail 'interrupted staged apply returned success'; else case_rc=$?; fi
+[ "$case_rc" = 130 ] || fail 'interrupted staged apply exit differs'
+cmp "$case_work/original.json" "$case_work/uci.json" || fail 'interrupted staged UCI edits were not restored'
+[ ! -s "$case_work/staged.json" ] || fail 'interrupted staged UCI edits leaked into next transaction'
 echo 'PASS: PE DNS pair proof, isolation config, truthful failure, cancel and lock guards'

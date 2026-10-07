@@ -93,7 +93,8 @@ function setup(config = {}) {
     baseclass: { extend: value => (exported = value) }, document: doc,
     window: { setTimeout: callback => { deferred.push(callback); return deferred.length; } },
     main: { DNS_SERVER_OPTIONS: {}, BOOTSTRAP_DNS_SERVER_OPTIONS: {}, UPDATE_INTERVAL_OPTIONS: {},
-      getClashUIUrl: () => 'http://example.test', validateDNS: () => ({ valid: true }) },
+      getDnsServerOptionsForType: () => ({}), DNS_SUPPORTED_PROTOCOLS: ['udp', 'tcp', 'doh', 'dot'],
+      getClashUIUrl: () => 'http://example.test', validateDNS: () => ({ valid: true }), validateDnsByType: () => ({ valid: true }) },
     dnsBenchmark: { renderOpenButton() {} },
   });
   vm.runInContext('(function(){' + source + '\n})()', context);
@@ -107,10 +108,10 @@ function setup(config = {}) {
     taboption(tab, ...args) { const record = option(...args); record.tab = tab; return record; } });
   return { options, tabs, styles, writes, flushDeferred() { while (deferred.length) deferred.shift()(); } };
 }
-const multiKeys = ['dns_optimizer_protocols', 'dns_optimizer_candidates', 'dns_optimizer_bootstrap_candidates'];
+const multiKeys = ['dns_optimizer_protocols', 'dns_optimizer_candidates', 'dns_optimizer_bootstrap_protocols', 'dns_optimizer_bootstrap_candidates'];
 test('configured and default DNS MultiValues have true checked state on initial render and opening', () => {
   for (const config of [{}, { dns_optimizer_protocols: 'udp dot', dns_optimizer_candidates: ['google', 'quad9'],
-    dns_optimizer_bootstrap_candidates: ['yandex_1', 'google_1'] }]) {
+    dns_optimizer_bootstrap_protocols: ['tcp', 'dot'], dns_optimizer_bootstrap_candidates: ['yandex_1', 'google_1'] }]) {
     const state = setup(config);
     for (const key of multiKeys) {
       const option = state.options.get(key), configured = option.cfgvalue('settings');
@@ -144,6 +145,26 @@ test('settings use separate Russian DNS, benchmark and service tabs with unchang
   assert.equal(state.options.get('dns_failover_enabled').default, '0');
   assert.equal(state.options.get('dns_optimizer_include_wan').default, '0');
 });
+test('only engine-supported transports are offered for primary, failover and bootstrap; rendering retains unsupported saved values', () => {
+  const state = setup({ dns_type: 'h3', dns_server: 'dns.google', bootstrap_dns_type: 'doq', bootstrap_dns_server: '9.9.9.9' });
+  for (const name of ['dns_type', 'secondary_dns_type', 'bootstrap_dns_type', 'secondary_bootstrap_dns_type', 'dns_optimizer_protocols', 'dns_optimizer_bootstrap_protocols']) {
+    assert.deepEqual([...state.options.get(name).keylist].sort(), ['udp', 'tcp', 'doh', 'dot'].sort(), name);
+  }
+  assert.equal(state.options.get('dns_type').cfgvalue('settings'), 'h3');
+  assert.equal(state.options.get('bootstrap_dns_type').cfgvalue('settings'), 'doq');
+  assert.deepEqual(state.writes, [], 'no automatic DNS migration');
+});
+test('bootstrap protocol selector precedes bootstrap candidates and defaults to visibly checked UDP', () => {
+  const state = setup();
+  const keys = [...state.options.keys()];
+  assert.equal(keys[keys.indexOf('dns_optimizer_bootstrap_candidates') - 1], 'dns_optimizer_bootstrap_protocols');
+  const option = state.options.get('dns_optimizer_bootstrap_protocols');
+  assert.deepEqual(Array.from(option.default), ['udp']);
+  const widget = option.renderWidget('settings', 0, option.cfgvalue('settings'));
+  assert.equal(widget.summary.textContent, 'UDP');
+  assert.equal(widget.items.find(item => item.value === 'udp').input.checked, true);
+  for (const item of widget.items.filter(item => item.value !== 'udp')) assert.equal(item.input.checked, false);
+});
 test('multivalue containment styles are injected even without rendering the legacy optimizer', () => {
   const state = setup();
   assert.equal(state.styles.length, 1, 'styles are available on settings page');
@@ -157,8 +178,8 @@ test('compact Russian summaries replace selected chips and follow native selecti
   const state = setup();
   for (const [key, initialText] of [
     ['dns_optimizer_protocols', 'UDP, DoH, DoT'],
-    ['dns_optimizer_candidates', 'Выбрано: 3 из 7'],
-    ['dns_optimizer_bootstrap_candidates', 'Выбрано: 7 из 10'],
+    ['dns_optimizer_candidates', 'Выбрано: 3 из 33'],
+    ['dns_optimizer_bootstrap_candidates', 'Выбрано: 7 из 25'],
   ]) {
     const option = state.options.get(key);
     const widget = option.renderWidget('settings', 0, option.cfgvalue('settings'));
@@ -168,7 +189,7 @@ test('compact Russian summaries replace selected chips and follow native selecti
     assert.equal(widget.summary.textContent, initialText, 'opening does not change the selection');
     widget.select(widget.getValue()[0], false);
     assert.equal(widget.summary.textContent, key === 'dns_optimizer_protocols' ? 'DoH, DoT' :
-      key === 'dns_optimizer_candidates' ? 'Выбрано: 2 из 7' : 'Выбрано: 6 из 10');
+      key === 'dns_optimizer_candidates' ? 'Выбрано: 2 из 33' : 'Выбрано: 6 из 25');
     const css = state.styles[0].textContent;
     assert.match(css, /\.pdk-settings-multivalue\s*>\s*ul:not\(\.dropdown\)[\s\S]*?display:\s*none\s*!important/,
       'native selected-chip list and preview must remain hidden regardless of theme');

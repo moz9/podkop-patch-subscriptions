@@ -12,13 +12,39 @@ const DNS_PRIMARY_POLICY = {
   yandex: { primaryEligible: false },
 };
 const NORMAL_DNS_OPTIMIZER_CANDIDATES = [
-  ["cloudflare", "Cloudflare"],
-  ["google", "Google"],
-  ["quad9", "Quad9 Secure"],
-  ["quad9_ecs", "Quad9 Secure ECS"],
-  ["adguard_unfiltered", "AdGuard Unfiltered"],
-  ["controld_unfiltered", "Control D Unfiltered"],
-  ["mullvad", "Mullvad"],
+  ["cloudflare","Cloudflare"],
+  ["google","Google"],
+  ["quad9","Quad9 Secure"],
+  ["quad9_ecs","Quad9 Secure ECS"],
+  ["adguard_unfiltered","AdGuard Unfiltered"],
+  ["controld_unfiltered","Control D Unfiltered"],
+  ["mullvad","Mullvad"],
+  ["223_5_5_5","223.5.5.5 (AliDNS)"],
+  ["223_6_6_6","223.6.6.6 (AliDNS)"],
+  ["193_233_112_67","193.233.112.67 (GeoHide Primary)"],
+  ["193_233_112_68","193.233.112.68 (GeoHide Secondary)"],
+  ["95_182_120_241","95.182.120.241 (GeoHide Third)"],
+  ["45_90_28_0","45.90.28.0 (NextDNS Primary)"],
+  ["45_90_30_0","45.90.30.0 (NextDNS Secondary)"],
+  ["80_253_249_40","80.253.249.40 (dns.malw.link)"],
+  ["95_216_204_218","95.216.204.218 (dns.malw.link)"],
+  ["149_112_112_112","149.112.112.112 (Quad9)"],
+  ["149_112_112_11","149.112.112.11 (Quad9 ECS)"],
+  ["9_9_9_10","9.9.9.10 (Quad9 Unsecured)"],
+  ["149_112_112_10","149.112.112.10 (Quad9 Unsecured)"],
+  ["adguard_default","AdGuard Default"],
+  ["adguard_family","AdGuard Family"],
+  ["alidns","AliDNS"],
+  ["comss","Comss.one"],
+  ["geohide","GeoHide"],
+  ["geohide_eu","GeoHide Europe"],
+  ["geohide_us","GeoHide USA"],
+  ["malw","dns.malw.link"],
+  ["quad9_unsecured","Quad9 Unsecured"],
+  ["nextdns","NextDNS"],
+  ["uncensored_anycast","UncensoredDNS Anycast"],
+  ["uncensored_unicast","UncensoredDNS Unicast"],
+  ["xbox_dns","Xbox DNS"],
 ];
 const DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES = [
   "cloudflare",
@@ -26,16 +52,31 @@ const DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES = [
   "controld_unfiltered",
 ];
 const BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES = [
-  ["cloudflare_1", "Cloudflare — 1.1.1.1"],
-  ["cloudflare_2", "Cloudflare — 1.0.0.1"],
-  ["google_1", "Google — 8.8.8.8"],
-  ["google_2", "Google — 8.8.4.4"],
-  ["yandex_1", "Yandex — 77.88.8.8"],
-  ["yandex_2", "Yandex — 77.88.8.1"],
-  ["quad9_1", "Quad9 Secure — 9.9.9.9"],
-  ["quad9_ecs", "Quad9 Secure ECS — 9.9.9.11"],
-  ["adguard_unfiltered", "AdGuard Unfiltered — 94.140.14.140"],
-  ["controld_unfiltered", "Control D Unfiltered — 76.76.2.0"],
+  ["cloudflare_1","Cloudflare — 1.1.1.1"],
+  ["cloudflare_2","Cloudflare — 1.0.0.1"],
+  ["google_1","Google — 8.8.8.8"],
+  ["google_2","Google — 8.8.4.4"],
+  ["yandex_1","Yandex — 77.88.8.8"],
+  ["yandex_2","Yandex — 77.88.8.1"],
+  ["quad9_1","Quad9 Secure — 9.9.9.9"],
+  ["quad9_ecs","Quad9 Secure ECS — 9.9.9.11"],
+  ["adguard_unfiltered","AdGuard Unfiltered — 94.140.14.140"],
+  ["controld_unfiltered","Control D Unfiltered — 76.76.2.0"],
+  ["223_5_5_5","223.5.5.5 (AliDNS)"],
+  ["223_6_6_6","223.6.6.6 (AliDNS)"],
+  ["193_233_112_67","193.233.112.67 (GeoHide Primary)"],
+  ["193_233_112_68","193.233.112.68 (GeoHide Secondary)"],
+  ["95_182_120_241","95.182.120.241 (GeoHide Third)"],
+  ["45_90_28_0","45.90.28.0 (NextDNS Primary)"],
+  ["45_90_30_0","45.90.30.0 (NextDNS Secondary)"],
+  ["76_76_10_0","76.76.10.0 (ControlD DNS)"],
+  ["80_253_249_40","80.253.249.40 (dns.malw.link DNS)"],
+  ["95_216_204_218","95.216.204.218 (dns.malw.link DNS)"],
+  ["149_112_112_112","149.112.112.112 (Quad9 DNS)"],
+  ["149_112_112_11","149.112.112.11 (Quad9 ECS DNS)"],
+  ["9_9_9_10","9.9.9.10 (Quad9 Unsecured DNS)"],
+  ["149_112_112_10","149.112.112.10 (Quad9 Unsecured DNS)"],
+  ["208_67_222_222","208.67.222.222 (OpenDNS)"],
 ];
 const DEFAULT_BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES = [
   "cloudflare_1",
@@ -488,7 +529,7 @@ function injectDnsOptimizerStyles() {
 
 function protocolLabel(protocol) {
   return (
-    { auto: "Авто", udp: "UDP", doh: "DoH", dot: "DoT" }[protocol] || protocol
+    { auto: "Авто", udp: "UDP", tcp: "TCP", doh: "DoH", dot: "DoT", doq: "DoQ", h3: "H3" }[protocol] || protocol
   );
 }
 
@@ -502,7 +543,7 @@ function normalizeProtocolSelection(value) {
   if (selected.has("auto")) {
     return ["udp", "doh", "dot"];
   }
-  return ["udp", "doh", "dot"].filter((protocol) => selected.has(protocol));
+  return ["udp", "tcp", "doh", "dot"].filter((protocol) => selected.has(protocol));
 }
 
 function benchmarkProtocolLabel(status) {
@@ -1808,7 +1849,7 @@ function configureDnsBenchmarkMultiValue(option) {
         const index = this.keylist.indexOf(item.getAttribute("data-value"));
         return this.vallist[index] || item.getAttribute("data-value");
       });
-      summary.textContent = this.option === "dns_optimizer_protocols"
+      summary.textContent = ["dns_optimizer_protocols", "dns_optimizer_bootstrap_protocols"].includes(this.option)
         ? labels.join(", ") || "Не выбрано"
         : `Выбрано: ${selected.length} из ${this.keylist.length}`;
       summary.title = labels.join(", ");
@@ -1826,6 +1867,29 @@ function configureDnsBenchmarkMultiValue(option) {
   };
 }
 
+function configureDnsServerChoices(option, protocolName, bootstrap = false) {
+  const render = option.renderWidget;
+  const choices = type => Object.fromEntries(Object.entries(main.getDnsServerOptionsForType(type, bootstrap))
+    .filter(([dnsServer]) => bootstrap || candidateIsPrimaryEligible({dnsServer})));
+  option.renderWidget = function(sectionId, optionIndex, cfgvalue) {
+    const protocolOption = this.map.lookupOption?.(protocolName, sectionId)?.[0];
+    const type = protocolOption?.formvalue(sectionId) || uci.get("podkop", sectionId, protocolName) || "udp";
+    const values = choices(type);
+    this.keylist = Object.keys(values); this.vallist = Object.values(values);
+    if (protocolOption) {
+      protocolOption.onchange = (_event, changedSection, nextType) => {
+        const widget = this.getUIElement(changedSection);
+        const nextChoices = choices(nextType);
+        // Native LuCI APIs retain a saved/custom value; selecting a different
+        // transport is never authority to overwrite the user's DNS address.
+        widget?.clearChoices?.(false);
+        widget?.addChoices?.(Object.keys(nextChoices), nextChoices);
+      };
+    }
+    return render.call(this, sectionId, optionIndex, cfgvalue);
+  };
+}
+
 function createSettingsContent(section) {
   injectDnsOptimizerStyles();
   section.tab("dns", "DNS");
@@ -1835,7 +1899,7 @@ function createSettingsContent(section) {
     const tab = name.startsWith("dns_optimizer_") || name === "_dns_benchmark"
       ? "benchmark"
       : name.startsWith("dns_") || name.startsWith("secondary_") ||
-          name === "bootstrap_dns_server" || name === "_dns_failover_active"
+          name === "bootstrap_dns_server" || name === "bootstrap_dns_type" || name === "_dns_failover_active"
         ? "dns"
         : "service";
     const option = section.taboption(tab, type, name, ...args);
@@ -1851,6 +1915,7 @@ function createSettingsContent(section) {
   o.value("doh", _("DNS over HTTPS (DoH)"));
   o.value("dot", _("DNS over TLS (DoT)"));
   o.value("udp", _("UDP (Unprotected DNS)"));
+  o.value("tcp", "DNS over TCP");
   o.default = "udp";
   o.rmempty = false;
   dnsOptimizerState.protocolOption = o;
@@ -1868,12 +1933,14 @@ function createSettingsContent(section) {
   o.default = "8.8.8.8";
   o.rmempty = false;
   dnsOptimizerState.dnsServerOption = o;
+  configureDnsServerChoices(o, "dns_type");
   o.write = writePrimaryDnsOption;
   o.validate = function (section_id, value) {
     if (!candidateIsPrimaryEligible({ dnsServer: value })) {
       return "Yandex DNS можно использовать только как bootstrap DNS.";
     }
-    const validation = main.validateDNS(value);
+    const type = dnsOptimizerState.protocolOption?.formvalue(section_id) || uci.get("podkop", section_id, "dns_type") || "udp";
+    const validation = main.validateDnsByType(value, type);
 
     if (validation.valid) {
       return true;
@@ -1881,6 +1948,12 @@ function createSettingsContent(section) {
 
     return validation.message;
   };
+
+  o = settingsOption(form.ListValue, "bootstrap_dns_type", "Протокол bootstrap DNS");
+  ["udp", "tcp", "doh", "dot"].forEach(type => o.value(type, type.toUpperCase()));
+  o.default = "udp";
+  o.rmempty = false;
+  o.write = writePrimaryDnsOption;
 
   o = settingsOption(
     form.Value,
@@ -1896,9 +1969,12 @@ function createSettingsContent(section) {
   o.default = "77.88.8.8";
   o.rmempty = false;
   dnsOptimizerState.bootstrapDnsServerOption = o;
+  configureDnsServerChoices(o, "bootstrap_dns_type", true);
   o.write = writePrimaryDnsOption;
   o.validate = function (section_id, value) {
-    const validation = main.validateDNS(value);
+    const typeOption = this.map.lookupOption("bootstrap_dns_type", section_id)?.[0];
+    const type = typeOption?.formvalue(section_id) || uci.get("podkop", section_id, "bootstrap_dns_type") || "udp";
+    const validation = main.validateDnsByType(value, type, true);
 
     if (validation.valid) {
       return true;
@@ -1934,6 +2010,7 @@ function createSettingsContent(section) {
   o.value("doh", _("DNS over HTTPS (DoH)"));
   o.value("dot", _("DNS over TLS (DoT)"));
   o.value("udp", _("UDP (Unprotected DNS)"));
+  o.value("tcp", "DNS over TCP");
   o.default = "udp";
   o.rmempty = false;
   o.depends("dns_failover_enabled", "1");
@@ -1951,13 +2028,21 @@ function createSettingsContent(section) {
   o.rmempty = false;
   o.depends("dns_failover_enabled", "1");
   dnsOptimizerState.secondaryDnsServerOption = o;
+  configureDnsServerChoices(o, "secondary_dns_type");
   o.validate = function (section_id, value) {
     if (!candidateIsPrimaryEligible({ dnsServer: value })) {
       return "Yandex DNS можно использовать только как bootstrap DNS.";
     }
-    const validation = main.validateDNS(value);
+    const type = dnsOptimizerState.secondaryProtocolOption?.formvalue(section_id) || uci.get("podkop", section_id, "secondary_dns_type") || "udp";
+    const validation = main.validateDnsByType(value, type);
     return validation.valid ? true : validation.message;
   };
+
+  o = settingsOption(form.ListValue, "secondary_bootstrap_dns_type", "Протокол резервного bootstrap DNS");
+  ["udp", "tcp", "doh", "dot"].forEach(type => o.value(type, type.toUpperCase()));
+  o.default = "udp";
+  o.rmempty = false;
+  o.depends("dns_failover_enabled", "1");
 
   o = settingsOption(
     form.Value,
@@ -1972,8 +2057,11 @@ function createSettingsContent(section) {
   o.rmempty = false;
   o.depends("dns_failover_enabled", "1");
   dnsOptimizerState.secondaryBootstrapDnsServerOption = o;
+  configureDnsServerChoices(o, "secondary_bootstrap_dns_type", true);
   o.validate = function (section_id, value) {
-    const validation = main.validateDNS(value);
+    const typeOption = this.map.lookupOption("secondary_bootstrap_dns_type", section_id)?.[0];
+    const type = typeOption?.formvalue(section_id) || uci.get("podkop", section_id, "secondary_bootstrap_dns_type") || "udp";
+    const validation = main.validateDnsByType(value, type, true);
     return validation.valid ? true : validation.message;
   };
 
@@ -1986,6 +2074,7 @@ function createSettingsContent(section) {
   o.value("udp", "UDP");
   o.value("doh", "DoH");
   o.value("dot", "DoT");
+  o.value("tcp", "TCP");
   o.default = ["udp", "doh", "dot"];
   o.rmempty = false;
   o.cfgvalue = function (sectionId) {
@@ -2027,6 +2116,11 @@ function createSettingsContent(section) {
       : DEFAULT_NORMAL_DNS_OPTIMIZER_CANDIDATES;
   };
 
+  o = settingsOption(form.MultiValue, "dns_optimizer_bootstrap_protocols", "Протоколы проверки bootstrap DNS");
+  ["udp", "tcp", "doh", "dot"].forEach(type => o.value(type, type.toUpperCase()));
+  o.default = ["udp"];
+  o.rmempty = false;
+
   o = settingsOption(
     form.MultiValue,
     "dns_optimizer_bootstrap_candidates",
@@ -2061,6 +2155,7 @@ function createSettingsContent(section) {
     ["udp", "dns_optimizer_custom_udp", "Свои DNS для UDP"],
     ["doh", "dns_optimizer_custom_doh", "Свои DNS для DoH"],
     ["dot", "dns_optimizer_custom_dot", "Свои DNS для DoT"],
+    ["tcp", "dns_optimizer_custom_tcp", "Свои DNS для TCP"],
   ];
   customDnsOptions.forEach(([protocol, optionName, label]) => {
     const customOption = settingsOption(
@@ -2085,7 +2180,7 @@ function createSettingsContent(section) {
         return true;
       }
       const validation =
-        protocol === "udp" ? main.validateIPV4(value) : main.validateDNS(value);
+        main.validateDnsByType(value, protocol);
       return validation.valid ? true : validation.message;
     };
   });
