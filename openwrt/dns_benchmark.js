@@ -93,8 +93,8 @@ function ensureStyle() {
     #modal_overlay .pdk-dns-benchmark thead {display:table-header-group!important}
     #modal_overlay .pdk-dns-benchmark tbody {display:table-row-group!important}
     #modal_overlay .pdk-dns-benchmark tr {display:table-row!important}
-    #modal_overlay .pdk-dns-benchmark th,#modal_overlay .pdk-dns-benchmark td {display:table-cell!important}
-    #modal_overlay .pdk-dns-benchmark td::before {display:none!important}
+    #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll th,#modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll td {display:table-cell!important}
+    #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll td::before {display:none!important}
     .pdk-dns-benchmark th,.pdk-dns-benchmark td {padding:6px 8px;word-break:normal;overflow-wrap:normal;white-space:nowrap;font-size:13px}
     .pdk-dns-benchmark td:first-child {min-width:12em;white-space:normal}
     .pdk-dns-benchmark td:first-child small {display:block;overflow-wrap:anywhere}

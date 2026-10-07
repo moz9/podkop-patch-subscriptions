@@ -14,7 +14,7 @@
     "m": "b884d024254596d5537fa5dc2490e5e5a489b964854072e6e532f027dddf68ae",
     "openwrt/dashboard.js": "6a075ab405160ecfe2742cca4ca5ef24af2d7fca2108d05c3fb48541c0e639aa",
     "openwrt/diagnostic.js": "25fcfd513a23bd3203a04d64f201e724de01f8584ee6435940e47c358a349ad2",
-    "openwrt/dns_benchmark.js": "1df1fe8a7461936cd81b6eaea223ba5979523d3a219d9dd87b7323730f3a3d82",
+    "openwrt/dns_benchmark.js": "9faf1c0c0cd41d3c2f32acc4e8c534d3b88407a3f4ccdfc68d1b7f1d2725b1a5",
     "openwrt/install.sh": "b391b157806cd5afa58c86e5b0c63a9bc0d030c19e92055c92ebeefd52d69485",
     "openwrt/main.js": "96977051ad16df2ca54939100fc8833f197e3cb92ed6389605c162075333b7ce",
     "openwrt/podkop-actions-ui-fix.sh": "2bc17d2a3cbc365d21d080612e4d5463ffee12c8b818fa2f6c839ee0645d605f",
