@@ -851,6 +851,15 @@ function normalizeProxyLinks(value) {
   }
   return [];
 }
+function getDashboardLatencyInfo(proxy) {
+  const delay = proxy?.history?.[0]?.delay;
+  if (proxy?.alive === false || (Number.isFinite(delay) && delay <= 0)) {
+    return {latency:0, latencyState:"unavailable"};
+  }
+  return Number.isFinite(delay) && delay > 0
+    ? {latency:delay, latencyState:"available"}
+    : {latency:0, latencyState:"unknown"};
+}
 async function getDashboardSections() {
   const configSections = await getConfigSections();
   const clashProxies = await PodkopShellMethods.getClashApiProxies();
@@ -904,7 +913,7 @@ async function getDashboardSections() {
             {
               code: outbound?.code || section[".name"],
               displayName: proxyDisplayName,
-              latency: outbound?.value?.history?.[0]?.delay || 0,
+              ...getDashboardLatencyInfo(outbound?.value),
               type: outbound?.value?.type || "",
               selected: true
             }
@@ -928,7 +937,7 @@ async function getDashboardSections() {
             {
               code: outbound?.code || section[".name"],
               displayName: proxyDisplayName,
-              latency: outbound?.value?.history?.[0]?.delay || 0,
+              ...getDashboardLatencyInfo(outbound?.value),
               type: outbound?.value?.type || "",
               selected: true
             }
@@ -939,7 +948,7 @@ async function getDashboardSections() {
         const selector = proxies.find(
           (proxy) => proxy.code === `${section[".name"]}-out`
         );
-        const links = section.selector_proxy_links ?? [];
+        const links = normalizeProxyLinks(section.selector_proxy_links);
         const outbounds = links.map((link, index) => ({
           link,
           outbound: proxies.find(
@@ -948,7 +957,7 @@ async function getDashboardSections() {
         })).map((item) => ({
           code: item?.outbound?.code || "",
           displayName: getProxyUrlName(item.link) || item?.outbound?.value?.name || "",
-          latency: item?.outbound?.value?.history?.[0]?.delay || 0,
+          ...getDashboardLatencyInfo(item?.outbound?.value),
           type: item?.outbound?.value?.type || "",
           selected: selector?.value?.now === item?.outbound?.code
         }));
@@ -971,12 +980,14 @@ async function getDashboardSections() {
         const activeLinks = section.proxy_config_type === "subscription_urltest" ? [
           ...normalizeProxyLinks(section.urltest_proxy_links),
           ...subscriptionCachedLinks.get(section[".name"]) ?? []
-        ] : section.urltest_proxy_links ?? [];
-        const outbounds = (outbound?.value?.all ?? []).map((code) => proxies.find((item) => item.code === code)).map((item, index) => ({
+        ] : normalizeProxyLinks(section.urltest_proxy_links);
+        const outboundCodes = Array.isArray(outbound?.value?.all) ? outbound.value.all : [];
+        const outbounds = outboundCodes.map((code) => proxies.find((item) => item.code === code)).map((item, index) => ({
           code: item?.code || "",
           displayName: getProxyUrlName(activeLinks[index]) || item?.value?.name || `Server ${index + 1}`,
-          latency: item?.value?.history?.[0]?.delay || 0,
+          ...getDashboardLatencyInfo(item?.value),
           type: item?.value?.type || "",
+          active: Boolean(item?.code && selector?.value?.now === outbound?.code && outbound?.value?.now === item.code),
           selected: selector?.value?.now === item?.code
         }));
         return {
@@ -989,7 +1000,8 @@ async function getDashboardSections() {
             {
               code: outbound?.code || "",
               displayName: _("Fastest"),
-              latency: outbound?.value?.history?.[0]?.delay || 0,
+              isGroup:true,
+              ...getDashboardLatencyInfo(outbound?.value),
               type: outbound?.value?.type || "",
               selected: selector?.value?.now === outbound?.code
             },
@@ -1012,7 +1024,7 @@ async function getDashboardSections() {
           {
             code: outbound?.code || section[".name"],
             displayName: section.interface || outbound?.value?.name || "",
-            latency: outbound?.value?.history?.[0]?.delay || 0,
+            ...getDashboardLatencyInfo(outbound?.value),
             type: outbound?.value?.type || "",
             selected: true
           }
@@ -1603,6 +1615,7 @@ var initialStore = {
     latencyFetching: false,
     data: []
   },
+  dashboardDisplayFilters: loadDashboardDisplayFilters(),
   subscriptionItemsWidget: {
     loading: true,
     failed: false,
@@ -1953,6 +1966,52 @@ var SocketManager = class _SocketManager {
 var socket = SocketManager.getInstance();
 
 // src/podkop/tabs/dashboard/partials/renderSections.ts
+function loadDashboardDisplayFilters() {
+  const defaults = {hideUnavailable:false, hideSlow:false, maxLatency:1000};
+  try {
+    const saved = JSON.parse(localStorage.getItem("podkop_dashboard_display_filters") || "{}");
+    return {hideUnavailable:saved.hideUnavailable === true, hideSlow:saved.hideSlow === true,
+      maxLatency:Number.isInteger(saved.maxLatency) && saved.maxLatency >= 1 && saved.maxLatency <= 60000
+        ? saved.maxLatency : 1000};
+  } catch (_) { return defaults; }
+}
+function saveDashboardDisplayFilters(filters) {
+  try { localStorage.setItem("podkop_dashboard_display_filters", JSON.stringify(filters)); } catch (_) {}
+}
+function isDashboardOutboundVisible(outbound, filters = {}) {
+  if (outbound.selected || outbound.active || outbound.isGroup) return true;
+  if (filters.hideUnavailable && (outbound.reason || outbound.latencyState === "unavailable")) {
+    return false;
+  }
+  const limit = Number.isInteger(filters.maxLatency) && filters.maxLatency >= 1 && filters.maxLatency <= 60000
+    ? filters.maxLatency : 1000;
+  return !filters.hideSlow || !(outbound.latency > limit);
+}
+function renderDashboardFilters(filters, onChange) {
+  const checkbox = (name, label) => E("label", {class:"pdk-dashboard-filters__control"}, [
+    E("input", {type:"checkbox", checked:filters[name] ? "checked" : null,
+      change:event => onChange({[name]:event.target.checked})}),
+    " ", label,
+  ]);
+  return E("div", {class:"pdk-dashboard-filters"}, [
+    checkbox("hideUnavailable", "Скрыть недоступные"),
+    checkbox("hideSlow", "Скрыть медленные"),
+    E("label", {class:"pdk-dashboard-filters__control"}, [
+      "Макс. задержка ",
+      E("input", {type:"number", min:1, max:60000, step:1, value:filters.maxLatency,
+        class:"cbi-input-text pdk-dashboard-filters__limit", "aria-label":"Максимальная задержка, мс",
+        change:event => {
+          const value = Number(event.target.value);
+          const valid = event.target.value !== "" && Number.isInteger(value) && value >= 1 && value <= 60000;
+          event.target.setCustomValidity(valid ? "" : "Введите целое число от 1 до 60000 мс.");
+          if (valid) onChange({maxLatency:value});
+          else event.target.reportValidity?.();
+        }}),
+      " мс",
+    ]),
+    E("small", {class:"pdk-dashboard-filters__hint"}, "Только отображение. Активные и непроверенные узлы не скрываются."),
+  ]);
+}
 function renderFailedState() {
   return E(
     "div",
@@ -1974,8 +2033,10 @@ function renderDefaultState({
   section,
   onChooseOutbound,
   onTestLatency,
-  latencyFetching
+  latencyFetching,
+  displayFilters = {}
 }) {
+  const visibleOutbounds = section.outbounds.filter(outbound => !section.withTagSelect || isDashboardOutboundVisible(outbound, displayFilters));
   function testLatency() {
     if (section.canTestLatency === false) {
       return;
@@ -2017,7 +2078,8 @@ function renderDefaultState({
           E(
             "div",
             { class: getLatencyClass() },
-            outbound.reason || (outbound.latency ? `${outbound.latency}ms` : "N/A")
+            outbound.reason || (outbound.latency ? `${outbound.latency} мс` :
+              outbound.latencyState === "unavailable" ? "Нет ответа" : "Не проверен")
           )
         ])
       ]
@@ -2042,13 +2104,17 @@ function renderDefaultState({
         },
         _("Test latency")
       )
-    ]),
+    ].filter(child => child != null)),
+    visibleOutbounds.length === section.outbounds.length ? null : E("small", {},
+      `Показано: ${visibleOutbounds.length} из ${section.outbounds.length}`),
     E(
       "div",
       { class: "pdk_dashboard-page__outbound-grid" },
-      section.outbounds.map((outbound) => renderOutbound(outbound))
+      visibleOutbounds.length || !section.outbounds.length
+        ? visibleOutbounds.map((outbound) => renderOutbound(outbound))
+        : E("div", {class:"pdk-dashboard-filters__empty"}, "Все узлы скрыты фильтрами. Измените фильтры выше.")
     )
-  ]);
+  ].filter(child => child != null));
 }
 function renderSections(props) {
   if (props.failed) {
@@ -2155,6 +2221,11 @@ function render() {
         )
       ]),
       // All outbounds
+      renderDashboardFilters(store.get().dashboardDisplayFilters, patch => {
+        const filters = {...store.get().dashboardDisplayFilters, ...patch};
+        saveDashboardDisplayFilters(filters);
+        store.set({dashboardDisplayFilters:filters});
+      }),
       E(
         "div",
         { id: "dashboard-sections-grid" },
@@ -2379,6 +2450,7 @@ async function renderSectionsWidget() {
       loading: sectionsWidget.loading,
       failed: sectionsWidget.failed,
       section,
+      displayFilters:store.get().dashboardDisplayFilters,
       latencyFetching: sectionsWidget.latencyFetching,
       onTestLatency: (tag) => {
         if (section.withTagSelect) {
@@ -2516,7 +2588,7 @@ async function renderServicesInfoWidget() {
   container.replaceChildren(renderedWidget);
 }
 async function onStoreUpdate(next, prev, diff) {
-  if (diff.sectionsWidget) {
+  if (diff.sectionsWidget || diff.dashboardDisplayFilters) {
     renderSectionsWidget();
   }
   if (diff.bandwidthWidget) {
@@ -2600,6 +2672,32 @@ var styles = `
     width: 100%;
     min-width: 0;
     --dashboard-grid-columns: 4;
+}
+
+.pdk-dashboard-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: .5rem 1rem;
+    margin-block: .75rem;
+}
+.pdk-dashboard-filters__control {
+    display: inline-flex;
+    align-items: center;
+    gap: .35rem;
+    margin: 0;
+}
+.pdk-dashboard-filters__limit {
+    width: 6rem;
+    min-width: 0;
+}
+.pdk-dashboard-filters__hint {
+    flex-basis: 100%;
+    opacity: .75;
+}
+.pdk-dashboard-filters__empty {
+    grid-column: 1 / -1;
+    padding-block: .5rem;
 }
 
 @media (max-width: 900px) {

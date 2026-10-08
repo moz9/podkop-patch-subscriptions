@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "patchVersion": "20261008-section-layout-v3",
+  "patchVersion": "20261008-dashboard-parity-v4",
   "supportedPodkopVersions": [
     "0.7.19",
     "0.7.20",
@@ -8,14 +8,14 @@
     "0.7.22"
   ],
   "recommendedPodkopVersion": "0.7.22",
-  "publishedAt": "2026-10-08T13:40:00+07:00",
+  "publishedAt": "2026-10-08T21:45:00+07:00",
   "sha256": {
     "a": "3ce23b373162941e23be70a682e82561d1c19ea42725739c59199e728d7e1165",
-    "i": "80364f9f1149f37982f4299c9c60c019ffca1981e6c997dba985096c5291b8f0",
+    "i": "9a24bea4291c48de9898031c6a60bab7cdb5d5c7b277a954d1f9586b6f44e0f2",
     "openwrt/dashboard.js": "6a075ab405160ecfe2742cca4ca5ef24af2d7fca2108d05c3fb48541c0e639aa",
     "openwrt/diagnostic.js": "25fcfd513a23bd3203a04d64f201e724de01f8584ee6435940e47c358a349ad2",
-    "openwrt/install.sh": "80364f9f1149f37982f4299c9c60c019ffca1981e6c997dba985096c5291b8f0",
-    "openwrt/main.js": "4d850c37e5849660734ae054fcc5a2651f59f9780470c0d609eaadc3aea3d842",
+    "openwrt/install.sh": "9a24bea4291c48de9898031c6a60bab7cdb5d5c7b277a954d1f9586b6f44e0f2",
+    "openwrt/main.js": "139227b508ffcb5cc0300104e22bebd8f3a8d8b2e468eff1c6a1f1a3a6bb8804",
     "openwrt/podkop-actions-ui-fix.sh": "2bc17d2a3cbc365d21d080612e4d5463ffee12c8b818fa2f6c839ee0645d605f",
     "openwrt/podkop-dns-failover": "71d45845a1f397ec11dd1ae73c1d9fccc848a468e2b9dea23ba47aea0bf48ddd",
     "openwrt/podkop-dns-failover-upgrade.sh": "eba79e97ac99e33b5875a2727385db649994b9e0188499cb0e00cd28d22d6b59",
