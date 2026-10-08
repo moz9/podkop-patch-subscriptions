@@ -54,6 +54,8 @@ expect_no_update '20260820-unified-install-seamless-v1' '20260819-podkop-0722-v1
 expect_update 'legacy-marker' '20260813-reliability-responsive-v1'
 expect_no_update '20260813-reliability-responsive-v1' 'legacy-marker'
 expect_update 'legacy-marker-v1' 'legacy-marker-v2'
+expect_update '20261008-subscription-controls-v2' '20261008-section-layout-v3'
+expect_no_update '20261008-section-layout-v3' '20261008-subscription-controls-v2'
 
 mkdir -p "$STATE_DIR"
 fixture_manifest="$test_root/fixture-manifest.json"

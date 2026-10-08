@@ -22,6 +22,7 @@
 
 const EntryPoint = {
   async render() {
+    document.body.classList.add("pdk-page");
     main.injectGlobalStyles();
 
     const podkopMap = new form.Map(
@@ -34,13 +35,13 @@ const EntryPoint = {
 
     // Sections tab
     const sectionsSection = podkopMap.section(
-      form.TypedSection,
+      form.GridSection,
       "section",
       _("Sections"),
     );
     sectionsSection.anonymous = false;
     sectionsSection.addremove = true;
-    sectionsSection.template = "cbi/simpleform";
+    sectionsSection.nodescriptions = true;
 
     // Render section content
     section.createSectionContent(sectionsSection);

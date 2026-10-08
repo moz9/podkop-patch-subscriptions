@@ -2,10 +2,96 @@
 "require form";
 "require baseclass";
 "require ui";
+"require uci";
 "require tools.widgets as widgets";
 "require view.podkop.main as main";
 
 function createSectionContent(section) {
+  // Native GridSection.handleModalSave() silently catches failures from
+  // save(null, true). Keep the modal and draft visible and show the failure.
+  section.handleModalSave = function (modalMap, event) {
+    let activeMap = modalMap;
+    let saveTasks = activeMap.save(null, true);
+    while (activeMap.parent) {
+      const parent = activeMap.parent;
+      activeMap = parent;
+      saveTasks = saveTasks.then(() => parent.load()).then(() => parent.reset());
+    }
+    return saveTasks.then(() => this.handleModalCancel(modalMap, event, true)).catch(error => {
+      const previous = modalMap.root?.querySelector(".pdk-section-save-error");
+      if (previous) previous.remove();
+      const detail = error instanceof TypeError && error.message
+        ? error.message : "Проверьте поля и соединение с маршрутизатором, затем повторите.";
+      modalMap.root?.prepend(E("div", {class:"alert-message warning pdk-section-save-error", role:"alert"},
+        "Не удалось сохранить секцию. " + detail));
+    });
+  };
+  section.tab("connection", "Подключение");
+  section.tab("checking", "Проверка узлов");
+  section.tab("lists", "Списки");
+  section.tab("advanced", "Дополнительно");
+
+  const listFields = new Set([
+    "community_lists", "user_domain_list_type", "user_domains", "user_domains_text",
+    "user_subnet_list_type", "user_subnets", "user_subnets_text", "local_domain_lists",
+    "local_subnet_lists", "remote_domain_lists", "remote_subnet_lists",
+  ]);
+  const checkingFields = new Set([
+    "urltest_check_interval", "urltest_tolerance",
+    "urltest_testing_url",
+  ]);
+  const advancedFields = new Set([
+    "fully_routed_ips", "mixed_proxy_enabled", "mixed_proxy_port", "resolve_real_ip_for_routing",
+  ]);
+  const modalOption = (type, name, ...args) => {
+    const field = section.taboption(
+      listFields.has(name) ? "lists" : checkingFields.has(name) ? "checking" :
+        advancedFields.has(name) ? "advanced" : "connection",
+      type, name, ...args,
+    );
+    field.modalonly = true;
+    return field;
+  };
+  const configValue = (sectionId, name) => uci.get("podkop", sectionId, name);
+  const countValues = value => Array.isArray(value) ? value.filter(Boolean).length :
+    typeof value === "string" ? value.trim().split(/\s+/).filter(Boolean).length : 0;
+  const summary = (name, title, value) => {
+    const column = section.option(form.DummyValue, name, title);
+    column.modalonly = false;
+    column.cfgvalue = value;
+  };
+  summary("_overview_type", "Тип", sectionId => {
+    const connection = configValue(sectionId, "connection_type");
+    if (connection === "vpn") return "VPN";
+    if (connection === "block") return "Блокировка";
+    if (connection === "exclusion") return "Исключение";
+    const type = configValue(sectionId, "proxy_config_type");
+    return "Прокси · " + ({url: "Ссылка", selector: "Селектор", urltest: "URLTest",
+      subscription_urltest: "Микс", outbound: "JSON"}[type] || "—");
+  });
+  summary("_overview_sources", "Источники", sectionId => {
+    const connection = configValue(sectionId, "connection_type");
+    if (connection === "vpn") return "Интерфейс: " + (configValue(sectionId, "interface") || "—");
+    if (connection !== "proxy") return "—";
+    const type = configValue(sectionId, "proxy_config_type");
+    if (type === "subscription_urltest") {
+      const sources = countValues(configValue(sectionId, "subscription_url"));
+      const manual = countValues(configValue(sectionId, "urltest_proxy_links"));
+      const selected = configValue(sectionId, "subscription_selection_mode") === "selected"
+        ? " · выбрано: " + countValues(configValue(sectionId, "subscription_selected_link_ids")) : "";
+      return "Подписок: " + sources + " · ссылок: " + manual + selected;
+    }
+    if (type === "urltest") return "Узлов: " + countValues(configValue(sectionId, "urltest_proxy_links"));
+    if (type === "selector") return "Узлов: " + countValues(configValue(sectionId, "selector_proxy_links"));
+    return type === "url" ? "Один адрес" : type === "outbound" ? "JSON" : "—";
+  });
+  summary("_overview_lists", "Списки", sectionId => {
+    const count = ["community_lists", "user_domains", "user_subnets", "local_domain_lists",
+      "local_subnet_lists", "remote_domain_lists", "remote_subnet_lists"].reduce(
+      (total, name) => total + countValues(configValue(sectionId, name)), 0);
+    return count ? "Элементов: " + count : "Нет";
+  });
+
   function hasListValue(value) {
     if (Array.isArray(value)) {
       return value.some((item) => item != null && String(item).trim() !== "");
@@ -14,7 +100,7 @@ function createSectionContent(section) {
     return value != null && String(value).trim() !== "";
   }
 
-  let o = section.option(
+  let o = modalOption(
     form.ListValue,
     "connection_type",
     _("Connection Type"),
@@ -25,7 +111,7 @@ function createSectionContent(section) {
   o.value("block", "Блокировка");
   o.value("exclusion", "Исключение");
 
-  o = section.option(
+  o = modalOption(
     form.ListValue,
     "proxy_config_type",
     _("Configuration Type"),
@@ -38,9 +124,8 @@ function createSectionContent(section) {
   o.value("outbound", _("Outbound Config"));
   o.default = "url";
   o.depends("connection_type", "proxy");
-  const proxyConfigTypeOption = o;
 
-  o = section.option(
+  o = modalOption(
     form.TextValue,
     "proxy_string",
     _("Proxy Configuration URL"),
@@ -69,7 +154,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "subscription_url",
     _("Subscription URLs"),
@@ -77,7 +162,6 @@ function createSectionContent(section) {
   );
   o.depends("proxy_config_type", "subscription_urltest");
   o.rmempty = true;
-  const subscriptionUrlOption = o;
   o.validate = function (section_id, value) {
     if (!value || value.length === 0) {
       return true;
@@ -92,7 +176,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.ListValue,
     "subscription_update_interval",
     _("Subscription Update Interval"),
@@ -108,7 +192,7 @@ function createSectionContent(section) {
   o.default = "1h";
   o.depends("proxy_config_type", "subscription_urltest");
 
-  o = section.option(
+  o = modalOption(
     form.TextValue,
     "outbound_json",
     _("Outbound Configuration"),
@@ -131,7 +215,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "selector_proxy_links",
     _("Selector Proxy Links"),
@@ -154,7 +238,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "urltest_proxy_links",
     "\u041f\u0440\u043e\u043a\u0441\u0438-\u0441\u0441\u044b\u043b\u043a\u0438",
@@ -165,11 +249,15 @@ function createSectionContent(section) {
   o.rmempty = true;
   const baseUrltestProxyLinksParse = o.parse;
   o.parse = function (section_id) {
-    const proxyConfigType =
-      proxyConfigTypeOption.formvalue(section_id) ||
-      proxyConfigTypeOption.cfgvalue(section_id);
+    // GridSection copies options into a NamedSection modal. The original
+    // options are not rendered, so read the sibling widgets from this map.
+    const modalValue = name => {
+      const match = this.map.lookupOption(name, section_id);
+      return match ? match[0].formvalue(match[1]) : null;
+    };
+    const proxyConfigType = modalValue("proxy_config_type");
     const proxyLinks = this.formvalue(section_id);
-    const subscriptionUrls = subscriptionUrlOption.formvalue(section_id);
+    const subscriptionUrls = modalValue("subscription_url");
 
     if (this.isActive(section_id) && !hasListValue(proxyLinks)) {
       if (proxyConfigType === "urltest") {
@@ -210,7 +298,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.ListValue,
     "urltest_check_interval",
     _("URLTest Check Interval"),
@@ -224,7 +312,7 @@ function createSectionContent(section) {
   o.depends("proxy_config_type", "urltest");
   o.depends("proxy_config_type", "subscription_urltest");
 
-  o = section.option(
+  o = modalOption(
     form.Value,
     "urltest_tolerance",
     _("URLTest Tolerance"),
@@ -248,7 +336,7 @@ function createSectionContent(section) {
     return _('Must be a number in the range of 50 - 1000');
   };
 
-  o = section.option(
+  o = modalOption(
     form.Value,
     "urltest_testing_url",
     _("URLTest Testing URL"),
@@ -277,7 +365,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.Flag,
     "enable_udp_over_tcp",
     _("UDP over TCP"),
@@ -287,7 +375,7 @@ function createSectionContent(section) {
   o.depends("connection_type", "proxy");
   o.rmempty = false;
 
-  o = section.option(
+  o = modalOption(
     widgets.DeviceSelect,
     "interface",
     _("Network Interface"),
@@ -333,7 +421,7 @@ function createSectionContent(section) {
     return !isWireless;
   };
 
-  o = section.option(
+  o = modalOption(
     form.Flag,
     "domain_resolver_enabled",
     _("Domain Resolver"),
@@ -343,7 +431,7 @@ function createSectionContent(section) {
   o.rmempty = false;
   o.depends("connection_type", "vpn");
 
-  o = section.option(
+  o = modalOption(
     form.ListValue,
     "domain_resolver_dns_type",
     _("DNS Protocol Type"),
@@ -356,7 +444,7 @@ function createSectionContent(section) {
   o.rmempty = false;
   o.depends("domain_resolver_enabled", "1");
 
-  o = section.option(
+  o = modalOption(
     form.Value,
     "domain_resolver_dns_server",
     _("DNS Server"),
@@ -378,7 +466,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "community_lists",
     _("Community Lists"),
@@ -466,7 +554,7 @@ function createSectionContent(section) {
     }
   };
 
-  o = section.option(
+  o = modalOption(
     form.ListValue,
     "user_domain_list_type",
     _("User Domain List Type"),
@@ -478,7 +566,7 @@ function createSectionContent(section) {
   o.default = "disabled";
   o.rmempty = false;
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "user_domains",
     _("User Domains"),
@@ -504,7 +592,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.TextValue,
     "user_domains_text",
     _("User Domains List"),
@@ -546,7 +634,7 @@ function createSectionContent(section) {
     return true;
   };
 
-  o = section.option(
+  o = modalOption(
     form.ListValue,
     "user_subnet_list_type",
     _("User Subnet List Type"),
@@ -558,7 +646,7 @@ function createSectionContent(section) {
   o.default = "disabled";
   o.rmempty = false;
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "user_subnets",
     _("User Subnets"),
@@ -584,7 +672,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.TextValue,
     "user_subnets_text",
     _("User Subnets List"),
@@ -625,7 +713,7 @@ function createSectionContent(section) {
     return true;
   };
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "local_domain_lists",
     _("Local Domain Lists"),
@@ -648,7 +736,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "local_subnet_lists",
     _("Local Subnet Lists"),
@@ -671,7 +759,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "remote_domain_lists",
     _("Remote Domain Lists"),
@@ -694,7 +782,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "remote_subnet_lists",
     _("Remote Subnet Lists"),
@@ -717,7 +805,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.DynamicList,
     "fully_routed_ips",
     _("Fully Routed IPs"),
@@ -744,7 +832,7 @@ function createSectionContent(section) {
     return validation.message;
   };
 
-  o = section.option(
+  o = modalOption(
     form.Flag,
     "mixed_proxy_enabled",
     _("Enable Mixed Proxy"),
@@ -757,7 +845,7 @@ function createSectionContent(section) {
   o.depends("connection_type", "proxy");
   o.depends("connection_type", "vpn");
 
-  o = section.option(
+  o = modalOption(
     form.Value,
     "mixed_proxy_port",
     _("Mixed Proxy Port"),
@@ -769,7 +857,7 @@ function createSectionContent(section) {
   o.rmempty = false;
   o.depends("mixed_proxy_enabled", "1");
 
-  o = section.option(
+  o = modalOption(
     form.Flag,
     "resolve_real_ip_for_routing",
     _("Resolve real IP for routing"),

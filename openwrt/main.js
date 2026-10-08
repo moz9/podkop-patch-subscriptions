@@ -6990,6 +6990,16 @@ var styles5 = `
     min-width: 0;
 }
 
+.pdk-page #view, .pdk-page #cbi-podkop {
+    width: 100%; min-width: 0; box-sizing: border-box;
+}
+.pdk-page #cbi-podkop .cbi-value > output {
+    flex: 1 1 0; min-width: 0; width: 100%; max-width: 100%;
+}
+.pdk-page #subscriptions-status {
+    width: 100%; min-width: 0; box-sizing: border-box;
+}
+
 .pdk_subscriptions-page__content {
     width: 100%;
     min-width: 0;
