@@ -41,7 +41,7 @@
     "openwrt/runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js": "96b7feb69999e1a60c648b686358fbf46224d0632effad6d1b365ca3bf8f2986",
     "openwrt/runtime-0.7.22/usr/bin/podkop": "b3714b34eef87aa25dcf998c217fdeb35fd96cdbdcce2d32e8780aed64d5b40c",
     "openwrt/runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js": "96b7feb69999e1a60c648b686358fbf46224d0632effad6d1b365ca3bf8f2986",
-    "openwrt/section.js": "d18c77058f39903f2f329830056cc4701826ad5e3fb0ad4f216433ebfcdd932d",
+    "openwrt/section.js": "d4a49d1c294bbe4a057c14c6aaa85ee1a115a51afaf2d3510c5e1bc9cfac3923",
     "openwrt/settings.js": "2c7c6710f36b12b589e2842c083bf1bbf63803b4b583deafd788aa48854dc722",
     "openwrt/subscriptions.js": "3ffd19eed69a6d061a0205ee29095b54ace314849b0c40ae78b4452d934e33b1",
     "s": "38689515a0a9339aea1ab7e0515b837051a08a0d38e283fbe52790fad5c75715"

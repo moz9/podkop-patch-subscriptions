@@ -17,6 +17,11 @@ const configs = {
     subscription_selection_mode: 'selected', subscription_selected_link_ids: ['one', 'two'],
     community_lists: ['youtube', 'telegram'], remote_domain_lists: ['https://secret.example/domains']},
   beta: {connection_type: 'vpn', interface: 'wg0'},
+  textLists: {user_domain_list_type:'text', user_domains_text:'example.com, site.test // comment\nlast.test',
+    user_subnet_list_type:'text', user_subnets_text:'10.0.0.0/24\n// comment\n192.168.0.0/16',
+    user_domains:['ignored.test'], user_subnets:['127.0.0.1']},
+  dynamicLists: {user_domain_list_type:'dynamic', user_domains:['example.com','site.test'],
+    user_domains_text:'ignored.test', user_subnet_list_type:'disabled', user_subnets:['127.0.0.1']},
 };
 const records = [], tabs = [];
 const makeOption = (placement, tab, type, key, title) => {
@@ -41,6 +46,8 @@ const context = vm.createContext({
   _: text => text,
 });
 vm.runInContext(`(function(){${read('section.js')}\n})()`, context);
+const parseListSource = read('main.js').match(/function parseValueList\(value\) \{[\s\S]*?\n\}/)[0];
+context.main.parseValueList = vm.runInContext(`(${parseListSource})`, context);
 exported.createSectionContent(section);
 assert.deepEqual(tabs, [
   {id:'connection', title:'Подключение'}, {id:'checking', title:'Проверка узлов'},
@@ -70,6 +77,9 @@ assert.equal(table.find(row => row.key === '_overview_sources').cfgvalue('beta')
 const summary = table.map(row => row.cfgvalue('alpha')).join(' ');
 assert.match(summary, /выбрано: 2/);
 assert.doesNotMatch(summary, /secret|password|vless:\/\//, 'summary never leaks credentials');
+const lists = table.find(row => row.key === '_overview_lists');
+assert.equal(lists.cfgvalue('textLists'), 'Элементов: 5', 'text lists count active entries and ignore comments/inactive dynamic values');
+assert.equal(lists.cfgvalue('dynamicLists'), 'Элементов: 2', 'only active dynamic lists count');
 const tolerance = modal.find(row => row.key === 'urltest_tolerance');
 assert.equal(tolerance.validate('alpha','50'), true);
 assert.equal(tolerance.validate('alpha','1000'), true);

@@ -86,9 +86,18 @@ function createSectionContent(section) {
     return type === "url" ? "Один адрес" : type === "outbound" ? "JSON" : "—";
   });
   summary("_overview_lists", "Списки", sectionId => {
-    const count = ["community_lists", "user_domains", "user_subnets", "local_domain_lists",
+    let count = ["community_lists", "local_domain_lists",
       "local_subnet_lists", "remote_domain_lists", "remote_subnet_lists"].reduce(
       (total, name) => total + countValues(configValue(sectionId, name)), 0);
+    for (const kind of ["domain", "subnet"]) {
+      const mode = configValue(sectionId, "user_" + kind + "_list_type");
+      const field = "user_" + kind + "s";
+      if (mode === "text") {
+        count += main.parseValueList(String(configValue(sectionId, field + "_text") || "")).length;
+      } else if (mode === "dynamic") {
+        count += countValues(configValue(sectionId, field));
+      }
+    }
     return count ? "Элементов: " + count : "Нет";
   });
 
