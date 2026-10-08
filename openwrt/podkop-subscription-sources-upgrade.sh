@@ -9,6 +9,8 @@ trap 'rm -rf "$work"; rm -f "$staged"' EXIT INT TERM HUP
 sh -n "$source_runtime"
 if grep -Fqx '# subscription_choices_and_busy_v1' "$target" &&
     grep -Fqx '# subscription_selection_v1' "$target" &&
+    grep -Fqx '# subscription_optional_selection_v1' "$target" &&
+    grep -Fqx '# subscription_tag_prefix_v1' "$target" &&
     grep -Fqx '# subscription_tag_filters_v1' "$target" &&
     grep -Fqx '# subscription_tag_glob_portable_v1' "$target" &&
     sed -n '/^set_subscription_links_enabled() {/,/^}/p' "$target" | grep -q 'set_subscription_sections_enabled' &&

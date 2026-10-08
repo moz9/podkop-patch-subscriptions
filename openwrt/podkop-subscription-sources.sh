@@ -3,6 +3,8 @@
 # subscription_source_actions_v1
 # subscription_choices_and_busy_v1
 # subscription_selection_v1
+# subscription_optional_selection_v1
+# subscription_tag_prefix_v1
 # subscription_tag_filters_v1
 # subscription_tag_glob_portable_v1
 subscription_tag_values_append() {
@@ -48,9 +50,16 @@ subscription_tags_verify() {
 }
 
 subscription_selection_mode() {
-    local mode=''
+    local mode='' excluded=''
     config_get mode "$1" subscription_selection_mode
-    case "$mode" in selected) printf 'selected\n' ;; *) printf 'all\n' ;; esac
+    case "$mode" in
+        selected|all|auto) printf '%s\n' "$mode" ;;
+        *)
+            # Preserve the legacy blacklist until manual selection is explicitly turned off.
+            config_get excluded "$1" subscription_excluded_link_ids
+            if [ -n "$excluded" ]; then printf 'all\n'; else printf 'auto\n'; fi
+            ;;
+    esac
 }
 
 subscription_selected_ids_json() {
@@ -65,16 +74,21 @@ subscription_selected_ids_json() {
 # Freeze the current effective choices before applying a mode transition and row edits.
 subscription_selection_prepare() {
     local section="$1" changes="$2" items="$3" excluded="$4" dir="$SUBSCRIPTION_APPLY_V2_TMP"
-    local current mode selected id enabled selection_id was_selected count=0
+    local current mode selected id enabled selection_id was_selected count=0 include_tags='[]' exclude_tags='[]'
     current="$(subscription_selection_mode "$section")"
     mode="$(printf '%s' "$changes" | jq -r --arg current "$current" '.selectionMode // $current')"
     selected="$(subscription_selected_ids_json "$section")" || return 1
     if [ "$mode" != "$current" ]; then
         count=1
-        if [ "$mode" = selected ]; then
+        if [ "$mode" = selected ] && { [ "$current" != auto ] || [ "$selected" = '[]' ]; }; then
             subscription_items_with_sources "$section" "$items" > "$dir/selection.$section.items" || return 1
+            if [ "$current" = auto ]; then
+                include_tags="$(subscription_tags_json "$section" subscription_include_tags)" || return 1
+                exclude_tags="$(subscription_tags_json "$section" subscription_exclude_tags)" || return 1
+            fi
             selected="$(subscription_source_policy "$(subscription_disabled_sources_json "$section")" "$excluded" \
-                "$dir/selection.$section.items" all '[]' | jq -c '[.[] | select(.runtimeEnabled) | .selectionId // .id] | unique')" || return 1
+                "$dir/selection.$section.items" "$current" '[]' "$include_tags" "$exclude_tags" \
+                | jq -c '[.[] | select(.runtimeEnabled) | .selectionId // .id] | unique')" || return 1
         fi
     fi
     if [ "$mode" = selected ]; then
@@ -248,11 +262,43 @@ subscription_source_policy() {
                              else $token.value == $chars[$pos] end)
                     | .+1] | unique end)
             | index($chars|length) != null;
-        def matches($patterns; $name): any($patterns[]; glob_matches(.; $name));
+        def country_code($text):
+            ($text | explode) as $codes
+            | if ($codes | length) == 2 and all($codes[]; . >= 65 and . <= 90) then $text else null end;
+        def flag_for($code): [$code | explode[] | . + 127397] | implode;
+        def whitespace: . == 32 or (. >= 9 and . <= 13) or . == 160 or . == 5760
+            or (. >= 8192 and . <= 8202) or . == 8232 or . == 8233 or . == 8239
+            or . == 8287 or . == 12288 or . == 65279;
+        def trim_name:
+            explode as $chars
+            | [$chars | to_entries[] | select(.value | whitespace | not) | .key] as $visible
+            | if ($visible|length) == 0 then "" else $chars[$visible[0]:($visible[-1]+1)] | implode end;
+        def leading_code($code; $name):
+            ($name | trim_name) as $name
+            |
+            ($name | startswith($code)) and
+            (($name | length) == 2 or any($name[2:3] | explode[]; whitespace)
+                or ([".","_",":","/","-"] | index($name[2:3]) != null));
+        def prefix_matches($code; $name):
+            ($name | contains(flag_for($code))) or leading_code($code; $name);
+        def legacy_flag_code($pattern):
+            ($pattern | explode) as $codes
+            | if ($codes | length) == 4 and $codes[0] == 42 and $codes[3] == 42
+                 and all($codes[1:3][]; . >= 127462 and . <= 127487)
+              then [$codes[1:3][] | . - 127397] | implode
+              else null end;
+        def pattern_matches($pattern; $name):
+            (legacy_flag_code($pattern)) as $legacy_code
+            | if ($pattern | startswith("@prefix:")) and (country_code($pattern[8:]) != null)
+              then prefix_matches($pattern[8:]; $name)
+              elif $legacy_code != null then prefix_matches($legacy_code; $name)
+              else glob_matches($pattern; $name) end;
+        def matches($patterns; $name): any($patterns[]; pattern_matches(.; $name));
         map(. as $item
             | .enabled = (.supported == true and (if $mode=="selected" then
                 ($selected | index($item.selectionId // $item.id)) != null
-                else ($excluded | index($item.id)) == null and ($excluded | index($item.selectionId // $item.id)) == null end))
+                elif $mode=="all" then ($excluded | index($item.id)) == null and ($excluded | index($item.selectionId // $item.id)) == null
+                else true end))
             | .sourceEnabled = (if ((.sourceIds // []) | length) > 0 then
                 any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
                 else ($disabled | length) == 0 end)

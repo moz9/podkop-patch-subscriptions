@@ -4,12 +4,18 @@ import assert from 'node:assert/strict';
 const js=fs.readFileSync(new URL('../openwrt/main.js',import.meta.url),'utf8');
 let state={subscriptionItemsWidget:{pendingChanges:{'main:a':false},data:[{code:'main',items:[{id:'a',enabled:true}],sources:[]}],actionStatus:'idle'}};
 const c=vm.createContext({store:{get:()=>state,set:x=>state={...state,...x}},_:x=>x,logger:{error(){}},showToast(){},
+  uci:{callLoad:async()=>({main:{'.name':'main',connection_type:'proxy',proxy_config_type:'subscription_urltest'}})}, window:{setTimeout:callback=>queueMicrotask(callback)},
   CustomPodkopMethods:{getConfigSections:async()=>[{'.name':'main',connection_type:'proxy',proxy_config_type:'subscription_urltest'}]},
   PodkopShellMethods:{getSubscriptionItemsCached:async()=>({success:true,data:[{id:'a',enabled:true}]}),getSubscriptionSources:async()=>({success:true,data:[]}),setSubscriptionSectionsEnabled:async()=>({success:true,data:{success:false,error:'service_busy'}})},
   isActionRunning:()=>false,getPendingCount2:x=>Object.keys(x).length,getSubscriptionActionErrorMessage:(e,f)=>e.message||f
 });
 vm.runInContext('var subscriptionStatusGeneration=0; var subscriptionStatusTimer;',c);
-for(const name of ['getRowId','getSourceId','getEffectiveEnabled','getEffectiveSourceEnabled','getEffectiveSelectionMode','hasPendingSubscriptionModeChange','getStatusLabel','getSourceSummary','getSectionCollapsedSummary','isSubscriptionSectionCollapsed','isSubscriptionSourceCollapsed','handleToggleSection','handleToggleSource','getChangesBySection','buildSubscriptionSectionChanges','parseSubscriptionTagList','normalizeSubscriptionTags','getEffectiveSubscriptionTags','subscriptionTagMatches','isSubscriptionTagFiltered','getTagFilterPreview','fetchSubscriptionItems','handleApply','rebaseSubscriptionDraft','setActionState','subscriptionStateLabel','canRefreshSubscriptions','canRunServiceAction','refreshSubscriptionRuntimeStatus','getToolbarMessage']){
+for(const name of ['sleep','readSubscriptionSections','readSubscriptionSectionsWithRetry']) {
+ const m=js.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));
+ assert.ok(m, `${name} must exist`);
+ vm.runInContext(m[0],c);
+}
+for(const name of ['getRowId','getSourceId','getEffectiveEnabled','getEffectiveSubscriptionItemEnabled','getEffectiveSourceEnabled','getEffectiveSelectionMode','hasPendingSubscriptionModeChange','getStatusLabel','getSourceSummary','getSectionCollapsedSummary','isSubscriptionSectionCollapsed','isSubscriptionSourceCollapsed','handleToggleSection','handleToggleSource','getChangesBySection','buildSubscriptionSectionChanges','parseSubscriptionTagList','normalizeSubscriptionTags','getEffectiveSubscriptionTags','subscriptionTagMatches','isSubscriptionTagFiltered','getTagFilterPreview','fetchSubscriptionItems','handleApply','rebaseSubscriptionDraft','setActionState','subscriptionStateLabel','canRefreshSubscriptions','canRunServiceAction','refreshSubscriptionRuntimeStatus','getToolbarMessage']){
  const m=js.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));
  if(m) vm.runInContext(m[0],c);
 }
