@@ -5425,6 +5425,15 @@ function getStatusClass({
   }
   return effectiveEnabled ? "pdk_subscriptions-page__status--enabled" : "pdk_subscriptions-page__status--excluded";
 }
+function getSubscriptionRowStatusTitle({item, effectiveEnabled, tagFiltered, serviceExcluded}) {
+  if (!item.supported) return getReasonLabel(item.reason);
+  if (item.subscriptionDisabled) return 'Подписка отключена: её узлы не попадут в набор для применения.';
+  if (!effectiveEnabled) return 'Узел не выбран вручную.';
+  if (tagFiltered) return 'Узел не подходит под фильтр тегов этой секции.';
+  if (!serviceExcluded.length) return 'Узел проходит выбранные фильтры и попадёт в набор при применении.';
+  const labels = {gemini:'Gemini', chatgpt:'ChatGPT'};
+  return serviceExcluded.map(service => `${labels[service] || service}: ${getSubscriptionServiceStateLabel(item.services?.[service])}`).join('; ');
+}
 function renderEmptyState(text) {
   return E("div", { class: "pdk_subscriptions-page__empty centered" }, text);
 }
@@ -5476,7 +5485,7 @@ function getSourceSummary({
   const parts = [
     `Конфигов: ${group.items.length}`,
     ...(getEffectiveSelectionMode(pendingChanges,section) === "auto" ? [] : [`${modeChanging ? "Выбрано сейчас" : "Выбрано"}: ${selectedCount}/${supportedCount}`]),
-    `${modeChanging ? "Доступно сейчас" : "Доступно"}: ${runtimeCount}`
+    `${modeChanging ? "По прежнему режиму" : "К применению"}: ${runtimeCount}`
   ];
   if (modeChanging) parts.push("После смены режима — после применения");
   if (!sourceEnabled) parts.push("Выключена");
@@ -5527,7 +5536,7 @@ function getToolbarMessage({
   if (status === "success") {
     return _("Changes applied. Podkop has been restarted.");
   }
-  return _("Select configs, then click Apply to restart Podkop once.");
+  return 'Настройте отбор узлов и нажмите «Применить». Проверки и изменения выбора сами рабочее подключение не переключают.';
 }
 function getToolbarClass(status, actionStatus, pendingCount) {
   if (status === "applying") {
@@ -5697,8 +5706,8 @@ function renderRow({
         "td",
         {
           class: "pdk_subscriptions-page__toggle-cell",
-          "data-label": _("On"),
-          "data-title": _("On")
+          "data-label": "Выбран",
+          "data-title": "Выбран"
         },
         [
           E("label", { class: "pdk_subscriptions-page__toggle-target" }, [
@@ -5706,8 +5715,8 @@ function renderRow({
               type: "checkbox",
               checked: effectiveEnabled ? "checked" : void 0,
               disabled: disabled ? "disabled" : void 0,
-              title: getEffectiveSelectionMode(pendingChanges, section) === "auto" ? "Выбор определяется тегами. Для отдельных галочек включите ручной отбор конфигов." : `${_("On")}: ${getItemName(item, index)}`,
-              "aria-label": `${_("On")}: ${getItemName(item, index)}`,
+              title: getEffectiveSelectionMode(pendingChanges, section) === "auto" ? "Узел выбран автоматически. Допуск определяется фильтрами тегов и сервисов. Для отдельных галочек включите ручной отбор." : "Выбор узла до фильтров. Итоговый допуск показан в столбце «Статус».",
+              "aria-label": `Выбран: ${getItemName(item, index)}`,
               change: (event) => {
                 const target = event.target;
                 onToggle(section.code, item, target.checked);
@@ -5746,7 +5755,7 @@ function renderRow({
         {
           "data-label": _("Status"),
           "data-title": _("Status"),
-          title: effectiveEnabled && serviceExcluded.length ? `Исключён фильтром сервисов: ${serviceExcluded.join(', ')} — нет свежего подтверждения. Подробнее в результатах проверок.` : void 0,
+          title: getSubscriptionRowStatusTitle({item, effectiveEnabled, tagFiltered, serviceExcluded}),
           class: `pdk_subscriptions-page__status ${getStatusClass({
             item,
             pending,
@@ -5776,7 +5785,7 @@ function renderSourceTable({
     E("table", { class: "pdk_subscriptions-page__table" }, [
       E("thead", {}, [
         E("tr", {}, [
-          E("th", {}, _("On")),
+          E("th", {}, "Выбран"),
           E("th", {}, _("Config")),
           E("th", {}, _("Protocol")),
           E("th", {}, _("Transport")),
@@ -5951,6 +5960,21 @@ function getSubscriptionServiceExclusions(item, required) {
     return !result || result.state !== 'pass' || !isSubscriptionServiceEvidenceFresh(result);
   });
 }
+function getSubscriptionServiceSummary(section, services, pendingChanges) {
+  const candidates = getSubscriptionServiceCheckTargets(section, services, true, pendingChanges);
+  const counts = {candidates:candidates.length, passed:0, fresh:0, needsCheck:0, failed:0, unknown:0};
+  for (const item of candidates) {
+    const results = services.map(service => item.services?.[service]);
+    if (results.some(result => !isSubscriptionServiceEvidenceFresh(result))) counts.needsCheck++;
+    else {
+      counts.fresh++;
+      if (results.some(result => result.state === 'fail')) counts.failed++;
+      else if (results.some(result => result.state !== 'pass')) counts.unknown++;
+      else counts.passed++;
+    }
+  }
+  return counts;
+}
 function getSubscriptionServiceStateLabel(result) {
   if (!result) return 'Не проверен — исключён';
   if (!isSubscriptionServiceEvidenceFresh(result)) return 'Проверка устарела или дата некорректна — исключён';
@@ -5973,6 +5997,7 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
   const checkRunning = actions?.serviceRunning && actions.serviceSection === section.code;
   const candidates = getSubscriptionServiceCheckTargets(section,selected,true,pendingChanges);
   const targets = getSubscriptionServiceCheckTargets(section,selected,false,pendingChanges);
+  const summary = getSubscriptionServiceSummary(section,selected,pendingChanges);
   const routingHint = getSubscriptionServiceRoutingHint(section,selected);
   return E('div', {class:'pdk_subscriptions-page__service-filter',style:'margin:8px 0'}, [
     E('div', {style:'display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px'}, [
@@ -5987,8 +6012,19 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
       click:()=>handleCheckSubscriptionServices(section.code,selected,true)},'Перепроверить всё')
     ]),
     E('small', {role:'status',style:'display:block;margin:4px 0'}, selected.length
-      ? `Фильтр включён · к проверке ${targets.length} из ${candidates.length} узлов · все выбранные сервисы обязательны`
+      ? `Подходят: ${summary.passed} из ${summary.candidates} · Свежие результаты: ${summary.fresh} · Нужна проверка: ${summary.needsCheck} · Отказ: ${summary.failed} · Не определено: ${summary.unknown}`
       : 'Фильтр выключен · выберите сервис для проверки'),
+    E('small', {'data-service-next-step':'true', style:'display:block;margin:4px 0'}, !selected.length
+      ? 'Выберите сервис, если доступ к нему обязателен для этой секции.'
+      : !summary.candidates
+      ? 'Нет кандидатов для проверки. Проверьте включённые подписки, теги и ручной выбор.'
+      : summary.needsCheck
+      ? 'Нажмите «Проверить новые/устаревшие». Рабочее подключение при проверке не переключается.'
+      : summary.unknown
+      ? 'Неопределённые узлы исключены. Откройте результаты: подтверждайте только чат, который вы действительно проверили через этот узел. Для новой попытки нажмите «Перепроверить всё».'
+      : summary.failed
+      ? 'Свежие отказы исключены. Причины доступны в результатах; для новой попытки нажмите «Перепроверить всё».'
+      : 'Все кандидаты предварительно подходят. Изменённый набор начнёт работать только после «Применить».'),
     E('details', {}, [E('summary', {}, 'Подробнее'),
       E('p', {}, 'Gemini: предварительная региональная проверка по ответу публичной страницы. Она не гарантирует ответ чата или доступ аккаунта. HTTP 200 или страница входа не доказывают работу чата. Неопределённый результат, отказ региона и отсутствие проверки — разные состояния.'),
       E('p', {}, 'Для конфигов подписок; отдельные proxy-ссылки не проверяются. Секция с отдельными proxy-ссылками не может использовать этот фильтр. Непроверенные и устаревшие узлы не допускаются в новое применение. Истечение срока не переключает рабочий прокси: может сохраняться прежний допущенный набор. Проверки не переключают рабочий прокси и не применяют изменения.'),
@@ -6128,22 +6164,24 @@ function getTagFilterPreview(section, pendingChanges) {
   const draft = uncertain ? {} : pendingChanges;
   const include = getEffectiveSubscriptionTags(draft, section, "include");
   const exclude = getEffectiveSubscriptionTags(draft, section, "exclude");
-  const chosen = section.items.filter(item => item.supported && getEffectiveSubscriptionItemEnabled(draft, section, item));
-  const filtered = chosen.filter(item => isSubscriptionTagFiltered(item, include, exclude)).length;
-  const enabled = chosen.filter(item => {
-    if (isSubscriptionTagFiltered(item, include, exclude)) return false;
-    if (getSubscriptionServiceExclusions(item,getEffectiveRequiredServices(draft,section)).length) return false;
+  const counts = {enabled:0, filtered:0, uncertain, unsupported:0, sourceExcluded:0, manualExcluded:0, serviceExcluded:0};
+  for (const item of section.items) {
+    if (!item.supported) { counts.unsupported++; continue; }
     const sources = section.sources || [];
-    if (!sources.length) return !item.subscriptionDisabled;
-    return sources.some(source =>
+    const sourceEnabled = !sources.length ? !item.subscriptionDisabled : sources.some(source =>
       (item.sourceIds?.length ? item.sourceIds.includes(source.id) : (item.sourceIndex || 1) === source.sourceIndex) &&
       getEffectiveSourceEnabled(draft, section.code, source));
-  }).length;
-  return {enabled,filtered,uncertain};
+    if (!sourceEnabled) { counts.sourceExcluded++; continue; }
+    if (!getEffectiveSubscriptionItemEnabled(draft, section, item)) { counts.manualExcluded++; continue; }
+    if (isSubscriptionTagFiltered(item, include, exclude)) { counts.filtered++; continue; }
+    if (getSubscriptionServiceExclusions(item,getEffectiveRequiredServices(draft,section)).length) { counts.serviceExcluded++; continue; }
+    counts.enabled++;
+  }
+  return counts;
 }
 function getSectionCollapsedSummary(section, pendingChanges) {
   const preview = getTagFilterPreview(section, pendingChanges);
-  const parts = [`${section.items.length} конфигов`, `${preview.uncertain ? "доступно сейчас" : "доступно"} ${preview.enabled}`];
+  const parts = [`${section.items.length} конфигов`, `${preview.uncertain ? "по прежнему режиму" : "к применению"} ${preview.enabled}`];
   if (preview.uncertain) parts.push("после смены режима — после применения");
   if (getEffectiveSelectionMode(pendingChanges, section) === "selected") parts.push("только выбранные");
   if (getEffectiveSubscriptionTags(pendingChanges, section, "include").length ||
@@ -6178,6 +6216,7 @@ function renderSection({
       click:()=>onToggleSection(section.code)},
       `${collapsed ? "▸" : "▾"} ${section.displayName} · ${getSectionCollapsedSummary(section, pendingChanges)}`),
     ...collapsed ? [] : [
+    E("small", {style:"display:block;margin:8px 0"}, "Настройте теги и нужные сервисы. Проверьте узлы и итоговый набор, затем нажмите «Применить»."),
     E("label", {style:"display:flex;align-items:center;gap:8px;margin:8px 0"}, [
       E("input", {type:"checkbox", checked:getEffectiveSelectionMode(pendingChanges, section) !== "auto" ? "checked" : void 0,
         disabled:applying || sourceActions?.modeDisabled ? "disabled" : void 0,
@@ -6186,7 +6225,7 @@ function renderSection({
       E("span", {}, "Ручной отбор конфигов")
     ]),
     ...getEffectiveSelectionMode(pendingChanges, section) === "auto" ? [
-      E("small", {style:"display:block;margin:4px 0"}, "Все поддерживаемые конфиги включённых подписок участвуют автоматически. В работу попадают только прошедшие фильтр тегов. Сохранённые ручные исключения сейчас не действуют.")
+      E("small", {style:"display:block;margin:4px 0"}, "Узлы включённых подписок выбираются автоматически. К применению допускаются только прошедшие фильтры тегов и сервисов. Сохранённые ручные исключения сейчас не действуют.")
     ] : [E("label", {style:"display:block;margin:8px 0"}, [
       E("span", {}, "Конфиги этой секции: "),
       E("select", {
@@ -6204,12 +6243,13 @@ function renderSection({
       ...["include","exclude"].map(kind => renderSubscriptionTagPicker(section,pendingChanges,kind,applying || sourceActions?.modeDisabled,onToggle))
     ]),
     ...section.serviceSupport !== undefined ? [renderSubscriptionServiceFilter(section,pendingChanges,applying,onToggle,sourceActions)]:[],
-    E("small", {style:"display:block;margin:4px 0"}, "Префиксы определены из названий узлов: SE, FI, US и другие. Флаг и буквенный код одной страны считаются одним тегом. Исключение важнее разрешения. При ручном отборе фильтр дополнительно ограничивает ваш выбор."),
+    E("details", {}, [E("summary", {}, "Как работают теги"), E("small", {}, "Префиксы определены из названий узлов: SE, FI, US и другие. Флаг и буквенный код одной страны считаются одним тегом. Исключение важнее разрешения. При ручном отборе фильтр дополнительно ограничивает ваш выбор.")]),
     E("small", {style:"display:block;margin:4px 0"}, tagPreview.uncertain
-      ? `Сейчас доступно узлов: ${tagPreview.enabled}. После смены режима итоговое число определится при применении.`
+      ? `По прежнему режиму подходят: ${tagPreview.enabled}. После смены режима итоговое число определится при применении.`
       : tagPreview.enabled === 0
-      ? "После применения не останется активных узлов — сохранение будет отклонено."
-      : `После фильтра останется активных узлов: ${tagPreview.enabled}; отфильтровано: ${tagPreview.filtered}.`),
+      ? "К применению: 0. Сохранение будет отклонено. Проверьте причины исключения ниже."
+      : `К применению: ${tagPreview.enabled} из ${section.items.length} конфигов.`),
+    E("small", {style:"display:block;margin:4px 0"}, `Исключено: несовместимые — ${tagPreview.unsupported}; подписки выключены — ${tagPreview.sourceExcluded}; не выбраны вручную — ${tagPreview.manualExcluded}; теги — ${tagPreview.filtered}; сервисы — ${tagPreview.serviceExcluded}. Причины учитываются по порядку, без двойного счёта.`),
     sourceGroups.length === 0 ? renderEmptyState(
       _("Subscription cache is empty. Click refresh to load configs.")
     ) : E(

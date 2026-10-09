@@ -58,6 +58,8 @@ expect_update 'legacy-marker-v1' 'legacy-marker-v2'
 mkdir -p "$STATE_DIR"
 expect_update '20261007-pe-v8' '20261009-pe-v11'
 expect_no_update '20261009-pe-v11' '20261007-pe-v8'
+expect_update '20261009-pe-v11' '20261010-pe-v12'
+expect_no_update '20261010-pe-v12' '20261009-pe-v11'
 fixture_manifest="$test_root/fixture-manifest.json"
 fixture_release="$test_root/fixture-release.json"
 TEST_CURRENT_PODKOP='0.7.23'
