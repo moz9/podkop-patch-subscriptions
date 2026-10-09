@@ -168,6 +168,51 @@ for version in 0.7.20 0.7.22; do
  [ "$choices" = "$(jq -c '.main | {selected:.subscription_selected_link_ids,excluded:.subscription_excluded_link_ids}' "$PODKOP_CONFIG")" ] || fail 'auto-to-selected did not resume saved choices'
  rm -f "$work/commits" "$work/reloads"
 done
+# Required-service storage failure exercises the full real transaction plus
+# real seamless reload and snapshot writer, with only UCI/process/disk fixtures.
+. "$repo/openwrt/podkop-service-checks.sh"
+. "$repo/openwrt/podkop-service-snapshot.sh"
+sed -n '/^subscription_reload_seamless() {$/,/^}$/p' "$runtime" > "$work/seamless"
+. "$work/seamless"
+PODKOP_SERVICE_CACHE_DIR="$work/service-checks"
+PODKOP_SERVICE_SNAPSHOT_DIR="$work/service-snapshot"
+TMP_RULESET_FOLDER="$work/rules"
+mkdir -p "$TMP_RULESET_FOLDER" "$work/bin"
+cp "$repo/tests/fixtures/subscription_services_process.sh" "$work/bin/sing-box"; chmod 755 "$work/bin/sing-box"
+PATH="$work/bin:$PATH"; export PATH
+cfg="$work/sing-box.json"
+printf '{"outbounds":[{"tag":"old"}],"route":{"rule_set":[]}}\n' > "$cfg"
+cp "$cfg" "$work/old-cfg"
+jq --arg cfg "$cfg" '.settings={config_path:$cfg}' "$PODKOP_CONFIG" > "$PODKOP_CONFIG.next"; mv "$PODKOP_CONFIG.next" "$PODKOP_CONFIG"
+subscription_services_context() { printf 'transaction-context\n'; }
+subscription_services_store main "$a" '{"gemini":{"state":"pass","network":"pass","manual":false,"reason":"region_precheck_passed"}}'
+config_foreach() { "$1" main; "$1" peer; }
+collect_urltest_proxy_links() { return 1; }
+log() { :; }
+subscription_services_snapshot_capacity() { return 1; }
+before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")"
+result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}' || true)"
+printf '%s' "$result" | jq -e '.success==false and .committed==false and .error=="service_snapshot_storage_unavailable"' >/dev/null || fail 'storage preflight did not reject real transaction'
+[ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'low storage preflight changed config/cache/runtime'
+subscription_services_snapshot_capacity() { return 0; }
+eval "$(sed -n '/^ uci() {$/,/^ }$/p' "$0" | sed 's/^ //;1s/uci()/service_test_uci()/')"
+uci() { [ "$1" != -q ] || shift; if [ "$1" = export ]; then cat "$PODKOP_CONFIG"; else service_test_uci "$@"; fi; }
+df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted\nfixture 100 100 0 100%% /\n'; }
+sing_box_init_config() {
+    if [ "$(subscription_required_services_json main)" != '[]' ]; then
+        printf '{"outbounds":[{"tag":"candidate"}],"route":{"rule_set":[]}}\n' > "$cfg"
+    else cp "$work/old-cfg" "$cfg"; fi
+}
+subscription_sing_box_pid() { printf '123\n'; }
+subscription_signal_sing_box_reload() { printf 'signal\n' >> "$work/service-signals"; }
+subscription_sing_box_reload_ready() { return 0; }
+subscription_apply_v2_reload() { PODKOP_SUBSCRIPTION_APPLY_NOW=1 PODKOP_SUBSCRIPTION_RELOAD_DELAY=0 subscription_reload_seamless; }
+result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}' || true)"
+printf '%s' "$result" | jq -e '.success==false and .state=="rolled_back" and .rolledBack' >/dev/null || fail 'snapshot save failure did not roll back real transaction'
+[ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'late snapshot failure failed to restore UCI/cache/full config'
+[ "$(wc -l < "$work/service-signals")" -eq 2 ] || fail 'late snapshot failure did not signal candidate then previous runtime'
+[ ! -f "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json" ] || fail 'failed activation saved a snapshot'
+echo 'PASS: full required-service transaction rejects low storage and rolls back UCI/cache/config after late snapshot failure'
 # Existing installations need the complete policy, transaction and legacy toggle retrofit.
 for version in 0.7.20 0.7.22; do
  runtime="$repo/openwrt/runtime-$version/usr/bin/podkop"

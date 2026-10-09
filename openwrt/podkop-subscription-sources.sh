@@ -7,6 +7,7 @@
 # subscription_tag_prefix_v1
 # subscription_tag_filters_v1
 # subscription_tag_glob_portable_v1
+# subscription_service_filter_v1
 subscription_tag_values_append() {
     SUBSCRIPTION_TAG_VALUES="$(printf '%s' "$SUBSCRIPTION_TAG_VALUES" | jq -c --arg value "$1" '. + [$value]')"
 }
@@ -222,8 +223,14 @@ subscription_cached_source_append() {
 }
 
 subscription_source_policy() {
-    jq -c --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
-        --argjson include "${6:-[]}" --argjson exclude "${7:-[]}" '
+    local services="${8:-}"
+    [ -n "$services" ] || services='{"required":[],"results":[]}'
+    printf '%s\n' "$services" | jq -c --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
+        --argjson include "${6:-[]}" --argjson exclude "${7:-[]}" --slurpfile policy_items "$3" '
+        . as $services
+        | ($services.results | map({key:.id,value:.services}) | from_entries) as $service_status
+        | $policy_items[0]
+        |
         def glob_tokens:
             explode as $chars
             | reduce range(0; $chars|length) as $i
@@ -303,9 +310,10 @@ subscription_source_policy() {
                 any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
                 else ($disabled | length) == 0 end)
             | .tagExcluded = ((($include|length)>0 and (matches($include; $item.name // $item.tag // "")|not)) or matches($exclude; $item.name // $item.tag // ""))
-            | .runtimeEnabled = (.enabled and .sourceEnabled and (.tagExcluded|not))
+            | .serviceExcluded = (all($services.required[]; . as $service | $service_status[$item.id][$service].state=="pass") | not)
+            | .runtimeEnabled = (.enabled and .sourceEnabled and (.tagExcluded|not) and (.serviceExcluded|not))
             | if .supported then .reason = (if .enabled and .tagExcluded then "tag_filtered" elif .enabled then "" elif $mode=="selected" then "user_unselected" else "user_excluded" end) else . end)
-    ' "$3"
+    '
 }
 
 subscription_disabled_sources_json() {
@@ -353,15 +361,18 @@ subscription_items_with_sources() {
 
 subscription_filter_source_links() {
     local items="$1" links="$2" output="$3" disabled="$4" excluded="$5" work link id
-    local mode=all selected='[]' include='[]' exclude='[]'
+    local mode=all selected='[]' include='[]' exclude='[]' services='{"required":[],"results":[]}'
     if [ -n "${6:-}" ]; then
         mode="$(subscription_selection_mode "$6")"
         selected="$(subscription_selected_ids_json "$6")" || return 1
         include="$(subscription_tags_json "$6" subscription_include_tags)" || return 1
         exclude="$(subscription_tags_json "$6" subscription_exclude_tags)" || return 1
+        if command -v subscription_services_policy >/dev/null 2>&1; then
+            services="$(subscription_services_policy "$6")" || return 1
+        fi
     fi
     work="$(mktemp)" || return 1
-    subscription_source_policy "$disabled" "$excluded" "$items" "$mode" "$selected" "$include" "$exclude" > "$work" || { rm -f "$work"; return 1; }
+    subscription_source_policy "$disabled" "$excluded" "$items" "$mode" "$selected" "$include" "$exclude" "$services" > "$work" || { rm -f "$work"; return 1; }
     : > "$output"
     while IFS= read -r link || [ -n "$link" ]; do
         [ -n "$link" ] || continue
@@ -376,11 +387,28 @@ subscription_filter_source_links() {
 # Stage and validate source choices inside the existing single-commit transaction.
 subscription_sources_prepare() {
     local section="$1" changes="$2" items="$3" excluded="$4" dir="$SUBSCRIPTION_APPLY_V2_TMP"
-    local sources proposed id enabled current count mode=all selected='[]' include='[]' exclude='[]'
+    local sources proposed id enabled current count mode=all selected='[]' include='[]' exclude='[]' required='[]' old_required='[]' services='{"required":[],"results":[]}'
+    SUBSCRIPTION_SOURCES_ERROR=invalid_subscription_source
     sources="$(get_subscription_sources "$section")" || return 1
     proposed="$(subscription_disabled_sources_json "$section")"
     printf '%s\n' "$changes" | jq -r '.sources // [] | .[] | [.id,.enabled] | @tsv' > "$dir/sources.$section.changes" || return 1
     count=0
+    if command -v subscription_services_policy >/dev/null 2>&1; then
+        old_required="$(subscription_required_services_json "$section")" || return 1
+        required="$(printf '%s' "$changes" | jq -c --argjson current "$old_required" '.requiredServices // $current')" || return 1
+        subscription_services_validate "$required" || return 1
+        if [ "$required" != '[]' ] && { ! command -v subscription_services_snapshot_capacity >/dev/null 2>&1 || ! subscription_services_snapshot_capacity; }; then
+            SUBSCRIPTION_SOURCES_ERROR=service_snapshot_storage_unavailable
+            return 1
+        fi
+        if [ "$required" != '[]' ] && command -v collect_urltest_proxy_links >/dev/null 2>&1 && collect_urltest_proxy_links "$section" "$dir/services.$section.manual" && [ -s "$dir/services.$section.manual" ]; then
+            SUBSCRIPTION_SOURCES_ERROR=service_manual_links_unsupported
+            return 1
+        fi
+        printf '%s\n' "$required" > "$dir/services.$section.required" || return 1
+        [ "$required" = "$old_required" ] || count=$((count + 1))
+        services="$(subscription_services_policy "$section" "$required")" || return 1
+    elif printf '%s' "$changes" | jq -e 'has("requiredServices")' >/dev/null; then return 1; fi
     while IFS="$(printf '\t')" read -r id enabled; do
         [ -n "$id" ] || continue
         printf '%s\n' "$sources" | jq -e --arg id "$id" 'any(.[]; .id == $id)' >/dev/null || return 1
@@ -396,13 +424,25 @@ subscription_sources_prepare() {
     fi
     include="$(cat "$dir/tags.$section.include")" || return 1
     exclude="$(cat "$dir/tags.$section.exclude")" || return 1
-    subscription_source_policy "$proposed" "$excluded" "$dir/sources.$section.items" "$mode" "$selected" "$include" "$exclude" > "$dir/sources.$section.effective" || return 1
+    subscription_source_policy "$proposed" "$excluded" "$dir/sources.$section.items" "$mode" "$selected" "$include" "$exclude" "$services" > "$dir/sources.$section.effective" || return 1
     SUBSCRIPTION_SOURCES_REMAINING="$(jq '[.[] | select(.runtimeEnabled)] | length' "$dir/sources.$section.effective")"
     SUBSCRIPTION_SOURCES_CHANGED="$count"
 }
 
 subscription_sources_stage() {
     local section="$1" id
+    if [ -s "$SUBSCRIPTION_APPLY_V2_TMP/services.$section.required" ]; then
+        local required current service
+        required="$(cat "$SUBSCRIPTION_APPLY_V2_TMP/services.$section.required")" || return 1
+        current="$(subscription_required_services_json "$section")" || return 1
+        if [ "$required" != "$current" ]; then
+            uci -q delete "podkop.$section.subscription_required_services" >/dev/null 2>&1 || true
+            printf '%s' "$required" | jq -r '.[]' > "$SUBSCRIPTION_APPLY_V2_TMP/services.$section.list" || return 1
+            while IFS= read -r service; do
+                uci -q add_list "podkop.$section.subscription_required_services=$service" || return 1
+            done < "$SUBSCRIPTION_APPLY_V2_TMP/services.$section.list"
+        fi
+    fi
     # A link-only transaction must not alter another UCI option.
     [ -s "$SUBSCRIPTION_APPLY_V2_TMP/sources.$section.changes" ] || return 0
     uci -q delete "podkop.$section.subscription_disabled_source_ids" >/dev/null 2>&1 || true
@@ -415,6 +455,9 @@ subscription_sources_stage() {
 
 subscription_sources_verify() {
     local actual
+    if [ -s "$SUBSCRIPTION_APPLY_V2_TMP/services.$1.required" ]; then
+        [ "$(subscription_required_services_json "$1")" = "$(cat "$SUBSCRIPTION_APPLY_V2_TMP/services.$1.required")" ] || return 1
+    fi
     actual="$(subscription_disabled_sources_json "$1")" || return 1
     [ "$actual" = "$(cat "$SUBSCRIPTION_APPLY_V2_TMP/sources.$1.proposed")" ]
 }

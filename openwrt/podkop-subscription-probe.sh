@@ -1,6 +1,9 @@
 # subscription_isolated_probe_v1 begin
 # Diagnostics use a private loopback listener and never the working selector.
-subscription_isolated_test() (
+subscription_isolated_test() {
+    local isolated_worker_pid isolated_worker_rc isolated_worker_traps
+    isolated_worker_traps="$(trap)"
+    (
     section="$1"
     item_id="$2"
     mode="${3:-ping}"
@@ -19,7 +22,7 @@ subscription_isolated_test() (
     probe_error() { jq -cn --arg error "$1" '{success:false,error:$error}'; exit 1; }
     validate_subscription_section_name "$section" && validate_subscription_urltest_section "$section" || probe_error invalid_section
     validate_subscription_link_id "$item_id" || probe_error invalid_link_id
-    case "$mode" in ping|speed) ;; *) probe_error invalid_probe_mode ;; esac
+    case "$mode" in ping|speed) ;; services) subscription_services_validate "${4:-}" || probe_error invalid_services;; *) probe_error invalid_probe_mode ;; esac
     subscription_runtime_busy && probe_error service_busy
     subscription_action_lock_acquire "isolated_$mode" || probe_error service_busy
     locked=1
@@ -51,10 +54,17 @@ subscription_isolated_test() (
     sing-box check -c "$work/config.json" >"$work/check.log" 2>&1 || probe_error invalid_config
     sing-box run -c "$work/config.json" >"$work/runtime.log" 2>&1 &
     probe_pid=$!
-    sleep 1
-    kill -0 "$probe_pid" 2>/dev/null || probe_error probe_start_failed
+    tries=0
+    while ! netstat -ln 2>/dev/null | grep -q ":$port "; do
+        kill -0 "$probe_pid" 2>/dev/null || probe_error probe_start_failed
+        [ "$tries" -lt 20 ] || probe_error probe_listener_timeout
+        sleep 0.25
+        tries=$((tries + 1))
+    done
     proxy="http://127.0.0.1:$port"
-    if [ "$mode" = ping ]; then
+    if [ "$mode" = services ]; then
+        subscription_services_probe "$section" "$item_id" "$4" "$proxy" "$work" || probe_error service_check_failed
+    elif [ "$mode" = ping ]; then
         result="$(curl -sS --proxy "$proxy" --noproxy '' --connect-timeout 7 -m 12 -o /dev/null -w '%{http_code} %{time_total}' https://www.gstatic.com/generate_204 2>"$work/curl.log")"
         rc=$?
         [ "$rc" -eq 0 ] || probe_error "probe_curl_$rc"
@@ -83,7 +93,17 @@ subscription_isolated_test() (
               | {success:true,results:[{id:$id,name:$name,tag:"isolated",success:($time>0),bytesPerSecond:(if $time>0 then $bytes/$time else 0 end),sizeDownload:$bytes,timeTotal:$time,httpCode:200}]} end
         ' "$work"/stream.*
     fi
-)
+    ) &
+    isolated_worker_pid=$!
+    # Shell functions with subshell bodies otherwise leave their children alive
+    # when the calling CLI process receives cancellation.
+    trap 'kill "$isolated_worker_pid" 2>/dev/null || true; wait "$isolated_worker_pid" 2>/dev/null || true; exit 130' INT TERM HUP
+    isolated_worker_rc=0
+    wait "$isolated_worker_pid" || isolated_worker_rc=$?
+    trap - INT TERM HUP
+    eval "$isolated_worker_traps"
+    return "$isolated_worker_rc"
+}
 
 subscription_ping() {
     subscription_isolated_test "$1" "$2" ping

@@ -3,7 +3,7 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 const js = fs.readFileSync(new URL('../openwrt/main.js', import.meta.url), 'utf8');
 const c = vm.createContext({Intl});
-for (const name of ['buildSubscriptionSectionChanges','getEffectiveSelectionMode','getEffectiveSubscriptionItemEnabled','subscriptionTagMatches','isSubscriptionTagFiltered','getSubscriptionTagChoices','getEffectiveSubscriptionTags','hasPendingSubscriptionModeChange','getTagFilterPreview','getEffectiveEnabled','getRowId','getEffectiveSourceEnabled']) {
+for (const name of ['getEffectiveRequiredServices','getSubscriptionServiceExclusions','buildSubscriptionSectionChanges','getEffectiveSelectionMode','getEffectiveSubscriptionItemEnabled','subscriptionTagMatches','isSubscriptionTagFiltered','getSubscriptionTagChoices','getEffectiveSubscriptionTags','hasPendingSubscriptionModeChange','getTagFilterPreview','getEffectiveEnabled','getRowId','getEffectiveSourceEnabled']) {
   const match = js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`));
   assert.ok(match, `${name} must exist`);
   vm.runInContext(match[0], c);

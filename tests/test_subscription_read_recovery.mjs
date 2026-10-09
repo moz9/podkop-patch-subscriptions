@@ -56,7 +56,9 @@ function makeHarness({sections, getItems, getSources} = {}) {
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [{
     code: 'main', displayName: 'main', selectionMode: 'selected',
     includeTags: ['RU *'], excludeTags: ['*slow'],
-    items: [{id: 'node', enabled: true}], sources: [{id: 'source', enabled: true}]
+    requiredServices: [], serviceSupport: false,
+    communityLists: [],
+    items: [{id: 'node', enabled: true, services: {}}], sources: [{id: 'source', enabled: true}]
   }], 'fresh selection mode and tags must be read alongside subscription items and sources');
   assert.deepEqual(calls.writes, []);
 }
