@@ -16,6 +16,7 @@ if grep -Fqx '# subscription_choices_and_busy_v1' "$target" &&
     grep -Fqx '# subscription_gemini_region_v2' "$target" &&
     grep -Fqx '# subscription_probe_context_v2' "$target" &&
     grep -Fqx '# subscription_service_snapshot_v1 end' "$target" &&
+    grep -Fqx '# subscription_source_ruleset_reuse_v1' "$target" &&
     grep -Fqx 'subscription_services_check)' "$target" &&
     sed -n '/^set_subscription_links_enabled() {/,/^}/p' "$target" | grep -q 'set_subscription_sections_enabled' &&
     grep -Eq '^# subscription_isolated_probe_v[12] end$' "$target"; then
@@ -26,7 +27,7 @@ for block in subscription_sources_v1 subscription_isolated_probe_v1 subscription
     sed -n "/^# $block begin$/,/^# $block end$/p" "$source_runtime" > "$work/$block"
     [ -s "$work/$block" ]
 done
-names='start_main start sing_box_init_config subscription_reload_seamless reload restart append_subscription_item filter_working_subscription_proxy_links refresh_subscription_cache load_subscription_proxy_links_for_section apply_subscription_exclusions_to_cached_links set_subscription_links_enabled set_subscription_sections_enabled subscription_speedtest_stop subscription_update subscription_update_json subscription_runtime_busy'
+names='start_main start sing_box_init_config prepare_source_ruleset subscription_reload_seamless reload restart append_subscription_item filter_working_subscription_proxy_links refresh_subscription_cache load_subscription_proxy_links_for_section apply_subscription_exclusions_to_cached_links set_subscription_links_enabled set_subscription_sections_enabled subscription_speedtest_stop subscription_update subscription_update_json subscription_runtime_busy'
 for name in $names; do
     sed -n "/^$name() {$/,/^}$/p" "$source_runtime" > "$work/$name"
     [ -s "$work/$name" ]

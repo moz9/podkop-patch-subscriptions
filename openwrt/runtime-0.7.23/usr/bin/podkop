@@ -4686,22 +4686,34 @@ configure_community_list_handler() {
 }
 
 prepare_source_ruleset() {
+# subscription_source_ruleset_reuse_v1
     local section="$1"
     local name="$2"
     local type="$3"
     local route_rule_tag="$4"
+    local prepare_status
 
     log "Preparing a $name $type rule set for '$section' section" "debug"
     ruleset_tag=$(get_ruleset_tag "$section" "$name" "$type")
     ruleset_filepath="$TMP_RULESET_FOLDER/$ruleset_tag.json"
-    create_source_rule_set "$ruleset_filepath"
-    case $? in
-    0)
-        config=$(sing_box_cm_add_local_ruleset "$config" "$ruleset_tag" "source" "$ruleset_filepath")
-        config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "rule_set" "$ruleset_tag")
+    if create_source_rule_set "$ruleset_filepath"; then prepare_status=0; else prepare_status=$?; fi
+    case "$prepare_status" in
+    0 | 3)
+        # Cached files still need registration in each new config. Multiple
+        # plaintext source URLs can share this tag within the same generation.
+        if ! printf '%s\n' "$config" | jq -e --arg tag "$ruleset_tag" 'any(.route.rule_set[]?; .tag==$tag)' >/dev/null; then
+            config=$(sing_box_cm_add_local_ruleset "$config" "$ruleset_tag" "source" "$ruleset_filepath") || return 1
+        fi
+        if ! printf '%s\n' "$config" | jq -e --arg key "$SERVICE_TAG" --arg rule "$route_rule_tag" --arg tag "$ruleset_tag" \
+            'any(.route.rules[]?; .[$key]==$rule and ((.rule_set // [] | if type=="array" then . else [.] end) | index($tag)!=null))' >/dev/null; then
+            config=$(sing_box_cm_patch_route_rule "$config" "$route_rule_tag" "rule_set" "$ruleset_tag") || return 1
+        fi
         case "$type" in
         domains)
-            config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "rule_set" "$ruleset_tag")
+            if ! printf '%s\n' "$config" | jq -e --arg key "$SERVICE_TAG" --arg rule "$SB_FAKEIP_DNS_RULE_TAG" --arg tag "$ruleset_tag" \
+                'any(.dns.rules[]?; .[$key]==$rule and ((.rule_set // [] | if type=="array" then . else [.] end) | index($tag)!=null))' >/dev/null; then
+                config=$(sing_box_cm_patch_dns_route_rule "$config" "$SB_FAKEIP_DNS_RULE_TAG" "rule_set" "$ruleset_tag") || return 1
+            fi
             ;;
         subnets) ;;
         *)
@@ -4710,7 +4722,10 @@ prepare_source_ruleset() {
             ;;
         esac
         ;;
-    3) log "Source rule set $ruleset_filepath already exists, skipping." "debug" ;;
+    *)
+        log "Unable to prepare source rule set $ruleset_filepath" "error"
+        return 1
+        ;;
     esac
 }
 
