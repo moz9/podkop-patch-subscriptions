@@ -98,9 +98,23 @@ state.subscriptionItemsWidget={data:[{...pool,items:[{...item,supported:true},{.
 c.PodkopShellMethods.checkSubscriptionServices=async(code,id,services)=>{calls.push([code,id,[...services]]);return {success:true,data:{success:true}};};
 await c.handleCheckSubscriptionServices('geo',['gemini']);
 assert.equal(calls.length,0,'default action must perform zero RPC probes for fully fresh evidence');
+c.PodkopShellMethods.getSubscriptionServices=async()=>({success:true,data:{success:true,requiredServices:['gemini'],catalog:[],results:[{id:'a',services:item.services}]}});
 await c.handleCheckSubscriptionServices('geo',['gemini'],true);
 assert.equal(calls.length,2,'force action explicitly probes cached nodes');
+assert.match(state.subscriptionItemsWidget.actionMessage,/Нажмите «Применить».*До применения оно не изменено/,'fresh proof activation must be distinguished from the isolated check');
 assert.match(JSON.stringify(filter),/Перепроверить всё/);
 assert.match(JSON.stringify(filter),/24 часа/);
 assert.match(JSON.stringify(filter),/плюс запуск.*не гарантированный срок/i);
 console.log('PASS: default checks skip cached observations; explicit force rechecks all');
+assert.equal(state.subscriptionItemsWidget.pendingChanges['geo:a'],false,'forced checks also preserve the node draft');
+for(const name of ['getToolbarMessage','getToolbarClass','renderToolbar','subscriptionStateLabel']) {
+ const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));assert.ok(match);vm.runInContext(match[0],c);
+}
+assert.match(c.getToolbarMessage({runtimeStatus:{pending:true},pendingCount:0}),/Конфиги или результаты проверок обновлены, но ещё не применены/);
+assert.match(c.subscriptionStateLabel({runtimeStatus:{pending:true},pendingCount:0})[2],/результаты проверок/);
+c.renderButton=props=>({tag:'button',attrs:{disabled:props.disabled},children:props.text});
+c.renderSubscriptionState=()=>({tag:'status'});
+for(const name of ['renderRotateCcwIcon24','renderSearchIcon24','renderCircleStopIcon24','renderSquareChartGanttIcon24'])c[name]=()=>null;
+const toolbar=c.renderToolbar({pendingCount:0,runtimeStatus:{pending:true,busy:false},actionStatus:'idle'});
+assert.equal(walk(toolbar).find(node=>node?.tag==='button'&&node.children==='Apply').attrs.disabled,false,'backend pending proof enables apply without a UCI draft');
+console.log('PASS: persisted service proof can enable Apply with no UI draft through backend pending status');

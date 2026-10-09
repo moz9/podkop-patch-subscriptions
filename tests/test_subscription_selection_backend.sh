@@ -206,6 +206,28 @@ printf '%s' "$result" | jq -e '.success==false and .state=="rolled_back" and .ro
 [ "$(wc -l < "$work/service-signals")" -eq 2 ] || fail 'late snapshot failure did not signal candidate then previous runtime'
 [ ! -f "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json" ] || fail 'failed activation saved a snapshot'
 echo 'PASS: full required-service transaction rejects low storage and rolls back UCI/cache/config after late snapshot failure'
+# Refreshed evidence for an already-enabled filter must enable explicit Apply,
+# even when its empty transaction does not change the generated config.
+jq '.main.subscription_required_services=["gemini"]' "$PODKOP_CONFIG" > "$PODKOP_CONFIG.next"; mv "$PODKOP_CONFIG.next" "$PODKOP_CONFIG"
+rm -f "$work/pending"
+before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")"
+subscription_services_store main "$a" '{"gemini":{"state":"pass","network":"pass","manual":false,"reason":"region_precheck_passed"}}'
+[ -f "$work/pending" ] || fail 'enabled filter refresh did not expose pending activation'
+[ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'diagnostic evidence refresh activated working state'
+sing_box_init_config() { printf 'generate\n' >> "$work/service-generations"; }
+result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}' || true)"
+printf '%s' "$result" | jq -e '.success==false and .error=="reload_failed" and .committed==false' >/dev/null || fail 'unchanged transaction hid snapshot save failure'
+[ -f "$work/pending" ] || fail 'same-config snapshot failure lost pending retry'
+[ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'same-config snapshot failure changed working state'
+df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted\nfixture 65536 0 65536 0%% /\n'; }
+result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}')"
+printf '%s' "$result" | jq -e '.success and .changed==0 and .state=="no_changes"' >/dev/null || fail 'unchanged pending transaction failed to apply'
+[ ! -f "$work/pending" ] || fail 'successful same-config snapshot left pending activation'
+[ -s "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json" ] || fail 'unchanged transaction did not capture admitted evidence snapshot'
+[ "$(wc -l < "$work/service-generations")" -eq 2 ] || fail 'empty pending transaction skipped real config generation'
+[ "$(wc -l < "$work/service-signals")" -eq 2 ] || fail 'same-config refresh unnecessarily signalled daemon'
+[ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'same-config activation changed UCI/cache/config'
+echo 'PASS: refreshed service proof marks explicit Apply; unchanged transaction captures snapshot and retains pending on failure'
 # Existing installations need the complete policy, transaction and legacy toggle retrofit.
 for version in 0.7.20 0.7.22 0.7.23; do
  runtime="$repo/openwrt/runtime-$version/usr/bin/podkop"

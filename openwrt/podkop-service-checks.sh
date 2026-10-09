@@ -66,6 +66,16 @@ subscription_services_error() {
     jq -cn --arg error "$1" '{success:false,error:$error}'
 }
 
+subscription_services_mark_pending() (
+    # Only persisted requirements need activation; diagnostics never apply themselves.
+    required="$(subscription_required_services_json "$1")" || exit 1
+    [ "$required" != '[]' ] || exit 0
+    pending="$(subscription_reload_pending_file)" || exit 1
+    [ -n "$pending" ] || exit 1
+    umask 077
+    touch "$pending"
+)
+
 subscription_services_store() {
     local section="$1" id="$2" services="$3" context now path dir
     validate_subscription_section_name "$section" && validate_subscription_link_id "$id" || return 1
@@ -85,7 +95,9 @@ subscription_services_store() {
         {context:$context,results:(($previous|map(select(.id!=$id))) + [{id:$id,checkedAt:$now,expiresAt:($now+86400),services:$services}] | .[-2048:])}
     ' > "$path.tmp.$$" || return 1
     if [ ! -s "$path.tmp.$$" ] || [ "$(wc -c < "$path.tmp.$$")" -gt 2097152 ]; then rm -f "$path.tmp.$$"; return 1; fi
-    chmod 600 "$path.tmp.$$" && mv "$path.tmp.$$" "$path"
+    # Stage pending first: a failed marker write must not invalidate admitted evidence.
+    if ! chmod 600 "$path.tmp.$$" || ! subscription_services_mark_pending "$section"; then rm -f "$path.tmp.$$"; return 1; fi
+    mv "$path.tmp.$$" "$path"
 }
 
 subscription_services_classify() {
@@ -165,7 +177,9 @@ subscription_services_confirm() (
     path="$(subscription_services_cache_path "$section")"
     jq --arg id "$id" --arg service "$service" --argjson enabled "$enabled" '
         .results |= map(if .id==$id then .services[$service] |= (.state=(if $enabled then "pass" else "fail" end) | .manual=true | .reason="user_confirmed") else . end)
-    ' "$path" > "$path.tmp.$$" && chmod 600 "$path.tmp.$$" && mv "$path.tmp.$$" "$path" || exit 1
+    ' "$path" > "$path.tmp.$$" && chmod 600 "$path.tmp.$$" || { rm -f "$path.tmp.$$"; exit 1; }
+    subscription_services_mark_pending "$section" || { rm -f "$path.tmp.$$"; subscription_services_error pending_write_failed; exit 1; }
+    mv "$path.tmp.$$" "$path" || exit 1
     jq -cn --arg id "$id" --arg service "$service" --argjson enabled "$enabled" '{success:true,id:$id,service:$service,confirmed:$enabled}'
 )
 
