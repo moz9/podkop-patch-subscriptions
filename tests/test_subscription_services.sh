@@ -43,13 +43,13 @@ subscription_services_validate '["gemini","chatgpt"]' || fail 'catalog accepted 
 ! subscription_services_validate '["api"]' || fail 'unknown catalog ids accepted'
 result="$(subscription_services_classify gemini 0 200 '<html>Sign in</html>')"
 printf '%s' "$result" | jq -e '.state=="unknown" and .network=="pass"' >/dev/null || fail 'HTTP200 must not prove Gemini Web'
-subscription_services_classify gemini 0 200 'Gemini is not available in your country' | jq -e '.state=="fail"' >/dev/null || fail 'region denial not rejected'
+subscription_services_classify gemini 0 200 '<html>Gemini is not available in your country</html>' | jq -e '.state=="unknown"' >/dev/null || fail 'missing marker reported as regional denial'
 subscription_services_classify chatgpt 28 000 '' | jq -e '.state=="fail" and .network=="fail"' >/dev/null || fail 'timeout not rejected'
-subscription_services_classify gemini 0 200 '<html>Gemini 45631641,null,true</html>' | jq -e '.state=="pass" and .manual==false and .reason=="region_precheck_passed"' >/dev/null || fail 'Gemini positive eligibility marker not recognized'
+subscription_services_classify gemini 0 200 '<html>Gemini ,2,1,200,"SWE"</html>' | jq -e '.state=="pass" and .manual==false and .region=="SWE" and .reason=="region_precheck_passed"' >/dev/null || fail 'Gemini country eligibility marker not recognized'
 subscription_services_classify gemini 0 200 'Gemini 45631641,null,true' | jq -e '.state=="unknown"' >/dev/null || fail 'plain text Gemini marker accepted'
 subscription_services_classify gemini 0 200 'arbitrary body 45631641,null,true' | jq -e '.state=="unknown"' >/dev/null || fail 'arbitrary 200 body accepted'
 subscription_services_classify gemini 0 403 'captcha cf-chl-' | jq -e '.state=="unknown" and .network=="pass" and .reason=="challenge_required"' >/dev/null || fail 'challenge misreported as region denial or blocks manual fallback'
-subscription_services_classify gemini 28 200 '<html>captcha</html>' | jq -e '.state=="fail" and .network=="fail"' >/dev/null || fail 'timeout body overrides transport failure'
+subscription_services_classify gemini 28 200 '<html>captcha</html>' | jq -e '.state=="unknown" and .network=="fail" and .reason=="network_failed"' >/dev/null || fail 'timeout body overrides transport failure'
 subscription_services_classify chatgpt 0 200 '{"models":[{"slug":"model"}]}' | jq -e '.state=="pass" and .reason=="anonymous_models_available"' >/dev/null || fail 'anonymous models evidence unrecognized'
 subscription_services_classify chatgpt 0 200 '{"models":[]}' | jq -e '.state=="unknown"' >/dev/null || fail 'empty models accepted'
 subscription_services_classify chatgpt 0 200 '{"models":[{}]}' | jq -e '.state=="unknown"' >/dev/null || fail 'invalid model accepted'
@@ -63,8 +63,8 @@ curl() {
         case "$1" in -o) output="$2"; shift 2;; https://*) endpoint="$1"; shift;; *) shift;; esac
     done
     printf '%s\n' "$endpoint" >> "$tmp/requests"
-    if [ "$fixture_failure" = 1 ]; then printf '{"error":{"code":"unsupported_country"}}' > "$output"; printf 403
-    elif [ "$endpoint" = https://gemini.google.com/ ]; then printf '<html>Gemini 45631641,null,true</html>' > "$output"; printf 200
+    if [ "$fixture_failure" = 1 ]; then printf '<html>Gemini ,2,1,200,"RUS"</html>' > "$output"; printf 200
+    elif [ "$endpoint" = https://gemini.google.com/ ]; then printf '<html>Gemini ,2,1,200,"SWE"</html>' > "$output"; printf 200
     elif [ "$endpoint" = https://chatgpt.com/backend-anon/models ]; then printf '{"models":[{"id":"model"}]}' > "$output"; printf 200
     else fail 'unexpected network destination'; fi
 }

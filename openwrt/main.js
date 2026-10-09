@@ -5403,7 +5403,7 @@ function getStatusLabel({
   }
   if (item.subscriptionDisabled) return "Подписка отключена";
   if (effectiveEnabled && tagFiltered) return "Исключён фильтром тегов";
-  if (effectiveEnabled && serviceExcluded?.length) return `Исключён фильтром сервисов: ${serviceExcluded.join(', ')} — нет свежего подтверждения`;
+  if (effectiveEnabled && serviceExcluded?.length) return 'Исключён: сервисы';
   if (pending) {
     return effectiveEnabled ? _("Will be included") : _("Will be excluded");
   }
@@ -5746,6 +5746,7 @@ function renderRow({
         {
           "data-label": _("Status"),
           "data-title": _("Status"),
+          title: effectiveEnabled && serviceExcluded.length ? `Исключён фильтром сервисов: ${serviceExcluded.join(', ')} — нет свежего подтверждения. Подробнее в результатах проверок.` : void 0,
           class: `pdk_subscriptions-page__status ${getStatusClass({
             item,
             pending,
@@ -5917,7 +5918,7 @@ function getEffectiveRequiredServices(pendingChanges, section) {
 }
 function normalizeSubscriptionServiceEvidence(row) {
   return Object.fromEntries(Object.entries(row.services || {}).map(([service,result])=>[service,{...result,
-    checkedAt:row.checkedAt ?? result.checkedAt,expiresAt:row.expiresAt ?? result.expiresAt}]));
+    checkedAt:result.checkedAt ?? row.checkedAt,expiresAt:result.expiresAt ?? row.expiresAt}]));
 }
 function isSubscriptionServiceEvidenceFresh(result) {
   const checkedAt=Number(result?.checkedAt);
@@ -5953,9 +5954,12 @@ function getSubscriptionServiceExclusions(item, required) {
 function getSubscriptionServiceStateLabel(result) {
   if (!result) return 'Не проверен — исключён';
   if (!isSubscriptionServiceEvidenceFresh(result)) return 'Проверка устарела или дата некорректна — исключён';
+  const region = /^[A-Z]{3}$/.test(result.region || '') ? ` (${result.region})` : '';
+  if (!result.manual && result.state === 'pass' && result.reason === 'region_precheck_passed') return `Регион${region} предварительно проходит`;
+  if (result.state === 'fail' && result.reason === 'region_denied') return `Регион${region} отклонён — исключён`;
   if (result.state === 'pass') return result.manual ? 'Подтверждён вами' : 'Предварительно проходит';
   if (result.state === 'fail') return 'Недоступен — исключён';
-  return result.network === 'pass' || result.network === true ? 'Требует подтверждения реального чата — исключён' : 'Сетевая доступность не подтверждена — исключён';
+  return result.network === 'pass' || result.network === true ? 'Не определено · Требует подтверждения чата — исключён' : 'Не определено · Ошибка соединения — исключён';
 }
 function canConfirmSubscriptionService(service, result) {
   return ['gemini','chatgpt'].includes(service) && result?.state === 'unknown' &&
@@ -5964,35 +5968,43 @@ function canConfirmSubscriptionService(service, result) {
 function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onToggle, actions) {
   const selected = getEffectiveRequiredServices(pendingChanges, section);
   if (!section.serviceSupport) return E('small', {role:'status'}, 'Эта версия backend не поддерживает фильтр сервисов. Обновите патч.');
-  const labels = {gemini:'Gemini (веб-чат)',chatgpt:'ChatGPT (веб-чат)'};
+  const labels = {gemini:'Gemini (регион)',chatgpt:'ChatGPT (веб-чат)'};
   const busy = actions?.modeDisabled || disabled;
   const checkRunning = actions?.serviceRunning && actions.serviceSection === section.code;
   const candidates = getSubscriptionServiceCheckTargets(section,selected,true,pendingChanges);
   const targets = getSubscriptionServiceCheckTargets(section,selected,false,pendingChanges);
   const routingHint = getSubscriptionServiceRoutingHint(section,selected);
-  return E('div', {style:'margin:8px 0'}, [
-    E('span', {}, 'Обязательные сервисы: '),
-    E('small', {style:'display:block;margin:4px 0'}, 'Для конфигов подписок; отдельные proxy-ссылки не проверяются. Секция с отдельными proxy-ссылками не может использовать этот фильтр.'),
-    ...routingHint ? [E('small', {style:'display:block;margin:4px 0'},routingHint)]:[],
+  return E('div', {class:'pdk_subscriptions-page__service-filter',style:'margin:8px 0'}, [
+    E('div', {style:'display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px'}, [
+    E('span', {}, 'Обязательные сервисы:'),
     ...Object.entries(labels).map(([id,label]) => E('label', {style:'display:inline-flex;gap:4px;margin-right:12px'}, [
       E('input', {type:'checkbox',value:id,checked:selected.includes(id)?'checked':void 0,disabled:busy?'disabled':void 0,
         change:event=>onToggle(section.code,{id:'services:required',enabled:section.requiredServices||[]},event.target.checked?[...new Set([...selected,id])]:selected.filter(service=>service!==id))}),label
     ])),
-    E('small', {style:'display:block;margin:4px 0'}, 'Ничего не выбрано — фильтр выключен. Все выбранные сервисы обязательны. Предварительные проверки не гарантируют ответ чата или доступ вашего аккаунта. HTTP 200 или страница входа не доказывают работу чата. Непроверенные и устаревшие узлы не допускаются в новое применение. Истечение срока не переключает рабочий прокси: при загрузке может сохраняться прежний допущенный набор. Проверки не переключают рабочий прокси и не применяют изменения.'),
-    E('small', {style:'display:block;margin:4px 0'}, `Результаты кешируются на 24 часа. Новых/устаревших узлов: ${targets.length} из ${candidates.length}; до ${targets.length*selected.length} проверок сервисов. Ориентир сетевой части: до ${targets.length*selected.length*4} с плюс запуск временных процессов; это не гарантированный срок. Свежие результаты, включая отказы и неопределённые, повторно не проверяются.`),
     E('button', {type:'button',class:'cbi-button',disabled:!selected.length||(!targets.length&&!checkRunning)||(busy&&!checkRunning)?'disabled':void 0,
       click:()=>checkRunning?handleCancelSubscriptionServices():handleCheckSubscriptionServices(section.code,selected)},checkRunning?'Остановить после текущего узла':`Проверить новые/устаревшие (${targets.length})`),
     E('button', {type:'button',class:'cbi-button',style:'margin-left:6px',disabled:busy||!selected.length||!candidates.length?'disabled':void 0,
-      click:()=>handleCheckSubscriptionServices(section.code,selected,true)},'Перепроверить всё'),
-    ...selected.length ? [E('details', {}, [E('summary', {}, 'Результаты по узлам и сервисам'),
+      click:()=>handleCheckSubscriptionServices(section.code,selected,true)},'Перепроверить всё')
+    ]),
+    E('small', {role:'status',style:'display:block;margin:4px 0'}, selected.length
+      ? `Фильтр включён · к проверке ${targets.length} из ${candidates.length} узлов · все выбранные сервисы обязательны`
+      : 'Фильтр выключен · выберите сервис для проверки'),
+    E('details', {}, [E('summary', {}, 'Подробнее'),
+      E('p', {}, 'Gemini: предварительная региональная проверка по ответу публичной страницы. Она не гарантирует ответ чата или доступ аккаунта. HTTP 200 или страница входа не доказывают работу чата. Неопределённый результат, отказ региона и отсутствие проверки — разные состояния.'),
+      E('p', {}, 'Для конфигов подписок; отдельные proxy-ссылки не проверяются. Секция с отдельными proxy-ссылками не может использовать этот фильтр. Непроверенные и устаревшие узлы не допускаются в новое применение. Истечение срока не переключает рабочий прокси: может сохраняться прежний допущенный набор. Проверки не переключают рабочий прокси и не применяют изменения.'),
+      ...routingHint ? [E('p', {},routingHint)]:[],
+      E('p', {}, `Результаты кешируются на 24 часа. До ${targets.length*selected.length} проверок сервисов. Ориентир сетевой части: до ${targets.length*selected.length*4} с плюс запуск временных процессов; это не гарантированный срок. Свежие результаты, включая отказы и неопределённые, повторно не проверяются.`)
+    ]),
+    E('details', {}, [E('summary', {}, 'Результаты по узлам и сервисам'),
+      ...!selected.length ? [E('small', {}, 'Выберите сервис для просмотра результатов.')]:[],
       ...candidates.map(item=>E('div', {style:'margin:6px 0'}, [E('span', {}, item.name||item.id),
         ...selected.map(service=>{
           const result=item.services?.[service];
-          const reasons={region_precheck_passed:'Предварительная региональная проверка пройдена',anonymous_models_available:'Анонимный список моделей доступен',challenge_required:'Требуется CAPTCHA или другая проверка',region_denied:'Регион отклонён сервисом'};
+          const reasons={region_precheck_passed:'Предварительная региональная проверка пройдена',anonymous_models_available:'Анонимный список моделей доступен',challenge_required:'Требуется CAPTCHA или другая проверка',region_denied:'Регион отклонён сервисом',region_unknown:'Результат региона не определён',region_marker_missing:'Маркер региона отсутствует',region_marker_ambiguous:'Маркер региона неоднозначен',region_missing:'Регион отсутствует в ответе',region_ambiguous:'Регион неоднозначен'};
           return E('div', {style:'margin-left:12px'}, [E('span', {title:reasons[result?.reason]||result?.reason||''}, `${labels[service]||service}: ${getSubscriptionServiceStateLabel(result)}`),
             ...canConfirmSubscriptionService(service,result) ? [E('button',{type:'button',class:'cbi-button',disabled:busy?'disabled':void 0,
               click:()=>handleConfirmSubscriptionService(section.code,item.id,service)},'Я проверил реальный чат через этот узел')]:[]]);
-        })]))])]:[]
+        })]))])
   ]);
 }
 function getSubscriptionTagChoices(section, savedTags) {

@@ -1,4 +1,5 @@
 # subscription_services_v1 begin
+# subscription_gemini_region_v2
 # Public website diagnostics only: no API keys, cookies or production selectors.
 subscription_services_catalog() {
     printf '%s\n' '[{"id":"gemini","label":"Gemini Web","proof":"preliminary_or_manual"},{"id":"chatgpt","label":"ChatGPT Web","proof":"preliminary_or_manual"}]'
@@ -23,7 +24,7 @@ subscription_services_context() {
     settings="$(uci -q show podkop.settings)" || return 1
     # Bind desired DNS settings too, so edits before a runtime rebuild cannot reuse old checks.
     settings="$(printf '%s\n' "$settings" | sed '/^podkop.settings.shutdown_correctly=/d' | LC_ALL=C sort)"
-    { printf '%s\n' "$dns" "$settings"; printf '%s\n' "service-web-v1:$udp"; } | sha256sum | awk '{print $1}'
+    { printf '%s\n' "$dns" "$settings"; printf '%s\n' "service-web-v2:$udp"; } | sha256sum | awk '{print $1}'
 }
 
 subscription_services_cache_path() {
@@ -37,9 +38,14 @@ subscription_services_read() {
     now="$(date +%s)"; path="$(subscription_services_cache_path "$section")"
     if [ -s "$path" ] && [ "$(wc -c < "$path")" -le 2097152 ]; then
         jq -c --arg context "$context" --argjson now "$now" '
-            if .context==$context then [.results[]? | select(
+            def fresh:
                 (.checkedAt|type=="number") and .checkedAt>0 and .checkedAt<=$now
-                and (.expiresAt|type=="number") and .expiresAt>$now and .expiresAt<=(.checkedAt+86400))] else [] end
+                and (.expiresAt|type=="number") and .expiresAt>$now and .expiresAt<=(.checkedAt+86400);
+            if .context==$context then [.results[]? | select(fresh) | . as $row
+                | .services |= (with_entries(.value |= (
+                    . + {checkedAt:(.checkedAt // $row.checkedAt),expiresAt:(.expiresAt // $row.expiresAt)}))
+                    | with_entries(select(.value | fresh)))
+                | select(.services|length>0)] else [] end
         ' "$path" 2>/dev/null || printf '[]\n'
     else printf '[]\n'; fi
 }
@@ -90,9 +96,14 @@ subscription_services_store() {
         cat "$path"
     else printf '{}\n'; fi | jq -c --arg context "$context" --arg id "$id" --argjson now "$now" --argjson services "$services" '
     # At most 2048 observations / 2 MiB per section; only public state and opaque IDs.
-        (if .context==$context then .results else [] end) as $previous
-        |
-        {context:$context,results:(($previous|map(select(.id!=$id))) + [{id:$id,checkedAt:$now,expiresAt:($now+86400),services:$services}] | .[-2048:])}
+        (if .context==$context then (.results // []) else [] end) as $previous
+        | ($previous | map(select(.id==$id)) | last // {}) as $old
+        # Checking a subset never replaces or renews another service observation.
+        # Preserve expired raw identity for admitted boot snapshots; read strips stale proof.
+        | (($old.services // {}) | with_entries(.value += {
+            checkedAt:(.value.checkedAt // $old.checkedAt),expiresAt:(.value.expiresAt // $old.expiresAt)})) as $retained
+        | ($services | with_entries(.value += {checkedAt:$now,expiresAt:($now+86400)})) as $checked
+        | {context:$context,results:(($previous|map(select(.id!=$id))) + [{id:$id,checkedAt:$now,expiresAt:($now+86400),services:($retained+$checked)}] | .[-2048:])}
     ' > "$path.tmp.$$" || return 1
     if [ ! -s "$path.tmp.$$" ] || [ "$(wc -c < "$path.tmp.$$")" -gt 2097152 ]; then rm -f "$path.tmp.$$"; return 1; fi
     # Stage pending first: a failed marker write must not invalidate admitted evidence.
@@ -100,26 +111,62 @@ subscription_services_store() {
     mv "$path.tmp.$$" "$path"
 }
 
+subscription_gemini_region_policy() {
+    # Snapshot 2026-10-09: Google Gemini *web* availability, not API/mobile availability.
+    # https://support.google.com/gemini/answer/13575153?hl=en
+    # Marker independently used by Clash Verge Rev crates/clash-verge-media-unlock/src/gemini.rs.
+    # Official support conflicts with that checker for HKG/MAC; CHN is Workspace-only.
+    # These conditional/conflicting countries and unrecognized tokens need manual proof.
+    case "$1" in
+        RUS|BLR|CUB|IRN|PRK|SYR) printf 'blocked\n';;
+        ALA|ALB|DZA|ASM|AND|AGO|AIA|ATA|ATG|ARG|ARM|ABW|AUS|AUT|AZE|BHR|BGD|BRB|BEL|BLZ|BEN|BMU|BTN|BOL|BIH|BWA|BRA|IOT|VGB|BRN|BGR|BFA|BDI|CPV|KHM|CMR|CAN|BES|CYM|CAF|TCD|CHL|CXR|CCK|COL|COM|COK|CRI|CIV|HRV|CUW|CZE|COD|DNK|DJI|DMA|DOM|ECU|EGY|SLV|GNQ|ERI|EST|SWZ|ETH|FLK|FRO|FJI|FIN|FRA|GUF|PYF|ATF|GAB|GEO|DEU|GHA|GIB|GRC|GRL|GRD|GLP|GUM|GTM|GGY|GIN|GNB|GUY|HTI|HMD|HND|HUN|ISL|IND|IDN|IRQ|IRL|IMN|ISR|ITA|JAM|JPN|JEY|JOR|KAZ|KEN|KIR|XKX|KWT|KGZ|LAO|LVA|LBN|LSO|LBR|LBY|LIE|LTU|LUX|MDG|MWI|MYS|MDV|MLI|MLT|MHL|MTQ|MRT|MUS|MYT|MEX|FSM|MDA|MCO|MNG|MNE|MSR|MAR|MOZ|MMR|NAM|NRU|NPL|NLD|NCL|NZL|NIC|NER|NGA|NIU|NFK|MKD|MNP|NOR|OMN|PAK|PLW|PSE|PAN|PNG|PRY|PER|PHL|PCN|POL|PRT|PRI|QAT|CYP|COG|REU|ROU|RWA|BLM|SHN|KNA|LCA|MAF|SPM|VCT|WSM|SMR|STP|SAU|SEN|SRB|SYC|SLE|SGP|SXM|SVK|SVN|SLB|SOM|ZAF|SGS|KOR|SSD|ESP|LKA|SDN|SUR|SJM|SWE|CHE|TWN|TJK|TZA|THA|BHS|GMB|TLS|TGO|TKL|TON|TTO|TUN|TUR|TKM|TCA|TUV|VIR|UGA|UKR|ARE|GBR|USA|UMI|URY|UZB|VUT|VAT|VEN|VNM|WLF|ESH|YEM|ZMB|ZWE) printf 'supported\n';;
+        *) printf 'unknown\n';;
+    esac
+}
+
 subscription_services_classify() {
-    local service="$1" rc="$2" code="$3" body="$4" state=unknown network=pass reason=confirmation_required
+    local service="$1" rc="$2" code="$3" body="$4" state=unknown network=pass reason=confirmation_required region='' tokens policy
     case "$service" in gemini|chatgpt) ;; *) return 1;; esac
     case "$code" in 2??) ;; 401|403|404|429) state=unknown; reason=challenge_required;; *) network=fail; state=fail; reason=http_failed;; esac
     if [ "$rc" -ne 0 ]; then network=fail; state=fail; reason=network_failed; fi
-    if [ "$rc" -eq 0 ] && [ "$code" = 200 ]; then
-        if [ "$service" = gemini ] && printf '%s' "$body" | grep -Eiq '<html|<!doctype html' && printf '%s' "$body" | grep -iq 'Gemini' && printf '%s' "$body" | grep -Fq '45631641,null,true'; then
-            state=pass; reason=region_precheck_passed
-        elif [ "$service" = chatgpt ] && printf '%s' "$body" | jq -e 'type=="object" and (.models|type=="array" and length>0 and all(.[]; type=="object" and ((.slug // .id)|type=="string" and length>0)))' >/dev/null 2>&1; then
+    if [ "$service" = gemini ]; then
+        # A transport/HTTP failure cannot establish geographic eligibility or denial.
+        state=unknown
+        if [ "$rc" -eq 0 ] && [ "$code" = 200 ] && printf '%s' "$body" | grep -Eiq '<html([[:space:]>])|<!doctype[[:space:]]+html([[:space:]>])' && printf '%s' "$body" | grep -iq 'Gemini'; then
+            if printf '%s' "$body" | grep -Eiq 'unusual traffic|captcha|cf-chl-|access denied'; then
+                reason=challenge_required
+            else
+                # Match a complete quoted ISO3 token; conflicting countries are ambiguous.
+                tokens="$(printf '%s' "$body" | grep -Eo ',2,1,200,"[A-Z]{3}"' | sed 's/^,2,1,200,"//;s/"$//' | LC_ALL=C sort -u)"
+                case "$tokens" in
+                    '') reason=region_marker_missing;;
+                    [A-Z][A-Z][A-Z]) region="$tokens"; reason=region_unknown;;
+                    *) reason=region_marker_ambiguous;;
+                esac
+                if [ -n "$region" ]; then
+                    policy="$(subscription_gemini_region_policy "$region")"
+                    case "$policy" in
+                        supported) state=pass; reason=region_precheck_passed;;
+                        blocked) state=fail; reason=region_denied;;
+                    esac
+                fi
+            fi
+        elif [ "$rc" -eq 0 ] && printf '%s' "$body" | grep -Eiq 'unusual traffic|captcha|cf-chl-|access denied'; then
+            reason=challenge_required
+        fi
+    else
+        if [ "$rc" -eq 0 ] && [ "$code" = 200 ] && printf '%s' "$body" | jq -e 'type=="object" and (.models|type=="array" and length>0 and all(.[]; type=="object" and ((.slug // .id)|type=="string" and length>0)))' >/dev/null 2>&1; then
             state=pass; reason=anonymous_models_available
         fi
+        if [ "$rc" -eq 0 ] && printf '%s' "$body" | grep -Eiq 'unusual traffic|captcha|cf-chl-|access denied'; then
+            state=unknown; reason=challenge_required
+        fi
+        if [ "$rc" -eq 0 ] && printf '%s' "$body" | grep -Eiq 'not (available|supported) in (your|this) (country|region)|unsupported[ _](country|region)'; then
+            state=fail; network=fail; reason=region_denied
+        fi
     fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$body" | grep -Eiq 'unusual traffic|captcha|cf-chl-|access denied'; then
-        state=unknown; reason=challenge_required
-    fi
-    if [ "$rc" -eq 0 ] && printf '%s' "$body" | grep -Eiq 'not (available|supported) in (your|this) (country|region)|unsupported[ _](country|region)'; then
-        state=fail; network=fail; reason=region_denied
-    fi
-    jq -cn --arg state "$state" --arg network "$network" --arg reason "$reason" --arg code "$code" \
-        '{state:$state,network:$network,reason:$reason,httpCode:($code|tonumber? // 0),manual:false}'
+    jq -cn --arg state "$state" --arg network "$network" --arg reason "$reason" --arg code "$code" --arg region "$region" \
+        '{state:$state,network:$network,reason:$reason,httpCode:($code|tonumber? // 0),manual:false,region:(if $region=="" then null else $region end)}'
 }
 
 subscription_services_probe() {

@@ -13,6 +13,8 @@ if grep -Fqx '# subscription_choices_and_busy_v1' "$target" &&
     grep -Fqx '# subscription_tag_glob_portable_v1' "$target" &&
     grep -Fqx '# subscription_service_filter_v1' "$target" &&
     grep -Fqx '# subscription_services_v1 end' "$target" &&
+    grep -Fqx '# subscription_gemini_region_v2' "$target" &&
+    grep -Fqx '# subscription_probe_context_v2' "$target" &&
     grep -Fqx '# subscription_service_snapshot_v1 end' "$target" &&
     grep -Fqx 'subscription_services_check)' "$target" &&
     sed -n '/^set_subscription_links_enabled() {/,/^}/p' "$target" | grep -q 'set_subscription_sections_enabled' &&
