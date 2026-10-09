@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 const js=fs.readFileSync(new URL('../openwrt/main.js',import.meta.url),'utf8');
 const now=1900000000;
 const c=vm.createContext({Error,Date:{now:()=>now*1000},_:x=>x,E:(tag,attrs,children)=>({tag,attrs,children})});
-for(const name of ['getEffectiveEnabled','getEffectiveSubscriptionItemEnabled','getEffectiveSelectionMode','getRowId','getEffectiveSubscriptionTags','getEffectiveSourceEnabled','subscriptionTagMatches','isSubscriptionTagFiltered','buildSubscriptionSectionChanges','getEffectiveRequiredServices','getSubscriptionServiceExclusions','getSubscriptionServiceStateLabel','canConfirmSubscriptionService','renderSubscriptionServiceFilter','normalizeSubscriptionServiceEvidence','isSubscriptionServiceEvidenceFresh','getSubscriptionServiceCheckTargets','getSubscriptionServiceRoutingHint']){
+for(const name of ['getEffectiveEnabled','getEffectiveSubscriptionItemEnabled','getEffectiveSelectionMode','getRowId','getEffectiveSubscriptionTags','getEffectiveSourceEnabled','subscriptionTagMatches','isSubscriptionTagFiltered','buildSubscriptionSectionChanges','getEffectiveRequiredServices','getSubscriptionServiceExclusions','getSubscriptionServiceStateLabel','canConfirmSubscriptionService','renderSubscriptionServiceFilter','normalizeSubscriptionServiceEvidence','isSubscriptionServiceEvidenceFresh','getSubscriptionServiceCheckTargets','getSubscriptionServiceRoutingHint','getSubscriptionServiceSummary']){
  const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));
  assert.ok(match,`${name} must exist`);
  vm.runInContext(match[0],c);
@@ -67,7 +67,7 @@ const pool={...section,items:[{...item,supported:true,enabled:true},{id:'b',supp
 assert.equal(c.getTagFilterPreview(pool,{'geo:services:required':['gemini']}).enabled,1,'preview excludes nodes without current proof');
 assert.match(c.getStatusLabel({item:{supported:true},effectiveEnabled:true,serviceExcluded:['gemini'],tagFiltered:false}),/сервис/i);
 assert.equal(c.getStatusLabel({item:{supported:true},effectiveEnabled:true,serviceExcluded:['gemini','chatgpt'],tagFiltered:false}),'Исключён: сервисы','service status remains compact when selections change');
-assert.match(js,/title:.*serviceExcluded\.join/,'row status retains exclusion detail in tooltip');
+assert.match(js,/title: getSubscriptionRowStatusTitle/,'row status retains the actual exclusion detail in tooltip');
 assert.deepEqual({...c.rebaseSubscriptionDraft({...draft,'geo:a':false},[{...pool,requiredServices:['gemini','chatgpt']}])},{'geo:a':false},'persisted service draft rebase does not lose node choices');
 assert.deepEqual({...c.rebaseSubscriptionDraft(draft,[{...pool,requiredServices:['chatgpt','gemini']}])},{},'service order has no meaning when rebasing the committed draft');
 const group={id:'s',items:pool.items,enabled:true};
@@ -82,7 +82,7 @@ assert.equal(c.getSubscriptionServiceCheckTargets(subset,['gemini'],true,{'geo:m
 assert.deepEqual([...c.getSubscriptionServiceExclusions({services:{gemini:{state:'pass',checkedAt:now+1,expiresAt:now+30}}},['gemini'])],['gemini'],'future timestamps cannot admit a node');
 assert.match(c.getSubscriptionServiceStateLabel({state:'pass',checkedAt:now+1,expiresAt:now+30}),/устарела/i,'malformed timestamp must not be labelled passing');
 assert.equal(c.getSubscriptionServiceCheckTargets({items:[{id:'bad-date',supported:true,services:{gemini:{state:'pass',expiresAt:now+30}}}]},['gemini']).length,1,'missing checkedAt requires a new observation');
-assert.match(c.getSourceSummary({section:pool,group,pendingChanges:{'geo:services:required':['gemini']}}),/Доступно: 1/);
+assert.match(c.getSourceSummary({section:pool,group,pendingChanges:{'geo:services:required':['gemini']}}),/К применению: 1/);
 console.log('PASS: service eligibility is reflected in preview, source counts, status and draft recovery');
 let state={subscriptionItemsWidget:{data:[pool],pendingChanges:{'geo:a':false},actionStatus:'idle'}};
 const calls=[];
