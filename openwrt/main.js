@@ -5507,7 +5507,7 @@ function getToolbarMessage({
   if (pendingCount > 0) {
     return `${_("Unsaved changes")}: ${pendingCount}. ${_("Click Apply to restart Podkop once.")}`;
   }
-  if (runtimeStatus?.pending) return "Новые конфиги скачаны, но ещё не используются. Нажмите «Применить», когда допустим краткий перерыв соединений.";
+  if (runtimeStatus?.pending) return "Конфиги или результаты проверок обновлены, но ещё не применены. Нажмите «Применить», когда допустим краткий перерыв соединений.";
   if (status === "success") {
     return _("Changes applied. Podkop has been restarted.");
   }
@@ -6374,7 +6374,7 @@ function subscriptionStateLabel(widget) {
   if (widget.runtimeStatus?.busy) return ["busy", "Podkop занят", "Применяются настройки или выполняется другая операция. Кнопки станут доступны после завершения; повторять нажатие не нужно."];
   if (widget.loading) return ["busy", "Загрузка", "Читаем состояние подписок."];
   if (widget.failed || widget.actionStatus === "error") return ["error", "Ошибка", "Причина указана рядом. Несохранённый выбор сохранён в этой вкладке."];
-  if (widget.pendingCount > 0 || widget.runtimeStatus?.pending) return ["pending", "Нужно применить", "Есть несохранённый выбор или скачанные конфиги, ещё не используемые Podkop. Нажмите «Применить»; соединения могут кратко прерваться."];
+  if (widget.pendingCount > 0 || widget.runtimeStatus?.pending) return ["pending", "Нужно применить", "Есть несохранённый выбор, обновлённые конфиги или результаты проверок, ещё не применённые Podkop. Нажмите «Применить»; соединения могут кратко прерваться."];
   return ["ready", "Готово", "Подписки доступны для действий. Это состояние операций, не проверка доступности всех прокси."];
 }
 function renderSubscriptionState(widget) {
@@ -6418,7 +6418,7 @@ async function reconcileSubscriptionApplyTimeout(snapshot, generation) {
       action:"apply",actionStatus:confirmed ? "success" : "error",actionError:confirmed ? "" : "apply_unconfirmed",
       actionMessage:confirmed ? "Применено. Сохранённые настройки проверены; Podkop завершил операцию."
         : current.runtimeStatus?.pending
-        ? "Настройки прочитаны, но новые конфиги ещё не применены. Ваш выбор сохранён. Проверьте его перед повторным применением."
+        ? "Настройки прочитаны, но конфиги или результаты проверок ещё не применены. Ваш выбор сохранён. Проверьте его перед повторным применением."
         : "Podkop завершил операцию, но часть выбранных настроек не подтверждена. Ваш оставшийся выбор сохранён. Проверьте его перед повторным применением."}});
   } catch (_) {
     if (generation !== subscriptionStatusGeneration || store.get().subscriptionItemsWidget.applyVerification !== snapshot) { releaseSubscriptionApplyRead(snapshot,generation); return; }
@@ -6523,7 +6523,8 @@ async function handleCheckSubscriptionServices(sectionCode, services, force = fa
       if (!response.success || response.data?.success !== true) throw new Error(response.data?.error||response.error||'service_check_failed');
       await refreshSubscriptionServiceEvidence(sectionCode);
     }
-    setActionState({action:'services',actionStatus:'idle',actionMessage:store.get().subscriptionItemsWidget.serviceCancel?'Проверка остановлена. Полученные результаты сохранены; изменения не применены.':'Проверка завершена. Результаты показаны по узлам и сервисам; изменения не применены.'});
+    const persistedFilter=store.get().subscriptionItemsWidget.data.find(section=>section.code===sectionCode)?.requiredServices?.length>0;
+    setActionState({action:'services',actionStatus:'idle',actionMessage:(store.get().subscriptionItemsWidget.serviceCancel?'Проверка остановлена. Полученные результаты сохранены.':'Проверка завершена. Результаты показаны по узлам и сервисам.') + (persistedFilter?' Нажмите «Применить», чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.':' Изменения рабочего подключения не применены.')});
   } catch (error) {
     setActionState({action:'services',actionStatus:'error',actionError:error?.message,actionMessage:getSubscriptionActionErrorMessage(error,'Не удалось завершить проверку сервисов. Сохранён ваш выбор; рабочий прокси не изменён.')});
   }
@@ -6544,7 +6545,7 @@ function handleConfirmSubscriptionService(sectionCode, itemId, service) {
           const response=await PodkopShellMethods.confirmSubscriptionService(sectionCode,itemId,service,true);
           if (!response.success || response.data?.success!==true) throw new Error(response.data?.error||response.error||'service_confirm_failed');
           await refreshSubscriptionServiceEvidence(sectionCode);
-          setActionState({action:'services',actionStatus:'idle',actionMessage:'Подтверждение сохранено. Изменения фильтра ещё не применены.'});
+          setActionState({action:'services',actionStatus:'idle',actionMessage:'Подтверждение сохранено. При включённом фильтре нажмите «Применить», чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.'});
         } catch(error) {setActionState({action:'services',actionStatus:'error',actionError:error?.message,actionMessage:getSubscriptionActionErrorMessage(error,'Подтверждение не сохранено. Повторите проверку сети.')});}
       }},'Да, получен ответ в реальном чате')
     ])

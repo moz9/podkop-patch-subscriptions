@@ -12,7 +12,13 @@ grep -Fq -- '--connect-timeout 2 -m 4' "$repo/openwrt/podkop-service-checks.sh" 
 [ "$(grep -c 'https://chatgpt.com/backend-anon/models' "$repo/openwrt/podkop-service-checks.sh")" -eq 1 ] || fail 'ChatGPT endpoint not single fixed GET'
 PODKOP_SERVICE_CACHE_DIR="$tmp/state"
 config_get() { eval "$1=''"; }
-config_list_foreach() { :; }
+required_fixture='[]'
+config_list_foreach() {
+    [ "$2" = subscription_required_services ] || return 0
+    printf '%s' "$required_fixture" | jq -r '.[]' > "$tmp/required.list"
+    while IFS= read -r value; do "$3" "$value"; done < "$tmp/required.list"
+}
+subscription_reload_pending_file() { printf '%s/pending\n' "$tmp"; }
 subscription_services_context() { printf 'test-context\n'; }
 validate_subscription_section_name() { [ "$1" = main ]; }
 validate_subscription_urltest_section() { [ "$1" = main ]; }
@@ -77,7 +83,31 @@ subscription_services_confirm main "$id" gemini false | jq -e '.success' >/dev/n
 subscription_services_confirm main "$id" gemini true > "$tmp/error" && fail 'manual negative overridden without new check' || :
 jq -e '.error=="confirmation_requires_unknown_state"' "$tmp/error" >/dev/null
 subscription_services_store main "$id" '{"gemini":{"state":"unknown","network":"pass","reason":"confirmation_required"}}'
+input_before="$(sha256sum "$tmp/items")"
+[ ! -f "$tmp/pending" ] || fail 'draft/off checks marked an activation pending'
+required_fixture='["gemini"]'
+subscription_services_store main "$id" '{"gemini":{"state":"unknown","network":"pass","reason":"confirmation_required"}}'
+[ -f "$tmp/pending" ] || fail 'already-enabled filter check did not mark pending'
+printf 'previous pending marker\n' > "$tmp/pending"
+subscription_services_store main "$id" '{"gemini":{"state":"unknown","network":"pass","reason":"confirmation_required"}}'
+[ "$(cat "$tmp/pending")" = 'previous pending marker' ] || fail 'service check truncated the existing pending marker'
+rm "$tmp/pending"
+cache_before="$(sha256sum "$(subscription_services_cache_path main)")"
+touch() { return 1; }
+subscription_services_store main "$id" '{"gemini":{"state":"fail","network":"fail"}}' && fail 'pending failure accepted updated service cache' || :
+[ "$cache_before" = "$(sha256sum "$(subscription_services_cache_path main)")" ] || fail 'pending failure changed old service evidence'
+subscription_services_confirm main "$id" gemini true > "$tmp/error" && fail 'pending failure accepted confirmation' || :
+[ "$cache_before" = "$(sha256sum "$(subscription_services_cache_path main)")" ] || fail 'pending failure changed confirmation evidence'
+unset -f touch
 subscription_services_confirm main "$id" gemini true | jq -e '.success' >/dev/null || fail 'recent valid confirmation rejected'
+[ -f "$tmp/pending" ] || fail 'already-enabled filter confirmation did not mark pending'
+[ "$(stat -c %a "$tmp/pending")" = 600 ] || fail 'service pending marker not private'
+[ "$input_before" = "$(sha256sum "$tmp/items")" ] || fail 'service evidence check/confirmation activated cache changes'
+required_fixture='[]'
+rm "$tmp/pending"
+subscription_services_store main "$id" '{"gemini":{"state":"unknown","network":"pass","reason":"confirmation_required"}}'
+subscription_services_confirm main "$id" gemini true | jq -e '.success' >/dev/null
+[ ! -f "$tmp/pending" ] || fail 'off-filter confirmation marked pending'
 service_policy="$(subscription_services_policy main '["gemini"]')"
 subscription_source_policy '[]' '[]' "$tmp/items" auto '[]' '[]' '[]' "$service_policy" | jq -e '.[0].runtimeEnabled and (.[0].serviceExcluded|not)' >/dev/null || fail 'confirmed recent exact id rejected'
 subscription_services_store main "$id" '{"gemini":{"state":"fail","network":"fail","reason":"network_failed"}}'
