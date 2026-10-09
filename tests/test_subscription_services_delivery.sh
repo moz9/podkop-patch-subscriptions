@@ -21,6 +21,10 @@ for runtime in "$repo"/openwrt/runtime-*/usr/bin/podkop; do
     cp "$tmp/old" "$tmp/once"
     PODKOP_SOURCES_TARGET="$tmp/old" PODKOP_SOURCES_SOURCE="$runtime" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
     cmp "$tmp/once" "$tmp/old" || fail 'service delivery not idempotent'
+    sed '/^# subscription_gemini_region_v2$/d; /^# subscription_probe_context_v2$/d' "$runtime" > "$tmp/pre-region"
+    PODKOP_SOURCES_TARGET="$tmp/pre-region" PODKOP_SOURCES_SOURCE="$runtime" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
+    grep -Fqx '# subscription_gemini_region_v2' "$tmp/pre-region" || fail 'region classifier retrofit skipped'
+    grep -Fqx '# subscription_probe_context_v2' "$tmp/pre-region" || fail 'probe context retrofit skipped'
     # Actual pre-service target: helper/routes absent and previously deployed v2 probe.
     awk '
         /^# subscription_(services|service_snapshot)_v1 begin$/ { block=1; next }

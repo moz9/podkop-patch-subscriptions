@@ -24,7 +24,7 @@ get_subscription_items_cache_path() { printf '%s/items\n' "$tmp"; }
 get_subscription_all_cache_path() { printf '%s/all\n' "$tmp"; }
 get_subscription_link_id() { printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'; }
 config_get() { eval "$1=''"; }
-sing_box_cf_add_proxy_outbound() { printf '%s\n' "$1"; }
+sing_box_cf_add_proxy_outbound() { printf '%s\n' "$1" | command jq '.outbounds=[{type:"direct",tag:"private-test"}]'; }
 get_outbound_tag_by_section() { printf 'private-test\n'; }
 jq() {
     last=''; for value in "$@"; do last="$value"; done

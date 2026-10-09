@@ -60,8 +60,8 @@ expect_update '20261008-section-layout-v3' '20261008-dashboard-parity-v4'
 expect_no_update '20261008-dashboard-parity-v4' '20261008-section-layout-v3'
 
 mkdir -p "$STATE_DIR"
-expect_update '20261008-dashboard-parity-v4' '20261009-service-filter-v1'
-expect_no_update '20261009-service-filter-v1' '20261008-dashboard-parity-v4'
+expect_update '20261008-dashboard-parity-v4' '20261009-gemini-region-v2'
+expect_no_update '20261009-gemini-region-v2' '20261008-dashboard-parity-v4'
 fixture_manifest="$test_root/fixture-manifest.json"
 fixture_release="$test_root/fixture-release.json"
 TEST_CURRENT_PODKOP='0.7.21'

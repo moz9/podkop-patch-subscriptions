@@ -1,5 +1,24 @@
 # subscription_isolated_probe_v1 begin
 # Diagnostics use a private loopback listener and never the working selector.
+# subscription_probe_context_v2
+subscription_probe_config() {
+    # Keep real resolvers and their detours. LAN FakeIP/routing lists do not
+    # serve this private HTTP CONNECT listener and must not download per node.
+    printf '%s\n' "$1" | jq -ce --arg tag "$2" --argjson port "$3" '
+        select(any(.outbounds[]; .tag==$tag))
+        | [.dns.servers[]? | select(.type=="fakeip") | .tag] as $fake
+        | .dns.rules=((.dns.rules//[]) | map(select(.server as $server | ($fake|index($server))==null)))
+        | [.dns.rules[]? | .. | objects | .rule_set? // empty | if type=="array" then .[] else . end] as $dns_sets
+        | .inbounds=[{type:"mixed",tag:"probe-in",listen:"127.0.0.1",listen_port:$port}]
+        | .route.rules=[{inbound:["probe-in"],outbound:$tag}]
+        | .route.rule_set=((.route.rule_set//[]) | map(select(.tag as $set | ($dns_sets|index($set))!=null)))
+        | .route.final=$tag | .route.default_mark=2097152
+        | .outbounds|=map(if .type=="urltest" then
+            {type:"selector",tag:.tag,outbounds:.outbounds,default:.outbounds[0]}
+            else . end)
+        | del(.experimental) | .log={level:"warn"}'
+}
+
 subscription_isolated_test() {
     local isolated_worker_pid isolated_worker_rc isolated_worker_traps
     isolated_worker_traps="$(trap)"
@@ -36,9 +55,7 @@ subscription_isolated_test() {
     done < "$(get_subscription_all_cache_path "$section")"
     [ -n "$link" ] || probe_error subscription_link_not_available
     name="$(jq -r --arg id "$item_id" '.[] | select(.id == $id) | .name' "$items")"
-    # Retain configured real DNS servers, but not FakeIP rules or production detours.
-    config="$(jq -c '{dns:{servers:[.dns.servers[] | select(.type != "fakeip") | del(.detour)], final:.dns.final, strategy:"ipv4_only"},
-        inbounds:[],outbounds:[],route:{default_mark:2097152,default_domain_resolver:.route.default_domain_resolver},log:{level:"warn"}}' /etc/sing-box/config.json)" || probe_error dns_config_invalid
+    config="$(jq -ce 'select(.dns|type=="object")' /etc/sing-box/config.json)" || probe_error dns_config_invalid
     config_get udp_over_tcp "$section" enable_udp_over_tcp
     config="$(sing_box_cf_add_proxy_outbound "$config" subscription-probe "$link" "$udp_over_tcp" 2>"$work/parser.log")" || probe_error invalid_config
     tag="$(get_outbound_tag_by_section subscription-probe)"
@@ -48,17 +65,15 @@ subscription_isolated_test() {
         port=$((port + 1)); tries=$((tries + 1))
         [ "$tries" -lt 20 ] || probe_error probe_port_busy
     done
-    printf '%s\n' "$config" | jq --arg tag "$tag" --argjson port "$port" '
-        .inbounds = [{type:"mixed",tag:"probe-in",listen:"127.0.0.1",listen_port:$port}]
-        | .route.final = $tag' > "$work/config.json" || probe_error invalid_config
+    subscription_probe_config "$config" "$tag" "$port" > "$work/config.json" || probe_error invalid_config
     sing-box check -c "$work/config.json" >"$work/check.log" 2>&1 || probe_error invalid_config
     sing-box run -c "$work/config.json" >"$work/runtime.log" 2>&1 &
     probe_pid=$!
     tries=0
     while ! netstat -ln 2>/dev/null | grep -q ":$port "; do
         kill -0 "$probe_pid" 2>/dev/null || probe_error probe_start_failed
-        [ "$tries" -lt 20 ] || probe_error probe_listener_timeout
-        sleep 0.25
+        [ "$tries" -lt 5 ] || probe_error probe_listener_timeout
+        sleep 1
         tries=$((tries + 1))
     done
     proxy="http://127.0.0.1:$port"

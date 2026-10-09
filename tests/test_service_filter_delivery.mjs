@@ -9,6 +9,9 @@ assert.ok(installer.includes("grep -Fqx '# subscription_services_v1 end'"), 'ins
 assert.ok(installer.includes("! grep -Fqx '# subscription_services_v1 end'"), 'installer must upgrade a previously patched backend');
 assert.ok(installer.includes("# subscription_service_filter_v1"), 'installer must require runtime admission, not just probe helper');
 assert.ok(installer.includes("# subscription_service_snapshot_v1 end"), 'installer must deliver safe expired-proof boot preservation');
+assert.ok(installer.includes("grep -Fqx '# subscription_gemini_region_v2'"), 'installer must detect the new classifier, not just the old helper');
+assert.ok(installer.includes("! grep -Fqx '# subscription_gemini_region_v2'"), 'installer must replace the already patched classifier');
+assert.ok(installer.includes("# subscription_probe_context_v2"), 'installer must deliver native DNS context for isolated probes');
 // Inline helpers must be byte-equivalent after line-ending normalization.
 // Replacement-string dollar expansion can otherwise silently corrupt shell $$.
 for (const [filename, marker] of [
