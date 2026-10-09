@@ -7,9 +7,9 @@ for version in 0.7.20 0.7.22 0.7.23; do
     source="$repo/openwrt/runtime-$version/usr/bin/podkop"
     sed -n '/^# subscription_sources_v1 begin$/,/^# subscription_sources_v1 end$/p' "$source" > "$work/sources"
     sed -n '/^# subscription_isolated_probe_v1 begin$/,/^# subscription_isolated_probe_v1 end$/p' "$source" > "$work/probe"
-    # PE owns its auto-selection/prefix implementation; historical runtimes
-    # still share the canonical legacy block.
-    if [ "$version" != 0.7.23 ]; then
+    # The canonical helper follows current native PE. Historical runtimes keep
+    # their own original selection/prefix semantics and retrofit from themselves.
+    if [ "$version" = 0.7.23 ]; then
         cmp -s "$work/sources" "$repo/openwrt/podkop-subscription-sources.sh"
     fi
     cmp -s "$work/probe" "$repo/openwrt/podkop-subscription-probe.sh"

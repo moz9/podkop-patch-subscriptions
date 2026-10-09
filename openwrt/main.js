@@ -783,6 +783,9 @@ var PodkopShellMethods = {
     [section]
   ),
   getSubscriptionSources: async (section) => callBaseMethod("get_subscription_sources", [section]),
+  getSubscriptionServices: async (section) => callBaseMethod("get_subscription_services", [section]),
+  checkSubscriptionServices: async (section, id, services) => callBaseMethod("subscription_services_check", [section, id, JSON.stringify(services)], "/usr/bin/podkop", 9e4),
+  confirmSubscriptionService: async (section, id, service, confirmed) => callBaseMethod("subscription_services_confirm", [section, id, service, confirmed ? "true" : "false"], "/usr/bin/podkop", 3e4),
   getSubscriptionOperationStatus: async () => callBaseMethod("get_subscription_operation_status", []),
   pingSubscription: async (section, id) => callBaseMethod("subscription_ping", [section, id], "/usr/bin/podkop", 3e4),
   getSubscriptionItemsCached: async (section) => callBaseMethod(
@@ -820,11 +823,13 @@ function buildSubscriptionSectionChanges(section, changes) {
   const mode = changes.find(change => change.id === "selection:mode");
   const include = changes.find(change => change.id === "tags:include");
   const exclude = changes.find(change => change.id === "tags:exclude");
+  const services = changes.find(change => change.id === "services:required");
   return { section,
     ...(mode ? {selectionMode: typeof mode.enabled === "string" ? mode.enabled : mode.enabled ? "selected" : "all"} : {}),
     ...(include ? {includeTags:include.enabled} : {}),
     ...(exclude ? {excludeTags:exclude.enabled} : {}),
-    changes: changes.filter(change => !change.id.startsWith("source:") && !change.id.startsWith("tags:") && change.id !== "selection:mode"),
+    ...(services ? {requiredServices:services.enabled} : {}),
+    changes: changes.filter(change => !change.id.startsWith("source:") && !change.id.startsWith("tags:") && !change.id.startsWith("services:") && change.id !== "selection:mode"),
     sources: changes.filter(change => change.id.startsWith("source:")).map(change => ({...change, id:change.id.slice(7)}))
   };
 }
@@ -5390,13 +5395,15 @@ function getStatusLabel({
   item,
   pending,
   effectiveEnabled,
-  tagFiltered
+  tagFiltered,
+  serviceExcluded
 }) {
   if (!item.supported) {
     return getReasonLabel(item.reason);
   }
   if (item.subscriptionDisabled) return "Подписка отключена";
   if (effectiveEnabled && tagFiltered) return "Исключён фильтром тегов";
+  if (effectiveEnabled && serviceExcluded?.length) return `Исключён фильтром сервисов: ${serviceExcluded.join(', ')} — нет свежего подтверждения`;
   if (pending) {
     return effectiveEnabled ? _("Will be included") : _("Will be excluded");
   }
@@ -5406,9 +5413,10 @@ function getStatusClass({
   item,
   pending,
   effectiveEnabled,
-  tagFiltered
+  tagFiltered,
+  serviceExcluded
 }) {
-  if ((item.subscriptionDisabled || (effectiveEnabled && tagFiltered)) && item.supported) return "pdk_subscriptions-page__status--excluded";
+  if ((item.subscriptionDisabled || (effectiveEnabled && (tagFiltered || serviceExcluded?.length))) && item.supported) return "pdk_subscriptions-page__status--excluded";
   if (!item.supported) {
     return "pdk_subscriptions-page__status--unsupported";
   }
@@ -5462,7 +5470,8 @@ function getSourceSummary({
   const excludeTags = getEffectiveSubscriptionTags(draft, section, "exclude");
   const runtimeCount = sourceEnabled ? group.items.filter(item =>
     item.supported && getEffectiveSubscriptionItemEnabled(draft, section, item) &&
-    !isSubscriptionTagFiltered(item, includeTags, excludeTags)).length : 0;
+    !isSubscriptionTagFiltered(item, includeTags, excludeTags) &&
+    !getSubscriptionServiceExclusions(item,getEffectiveRequiredServices(draft,section)).length).length : 0;
   const unsupportedCount = group.items.length - supportedCount;
   const parts = [
     `Конфигов: ${group.items.length}`,
@@ -5651,7 +5660,8 @@ function renderRow({
   const tagFiltered = isSubscriptionTagFiltered(item,
     getEffectiveSubscriptionTags(pendingChanges, section, "include"),
     getEffectiveSubscriptionTags(pendingChanges, section, "exclude"));
-  const isLastEnabled = item.supported && effectiveEnabled && !item.subscriptionDisabled && !tagFiltered && enabledSupportedCount <= 1;
+  const serviceExcluded = getSubscriptionServiceExclusions(item,getEffectiveRequiredServices(pendingChanges,section));
+  const isLastEnabled = item.supported && effectiveEnabled && !item.subscriptionDisabled && !tagFiltered && !serviceExcluded.length && enabledSupportedCount <= 1;
   const disabled = !item.supported || applying || isLastEnabled || getEffectiveSelectionMode(pendingChanges, section) === "auto";
   const latency = latencyByRow[rowId];
   const speed = speedByRow[rowId];
@@ -5740,10 +5750,11 @@ function renderRow({
             item,
             pending,
             effectiveEnabled,
-            tagFiltered
+            tagFiltered,
+            serviceExcluded
           })}`
         },
-        getStatusLabel({ item, pending, effectiveEnabled, tagFiltered })
+        getStatusLabel({ item, pending, effectiveEnabled, tagFiltered, serviceExcluded })
       )
     ]
   );
@@ -5900,6 +5911,90 @@ function getEffectiveSubscriptionTags(pendingChanges, section, kind) {
   const key = `${section.code}:tags:${kind}`;
   return key in pendingChanges ? pendingChanges[key] : (section[`${kind}Tags`] || []);
 }
+function getEffectiveRequiredServices(pendingChanges, section) {
+  const key = `${section.code}:services:required`;
+  return key in pendingChanges ? pendingChanges[key] : section.requiredServices || [];
+}
+function normalizeSubscriptionServiceEvidence(row) {
+  return Object.fromEntries(Object.entries(row.services || {}).map(([service,result])=>[service,{...result,
+    checkedAt:row.checkedAt ?? result.checkedAt,expiresAt:row.expiresAt ?? result.expiresAt}]));
+}
+function isSubscriptionServiceEvidenceFresh(result) {
+  const checkedAt=Number(result?.checkedAt);
+  const expiresAt=Number(result?.expiresAt);
+  const now=Date.now()/1000;
+  return checkedAt>0 && checkedAt<=now && Number.isFinite(checkedAt) && Number.isFinite(expiresAt) && expiresAt>now;
+}
+function getSubscriptionServiceCheckTargets(section, services, force = false, pendingChanges = {}) {
+  if (!services.length) return [];
+  const include=getEffectiveSubscriptionTags(pendingChanges,section,'include');
+  const exclude=getEffectiveSubscriptionTags(pendingChanges,section,'exclude');
+  return section.items.filter(item=>item.supported && getEffectiveSubscriptionItemEnabled(pendingChanges,section,item) &&
+    !isSubscriptionTagFiltered(item,include,exclude) &&
+    (!(section.sources || []).length ? !item.subscriptionDisabled : section.sources.some(source=>
+      (item.sourceIds?.length ? item.sourceIds.includes(source.id) : (item.sourceIndex || 1) === source.sourceIndex) &&
+      getEffectiveSourceEnabled(pendingChanges,section.code,source))) && (force || services.some(service=>{
+    const result=item.services?.[service];
+    return !isSubscriptionServiceEvidenceFresh(result);
+  })));
+}
+function getSubscriptionServiceRoutingHint(section, services) {
+  if (!services.includes('gemini')) return '';
+  return section.communityLists?.includes('google_ai')
+    ? 'Google AI выбран в этой секции. Он направляет связанные домены; фильтр узлов маршруты не меняет.'
+    : 'Проверьте Секции → Редактировать → Списки: Google AI направляет связанные домены; фильтр узлов маршруты не меняет.';
+}
+function getSubscriptionServiceExclusions(item, required) {
+  return required.filter(service => {
+    const result = item.services?.[service];
+    return !result || result.state !== 'pass' || !isSubscriptionServiceEvidenceFresh(result);
+  });
+}
+function getSubscriptionServiceStateLabel(result) {
+  if (!result) return 'Не проверен — исключён';
+  if (!isSubscriptionServiceEvidenceFresh(result)) return 'Проверка устарела или дата некорректна — исключён';
+  if (result.state === 'pass') return result.manual ? 'Подтверждён вами' : 'Предварительно проходит';
+  if (result.state === 'fail') return 'Недоступен — исключён';
+  return result.network === 'pass' || result.network === true ? 'Требует подтверждения реального чата — исключён' : 'Сетевая доступность не подтверждена — исключён';
+}
+function canConfirmSubscriptionService(service, result) {
+  return ['gemini','chatgpt'].includes(service) && result?.state === 'unknown' &&
+    (result.network === 'pass' || result.network === true) && isSubscriptionServiceEvidenceFresh(result);
+}
+function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onToggle, actions) {
+  const selected = getEffectiveRequiredServices(pendingChanges, section);
+  if (!section.serviceSupport) return E('small', {role:'status'}, 'Эта версия backend не поддерживает фильтр сервисов. Обновите патч.');
+  const labels = {gemini:'Gemini (веб-чат)',chatgpt:'ChatGPT (веб-чат)'};
+  const busy = actions?.modeDisabled || disabled;
+  const checkRunning = actions?.serviceRunning && actions.serviceSection === section.code;
+  const candidates = getSubscriptionServiceCheckTargets(section,selected,true,pendingChanges);
+  const targets = getSubscriptionServiceCheckTargets(section,selected,false,pendingChanges);
+  const routingHint = getSubscriptionServiceRoutingHint(section,selected);
+  return E('div', {style:'margin:8px 0'}, [
+    E('span', {}, 'Обязательные сервисы: '),
+    E('small', {style:'display:block;margin:4px 0'}, 'Для конфигов подписок; отдельные proxy-ссылки не проверяются. Секция с отдельными proxy-ссылками не может использовать этот фильтр.'),
+    ...routingHint ? [E('small', {style:'display:block;margin:4px 0'},routingHint)]:[],
+    ...Object.entries(labels).map(([id,label]) => E('label', {style:'display:inline-flex;gap:4px;margin-right:12px'}, [
+      E('input', {type:'checkbox',value:id,checked:selected.includes(id)?'checked':void 0,disabled:busy?'disabled':void 0,
+        change:event=>onToggle(section.code,{id:'services:required',enabled:section.requiredServices||[]},event.target.checked?[...new Set([...selected,id])]:selected.filter(service=>service!==id))}),label
+    ])),
+    E('small', {style:'display:block;margin:4px 0'}, 'Ничего не выбрано — фильтр выключен. Все выбранные сервисы обязательны. Предварительные проверки не гарантируют ответ чата или доступ вашего аккаунта. HTTP 200 или страница входа не доказывают работу чата. Непроверенные и устаревшие узлы не допускаются в новое применение. Истечение срока не переключает рабочий прокси: при загрузке может сохраняться прежний допущенный набор. Проверки не переключают рабочий прокси и не применяют изменения.'),
+    E('small', {style:'display:block;margin:4px 0'}, `Результаты кешируются на 24 часа. Новых/устаревших узлов: ${targets.length} из ${candidates.length}; до ${targets.length*selected.length} проверок сервисов. Ориентир сетевой части: до ${targets.length*selected.length*4} с плюс запуск временных процессов; это не гарантированный срок. Свежие результаты, включая отказы и неопределённые, повторно не проверяются.`),
+    E('button', {type:'button',class:'cbi-button',disabled:!selected.length||(!targets.length&&!checkRunning)||(busy&&!checkRunning)?'disabled':void 0,
+      click:()=>checkRunning?handleCancelSubscriptionServices():handleCheckSubscriptionServices(section.code,selected)},checkRunning?'Остановить после текущего узла':`Проверить новые/устаревшие (${targets.length})`),
+    E('button', {type:'button',class:'cbi-button',style:'margin-left:6px',disabled:busy||!selected.length||!candidates.length?'disabled':void 0,
+      click:()=>handleCheckSubscriptionServices(section.code,selected,true)},'Перепроверить всё'),
+    ...selected.length ? [E('details', {}, [E('summary', {}, 'Результаты по узлам и сервисам'),
+      ...candidates.map(item=>E('div', {style:'margin:6px 0'}, [E('span', {}, item.name||item.id),
+        ...selected.map(service=>{
+          const result=item.services?.[service];
+          const reasons={region_precheck_passed:'Предварительная региональная проверка пройдена',anonymous_models_available:'Анонимный список моделей доступен',challenge_required:'Требуется CAPTCHA или другая проверка',region_denied:'Регион отклонён сервисом'};
+          return E('div', {style:'margin-left:12px'}, [E('span', {title:reasons[result?.reason]||result?.reason||''}, `${labels[service]||service}: ${getSubscriptionServiceStateLabel(result)}`),
+            ...canConfirmSubscriptionService(service,result) ? [E('button',{type:'button',class:'cbi-button',disabled:busy?'disabled':void 0,
+              click:()=>handleConfirmSubscriptionService(section.code,item.id,service)},'Я проверил реальный чат через этот узел')]:[]]);
+        })]))])]:[]
+  ]);
+}
 function getSubscriptionTagChoices(section, savedTags) {
   const choices = new Map();
   const regionNames = typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function'
@@ -6025,6 +6120,7 @@ function getTagFilterPreview(section, pendingChanges) {
   const filtered = chosen.filter(item => isSubscriptionTagFiltered(item, include, exclude)).length;
   const enabled = chosen.filter(item => {
     if (isSubscriptionTagFiltered(item, include, exclude)) return false;
+    if (getSubscriptionServiceExclusions(item,getEffectiveRequiredServices(draft,section)).length) return false;
     const sources = section.sources || [];
     if (!sources.length) return !item.subscriptionDisabled;
     return sources.some(source =>
@@ -6041,6 +6137,7 @@ function getSectionCollapsedSummary(section, pendingChanges) {
   if (getEffectiveSubscriptionTags(pendingChanges, section, "include").length ||
       getEffectiveSubscriptionTags(pendingChanges, section, "exclude").length) parts.push("фильтр тегов");
   if (section.sources?.some(source => source.error)) parts.push("Ошибка подписки");
+  if (getEffectiveRequiredServices(pendingChanges,section).length) parts.push("фильтр сервисов");
   return parts.join(" · ");
 }
 function renderSection({
@@ -6094,6 +6191,7 @@ function renderSection({
     E("div", {class:"pdk_tag-pickers"}, [
       ...["include","exclude"].map(kind => renderSubscriptionTagPicker(section,pendingChanges,kind,applying || sourceActions?.modeDisabled,onToggle))
     ]),
+    ...section.serviceSupport !== undefined ? [renderSubscriptionServiceFilter(section,pendingChanges,applying,onToggle,sourceActions)]:[],
     E("small", {style:"display:block;margin:4px 0"}, "Префиксы определены из названий узлов: SE, FI, US и другие. Флаг и буквенный код одной страны считаются одним тегом. Исключение важнее разрешения. При ручном отборе фильтр дополнительно ограничивает ваш выбор."),
     E("small", {style:"display:block;margin:4px 0"}, tagPreview.uncertain
       ? `Сейчас доступно узлов: ${tagPreview.enabled}. После смены режима итоговое число определится при применении.`
@@ -6222,6 +6320,8 @@ function renderSubscriptionSections({
         disabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || pendingCount > 0,
         refreshDisabled:applying || loading || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || (!failed && !applyUnconfirmed && pendingCount > 0),
         speedRunning:action === "speed" && actionStatus === "running",
+        serviceRunning:action === "services" && actionStatus === "running",
+        serviceSection:actionTarget?.sectionCode,
         onRefresh, onPing, onSpeedtest
       }
     })
@@ -6403,6 +6503,68 @@ function setActionState({
     }
   });
 }
+function handleCancelSubscriptionServices() {
+  const widget = store.get().subscriptionItemsWidget;
+  if (widget.action !== 'services' || widget.actionStatus !== 'running') return;
+  store.set({subscriptionItemsWidget:{...widget,serviceCancel:true,actionMessage:'Остановка запрошена. Ждём завершения текущего узла; новые проверки не запускаются.'}});
+}
+async function refreshSubscriptionServiceEvidence(sectionCode) {
+  const response = await PodkopShellMethods.getSubscriptionServices(sectionCode);
+  if (!response.success || response.data?.success !== true || !Array.isArray(response.data.results)) throw new Error(response.data?.error || response.error || 'service_support_missing');
+  const widget = store.get().subscriptionItemsWidget;
+  const byId = new Map(response.data.results.map(result=>[result.id,normalizeSubscriptionServiceEvidence(result)]));
+  store.set({subscriptionItemsWidget:{...widget,data:widget.data.map(section=>section.code!==sectionCode?section:{...section,
+    serviceSupport:true,requiredServices:response.data.requiredServices || [],
+    items:section.items.map(item=>({...item,services:byId.get(item.id)||{}}))})}});
+}
+async function handleCheckSubscriptionServices(sectionCode, services, force = false) {
+  const widget = store.get().subscriptionItemsWidget;
+  if (widget.loading || widget.failed || widget.applying || widget.applyVerification || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown || isActionRunning()) return;
+  const section = widget.data.find(section=>section.code===sectionCode);
+  if (!section?.serviceSupport || !services.length) return;
+  const items = getSubscriptionServiceCheckTargets(section,services,force,widget.pendingChanges);
+  if (!items.length) {
+    setActionState({action:'services',actionStatus:'idle',actionMessage:'Все выбранные сервисы уже имеют свежие результаты. Повторные сетевые проверки не запускались.'});
+    return;
+  }
+  store.set({subscriptionItemsWidget:{...widget,serviceCancel:false}});
+  setActionState({action:'services',actionStatus:'running',actionTarget:{sectionCode},actionMessage:'Подготовка изолированной проверки сервисов. Рабочий прокси не переключается.'});
+  try {
+    for (let index=0;index<items.length;index++) {
+      if (store.get().subscriptionItemsWidget.serviceCancel) break;
+      const item=items[index];
+      setActionState({action:'services',actionStatus:'running',actionMessage:`Сервисы: ${section.displayName||sectionCode} / ${item.name||item.id} (${index+1}/${items.length}): ${services.join(', ')}`});
+      const response=await PodkopShellMethods.checkSubscriptionServices(sectionCode,item.id,services);
+      if (!response.success || response.data?.success !== true) throw new Error(response.data?.error||response.error||'service_check_failed');
+      await refreshSubscriptionServiceEvidence(sectionCode);
+    }
+    setActionState({action:'services',actionStatus:'idle',actionMessage:store.get().subscriptionItemsWidget.serviceCancel?'Проверка остановлена. Полученные результаты сохранены; изменения не применены.':'Проверка завершена. Результаты показаны по узлам и сервисам; изменения не применены.'});
+  } catch (error) {
+    setActionState({action:'services',actionStatus:'error',actionError:error?.message,actionMessage:getSubscriptionActionErrorMessage(error,'Не удалось завершить проверку сервисов. Сохранён ваш выбор; рабочий прокси не изменён.')});
+  }
+}
+function handleConfirmSubscriptionService(sectionCode, itemId, service) {
+  const widget=store.get().subscriptionItemsWidget;
+  const section=widget.data.find(section=>section.code===sectionCode);
+  const item=section?.items.find(item=>item.id===itemId);
+  if (!canConfirmSubscriptionService(service,item?.services?.[service]) || widget.loading || widget.applying || isActionRunning() || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown) return;
+  ui.showModal('Подтверждение реального чата', [
+    E('p',{},`Подтверждайте только если вы самостоятельно открыли ${service==='gemini'?'Gemini':'ChatGPT'} именно через узел «${item.name||item.id}» и получили ответ на сообщение. Открытие сайта или страницы входа недостаточно. Проверка здесь не переключает прокси. Данные входа не сохраняются.`),
+    E('div',{class:'right'},[
+      E('button',{type:'button',class:'cbi-button',click:()=>ui.hideModal()},'Отмена'),
+      E('button',{type:'button',class:'cbi-button cbi-button-apply',click:async()=>{
+        ui.hideModal();
+        setActionState({action:'services',actionStatus:'running',actionTarget:{sectionCode},actionMessage:'Сохраняем ваше подтверждение реального чата.'});
+        try {
+          const response=await PodkopShellMethods.confirmSubscriptionService(sectionCode,itemId,service,true);
+          if (!response.success || response.data?.success!==true) throw new Error(response.data?.error||response.error||'service_confirm_failed');
+          await refreshSubscriptionServiceEvidence(sectionCode);
+          setActionState({action:'services',actionStatus:'idle',actionMessage:'Подтверждение сохранено. Изменения фильтра ещё не применены.'});
+        } catch(error) {setActionState({action:'services',actionStatus:'error',actionError:error?.message,actionMessage:getSubscriptionActionErrorMessage(error,'Подтверждение не сохранено. Повторите проверку сети.')});}
+      }},'Да, получен ответ в реальном чате')
+    ])
+  ]);
+}
 async function readSubscriptionSections() {
   // The backend commits selection/tag changes outside LuCI's cached UCI object.
   // Bypass cached load without unloading local unsaved form changes.
@@ -6419,11 +6581,20 @@ async function readSubscriptionSections() {
     if (!items.success || !Array.isArray(items.data)) {
       throw new Error(items.success ? items.data?.error || "invalid_subscription_items" : items.error);
     }
+    let serviceData;
+    try {
+      const response=await PodkopShellMethods.getSubscriptionServices?.(section[".name"]);
+      if (response?.success && response.data?.success===true && Array.isArray(response.data.results)) serviceData=response.data;
+    } catch (_) { /* Other subscription controls remain usable; service filtering fails closed. */ }
+    const serviceResults=new Map((serviceData?.results||[]).map(result=>[result.id,normalizeSubscriptionServiceEvidence(result)]));
     return {code:section[".name"], displayName:section[".name"],
       selectionMode: section.subscription_selection_mode || "auto",
       includeTags:normalizeSubscriptionTags(section.subscription_include_tags),
       excludeTags:normalizeSubscriptionTags(section.subscription_exclude_tags),
-      items:items.data, sources:sources.data};
+      communityLists:normalizeSubscriptionTags(section.community_lists),
+      requiredServices:serviceData?.requiredServices || normalizeSubscriptionTags(section.subscription_required_services),
+      serviceSupport:!!serviceData,
+      items:items.data.map(item=>({...item,services:serviceResults.get(item.id)||{}})), sources:sources.data};
   }));
 }
 async function readSubscriptionSectionsWithRetry(onRetry) {
@@ -6500,6 +6671,8 @@ function rebaseSubscriptionDraft(draft, sections) {
       const key = `${section.code}:tags:${kind}`;
       if (key in remaining && JSON.stringify(remaining[key]) === JSON.stringify(section[`${kind}Tags`] || [])) delete remaining[key];
     }
+    const serviceKey = `${section.code}:services:required`;
+    if (serviceKey in remaining && JSON.stringify([...remaining[serviceKey]].sort()) === JSON.stringify([...(section.requiredServices || [])].sort())) delete remaining[serviceKey];
     for (const item of section.items) {
       const key = `${section.code}:${item.id}`;
       if (key in remaining && remaining[key] === item.enabled) delete remaining[key];
@@ -6940,6 +7113,8 @@ function getErrorText(error) {
 }
 function getSubscriptionActionErrorMessage(error, fallback) {
   const detail = getErrorText(error);
+  if (/service_snapshot_storage_unavailable/.test(detail)) return 'Не удалось подготовить безопасную копию рабочего подключения: проверьте свободное место или локальные списки. Изменения фильтра не применены; ваш выбор сохранён. При нехватке места освободите его и повторите применение.';
+  if (/service_manual_links_unsupported/.test(detail)) return 'Фильтр сервисов нельзя применить: в секции есть отдельные proxy-ссылки, которые пока не проверяются. Перенесите их в отдельную секцию или отключите фильтр сервисов. Настройки не применены; ваш выбор сохранён.';
   if (/probe_start_failed/.test(detail)) return "Не удалось запустить временный процесс проверки. Рабочее подключение не изменено.";
   if (/probe_curl_|dns_config_invalid/.test(detail)) return "Проверочное подключение не удалось. Проверьте доступность сервера и настройки DNS.";
   if (/cannot_disable_last_enabled_link/.test(detail)) return "В секции должен остаться хотя бы один включённый конфиг из включённой подписки.";

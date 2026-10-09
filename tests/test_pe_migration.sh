@@ -45,6 +45,8 @@ new_case() {
 id() { printf '0\n'; }
 # Wall-clock waiting is an appliance boundary; keep readiness state/polls real.
 sleep() { :; }
+# Durability is another appliance boundary; never flush the host's unrelated disks.
+sync() { printf 'sync\n' >> "$case_dir/events"; }
 uci() { case "$1 ${2:-}" in 'changes ') printf '%s' "$PENDING" ;; '-q show') [ "$ACTIVE_SUB" = 0 ] || printf "podkop.main.proxy_config_type='subscription_urltest'\n" ;; *) return 91 ;; esac; }
 ubus() { case "$*" in *podkop-dns-failover*) printf '{"podkop-dns-failover":{"instances":{"main":{"running":%s,"pid":%s}}}}\n' "$DNS_WAS_RUNNING" "$$" ;; *) printf '{"sing-box":{"instances":{"main":{"running":%s,"pid":%s}}}}\n' "$(if [ "$HEALTH_FAIL" = 0 ]; then printf true; else printf false; fi)" "$$" ;; esac; }
 apk() {

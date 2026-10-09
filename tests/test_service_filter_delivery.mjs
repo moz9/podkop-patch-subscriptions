@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const installer = fs.readFileSync(path.join(root, 'openwrt/install.sh'), 'utf8');
+assert.equal(fs.readFileSync(path.join(root, 'i'), 'utf8'), installer);
+assert.ok(installer.includes("grep -Fqx '# subscription_services_v1 end'"), 'installer must detect old backends without service checks');
+assert.ok(installer.includes("! grep -Fqx '# subscription_services_v1 end'"), 'installer must upgrade a previously patched backend');
+assert.ok(installer.includes("# subscription_service_filter_v1"), 'installer must require runtime admission, not just probe helper');
+assert.ok(installer.includes("# subscription_service_snapshot_v1 end"), 'installer must deliver safe expired-proof boot preservation');
+console.log('Service filter delivery checks passed');

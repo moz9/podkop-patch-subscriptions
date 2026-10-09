@@ -14,6 +14,8 @@ external_device=/dev/test
 mount_table="$test_dir/mounts"
 printf '/dev/test %s ext4 rw,noatime 0 0\n' "$external_mount" > "$mount_table"
 storage_idle_path() { return 0; }
+# Keep fixture durability checks isolated from the host's unrelated disks.
+sync() { :; }
 # Real target BusyBox sort has no -o support.
 sort() {
     for argument in "$@"; do [ "$argument" != -o ] || return 2; done
@@ -66,6 +68,12 @@ mkdir "$source_root/$name"
 printf 'now in use\n' > "$source_root/$name/file"
 if (storage_idle_path() { return 1; }; storage_offload "$source_root/$name") > "$test_dir/busy-error" 2>&1; then exit 1; fi
 [ -f "$source_root/$name/file" ]
+# A failed durability flush must retain the verified source too.
+name=podkop-selection-test.FlushFailed
+printf 'keep after flush failure\n' > "$source_root/$name"
+if (sync() { return 1; }; storage_offload "$source_root/$name") > "$test_dir/flush-error" 2>&1; then exit 1; fi
+[ -f "$source_root/$name" ]
+grep -q 'не удалось записать копию' "$test_dir/flush-error"
 # Commit the destination to disk before removing the verified original.
 name=podkop-selection-test.FlushFirst
 printf 'flush first\n' > "$source_root/$name"
