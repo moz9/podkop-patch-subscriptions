@@ -8,6 +8,7 @@
 # subscription_tag_filters_v1
 # subscription_tag_glob_portable_v1
 # subscription_service_filter_v1
+# subscription_game_filter_v1
 subscription_tag_values_append() {
     SUBSCRIPTION_TAG_VALUES="$(printf '%s' "$SUBSCRIPTION_TAG_VALUES" | jq -c --arg value "$1" '. + [$value]')"
 }
@@ -296,7 +297,9 @@ subscription_source_policy() {
               else null end;
         def pattern_matches($pattern; $name):
             (legacy_flag_code($pattern)) as $legacy_code
-            | if ($pattern | startswith("@prefix:")) and (country_code($pattern[8:]) != null)
+            | if $pattern == "@game:only" then ($name | contains("Игровой") | not)
+              elif $pattern == "@game:exclude" then ($name | contains("Игровой"))
+              elif ($pattern | startswith("@prefix:")) and (country_code($pattern[8:]) != null)
               then prefix_matches($pattern[8:]; $name)
               elif $legacy_code != null then prefix_matches($legacy_code; $name)
               else glob_matches($pattern; $name) end;

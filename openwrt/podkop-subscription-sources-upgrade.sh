@@ -14,6 +14,7 @@ if grep -Fqx '# subscription_choices_and_busy_v1' "$target" &&
     grep -Fqx '# subscription_tag_filters_v1' "$target" &&
     grep -Fqx '# subscription_tag_glob_portable_v1' "$target" &&
     grep -Fqx '# subscription_service_filter_v1' "$target" &&
+    grep -Fqx '# subscription_game_filter_v1' "$target" &&
     grep -Fqx '# subscription_services_v1 end' "$target" &&
     grep -Fqx '# subscription_gemini_region_v2' "$target" &&
     grep -Fqx '# subscription_probe_context_v2' "$target" &&

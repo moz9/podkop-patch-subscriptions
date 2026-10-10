@@ -6058,7 +6058,7 @@ function getSubscriptionTagChoices(section, savedTags) {
     if (/^Авто(?:\s|$)/i.test(name)) choices.set('Авто*', {value:'Авто*',label:'Авто',missing:false});
     else if (!codes.length && name) choices.set(literal(rawName), {value:literal(rawName),label:name,missing:false});
   }
-  for (const tag of savedTags) if (!choices.has(tag)) {
+  for (const tag of savedTags) if (tag !== '@game:only' && tag !== '@game:exclude' && !choices.has(tag)) {
     choices.set(tag, {value:tag, label:`${tag} — сохранённый шаблон`, missing:!section.items.some(item => subscriptionTagMatches(tag,item.name || item.tag || ''))});
   }
   return [...choices.values()].sort((a,b) => a.label.localeCompare(b.label, 'ru'));
@@ -6089,6 +6089,9 @@ function renderSubscriptionTagPicker(section, pendingChanges, kind, disabled, on
   ]);
 }
 function subscriptionTagMatches(pattern, name) {
+  // Reserved exclusion predicates keep the game filter ANDed with countries.
+  if (pattern === '@game:only') return !String(name || '').includes('Игровой');
+  if (pattern === '@game:exclude') return String(name || '').includes('Игровой');
   const flag = pattern.match(/^\*([\u{1F1E6}-\u{1F1FF}]{2})\*$/u);
   const code = pattern.startsWith('@prefix:') ? pattern.slice(8) : flag ? Array.from(flag[1]).map(char => String.fromCharCode(char.codePointAt(0) - 0x1F1E6 + 65)).join('') : '';
   if (/^[A-Z]{2}$/.test(code)) {
@@ -6192,6 +6195,10 @@ function renderSection({
   const enabledSupportedCount = tagPreview.enabled;
   const sourceGroups = getSourceGroups(section);
   const collapsed = isSubscriptionSectionCollapsed(collapsedSections, section.code);
+  const gameTags = getEffectiveSubscriptionTags(pendingChanges, section, "exclude");
+  const gameMode = gameTags.includes('@game:only')
+    ? (gameTags.includes('@game:exclude') ? 'conflict' : 'gaming')
+    : gameTags.includes('@game:exclude') ? 'non-gaming' : 'all';
   return E("div", { class: "pdk_subscriptions-page__section" }, [
     E("button", {type:"button", class:"pdk_subscriptions-page__section-title",
       style:"display:block;width:100%;text-align:left;cursor:pointer",
@@ -6226,6 +6233,25 @@ function renderSection({
     ])],
     E("div", {class:"pdk_tag-pickers"}, [
       ...["include","exclude"].map(kind => renderSubscriptionTagPicker(section,pendingChanges,kind,applying || sourceActions?.modeDisabled,onToggle))
+    ]),
+    E("label", {style:"display:block;margin:8px 0"}, [
+      E("span", {}, "Тип узлов: "),
+      E("select", {
+        "aria-label":"Тип узлов",
+        disabled:applying || sourceActions?.modeDisabled ? "disabled" : void 0,
+        change:event => {
+          const mode = event.target.value;
+          if (!['all','gaming','non-gaming'].includes(mode)) return;
+          const next = gameTags.filter(tag => tag !== '@game:only' && tag !== '@game:exclude');
+          if (mode !== 'all') next.push(mode === 'gaming' ? '@game:only' : '@game:exclude');
+          onToggle(section.code,{id:"tags:exclude",enabled:section.excludeTags || []},next);
+        }
+      }, [
+        ...gameMode === 'conflict' ? [E("option", {value:"conflict",selected:"selected",disabled:"disabled"}, "Конфликт — выберите тип")]:[],
+        ...[['all','Все'],['gaming','Игровые'],['non-gaming','Неигровые']].map(([value,label]) =>
+          E("option", {value,selected:gameMode === value ? "selected" : void 0},label))
+      ]),
+      E("small", {style:"display:block;margin-top:4px"}, "Игровые — со словом «Игровой» в названии. Неигровые — без этой метки. Страны и остальные фильтры продолжают действовать.")
     ]),
     ...section.serviceSupport !== undefined ? [renderSubscriptionServiceFilter(section,pendingChanges,applying,onToggle,sourceActions)]:[],
     E("details", {}, [E("summary", {}, "Как работают теги"), E("small", {}, "Префиксы определены из названий узлов: SE, FI, US и другие. Флаг и буквенный код одной страны считаются одним тегом. Исключение важнее разрешения. При ручном отборе фильтр дополнительно ограничивает ваш выбор.")]),
