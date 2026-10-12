@@ -1,0 +1,5 @@
+#!/bin/sh
+[ "${1:-}" != -q ] || shift
+case "${1:-}" in get|show|changes|export) exit 1;; esac
+printf '%s\n' 'BLOCKED: uci mutation' >> /tmp/ci-guard.log
+exit 126
