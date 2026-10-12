@@ -3,13 +3,15 @@ import vm from 'node:vm';
 import assert from 'node:assert/strict';
 const js=fs.readFileSync(new URL('../openwrt/main.js',import.meta.url),'utf8');
 const now=1900000000;
+const revision = 'a'.repeat(64);
+const buildSection = (code,changes) => c.buildSubscriptionSectionChanges(code,changes,revision);
 const c=vm.createContext({Error,Date:{now:()=>now*1000},_:x=>x,E:(tag,attrs,children)=>({tag,attrs,children})});
 for(const name of ['getEffectiveEnabled','getEffectiveSubscriptionItemEnabled','getEffectiveSelectionMode','getRowId','getEffectiveSubscriptionTags','getEffectiveSourceEnabled','subscriptionTagMatches','isSubscriptionTagFiltered','buildSubscriptionSectionChanges','getEffectiveRequiredServices','getSubscriptionServiceExclusions','getSubscriptionServiceStateLabel','canConfirmSubscriptionService','renderSubscriptionServiceFilter','normalizeSubscriptionServiceEvidence','isSubscriptionServiceEvidenceFresh','getSubscriptionServiceCheckTargets','getSubscriptionServiceRoutingHint','getSubscriptionServiceSummary']){
  const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));
  assert.ok(match,`${name} must exist`);
  vm.runInContext(match[0],c);
 }
-const section={code:'geo',requiredServices:[],serviceSupport:true,items:[]};
+const section={code:'geo',revision,requiredServices:[],serviceSupport:true,items:[]};
 assert.match(c.getSubscriptionServiceRoutingHint({...section,communityLists:['google_ai']},['gemini']),/Google AI выбран в этой секции/);
 assert.match(c.getSubscriptionServiceRoutingHint(section,['gemini']),/Секции.*Списки.*фильтр узлов маршруты не меняет/i);
 assert.equal(c.getSubscriptionServiceRoutingHint({...section,communityLists:['google_ai']},['chatgpt']),'','do not invent OpenAI routing lists or show unrelated Gemini hints');
@@ -18,7 +20,7 @@ assert.deepEqual(JSON.parse(JSON.stringify(c.normalizeSubscriptionServiceEvidenc
 assert.deepEqual([...c.getEffectiveRequiredServices({},section)],[],'filter defaults off');
 const draft={'geo:services:required':['gemini','chatgpt']};
 assert.deepEqual([...c.getEffectiveRequiredServices(draft,section)],['gemini','chatgpt']);
-assert.deepEqual(JSON.parse(JSON.stringify(c.buildSubscriptionSectionChanges('geo',[{id:'services:required',enabled:['gemini']},{id:'a',enabled:false}]))),{section:'geo',requiredServices:['gemini'],changes:[{id:'a',enabled:false}],sources:[]});
+assert.deepEqual(JSON.parse(JSON.stringify(buildSection('geo',[{id:'services:required',enabled:['gemini']},{id:'a',enabled:false}]))),{section:'geo',expectedRevision:revision,requiredServices:['gemini'],changes:[{id:'a',enabled:false}],sources:[]});
 const item={id:'a',services:{gemini:{state:'pass',expiresAt:now+30,checkedAt:now-60},chatgpt:{state:'unknown',expiresAt:now+30,checkedAt:now-60,network:true}}};
 const targetPool={items:[{...item,supported:true},{id:'b',supported:true,services:{gemini:{state:'fail',expiresAt:now+30,checkedAt:now-60}}},{id:'c',supported:true,services:{gemini:{state:'pass',expiresAt:now-1}}},{id:'d',supported:false}]};
 assert.deepEqual(c.getSubscriptionServiceCheckTargets(targetPool,['gemini']).map(row=>row.id).join(','),'c','fresh pass/fail/unknown must all be cached');
@@ -84,7 +86,7 @@ assert.match(c.getSubscriptionServiceStateLabel({state:'pass',checkedAt:now+1,ex
 assert.equal(c.getSubscriptionServiceCheckTargets({items:[{id:'bad-date',supported:true,services:{gemini:{state:'pass',expiresAt:now+30}}}]},['gemini']).length,1,'missing checkedAt requires a new observation');
 assert.match(c.getSourceSummary({section:pool,group,pendingChanges:{'geo:services:required':['gemini']}}),/К применению: 1/);
 console.log('PASS: service eligibility is reflected in preview, source counts, status and draft recovery');
-let state={subscriptionItemsWidget:{data:[pool],pendingChanges:{'geo:a':false},actionStatus:'idle'}};
+let state={subscriptionItemsWidget:{data:[pool],pendingChanges:{'geo:a':false},draftRevisions:{geo:revision},actionStatus:'idle'}};
 const calls=[];
 c.store={get:()=>state,set:value=>state={...state,...value}};
 c.isActionRunning=()=>false;
@@ -93,7 +95,9 @@ c.PodkopShellMethods={
  checkSubscriptionServices:async(code,id,services)=>{calls.push([code,id,[...services]]);c.handleCancelSubscriptionServices();return {success:true,data:{success:true}};},
  getSubscriptionServices:async()=>({success:true,data:{success:true,requiredServices:[],catalog:[],results:[{id:'a',services:item.services}]}})
 };
-for(const name of ['setActionState','handleCancelSubscriptionServices','handleCheckSubscriptionServices','refreshSubscriptionServiceEvidence']){
+vm.runInContext('var subscriptionStatusGeneration=0;',c);
+c.readSubscriptionSectionsWithRetry=async()=>{const evidence=(await c.PodkopShellMethods.getSubscriptionServices()).data;return state.subscriptionItemsWidget.data.map(row=>({...row,revision:'b'.repeat(64),requiredServices:evidence.requiredServices,items:row.items.map(item=>({...item,services:c.normalizeSubscriptionServiceEvidence(evidence.results.find(result=>result.id===item.id)||{services:{}})}))}));};
+for(const name of ['getSubscriptionDraftState','setActionState','handleCancelSubscriptionServices','handleCheckSubscriptionServices','refreshSubscriptionServiceEvidence','getSubscriptionServiceCheckError']){
  const match=js.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));assert.ok(match,`${name} must exist`);vm.runInContext(match[0],c);
 }
 await c.handleCheckSubscriptionServices('geo',['gemini']);
@@ -110,7 +114,7 @@ assert.match(c.getSubscriptionActionErrorMessage(new Error('service_snapshot_sto
 assert.match(JSON.stringify(filter),/Для конфигов подписок; отдельные proxy-ссылки не проверяются/,'selector must state its supported scope');
 console.log('PASS: unsupported manual links receive an explicit service filter error');
 calls.length=0;
-state.subscriptionItemsWidget={data:[{...pool,items:[{...item,supported:true},{...item,id:'b',supported:true}]}],pendingChanges:{'geo:a':false},actionStatus:'idle'};
+state.subscriptionItemsWidget={data:[{...pool,items:[{...item,supported:true},{...item,id:'b',supported:true}]}],pendingChanges:{'geo:a':false},draftRevisions:{geo:revision},actionStatus:'idle'};
 c.PodkopShellMethods.checkSubscriptionServices=async(code,id,services)=>{calls.push([code,id,[...services]]);return {success:true,data:{success:true}};};
 await c.handleCheckSubscriptionServices('geo',['gemini']);
 assert.equal(calls.length,0,'default action must perform zero RPC probes for fully fresh evidence');
@@ -126,11 +130,20 @@ assert.equal(state.subscriptionItemsWidget.pendingChanges['geo:a'],false,'forced
 for(const name of ['getToolbarMessage','getToolbarClass','renderToolbar','subscriptionStateLabel']) {
  const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));assert.ok(match);vm.runInContext(match[0],c);
 }
-assert.match(c.getToolbarMessage({runtimeStatus:{pending:true},pendingCount:0}),/Конфиги или результаты проверок обновлены, но ещё не применены/);
-assert.match(c.subscriptionStateLabel({runtimeStatus:{pending:true},pendingCount:0})[2],/результаты проверок/);
+assert.match(c.getToolbarMessage({runtimeStatus:{pending:true},pendingCount:0}),/Применить.*перерыв соединений/);
+assert.match(c.subscriptionStateLabel({runtimeStatus:{pending:true},pendingCount:0})[2],/Применить.*перерыв соединений/);
 c.renderButton=props=>({tag:'button',attrs:{disabled:props.disabled},children:props.text});
 c.renderSubscriptionState=()=>({tag:'status'});
 for(const name of ['renderRotateCcwIcon24','renderSearchIcon24','renderCircleStopIcon24','renderSquareChartGanttIcon24'])c[name]=()=>null;
 const toolbar=c.renderToolbar({pendingCount:0,runtimeStatus:{pending:true,busy:false},actionStatus:'idle'});
 assert.equal(walk(toolbar).find(node=>node?.tag==='button'&&node.children==='Apply').attrs.disabled,false,'backend pending proof enables apply without a UCI draft');
 console.log('PASS: persisted service proof can enable Apply with no UI draft through backend pending status');
+
+calls.length=0;
+state.subscriptionItemsWidget={data:[{...pool,items:[{id:'a',supported:true},{id:'b',supported:true}]}],pendingChanges:{},actionStatus:'idle'};
+c.PodkopShellMethods.checkSubscriptionServices=async(code,id)=>{calls.push(id);if(id==='a')throw new Error('request_timeout');return {success:true,data:{success:true}};};
+await c.handleCheckSubscriptionServices('geo',['gemini'],true);
+assert.deepEqual(calls,['a','b'],'one failed node must not prevent later nodes from being checked');
+assert.match(state.subscriptionItemsWidget.actionMessage,/Ошибок: 1/,'batch retains a visible truthful error count');
+assert.match(c.getSubscriptionActionErrorMessage(new Error('service_results_stale_or_missing'),'generic'),/устарели|не найдены/,'missing proof must explain required recheck');
+assert.match(c.getSubscriptionActionErrorMessage(new Error('service_no_eligible_nodes'),'generic'),/ни одного|нет.*узл/i,'empty admission must not be reported as reload failure');

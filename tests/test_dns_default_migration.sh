@@ -277,18 +277,18 @@ fi
 [ "$MOCK_SET_COUNT" -eq 2 ] && [ "$MOCK_COMMIT_COUNT" -eq 1 ] && [ "$MOCK_REVERT_COUNT" -eq 1 ] ||
     fail_test 'commit failure did not perform exactly one package revert'
 
-grep -q '^VERSION="20260814-dns-optimizer-v18"$' openwrt/podkop-dns-optimizer ||
+grep -q '^VERSION="20261011-dns-optimizer-v21"$' openwrt/podkop-dns-optimizer ||
     fail_test 'DNS optimizer version was not bumped to v18'
 for installer in i openwrt/install.sh; do
-    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261010-game-filter-v2"$' "$installer" ||
+    grep -q '^INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261012-safety-cas-v1-candidate"$' "$installer" ||
         fail_test "$installer patch marker does not match the current release"
-    grep -q '^DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v18"$' "$installer" ||
+    grep -q '^DNS_OPTIMIZER_VERSION="20261011-dns-optimizer-v21"$' "$installer" ||
         fail_test "$installer DNS optimizer version was not bumped to v18"
-    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20261010_game_filter_v2"$' "$installer" ||
+    grep -q '^LUCI_MODULE_NAMESPACE="podkop_patch_20261012_safety_cas_v1_candidate"$' "$installer" ||
         fail_test "$installer LuCI namespace does not match the current release"
 done
 
-[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20261010-game-filter-v2' ] ||
+[ "$(jq -r '.patchVersion' openwrt/update-manifest.json)" = '20261012-safety-cas-v1-candidate' ] ||
     fail_test 'update manifest does not match the current release'
 
 cmp -s i openwrt/install.sh ||

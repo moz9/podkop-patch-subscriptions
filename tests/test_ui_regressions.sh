@@ -103,17 +103,44 @@ if sed -n '/#view \.cbi-page-actions \.cbi-button {/,/^    }/p' openwrt/main.js 
     fail 'LuCI action buttons must not use a pixel flex-basis that becomes height in Proton2025 column layout'
 fi
 
-if ! sed -n '/function canRefreshSubscriptions()/,/^}/p' openwrt/main.js \
-    | grep -q 'widget.failed || getPendingCount2(widget.pendingChanges) === 0'; then
-    fail 'subscription refresh must remain available after a cache load failure, including stale pending UI state'
-fi
+# Exercise the shipped guard instead of requiring adjacent source terms:
+# CAS adds explicit read-only recovery states without removing failure recovery.
+node <<'JS'
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const vm = require('node:vm');
+const source = fs.readFileSync('openwrt/main.js', 'utf8');
+const guard = source.match(/function canRefreshSubscriptions\(\) \{[\s\S]*?\n}/);
+assert.ok(guard, 'refresh guard exists');
+let widget;
+const context = vm.createContext({
+  store: { get: () => ({subscriptionItemsWidget: widget}) },
+  isActionRunning: () => false,
+  getPendingCount2: pending => Object.keys(pending || {}).length
+});
+vm.runInContext(guard[0], context);
+const base = {loading:false, applying:false, applyVerification:false,
+  runtimeStatus:{busy:false, unknown:false}, pendingChanges:{main:{node:true}}};
+widget = {...base, failed:true};
+assert.equal(context.canRefreshSubscriptions(), true, 'failed cache permits recovery despite pending draft');
+widget = {...base, failed:false};
+assert.equal(context.canRefreshSubscriptions(), false, 'ordinary unsaved draft blocks destructive refresh');
+for (const recovery of [{snapshotBundleMismatch:true}, {applyUnconfirmed:true}, {draftConflicts:{main:{}}}]) {
+  widget = {...base, ...recovery};
+  assert.equal(context.canRefreshSubscriptions(), true, 'CAS recovery permits read-only reread');
+}
+for (const blocked of [{loading:true}, {applying:true}, {applyVerification:true}, {runtimeStatus:{busy:true}}, {runtimeStatus:{unknown:true}}]) {
+  widget = {...base, failed:true, ...blocked};
+  assert.equal(context.canRefreshSubscriptions(), false, 'in-flight/unknown state remains blocked');
+}
+JS
 
 if ! sed -n '/async function handleRefreshSubscriptions(/,/^}/p' openwrt/main.js \
     | grep -q 'canRefreshSubscriptions()'; then
     fail 'subscription refresh handler must use the recoverable refresh guard'
 fi
 
-if ! sed -n '/async function handleApply()/,/^}/p' openwrt/main.js \
+if ! sed -n '/async function handleApply(/,/^}/p' openwrt/main.js \
     | grep -q 'result.data?.state === "rollback_failed"' ||
     ! sed -n '/function getSubscriptionActionErrorMessage/,/^}/p' openwrt/main.js \
     | grep -q 'case "rollback_failed"'; then

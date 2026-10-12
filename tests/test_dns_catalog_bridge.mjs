@@ -1,0 +1,17 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const source=fs.readFileSync(new URL('../openwrt/main.js',import.meta.url),'utf8');
+const ctx=vm.createContext({_:s=>s,validateIPV4:()=>({valid:true}),validateDNS:()=>({valid:true})});
+const start=source.indexOf('var DNS_MAIN_CATALOG =');
+assert.ok(start>=0,'legacy exposes the shared DNS catalog, not the old flat choices');
+vm.runInContext(source.slice(start,source.indexOf('var DIAGNOSTICS_UPDATE_INTERVAL',start)),ctx);
+assert.deepEqual(Array.from(ctx.DNS_SUPPORTED_PROTOCOLS),['udp','tcp','doh','dot']);
+assert.ok(ctx.getDnsServerOptionsForType('dot')['cloudflare-dns.com']);
+assert.equal(ctx.getDnsServerOptionsForType('udp')['cloudflare-dns.com'],undefined);
+assert.equal(ctx.validateDnsByType('freedns.controld.com/p0','dot').valid,true);
+assert.equal(ctx.validateDnsByType('cloudflare-dns.com','udp').valid,false);
+assert.equal(ctx.validateDnsByType('1.1.1.1','doq').valid,false);
+assert.doesNotMatch(ctx.validateDnsByType('1.1.1.1','doq').message,/Engine|Podkop PE/);
+for(const name of ['getDnsServerOptionsForType','validateDnsByType','DNS_SUPPORTED_PROTOCOLS']) assert.match(source.slice(source.lastIndexOf('return baseclass.extend')),new RegExp('\\b'+name+'\\b'));
+console.log('PASS: legacy shares protocol-aware catalog and neutral validation without Engine');

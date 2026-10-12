@@ -145,9 +145,17 @@ subscription_items_with_sources() { cat "$2"; }
 get_subscription_sources() { printf '[]\n'; }
 printf '[]\n' > "$tmp/tags.main.include"
 printf '[]\n' > "$tmp/tags.main.exclude"
-subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]'
+before_required_items="$(sha256sum "$tmp/items")"
+before_required_pending="$(if [ -f "$tmp/pending" ]; then sha256sum "$tmp/pending"; else echo absent; fi)"
+unset SUBSCRIPTION_SOURCES_CHANGED
+if subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]'; then
+    fail 'missing exact-context service proof allowed activation prepare'
+fi
+[ "$SUBSCRIPTION_SOURCES_ERROR" = service_results_stale_or_missing ] || fail 'missing proof refusal is not explicit'
 [ "$SUBSCRIPTION_SOURCES_REMAINING" = 0 ] || fail 'transaction did not enforce proposed requirements'
-[ "$SUBSCRIPTION_SOURCES_CHANGED" = 1 ] || fail 'requirement changes not counted'
+[ "${SUBSCRIPTION_SOURCES_CHANGED:-0}" = 0 ] || fail 'refused prepare claimed staged changes'
+[ "$before_required_items" = "$(sha256sum "$tmp/items")" ] || fail 'refused prepare changed cached items'
+[ "$before_required_pending" = "$(if [ -f "$tmp/pending" ]; then sha256sum "$tmp/pending"; else echo absent; fi)" ] || fail 'refused prepare changed pending activation'
 collect_urltest_proxy_links() { printf 'manual-link\n' > "$2"; return 0; }
 subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]' && fail 'untested manual mix admitted' || :
 [ "$SUBSCRIPTION_SOURCES_ERROR" = service_manual_links_unsupported ] || fail 'manual mix failure is not explicit'
@@ -164,6 +172,7 @@ printf 'opaque-test-link\n' > "$tmp/all"
 log() { :; }
 stop_main() { touch "$tmp/stopped"; }
 start_main() { touch "$tmp/started"; }
+. "$repo/openwrt/podkop-service-snapshot.sh"
 eval "$(sed -n '/^reload() {$/,/^}$/p' "$repo/openwrt/runtime-0.7.22/usr/bin/podkop")"
 before="$(sha256sum "$tmp/items" "$tmp/all")"
 reload && fail 'expired required service did not abort reload' || :

@@ -16,7 +16,16 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 # Use the installed PE functions, not the historical subscription helper.
 sed -n '/^# subscription_sources_v1 begin$/,/^# subscription_sources_v1 end$/p' "$runtime" > "$work/backend"
 sed -n '/^# subscription_apply_v2 begin$/,/^# subscription_apply_v2 end$/p' "$runtime" >> "$work/backend"
+for name in subscription_pending_sections_json subscription_pending_mark subscription_pending_clear; do
+    sed -n "/^$name() {$/,/^}$/p" "$runtime" >> "$work/backend"
+done
 . "$work/backend"
+CAS_TEST_RUNTIME="$runtime"
+. "$repo/tests/cas-fake-state.sh"
+SUBSCRIPTION_CACHE_DIR="$work/cache"
+mkdir -p "$SUBSCRIPTION_CACHE_DIR"
+printf '{"dns":{"servers":[]}}\n' > "$work/cas-dns.json"
+PODKOP_SUBSCRIPTION_CAS_DNS_CONFIG="$work/cas-dns.json"
 
 PODKOP_CONFIG="$work/config"
 printf '{"main":{}}\n' > "$PODKOP_CONFIG"
@@ -40,8 +49,17 @@ printf '{"main":{"subscription_excluded_link_ids":["old"]}}\n' > "$PODKOP_CONFIG
 [ "$(subscription_selection_mode main)" = all ] || fail 'legacy exclusions must retain their effective all mode during upgrade'
 printf '{"main":{"subscription_selection_mode":"auto","subscription_excluded_link_ids":["old"]}}\n' > "$PODKOP_CONFIG"
 [ "$(subscription_selection_mode main)" = auto ] || fail 'explicit auto must ignore stored manual preferences'
-result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"auto","changes":[]}]}')" || true
-printf '%s\n' "$result" | jq -e '.error=="subscription_cache_missing"' >/dev/null || fail 'auto mode must be accepted by transaction validation'
+# Auto passes payload validation but requires a fresh revision before cache use.
+payload='{"sections":[{"section":"main","selectionMode":"auto","changes":[]}]}'
+result="$(set_subscription_sections_enabled "$payload")" || true
+printf '%s\n' "$result" | jq -e '.error=="revision_required" and (.committed|not)' >/dev/null || fail 'auto payload must require a revision'
+printf '[{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","supported":true}]\n' > "$work/missing.items"
+printf 'link-one\n' > "$(get_subscription_all_cache_path main)"
+payload="$(cas_test_fresh_payload "$payload")"
+rm "$work/missing.items"
+result="$(set_subscription_sections_enabled "$payload")" || true
+printf '%s\n' "$result" | jq -e '.error=="revision_conflict" and (.committed|not)' >/dev/null || fail 'lost cache must invalidate the previously fresh auto revision'
+
 
 printf '%s\n' '[{"id":"old","supported":true,"sourceIds":["active"],"name":"SE Stockholm"},{"id":"selected","supported":true,"sourceIds":["active"],"name":"🇸🇪 Stockholm"},{"id":"eu","supported":true,"sourceIds":["active"],"name":"EU Transit"},{"id":"lower","supported":true,"sourceIds":["active"],"name":"se lower"},{"id":"middle","supported":true,"sourceIds":["active"],"name":"Node SE Stockholm"},{"id":"sweden","supported":true,"sourceIds":["active"],"name":"🇸🇪 Sweden"}]' > "$work/items"
 subscription_source_policy '[]' '["old"]' "$work/items" auto '["selected"]' '["@prefix:SE"]' '[]' \

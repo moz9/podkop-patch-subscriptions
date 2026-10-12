@@ -14,7 +14,7 @@ if ! grep -q 'SET_SUBSCRIPTION_SECTIONS_ENABLED' openwrt/main.js ||
     fail 'LuCI must use one all-sections subscription apply endpoint'
 fi
 
-if sed -n '/async function handleApply()/,/^}/p' openwrt/main.js \
+if sed -n '/async function handleApply(/,/^}/p' openwrt/main.js \
     | grep -q 'for (const \[sectionCode, changes\]'; then
     fail 'LuCI must not apply subscription sections one by one'
 fi
@@ -73,7 +73,7 @@ if grep -q 'Failed to apply changes. Podkop was not changed.' openwrt/main.js; t
     fail 'UI must not claim no changes after a post-commit failure'
 fi
 
-if ! sed -n '/async function handleApply()/,/^}/p' openwrt/main.js \
+if ! sed -n '/async function handleApply(/,/^}/p' openwrt/main.js \
     | grep -q 'await fetchSubscriptionItems("error")'; then
     fail 'UI must resynchronize subscription state after an apply error'
 fi

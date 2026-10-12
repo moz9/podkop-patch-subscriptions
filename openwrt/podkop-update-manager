@@ -1,16 +1,44 @@
 #!/bin/ash
 
 VERSION="20260813-update-manager-v3"
-STATE_DIR="/tmp/podkop-update-manager"
+STATE_DIR="${PODKOP_PATCH_MANAGER_STATE_DIR:-/tmp/podkop-update-manager}"
 STATUS_FILE="$STATE_DIR/status.json"
 DETAILS_FILE="$STATE_DIR/details.json"
 LOG_FILE="$STATE_DIR/update.log"
 LOCK_DIR="$STATE_DIR/lock"
 MANIFEST_URL="${PODKOP_PATCH_MANIFEST_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/openwrt/update-manifest.json}"
 RELEASE_URL="${PODKOP_OFFICIAL_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/latest}"
-INSTALLER_URL="${PODKOP_PATCH_INSTALLER_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/i}"
 
-mkdir -p "$STATE_DIR"
+owned_nonwritable_path() {
+    local info owner permissions
+    [ ! -L "$1" ] || return 1
+    info="$(LC_ALL=C ls -nd "$1" 2>/dev/null)" || return 1
+    owner="$(printf '%s\n' "$info" | awk '{print $3}')"
+    permissions="$(printf '%s\n' "$info" | awk '{print $1}')"
+    [ "$owner" = "$(id -u)" ] || return 1
+    case "$permissions" in ?????w*|????????w*) return 1 ;; esac
+}
+
+prepare_owned_file() {
+    if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+        (umask 077; set -C; : > "$1") 2>/dev/null || return 1
+    fi
+    [ -f "$1" ] && owned_nonwritable_path "$1"
+}
+
+umask 077
+if ! mkdir -m 700 "$STATE_DIR" 2>/dev/null; then
+    if [ ! -d "$STATE_DIR" ] || ! owned_nonwritable_path "$STATE_DIR"; then
+        echo '{"success":false,"error":"untrusted_state_directory"}' >&2
+        exit 1
+    fi
+fi
+for output_path in "$STATUS_FILE" "$DETAILS_FILE" "$LOG_FILE"; do
+    if ! prepare_owned_file "$output_path"; then
+        echo '{"success":false,"error":"untrusted_state_file"}' >&2
+        exit 1
+    fi
+done
 
 updated_at() {
     date -Iseconds 2>/dev/null || date
@@ -133,7 +161,7 @@ patch_manifest_is_older() {
 kill_process_tree() {
     local pid="$1"
     local child
-    [ -n "$pid" ] && [ -d "/proc/$pid" ] || return 0
+    [ -n "$pid" ] || return 0
     if [ -r "/proc/$pid/task/$pid/children" ]; then
         for child in $(cat "/proc/$pid/task/$pid/children" 2>/dev/null); do
             kill_process_tree "$child"
@@ -144,21 +172,35 @@ kill_process_tree() {
 
 run_with_timeout() {
     local limit="$1"
-    local pid watchdog rc
+    local pid watchdog rc deadline
     shift
+    deadline="$(mktemp "$STATE_DIR/.deadline.XXXXXX")" || return 1
+    ACTIVE_DEADLINE="$deadline"
 
     "$@" >> "$LOG_FILE" 2>&1 &
     pid="$!"
+    ACTIVE_PID="$pid"
     (
-        sleep "$limit"
+        sleep "$limit" &
+        timer="$!"
+        trap 'kill "$timer" 2>/dev/null || true; wait "$timer" 2>/dev/null || true' EXIT
+        trap 'exit 0' INT TERM HUP
+        wait "$timer"
+        rm -f "$deadline"
         kill_process_tree "$pid"
     ) &
     watchdog="$!"
+    ACTIVE_WATCHDOG="$watchdog"
 
     wait "$pid"
     rc="$?"
     kill "$watchdog" 2>/dev/null || true
     wait "$watchdog" >/dev/null 2>&1 || true
+    [ -e "$deadline" ] || rc=124
+    rm -f "$deadline"
+    ACTIVE_DEADLINE=""
+    ACTIVE_PID=""
+    ACTIVE_WATCHDOG=""
     return "$rc"
 }
 
@@ -168,13 +210,16 @@ download_file() {
     local raw_path ip
 
     rm -f "$output"
+    case "$url" in
+    file:///*|/*) cp "${url#file://}" "$output" && [ -s "$output" ]; return $? ;;
+    esac
     if command -v curl >/dev/null 2>&1; then
         if run_with_timeout 45 curl -fsSL --connect-timeout 10 -m 30 -o "$output" "$url"; then
             [ -s "$output" ] && return 0
         fi
     fi
     if command -v wget >/dev/null 2>&1; then
-        if run_with_timeout 45 wget --no-check-certificate -T 30 -O "$output" "$url"; then
+        if run_with_timeout 45 wget -T 30 -O "$output" "$url"; then
             [ -s "$output" ] && return 0
         fi
     fi
@@ -188,15 +233,39 @@ download_file() {
                 -o "$output" "$url"; then
                 [ -s "$output" ] && return 0
             fi
-            if command -v wget >/dev/null 2>&1 && run_with_timeout 45 wget -T 30 \
-                --no-check-certificate --header="Host: raw.githubusercontent.com" \
-                -O "$output" "https://$ip/$raw_path"; then
-                [ -s "$output" ] && return 0
-            fi
         done
         ;;
     esac
     return 1
+}
+
+# Resolve a mutable GitHub ref once. All release bytes use the returned commit.
+# Local releases are an explicit caller-owned trust boundary.
+pin_release_root() {
+    local source="$1" metadata="$2" tail owner repository ref encoded commit
+    case "$source" in
+    file:///*|/*) PINNED_ROOT="${source%/}"; return 0 ;;
+    https://raw.githubusercontent.com/*) ;;
+    https://*)
+        # A caller-pinned manifest authenticates an explicit HTTPS mirror.
+        printf '%s\n' "${PODKOP_PATCH_MANIFEST_SHA256:-}" | grep -Eq '^[0-9a-f]{64}$' || return 1
+        PINNED_ROOT="${source%/}"; return 0 ;;
+    *) return 1 ;;
+    esac
+    tail="${source#https://raw.githubusercontent.com/}"
+    owner="${tail%%/*}"; tail="${tail#*/}"
+    repository="${tail%%/*}"; ref="${tail#*/}"
+    case "$owner/$repository" in *[!a-zA-Z0-9_./-]*|'/' ) return 1 ;; esac
+    [ -n "$owner" ] && [ -n "$repository" ] && [ -n "$ref" ] || return 1
+    if printf '%s\n' "$ref" | grep -Eq '^[0-9a-f]{40}$'; then
+        commit="$ref"
+    else
+        encoded="$(printf '%s' "$ref" | jq -sRr @uri)" || return 1
+        download_file "https://api.github.com/repos/$owner/$repository/commits/$encoded" "$metadata" || return 1
+        commit="$(jq -er '.sha | select(type == "string" and length == 40)' "$metadata")" || return 1
+    fi
+    printf '%s\n' "$commit" | grep -Eq '^[0-9a-f]{40}$' || return 1
+    PINNED_ROOT="https://raw.githubusercontent.com/$owner/$repository/$commit"
 }
 
 current_podkop_version() {
@@ -224,10 +293,20 @@ perform_check() {
     cache_buster="$(date +%s 2>/dev/null || echo 0)"
     log_line "Checking Podkop and subscription patch updates."
 
-    if ! download_file "$MANIFEST_URL?t=$cache_buster" "$manifest" ||
-        ! jq -e '.schemaVersion == 1 and (.patchVersion | type == "string" and length > 0) and (.supportedPodkopVersions | type == "array")' "$manifest" >/dev/null 2>&1; then
+    if ! pin_release_root "${MANIFEST_URL%/openwrt/update-manifest.json}" "$STATE_DIR/release-commit.json"; then
+        write_status "error" "release_pin_failed"
+        return 1
+    fi
+    PINNED_MANIFEST_URL="$PINNED_ROOT/openwrt/update-manifest.json"
+    if ! download_file "$PINNED_MANIFEST_URL" "$manifest" ||
+        ! jq -e '.schemaVersion == 1 and (.patchVersion | type == "string" and length > 0) and (.supportedPodkopVersions | type == "array") and ((.channel // "legacy") == "legacy") and (.sha256 | type == "object")' "$manifest" >/dev/null 2>&1; then
         log_line "Compatibility manifest download or validation failed."
         write_status "error" "manifest_failed"
+        return 1
+    fi
+    if [ -n "${PODKOP_PATCH_MANIFEST_SHA256:-}" ] &&
+        [ "$(sha256sum "$manifest" | awk '{print $1}')" != "$PODKOP_PATCH_MANIFEST_SHA256" ]; then
+        write_status "error" "manifest_checksum_failed"
         return 1
     fi
     if ! download_file "$RELEASE_URL" "$release"; then
@@ -323,9 +402,19 @@ perform_update() {
     write_status "running" "patch_update_running"
     installer="$STATE_DIR/installer.sh"
     cache_buster="$(date +%s 2>/dev/null || echo 0)"
-    if ! download_file "$INSTALLER_URL?t=$cache_buster" "$installer"; then
+    if ! download_file "$PINNED_ROOT/i" "$installer"; then
         log_line "Installer download failed."
         write_status "error" "download_failed"
+        return 1
+    fi
+
+    expected_installer_hash="$(jq -er '.sha256.i | select(type == "string" and length == 64)' "$STATE_DIR/manifest.json")" || { write_status "error" "installer_checksum_failed"; return 1; }
+    case "$expected_installer_hash" in
+        *[!0123456789abcdef]*) write_status "error" "installer_checksum_failed"; return 1 ;;
+    esac
+    if [ "$(sha256sum "$installer" | awk '{print $1}')" != "$expected_installer_hash" ]; then
+        log_line "Installer checksum mismatch; installation refused."
+        write_status "error" "installer_checksum_failed"
         return 1
     fi
 
@@ -334,6 +423,8 @@ perform_update() {
     [ "$mode" = "podkop_and_patch" ] && force_podkop_update=1
     if ! run_with_timeout 900 env \
         PODKOP_PATCH_UPDATE_PODKOP=1 \
+        PODKOP_PATCH_RAW_BASE="$PINNED_ROOT/openwrt" \
+        PODKOP_PATCH_MANIFEST_SHA256="$(sha256sum "$STATE_DIR/manifest.json" | awk '{print $1}')" \
         PODKOP_PATCH_FORCE_PODKOP_UPDATE="$force_podkop_update" \
         sh "$installer"; then
         log_line "Installer returned an error. Existing backup and rollback rules remain active."
@@ -366,33 +457,65 @@ lock_busy() {
     [ -n "$pid" ] && [ -d "/proc/$pid" ]
 }
 
+worker_interrupted() {
+    trap '' INT TERM HUP
+    if [ -n "${ACTIVE_PID:-}" ]; then
+        kill_process_tree "$ACTIVE_PID"
+        wait "$ACTIVE_PID" 2>/dev/null || true
+    fi
+    if [ -n "${ACTIVE_WATCHDOG:-}" ]; then
+        kill "$ACTIVE_WATCHDOG" 2>/dev/null || true
+        wait "$ACTIVE_WATCHDOG" 2>/dev/null || true
+    fi
+    [ -z "${ACTIVE_DEADLINE:-}" ] || rm -f "$ACTIVE_DEADLINE"
+    write_status "error" "worker_interrupted"
+    exit "$1"
+}
+
+release_worker_lock() {
+    [ -n "${WORKER_TOKEN:-}" ] || return 0
+    [ "$(cat "$LOCK_DIR/token" 2>/dev/null)" = "$WORKER_TOKEN" ] || return 0
+    rm -f "$LOCK_DIR/token" "$LOCK_DIR/pid"
+    rmdir "$LOCK_DIR" 2>/dev/null || true
+}
+
 start_worker() {
-    local action="$1"
-    if lock_busy; then
+    local action="$1" token
+    # Reserve before changing status/logs. Never remove another owner's lock.
+    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
         echo '{"success":false,"error":"busy"}'
         return 1
     fi
-    rm -rf "$LOCK_DIR"
+    token="$$:$(date +%s)"
+    printf '%s\n' "$token" > "$LOCK_DIR/token"
+    echo "$$" > "$LOCK_DIR/pid"
     : > "$LOG_FILE"
     write_status "$( [ "$action" = check ] && echo checking || echo running )" "$( [ "$action" = check ] && echo checking_updates || echo patch_update_running )"
     if command -v start-stop-daemon >/dev/null 2>&1; then
-        start-stop-daemon -S -b -x "$0" -- worker "$action" >/dev/null 2>&1
+        start-stop-daemon -S -b -x "$0" -- worker "$action" "$token" >/dev/null 2>&1 || return 1
     elif command -v setsid >/dev/null 2>&1; then
-        setsid "$0" worker "$action" </dev/null >/dev/null 2>&1 &
+        setsid "$0" worker "$action" "$token" </dev/null >/dev/null 2>&1 &
     else
-        "$0" worker "$action" </dev/null >/dev/null 2>&1 &
+        "$0" worker "$action" "$token" </dev/null >/dev/null 2>&1 &
     fi
     echo '{"success":true,"started":true}'
 }
 
 run_worker() {
     local action="$1"
-    if ! mkdir "$LOCK_DIR" 2>/dev/null; then
-        write_status "error" "busy"
-        return 1
+    WORKER_TOKEN="${2:-}"
+    if [ -n "$WORKER_TOKEN" ]; then
+        [ "$(cat "$LOCK_DIR/token" 2>/dev/null)" = "$WORKER_TOKEN" ] || return 1
+    else
+        mkdir "$LOCK_DIR" 2>/dev/null || return 1
+        WORKER_TOKEN="$$:$(date +%s)"
+        printf '%s\n' "$WORKER_TOKEN" > "$LOCK_DIR/token"
     fi
     echo "$$" > "$LOCK_DIR/pid"
-    trap 'rm -rf "$LOCK_DIR"' EXIT INT TERM
+    trap 'release_worker_lock' EXIT
+    trap 'worker_interrupted 130' INT
+    trap 'worker_interrupted 143' TERM
+    trap 'worker_interrupted 129' HUP
     case "$action" in
     check) perform_check 1 ;;
     update) perform_update ;;
@@ -419,7 +542,7 @@ update_start) start_worker update ;;
 status) show_status ;;
 log) cat "$LOG_FILE" 2>/dev/null || true ;;
 version) echo "$VERSION" ;;
-worker) run_worker "$2" ;;
+worker) run_worker "$2" "${3:-}" ;;
 *)
     echo "Usage: podkop-update-manager {check_start|update_start|status|log|version}" >&2
     exit 1

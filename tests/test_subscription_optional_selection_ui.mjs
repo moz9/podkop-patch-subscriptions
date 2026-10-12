@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 const js = fs.readFileSync(new URL('../openwrt/main.js', import.meta.url), 'utf8');
+const revision = 'a'.repeat(64);
+const buildSection = (code,changes) => c.buildSubscriptionSectionChanges(code,changes,revision);
 const c = vm.createContext({Intl});
 for (const name of ['getEffectiveRequiredServices','getSubscriptionServiceExclusions','buildSubscriptionSectionChanges','getEffectiveSelectionMode','getEffectiveSubscriptionItemEnabled','subscriptionTagMatches','isSubscriptionTagFiltered','getSubscriptionTagChoices','getEffectiveSubscriptionTags','hasPendingSubscriptionModeChange','getTagFilterPreview','getEffectiveEnabled','getRowId','getEffectiveSourceEnabled']) {
   const match = js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`));
@@ -10,7 +12,7 @@ for (const name of ['getEffectiveRequiredServices','getSubscriptionServiceExclus
 }
 assert.equal(c.getEffectiveSelectionMode({}, {code:'main'}), 'auto');
 assert.equal(c.getEffectiveSelectionMode({'main:selection:mode':'auto'}, {code:'main',selectionMode:'selected'}), 'auto');
-assert.equal(c.buildSubscriptionSectionChanges('main',[{id:'selection:mode',enabled:'auto'}]).selectionMode, 'auto');
+assert.equal(buildSection('main',[{id:'selection:mode',enabled:'auto'}]).selectionMode, 'auto');
 const section = {code:'main',selectionMode:'selected',includeTags:['*🇸🇪*'],excludeTags:[],sources:[{id:'one',enabled:true},{id:'two',enabled:true}],items:[
   {id:'a',name:'🇸🇪 Швеция',supported:true,enabled:true,sourceIds:['one']},
   {id:'b',name:'SE Kazam · Reality',supported:true,enabled:false,sourceIds:['two']},
@@ -31,7 +33,7 @@ assert.ok(choices.some(x=>x.label==='EU' && x.value==='@prefix:EU'));
 assert.ok(choices.some(x=>x.label==='FI'));
 assert.ok(!choices.some(x=>/Швеция|Соединенные/.test(x.label)),'compact codes, not country names');
 assert.match(js,/Ручной отбор конфигов/);
-assert.match(js,/selectionMode: section\.subscription_selection_mode \|\| \(normalizeSubscriptionTags\(section\.subscription_excluded_link_ids\)/);
+assert.match(js,/getSubscriptionSnapshot\(\)/,'selection mode is read from the coherent backend snapshot');
 Object.assign(c, {
   E: (tag, attrs, children) => ({tag, attrs, children}),
   _: text => text,

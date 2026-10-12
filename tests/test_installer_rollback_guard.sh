@@ -22,6 +22,10 @@ fail_test() {
 
 sed \
     -e 's/\r$//' \
+    -e "s|/tmp/luci-|$test_root/luci-|g" \
+    -e "s|/etc/init.d/rpcd|$test_root/absent-rpcd|g" \
+    -e "s|/etc/init.d/uhttpd|$test_root/absent-uhttpd|g" \
+    -e "s|/etc/init.d/memdoc|$test_root/absent-memdoc|g" \
     -e '/^tmp_dir="$(mktemp -d)"$/,$d' \
     "$repo_root/i" > "$library"
 

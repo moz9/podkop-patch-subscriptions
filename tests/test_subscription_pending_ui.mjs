@@ -2,15 +2,17 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 const js=fs.readFileSync(new URL('../openwrt/main.js',import.meta.url),'utf8');
-let state={subscriptionItemsWidget:{pendingChanges:{'main:a':false},data:[{code:'main',items:[{id:'a',enabled:true}],sources:[]}],actionStatus:'idle'}};
+const revision = 'a'.repeat(64);
+let state={subscriptionItemsWidget:{pendingChanges:{'main:a':false},draftRevisions:{main:revision},data:[{code:'main',revision,items:[{id:'a',enabled:true}],sources:[]}],actionStatus:'idle'}};
+const buildSection = (code,changes) => c.buildSubscriptionSectionChanges(code,changes,revision);
 const c=vm.createContext({store:{get:()=>state,set:x=>state={...state,...x}},_:x=>x,logger:{error(){}},showToast(){},
   uci:{callLoad:async()=>({main:{'.name':'main',connection_type:'proxy',proxy_config_type:'subscription_urltest'}})}, window:{setTimeout:callback=>queueMicrotask(callback)},
   CustomPodkopMethods:{getConfigSections:async()=>[{'.name':'main',connection_type:'proxy',proxy_config_type:'subscription_urltest'}]},
-  PodkopShellMethods:{getSubscriptionItemsCached:async()=>({success:true,data:[{id:'a',enabled:true}]}),getSubscriptionSources:async()=>({success:true,data:[]}),setSubscriptionSectionsEnabled:async()=>({success:true,data:{success:false,error:'service_busy'}})},
+  PodkopShellMethods:{getSubscriptionSnapshot:async()=>({success:true,data:{success:true,version:1,sections:[{code:'main',revision,items:[{id:'a',enabled:true}],sources:[]}]}}),getSubscriptionItemsCached:async()=>({success:true,data:[{id:'a',enabled:true}]}),getSubscriptionSources:async()=>({success:true,data:[]}),setSubscriptionSectionsEnabled:async()=>({success:true,data:{success:false,error:'service_busy'}})},
   isActionRunning:()=>false,getPendingCount2:x=>Object.keys(x).length,getSubscriptionActionErrorMessage:(e,f)=>e.message||f
 });
-vm.runInContext('var subscriptionStatusGeneration=0; var subscriptionStatusTimer;',c);
-for(const name of ['sleep','readSubscriptionSections','readSubscriptionSectionsWithRetry']) {
+vm.runInContext('var subscriptionStatusGeneration=0; var subscriptionReadGeneration=0; var subscriptionStatusTimer;',c);
+for(const name of ['getRowId2','normalizeSubscriptionServiceEvidence','getSubscriptionDraftState','reconcileConfirmedSubscriptionDraft','sleep','readSubscriptionSections','readSubscriptionSectionsWithRetry']) {
  const m=js.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));
  assert.ok(m, `${name} must exist`);
  vm.runInContext(m[0],c);
@@ -45,8 +47,8 @@ assert.equal(c.subscriptionTagMatches('Node [!0-9]','Node x'),true,'negated clas
 assert.equal(c.subscriptionTagMatches('**','x'.repeat(300000)),true,'long untrusted node name must not overflow argument spreading');
 const tagDraft={'main:tags:include':['🇷🇺 Москва *'],'main:tags:exclude':['*2'],'main:selection:mode':true,'main:a':false,'main:source:s':false};
 const tagChanges=c.getChangesBySection(tagDraft);
-const payload=c.buildSubscriptionSectionChanges('main',tagChanges.main);
-assert.deepEqual(JSON.parse(JSON.stringify(payload)),{section:'main',selectionMode:'selected',includeTags:['🇷🇺 Москва *'],excludeTags:['*2'],changes:[{id:'a',enabled:false}],sources:[{id:'s',enabled:false}]});
+const payload=buildSection('main',tagChanges.main);
+assert.deepEqual(JSON.parse(JSON.stringify(payload)),{section:'main',expectedRevision:revision,selectionMode:'selected',includeTags:['🇷🇺 Москва *'],excludeTags:['*2'],changes:[{id:'a',enabled:false}],sources:[{id:'s',enabled:false}]});
 assert.deepEqual({...c.rebaseSubscriptionDraft(tagDraft,[{code:'main',selectionMode:'all',includeTags:['🇷🇺 Москва *'],excludeTags:[],items:[{id:'a',enabled:true}],sources:[]}])},{'main:tags:exclude':['*2'],'main:selection:mode':true,'main:a':false,'main:source:s':false});
 const preview=c.getTagFilterPreview({code:'main',items:[{id:'a',name:'🇷🇺 Москва 1',supported:true,enabled:true},{id:'b',name:'🇷🇺 Москва 2',supported:true,enabled:true},{id:'c',name:'US West',supported:true,enabled:true}],sources:[],includeTags:[],excludeTags:[]},{'main:tags:include':['🇷🇺 Москва ?'],'main:tags:exclude':['*2']});
 assert.equal(preview.enabled,1);
@@ -86,8 +88,8 @@ for (const runtimeStatus of [{busy:true},{unknown:true}]) {
 assert.equal(c.subscriptionStateLabel({runtimeStatus:{busy:true}})[1],'Podkop занят');
 assert.equal(c.subscriptionStateLabel({runtimeStatus:{pending:true}})[1],'Нужно применить');
 assert.equal(c.subscriptionStateLabel({})[1],'Готово');
-assert.match(c.getToolbarMessage({runtimeStatus:{busy:true}}),/Кнопки станут доступны автоматически/);
-assert.match(c.getToolbarMessage({runtimeStatus:{pending:true}}),/ещё не применены/);
+assert.match(c.getToolbarMessage({runtimeStatus:{busy:true}}),/Podkop занят.*дождитесь/);
+assert.match(c.getToolbarMessage({runtimeStatus:{pending:true}}),/Применить.*перерыв соединений/);
 assert.deepEqual({...c.rebaseSubscriptionDraft({'main:a':false,'main:b':false},[{code:'main',items:[{id:'a',enabled:false}]}])},{'main:b':false});
 let finish, calls=0;
 c.PodkopShellMethods.setSubscriptionSectionsEnabled=()=>{calls++;return new Promise(resolve=>finish=resolve)};
@@ -96,6 +98,7 @@ state.subscriptionItemsWidget.actionStatus='idle';
 const applying=c.handleApply();
 await c.handleApply();
 assert.equal(calls,1,'double click must not start a second apply');
+c.PodkopShellMethods.getSubscriptionSnapshot=async()=>({success:true,data:{success:true,version:1,sections:[{code:'main',revision:'b'.repeat(64),items:[{id:'a',enabled:false}],sources:[]}]}});
 finish({success:true,data:{success:true}});
 await applying;
 assert.equal(Object.keys(state.subscriptionItemsWidget.pendingChanges).length,0);

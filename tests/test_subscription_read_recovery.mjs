@@ -3,123 +3,79 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const source = fs.readFileSync(new URL('../openwrt/main.js', import.meta.url), 'utf8');
-
+const revision = 'a'.repeat(64);
 function extract(name) {
   const match = source.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));
   assert.ok(match, `${name} must exist in the LuCI bundle`);
   return match[0];
 }
-
-function makeHarness({sections, getItems, getSources} = {}) {
-  const calls = {callLoad: [], items: [], sources: [], sleep: [], writes: []};
-  const cachedConfig = {
-    main: {'.name': 'main', connection_type: 'proxy', proxy_config_type: 'subscription_urltest', subscription_selection_mode: 'all'},
-    newDraft: {'.name': 'newDraft', connection_type: 'proxy', proxy_config_type: 'manual', proxy_string: 'unsaved local draft'}
+const defaultSection={code:'main',displayName:'main',revision,selectionMode:'selected',includeTags:['RU *'],excludeTags:['*slow'],
+  requiredServices:[],serviceSupport:false,serviceCatalog:[],communityLists:[],items:[{id:'node',enabled:true,services:{}}],sources:[{id:'source',enabled:true}]};
+function makeHarness({sections=[defaultSection],getSnapshot}={}) {
+  const calls={snapshots:0,callLoad:[],items:[],sources:[],sleep:[],writes:[]};
+  const cachedConfig={main:{'.name':'main',connection_type:'proxy',proxy_config_type:'subscription_urltest',subscription_selection_mode:'all'},
+    newDraft:{'.name':'newDraft',connection_type:'proxy',proxy_config_type:'manual',proxy_string:'unsaved local draft'}};
+  const cachedSnapshot=JSON.stringify(cachedConfig);
+  const methods={
+    getSubscriptionSnapshot:async()=>{calls.snapshots++;return getSnapshot?getSnapshot(calls.snapshots):{success:true,data:{success:true,version:1,sections}};},
+    getSubscriptionItemsCached:async()=>{calls.items.push('forbidden');throw new Error('independent items read is incoherent');},
+    getSubscriptionSources:async()=>{calls.sources.push('forbidden');throw new Error('independent sources read is incoherent');},
+    setSubscriptionSectionsEnabled:async()=>{calls.writes.push('apply');throw new Error('reading cannot apply');},
+    updateSubscription:async()=>{calls.writes.push('refresh');throw new Error('reading cannot download');}
   };
-  const cachedSnapshot = JSON.stringify(cachedConfig);
-  const freshSections = sections ?? [{
-    '.name': 'main', connection_type: 'proxy', proxy_config_type: 'subscription_urltest',
-    subscription_selection_mode: 'selected', subscription_include_tags: ['RU *'], subscription_exclude_tags: ['*slow']
-  }];
-  const uci = {
-    unload() { throw new Error('read must not discard unsaved UCI changes'); },
-    async callLoad(packageName) {
-      calls.callLoad.push(packageName);
-      return Object.fromEntries(freshSections.map((section, index) => [`section${index}`, section]));
-    }
-  };
-  const methods = {
-    getSubscriptionItemsCached: async name => { calls.items.push(name); return getItems ? getItems(name, calls.items.length) : {success: true, data: [{id: 'node', enabled: true}]}; },
-    getSubscriptionSources: async name => { calls.sources.push(name); return getSources ? getSources(name, calls.sources.length) : {success: true, data: [{id: 'source', enabled: true}]}; },
-    setSubscriptionSectionsEnabled: async () => { calls.writes.push('setSubscriptionSectionsEnabled'); throw new Error('write RPC must not be called while reading'); },
-    updateSubscription: async () => { calls.writes.push('updateSubscription'); throw new Error('write RPC must not be called while reading'); }
-  };
-  const context = vm.createContext({
-    uci,
-    PodkopShellMethods: methods,
-    window: {setTimeout: (callback, milliseconds) => { calls.sleep.push(milliseconds); queueMicrotask(callback); }}
+  const context=vm.createContext({
+    PodkopShellMethods:methods,
+    uci:{unload(){throw new Error('must not discard unsaved changes');},callLoad(){calls.callLoad.push('forbidden');throw new Error('snapshot must not stitch UCI data');}},
+    window:{setTimeout:(callback,ms)=>{calls.sleep.push(ms);queueMicrotask(callback);}}
   });
-  vm.runInContext(extract('normalizeSubscriptionTags'), context);
-  vm.runInContext(extract('sleep'), context);
-  vm.runInContext(extract('readSubscriptionSections'), context);
-  vm.runInContext(extract('readSubscriptionSectionsWithRetry'), context);
-  return {context, calls, methods, cachedConfig, cachedSnapshot};
+  for(const name of ['normalizeSubscriptionServiceEvidence','sleep','readSubscriptionSections','readSubscriptionSectionsWithRetry']) vm.runInContext(extract(name),context);
+  return {context,calls,methods,cachedConfig,cachedSnapshot};
 }
-
 {
-  const {context, calls, cachedConfig, cachedSnapshot} = makeHarness();
-  const result = await context.readSubscriptionSections();
-  assert.deepEqual(calls.callLoad, ['podkop'], 'read must bypass stale cached UCI without unloading it');
-  assert.equal(JSON.stringify(cachedConfig), cachedSnapshot, 'direct read must preserve unsaved local UCI data');
-  assert.deepEqual(calls.items, ['main']);
-  assert.deepEqual(calls.sources, ['main']);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [{
-    code: 'main', displayName: 'main', selectionMode: 'selected',
-    includeTags: ['RU *'], excludeTags: ['*slow'],
-    requiredServices: [], serviceSupport: false,
-    communityLists: [],
-    items: [{id: 'node', enabled: true, services: {}}], sources: [{id: 'source', enabled: true}]
-  }], 'fresh selection mode and tags must be read alongside subscription items and sources');
-  assert.deepEqual(calls.writes, []);
+  const {context,calls,cachedConfig,cachedSnapshot}=makeHarness();
+  const result=await context.readSubscriptionSections();
+  assert.equal(calls.snapshots,1,'policy, identities and proof must come from one coherent operation');
+  assert.deepEqual(calls.callLoad,[],'snapshot must not read LuCI saved/staged data independently');
+  assert.equal(JSON.stringify(cachedConfig),cachedSnapshot,'unsaved local UCI data remains unchanged');
+  assert.deepEqual(calls.items,[]);assert.deepEqual(calls.sources,[]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)),[defaultSection],'revision, policy and lists stay together');
+  assert.deepEqual(calls.writes,[]);
 }
-
-for (const [label, options, expectedMode] of [
-  ['old excluded IDs list', {subscription_excluded_link_ids:['node']}, 'all'],
-  ['old excluded ID scalar', {subscription_excluded_link_ids:'node'}, 'all'],
-  ['no old exclusions', {}, 'auto'],
-  ['empty old exclusions list', {subscription_excluded_link_ids:[]}, 'auto'],
-  ['blank old exclusions list', {subscription_excluded_link_ids:['','  ']}, 'auto'],
-  ['explicit auto with retained exclusions', {subscription_selection_mode:'auto',subscription_excluded_link_ids:['node']}, 'auto'],
-  ['explicit selected', {subscription_selection_mode:'selected',subscription_excluded_link_ids:['node']}, 'selected'],
-  ['explicit all', {subscription_selection_mode:'all'}, 'all']
+// The backend owns legacy mode normalization. The UI trusts its explicit mode,
+// even when LuCI still caches a different saved mode or unsaved legacy fields.
+for(const selectionMode of ['auto','all','selected']) {
+  const {context,calls,cachedConfig,cachedSnapshot}=makeHarness({sections:[{...defaultSection,selectionMode}]});
+  const result=await context.readSubscriptionSections();
+  assert.equal(result[0].selectionMode,selectionMode,'coherent backend mode wins over stale LuCI mode');
+  assert.equal(JSON.stringify(cachedConfig),cachedSnapshot);
+  assert.deepEqual(calls.callLoad,[]);assert.deepEqual(calls.writes,[]);
+}
+{
+  const retries=[];
+  const {context,calls,cachedConfig,cachedSnapshot}=makeHarness({getSnapshot:attempt=>attempt===1?{success:false,error:'temporary read failure'}:{success:true,data:{success:true,version:1,sections:[defaultSection]}}});
+  const result=await context.readSubscriptionSectionsWithRetry(attempt=>retries.push(attempt));
+  assert.equal(result[0].items.length,1);assert.equal(calls.snapshots,2);
+  assert.equal(JSON.stringify(cachedConfig),cachedSnapshot);assert.deepEqual(calls.callLoad,[]);
+  assert.deepEqual(calls.sleep,[1500]);assert.deepEqual(retries,[1]);assert.deepEqual(calls.writes,[]);
+}
+{
+  const retries=[];
+  const {context,calls,cachedConfig,cachedSnapshot}=makeHarness({getSnapshot:()=>({success:false,error:'temporary read failure'})});
+  await assert.rejects(context.readSubscriptionSectionsWithRetry(attempt=>retries.push(attempt)),/temporary read failure/);
+  assert.equal(calls.snapshots,3,'sustained failure has bounded attempts');assert.deepEqual(calls.callLoad,[]);
+  assert.equal(JSON.stringify(cachedConfig),cachedSnapshot);assert.deepEqual(calls.sleep,[1500,1500]);assert.deepEqual(retries,[1,2]);assert.deepEqual(calls.writes,[]);
+}
+for(const [label,response,expected] of [
+  ['missing snapshot support',{success:true,data:null},/subscription_snapshot_unsupported/],
+  ['malformed version',{success:true,data:{success:true,version:2,sections:[]}},/subscription_snapshot_unsupported/],
+  ['missing revision',{success:true,data:{success:true,version:1,sections:[{...defaultSection,revision:null}]}},/subscription_snapshot_unsupported/],
+  ['access denied',{success:false,error:'access denied'},/access denied/]
 ]) {
-  const {context, calls} = makeHarness({sections:[{
-    '.name':'main', connection_type:'proxy', proxy_config_type:'subscription_urltest', ...options
-  }]});
-  const result = await context.readSubscriptionSections();
-  assert.equal(result[0].selectionMode, expectedMode, `${label} preserves intended manual/automatic pool`);
-  assert.deepEqual(calls.writes, [], 'mode fallback is read-only');
+  const {context,calls,cachedConfig,cachedSnapshot}=makeHarness({getSnapshot:()=>response});
+  await assert.rejects(context.readSubscriptionSectionsWithRetry(),expected,label);
+  assert.equal(calls.snapshots,1,`${label} stops without retries or permissive fallback`);
+  assert.equal(JSON.stringify(cachedConfig),cachedSnapshot);assert.deepEqual(calls.sleep,[]);assert.deepEqual(calls.writes,[]);
 }
-
-{
-  const retries = [];
-  const {context, calls, cachedConfig, cachedSnapshot} = makeHarness({
-    getItems: (_name, attempt) => attempt === 1 ? {success: false, error: 'temporary read failure'} : {success: true, data: [{id: 'node'}]}
-  });
-  const result = await context.readSubscriptionSectionsWithRetry(attempt => retries.push(attempt));
-  assert.equal(result[0].items.length, 1, 'second read succeeds');
-  assert.deepEqual(calls.items, ['main', 'main']);
-  assert.deepEqual(calls.callLoad, ['podkop', 'podkop'], 'each attempt directly reads saved UCI');
-  assert.equal(JSON.stringify(cachedConfig), cachedSnapshot, 'retry must preserve unsaved local UCI data');
-  assert.deepEqual(calls.sleep, [1500]);
-  assert.deepEqual(retries, [1]);
-  assert.deepEqual(calls.writes, []);
-}
-
-{
-  const retries = [];
-  const {context, calls, cachedConfig, cachedSnapshot} = makeHarness({getItems: () => ({success: false, error: 'temporary read failure'})});
-  await assert.rejects(context.readSubscriptionSectionsWithRetry(attempt => retries.push(attempt)), /temporary read failure/);
-  assert.equal(calls.items.length, 3, 'sustained failure makes exactly three read attempts');
-  assert.deepEqual(calls.callLoad, ['podkop', 'podkop', 'podkop']);
-  assert.equal(JSON.stringify(cachedConfig), cachedSnapshot, 'failed reads must preserve unsaved local UCI data');
-  assert.deepEqual(calls.sleep, [1500, 1500]);
-  assert.deepEqual(retries, [1, 2]);
-  assert.deepEqual(calls.writes, []);
-}
-
-for (const [label, setup, expected] of [
-  ['missing source support', {getSources: () => ({success: true, data: null})}, /source_support_missing/],
-  ['access denied', {getItems: () => ({success: false, error: 'access denied'})}, /access denied/]
-]) {
-  const {context, calls, cachedConfig, cachedSnapshot} = makeHarness(setup);
-  await assert.rejects(context.readSubscriptionSectionsWithRetry(), expected, `${label} is not retryable`);
-  assert.equal(calls.items.length, 1, `${label} stops after one attempt`);
-  assert.equal(JSON.stringify(cachedConfig), cachedSnapshot, `${label} preserves unsaved local UCI data`);
-  assert.deepEqual(calls.sleep, []);
-  assert.deepEqual(calls.writes, []);
-}
-
 {
   const draft = {'main:node': false};
   const data = [{code: 'main', items: [{id: 'node', enabled: true}], sources: []}];
@@ -141,4 +97,4 @@ for (const [label, setup, expected] of [
   assert.deepEqual(calls.writes, []);
 }
 
-console.log('PASS: subscription reads bypass cached UCI without discarding local drafts, retry transient failures, and never write during recovery');
+console.log('PASS: coherent subscription snapshots preserve local UCI drafts, retry transient failures, reject mismatched bundles and never mutate during recovery');

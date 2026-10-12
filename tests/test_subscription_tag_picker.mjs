@@ -50,3 +50,10 @@ const brokenIntl = vm.createContext({Intl:{DisplayNames:function(){throw new Err
 vm.runInContext(choicesSource, brokenIntl);
 assert.equal(brokenIntl.getSubscriptionTagChoices({items:[{name:'US Server'}]},[])[0].description, undefined, 'failed DisplayNames construction keeps code only');
 console.log('PASS: automatic country tags, literal safety, retained rules, initial checks and draft changes');
+
+const cached=c.getSubscriptionTagChoices(section, ['old*']);
+assert.equal(c.getSubscriptionTagChoices(section, ['old*']),cached,'unchanged country catalogue must be reused across state updates');
+ c.getSubscriptionTagChoices(section, []);
+assert.equal(c.getSubscriptionTagChoices(section, ['old*']),cached,'include/exclude pickers must not evict one another on each render');
+assert.notEqual(c.getSubscriptionTagChoices(section, ['other*']),cached,'saved pattern changes invalidate choices');
+assert.notEqual(c.getSubscriptionTagChoices({...section,items:[...section.items]}, ['old*']),cached,'subscription refresh invalidates choices');

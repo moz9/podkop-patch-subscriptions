@@ -22,7 +22,7 @@ check
 cp "$target" "$work/full"
 # Maintenance can replace only the update function while leaving the other helpers.
 awk '
-/^subscription_patch_update\(\) \{$/ {drop=4; print; next}
+/^subscription_patch_update\(\) \{$/ {drop=7; print; next}
 drop {drop--; next}
 {print}
 ' "$target" > "$work/partial"

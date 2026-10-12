@@ -1,0 +1,260 @@
+#!/bin/sh
+# Opt-in, single-section runtime. No command in this helper reloads the frontend.
+# prepare LOGICAL SECTION PORT API_PORT OUTPUT_DIR: pure graph split (no service calls).
+# bootstrap LOGICAL SECTION: validate and persist ROOT files; caller activates frontend.
+# apply LOGICAL SECTION: strict frontend equality, worker-only restart with rollback.
+set -eu
+umask 077
+ROOT="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
+SINGLE_HELPER="${PODKOP_SINGLE_MANAGER:-$(dirname "$0")/podkop-single-runtime}"
+if [ "${1:-}" = single-migrate ]; then exec "$SINGLE_HELPER" "$@"; fi
+if [ "${PODKOP_SECTION_MODE:-$(cat "$ROOT/runtime-mode" 2>/dev/null || true)}" = single ] ||
+   { [ "${PODKOP_SECTION_MODE:-}" != split ] && jq -e '.mode=="single"' "$ROOT/metadata.json" >/dev/null 2>&1; } ||
+   { [ "${1:-}" = bootstrap ] && [ ! -f "$ROOT/metadata.json" ] && [ "${PODKOP_SECTION_MODE:-}" != split ]; }; then
+    exec "$SINGLE_HELPER" "$@"
+fi
+LOCK_PATH="${PODKOP_SECTION_LOCK:-}"
+FRONTEND="${PODKOP_SECTION_FRONTEND_CONFIG:-/etc/sing-box/config.json}"
+SING_BOX="${PODKOP_SECTION_SING_BOX:-/usr/bin/sing-box}"
+INIT="${PODKOP_SECTION_INIT:-/etc/init.d/podkop-section-worker}"
+PORT=19160
+API_PORT=19163
+WORK=""
+LOCK=""
+PHASE=""
+SWAPPED=0
+COMMITTED=0
+cleanup() { [ -z "$WORK" ] || rm -rf "$WORK"; }
+finish() {
+    # Cleanup must continue even when old daemon cannot be made ready.
+    set +e
+    result="$1"
+    trap - EXIT HUP INT TERM
+    if [ "$SWAPPED" = 1 ] && [ "$COMMITTED" != 1 ]; then
+        for rollback_file in worker frontend logical metadata; do
+            if [ "$PHASE" = apply ] && [ "$rollback_file" != worker ] && [ "$rollback_file" != logical ]; then continue; fi
+            if [ -f "$WORK/before-$rollback_file.json" ]; then
+                mv "$WORK/before-$rollback_file.json" "$ROOT/$rollback_file.json" || result=1
+            elif [ "$PHASE" = bootstrap ]; then
+                rm -f "$ROOT/$rollback_file.json" || result=1
+            fi
+        done
+        if [ "$PHASE" = apply ]; then
+            if ! "$INIT" restart 9>&- >/dev/null 2>&1 || ! wait_ready; then error rollback_not_ready; result=1; fi
+        fi
+    fi
+    cleanup
+    exit "$result"
+}
+trap 'finish $?' EXIT
+trap 'exit 1' HUP INT TERM
+error() { printf 'section_runtime: %s\n' "$1" >&2; return 1; }
+
+prepare() (
+    logical="$1" section="$2" port="$3" api="$4" output="$5"
+    case "$section" in ''|*[!a-zA-Z0-9_]*) error invalid_section; return 1;; esac
+    case "$port:$api" in *[!0-9:]*|:*) error invalid_ports; return 1;; esac
+    [ "$port" -ge 1024 ] && [ "$port" -le 65535 ] && [ "$api" -ge 1024 ] && [ "$api" -le 65535 ] && [ "$port" != "$api" ] || { error invalid_ports; return 1; }
+    [ ! -e "$output" ] || { error output_exists; return 1; }
+    staged="$(mktemp -d "${output}.tmp.XXXXXX")" || return 1
+    if ! jq -e --arg s "$section" --argjson port "$port" --argjson api "$api" '
+      def require($condition;$label): if $condition then . else error("section_graph/"+$label) end;
+      def resolver_tag: if type=="string" then . elif type=="object" then .server // "" else "" end;
+      def member_name:
+        startswith($s+"-") and endswith("-out") and
+        (.[(($s|length)+1):-4] as $number |
+          ($number|length)>0 and all($number|explode[]; .>=48 and .<=57));
+      def acyclic($edges;$node;$seen):
+        if ($seen|index($node))!=null then false
+        else all($edges[$node][]?; acyclic($edges;.;$seen+[$node])) end;
+      . as $source |
+      require(type=="object" and (.outbounds|type)=="array" and (.dns.servers|type)=="array";"schema") |
+      [.outbounds[] | select(.tag | startswith($s+"-"))] as $selected |
+      ($selected|map(.tag)) as $tags |
+      [.outbounds[]|select(.type=="direct")|.tag] as $direct_tags |
+      [.dns.servers[]|select(.type!="fakeip" and .address!="fakeip")] as $dns |
+      ($dns|map(.tag)) as $dns_tags |
+      ($selected|map({key:.tag,value:((.outbounds//[])+[.detour?|select(.!=null)])})|from_entries) as $out_edges |
+      ($dns|map({key:.tag,value:[(.domain_resolver?,.address_resolver?)|select(.!=null)|resolver_tag]})|from_entries) as $dns_edges |
+      require(($selected|length)>0 and ($tags|unique|length)==($tags|length);"selected_tags") |
+      require(all($tags[]; .==($s+"-out") or .==($s+"-urltest-out") or member_name);"supported_names") |
+      require(([.outbounds[].tag]|unique|length)==(.outbounds|length);"unique_tags") |
+      require(($selected|map(select(.tag==($s+"-out") and (.type=="selector" or .type=="urltest")))|length)==1;"section_group") |
+      require(all($selected[]; .tag!=($s+"-urltest-out") or .type=="urltest");"urltest_type") |
+      require(all($tags[]; acyclic($out_edges;.;[]));"outbound_cycle") |
+      require(all($dns_tags[]; acyclic($dns_edges;.;[]));"dns_cycle") |
+      require(all($selected[]; .type as $t | ["selector","urltest","direct","socks","http","shadowsocks","vmess","vless","trojan","hysteria","hysteria2","tuic","ssh"]|index($t)!=null);"transport_type") |
+      require(all($selected[]; if .type=="selector" or .type=="urltest" then (.outbounds|type)=="array" and (.outbounds|length)>0 and all(.outbounds[]; . as $t | $tags|index($t)!=null) and (.default==null or (.default as $t | .outbounds|index($t)!=null)) else .outbounds==null end);"group_members") |
+      require(all($selected[]; .detour==null or (.detour as $t | $tags|index($t)!=null));"outbound_detour") |
+      require(all($selected[]|..|objects|(.domain_resolver?,.address_resolver?)|select(.!=null)|resolver_tag; . as $t | $dns_tags|index($t)!=null);"outbound_dns") |
+      require(($dns|length)>0 and ($dns_tags|unique|length)==($dns_tags|length);"dns_servers") |
+      require(all($dns[]; .detour==null or (.detour as $t | ($tags+$direct_tags)|index($t)!=null));"dns_detour") |
+      require(all($dns[]|..|objects|(.domain_resolver?,.address_resolver?)|select(.!=null)|resolver_tag; . as $t | $dns_tags|index($t)!=null);"dns_resolver") |
+      require(.dns.final==null or (.dns.final as $t | $dns_tags|index($t)!=null);"dns_final") |
+      require(.route.default_domain_resolver==null or (.route.default_domain_resolver|resolver_tag as $t | $dns_tags|index($t)!=null);"route_dns") |
+      require(all((.route,.dns)|..|objects|(.outbound?,.detour?)|select(.!=null); . as $t | ($tags|index($t))==null or $t==($s+"-out"));"frontend_dependency") |
+      require(all(.outbounds[]|select((.tag as $t|$tags|index($t))==null)|(.detour?,.outbounds[]?)|select(.!=null); . as $t | ($tags|index($t))==null or $t==($s+"-out"));"frontend_outbound_dependency") |
+      {frontend: ($source|.outbounds |= (map(select((.tag as $t | $tags|index($t))==null)) + [{type:"socks",tag:($s+"-out"),server:"127.0.0.1",server_port:$port,version:"5",routing_mark:2097152}])),
+       worker: {log:{level:"warn"},dns:($source.dns|.servers=$dns|del(.rules,.fakeip,.cache_capacity)),
+         inbounds:[{type:"socks",tag:"section-in",listen:"127.0.0.1",listen_port:$port}],
+         outbounds:($selected + [$source.outbounds[]|select(.type=="direct" and (.tag as $t | $tags|index($t))==null)]|map(if .type=="selector" or .type=="urltest" then . else .routing_mark=2097152 end)),
+         route:({final:($s+"-out"),auto_detect_interface:true,default_mark:2097152} + (if $source.route.default_domain_resolver!=null then {default_domain_resolver:$source.route.default_domain_resolver} else {} end)),
+         experimental:{clash_api:{external_controller:("127.0.0.1:"+($api|tostring))}}}}
+    ' "$logical" > "$staged/split.json" 2>"$staged/error"; then
+        reason="$(sed -n 's/.*\(section_graph\/[a-z_]*\).*/\1/p' "$staged/error" | head -n 1)"
+        rm -rf "$staged"
+        error "${reason:-unsupported_graph}"
+        return 1
+    fi
+    jq '.frontend' "$staged/split.json" > "$staged/frontend.json"
+    jq '.worker' "$staged/split.json" > "$staged/worker.json"
+    cp "$logical" "$staged/logical.json"
+    jq -n --arg s "$section" --argjson p "$port" --argjson a "$api" '{section:$s,port:$p,api_port:$a}' > "$staged/metadata.json"
+    rm "$staged/split.json"
+    rm "$staged/error"
+    chmod 600 "$staged"/*.json
+    mv "$staged" "$output"
+)
+
+resource_floor() (
+    available="$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo)"
+    case "$available" in ''|*[!0-9]*) error memory_unavailable; return 1;; esac
+    [ "$available" -ge 28672 ] || { error memory_floor; return 1; }
+)
+
+lock_root() {
+    command -v flock >/dev/null 2>&1 || { error lock_unavailable; return 1; }
+    if [ -z "$LOCK_PATH" ]; then
+        lock_key="$(printf '%s' "$ROOT" | sha256sum | cut -c 1-16)" || { error lock_unavailable; return 1; }
+        [ -n "$lock_key" ] || { error lock_unavailable; return 1; }
+        LOCK_PATH="/var/run/podkop-section-runtime-$lock_key.lock"
+    fi
+    # Keep this inode: unlinking a held flock would permit a second owner.
+    # The kernel releases FD9 on exit/SIGKILL/reboot; stale owner text is inert.
+    exec 9>> "$LOCK_PATH"
+    flock -n 9 || { error busy; return 1; }
+    lock_start="$(awk '{print $22}' "/proc/$$/stat")"
+    : > "$LOCK_PATH"
+    printf '%s %s\n' "$$" "$lock_start" >&9
+    chmod 600 "$LOCK_PATH"
+    mkdir -p "$ROOT"
+    chmod 700 "$ROOT"
+    WORK="$(mktemp -d "$ROOT/.candidate.XXXXXX")"
+}
+
+check_candidate() {
+    "$SING_BOX" check -c "$1/worker.json" 9>&- >/dev/null 2>&1 &&
+        "$SING_BOX" check -c "$1/frontend.json" 9>&- >/dev/null 2>&1 || { error candidate_invalid; return 1; }
+}
+
+service_pid() (
+    pid="$(ubus call service list '{"name":"podkop-section-worker"}' 2>/dev/null |
+        jq -er '."podkop-section-worker".instances.worker | select(.running==true) | .pid | select(type=="number" and .>1 and floor==.)' 2>/dev/null)" || return 1
+    case "$pid" in ''|*[!0-9]*) return 1;; esac
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    tr '\000' '\n' < "/proc/$pid/cmdline" | awk -v bin="$SING_BOX" -v cfg="$ROOT/worker.json" '
+        NR==1 && $0!=bin {bad=1;exit}
+        previous=="-c" && $0==cfg {found=1}
+        {previous=$0}
+        END {exit (bad || !found)}' || return 1
+    printf '%s\n' "$pid"
+)
+
+owns_listener() (
+    pid="$1" port="$2"
+    socket="$(awk -v addr="0100007F:$(printf '%04X' "$port")" '$2==addr && $4=="0A" {print $10}' "/proc/$pid/net/tcp" 2>/dev/null)"
+    [ -n "$socket" ] || return 1
+    for fd in /proc/"$pid"/fd/*; do
+        [ "$(readlink "$fd" 2>/dev/null)" = "socket:[$socket]" ] && return 0
+    done
+    return 1
+)
+
+ready_pid() (
+    [ -f "$ROOT/metadata.json" ] || return 1
+    port="$(jq -er '.port|select(type=="number" and .>=1024 and .<=65535)' "$ROOT/metadata.json" 2>/dev/null)" || return 1
+    api="$(jq -er '.api_port|select(type=="number" and .>=1024 and .<=65535)' "$ROOT/metadata.json" 2>/dev/null)" || return 1
+    pid="$(service_pid)" || return 1
+    owns_listener "$pid" "$port" && owns_listener "$pid" "$api" || return 1
+    printf '%s\n' "$pid"
+)
+
+wait_ready() (
+    attempts=0 previous="${1:-0}"
+    while [ "$attempts" -lt 8 ]; do
+        pid="$(ready_pid)" || pid=0
+        [ "$pid" -gt 1 ] && [ "$pid" != "$previous" ] && return 0
+        attempts=$((attempts + 1))
+        sleep 1
+    done
+    return 1
+)
+
+bootstrap() {
+    resource_floor || return 1
+    lock_root || return 1
+    prepare "$1" "$2" "$PORT" "$API_PORT" "$WORK/prepared" || return 1
+    check_candidate "$WORK/prepared" || return 1
+    for file in worker frontend logical metadata; do
+        [ ! -f "$ROOT/$file.json" ] || cp -p "$ROOT/$file.json" "$WORK/before-$file.json"
+    done
+    PHASE=bootstrap
+    SWAPPED=1
+    # Each rename is atomic; bootstrap runs only during an explicitly full reload.
+    # Worker/frontend activation is deliberately the caller's responsibility.
+    for file in worker frontend logical metadata; do
+        mv "$WORK/prepared/$file.json" "$ROOT/$file.json" || return 1
+    done
+    COMMITTED=1
+}
+
+apply() {
+    resource_floor || return 1
+    lock_root || return 1
+    section="$(jq -er '.section' "$ROOT/metadata.json" 2>/dev/null)" || { error missing_state; return 1; }
+    [ "$section" = "$2" ] || { error section_mismatch; return 1; }
+    [ -f "$ROOT/worker.json" ] && [ -f "$ROOT/logical.json" ] || { error missing_state; return 1; }
+    prepare "$1" "$2" "$PORT" "$API_PORT" "$WORK/prepared" || return 1
+    # Top-level outbound order has no routing meaning. All selector member arrays,
+    # DNS and route rules remain ordered and are compared without normalization.
+    jq -cS '.outbounds|=sort_by(.tag)' "$WORK/prepared/frontend.json" > "$WORK/frontend.canonical"
+    jq -cS '.outbounds|=sort_by(.tag)' "$FRONTEND" > "$WORK/active.canonical" 2>/dev/null || { error frontend_unavailable; return 1; }
+    cmp -s "$WORK/frontend.canonical" "$WORK/active.canonical" || { error frontend_changed; return 1; }
+    check_candidate "$WORK/prepared" || return 1
+    jq -cS '.outbounds|=sort_by(.tag)' "$WORK/prepared/worker.json" > "$WORK/worker.canonical"
+    jq -cS '.outbounds|=sort_by(.tag)' "$ROOT/worker.json" > "$WORK/current-worker.canonical"
+    if cmp -s "$WORK/worker.canonical" "$WORK/current-worker.canonical"; then
+        ready_pid >/dev/null || { error worker_not_ready; return 1; }
+        mv "$WORK/prepared/logical.json" "$ROOT/logical.json"
+        return 0
+    fi
+    previous="$(service_pid)" || previous=0
+    cp -p "$ROOT/worker.json" "$WORK/before-worker.json"
+    cp -p "$ROOT/logical.json" "$WORK/before-logical.json"
+    PHASE=apply
+    SWAPPED=1
+    mv "$WORK/prepared/worker.json" "$ROOT/worker.json"
+    if "$INIT" restart 9>&- >/dev/null 2>&1 && wait_ready "$previous" && resource_floor; then
+        mv "$WORK/prepared/logical.json" "$ROOT/logical.json"
+        COMMITTED=1
+        return 0
+    fi
+    error worker_apply_failed
+    return 1
+}
+
+status() (
+    section="$(jq -er '.section|select(type=="string")' "$ROOT/metadata.json" 2>/dev/null)" || section=""
+    pid="$(ready_pid)" || pid=0
+    jq -n --arg s "$section" --argjson p "$pid" '{ready:($p>1),section:$s,pid:$p}'
+)
+
+case "${1:-}" in
+    preflight) [ "$#" = 1 ] || exit 1; resource_floor;;
+    prepare) [ "$#" = 6 ] || exit 1; prepare "$2" "$3" "$4" "$5" "$6";;
+    bootstrap) [ "$#" = 3 ] || exit 1; bootstrap "$2" "$3";;
+    apply) [ "$#" = 3 ] || exit 1; apply "$2" "$3";;
+    status) [ "$#" = 1 ] || exit 1; status;;
+    wait-ready) [ "$#" = 1 ] || exit 1; wait_ready;;
+    *) error invalid_command; exit 1;;
+esac

@@ -15,7 +15,7 @@ has_wrapper() {
     sed -n "/^$1() {/,/^}/p" "$target" | grep -Fq "/usr/bin/podkop-update-manager $2"
 }
 update=0; status=0; check=0; log=0; check_case=0; log_case=0
-has_wrapper subscription_patch_update update_start || update=1
+has_wrapper subscription_patch_update update_start && grep -Fq "patch_update_verified_manager_v1" "$target" || update=1
 has_wrapper get_subscription_patch_update_status status || status=1
 grep -q '^subscription_patch_update_check() {' "$target" || check=1
 grep -q '^get_subscription_patch_update_log() {' "$target" || log=1
@@ -40,6 +40,19 @@ $0 == "subscription_patch_update() {" && need_update {
     print "        /usr/bin/podkop-update-manager update_start"
     print "        return $?"
     print "    fi"
+    print "    # patch_update_verified_manager_v1: never execute an unverified fallback"
+    print "    echo \047{\"success\":false,\"error\":\"update_manager_missing\"}\047"
+    print "    return 1"
+    # Remove the old manager prefix when upgrading an already-wrapped runtime.
+    if (getline > 0) {
+        if ($0 == "    if [ -x /usr/bin/podkop-update-manager ]; then") {
+            getline; getline; getline; getline
+        }
+        if ($0 ~ /patch_update_verified_manager_v1:/) {
+            getline; getline; getline
+        }
+        print
+    }
     update_wrapper = 1
     next
 }

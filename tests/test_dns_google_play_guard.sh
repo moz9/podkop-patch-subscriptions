@@ -18,7 +18,7 @@ awk '/^case "\$\{1:-\}" in$/ { exit } { sub(/\r$/, ""); print }' \
     openwrt/podkop-dns-optimizer > "$optimizer_functions"
 . "$optimizer_functions"
 
-[ "$VERSION" = "20260814-dns-optimizer-v18" ] ||
+[ "$VERSION" = "20261011-dns-optimizer-v21" ] ||
     record_failure "DNS optimizer version is not v18: $VERSION"
 
 # Google Play compatibility must cover both its control plane and download path.
@@ -201,7 +201,7 @@ read_configured_pair() {
 }
 PAIR_FAILED_DOMAIN=play.googleapis.com
 run_dns_query() {
-    [ "$5" != "$PAIR_FAILED_DOMAIN" ] || return 1
+    [ "$2" != 1.1.1.1 ] || [ "$5" != "$PAIR_FAILED_DOMAIN" ] || return 1
     printf '%s\n' 5
 }
 

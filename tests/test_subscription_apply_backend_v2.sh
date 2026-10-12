@@ -2,7 +2,7 @@
 set -eu
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-runtime="$repo_root/openwrt/runtime-0.7.20/usr/bin/podkop"
+runtime="${PODKOP_TEST_RUNTIME:-$repo_root/openwrt/runtime-0.7.20/usr/bin/podkop}"
 upgrade="$repo_root/openwrt/podkop-subscription-apply-v2-upgrade.sh"
 
 fail() {
@@ -33,6 +33,9 @@ cp "$(command -v jq)" "$tmp/jq"
 
 sed 's/\r$//' "$runtime" |
     sed -n '/^# subscription_apply_v2 begin$/,/^# subscription_apply_v2 end$/p' > "$tmp/backend.sh"
+for pending_helper in subscription_pending_sections_json subscription_pending_mark subscription_pending_clear; do
+    sed -n "/^$pending_helper() {$/,/^}$/p" "$runtime" >> "$tmp/backend.sh"
+done
 
 cat > "$tmp/uci" <<'UCI_EOF'
 #!/bin/sh
@@ -49,6 +52,9 @@ shift || true
 stage="${TEST_UCI_CONFIG}.stage"
 
 case "$command" in
+changes)
+    [ ! -f "$stage" ] || printf 'fake-pending-delta\n'
+    ;;
 delete)
     : > "$stage"
     ;;
@@ -143,12 +149,28 @@ subscription_action_lock_release() {
 }
 
 . "$tmp/backend.sh"
+CAS_TEST_CONFIG_FORMAT=exclusions
+. "$CAS_TEST_ADAPTER"
+printf '{"dns":{"servers":[]}}\n' > "$tmp/cas-dns.json"
+PODKOP_SUBSCRIPTION_CAS_DNS_CONFIG="$tmp/cas-dns.json"
 
 subscription_apply_v2_reload() {
     count=0
     [ ! -f "$tmp/reload-count" ] || count="$(cat "$tmp/reload-count")"
     count=$((count + 1))
     printf '%s\n' "$count" > "$tmp/reload-count"
+    if [ -f "$tmp/fail-unproven-once" ]; then
+        rm -f "$tmp/fail-unproven-once"
+        PODKOP_SECTION_ERROR=section_runtime_health_failed
+        PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=2
+        return 1
+    fi
+    if [ -f "$tmp/fail-memory-once" ]; then
+        rm -f "$tmp/fail-memory-once"
+        PODKOP_SECTION_ERROR=section_memory_low
+        PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=1
+        return 1
+    fi
     if [ -f "$tmp/fail-reload-once" ]; then
         rm -f "$tmp/fail-reload-once"
         return 1
@@ -157,7 +179,26 @@ subscription_apply_v2_reload() {
 }
 
 payload='{"sections":[{"section":"main","changes":[{"id":"11111111111111111111111111111111","enabled":false}]}]}'
-result="$(set_subscription_sections_enabled "$payload")"
+# Direct calls verify the adapter does not bypass the CAS protocol.
+for revision_case in missing malformed stale; do
+    case "$revision_case" in
+        missing) rejected="$payload"; expected_error=revision_required ;;
+        malformed) rejected="$(printf '%s' "$payload" | jq '.sections[0].expectedRevision="bad"')"; expected_error=invalid_revision ;;
+        stale) rejected="$(printf '%s' "$payload" | jq --arg revision "$(printf '%064d' 0)" '.sections[0].expectedRevision=$revision')"; expected_error=revision_conflict ;;
+    esac
+    if rejection="$(set_subscription_sections_enabled "$rejected")"; then exit 1; fi
+    printf '%s' "$rejection" | jq -e --arg error "$expected_error" '.error==$error and (.committed|not)' >/dev/null
+    [ ! -f "$tmp/commit-count" ] && [ ! -f "$tmp/reload-count" ]
+    [ ! -s "$PODKOP_CONFIG" ]
+done
+# Unsaved shared deltas must remain untouched and block activation.
+printf 'pending-user-edit\n' > "$PODKOP_CONFIG.stage"
+if rejection="$(cas_test_apply_fresh "$payload")"; then exit 1; fi
+printf '%s' "$rejection" | jq -e '.error=="uci_pending_changes" and (.committed|not)' >/dev/null
+[ "$(cat "$PODKOP_CONFIG.stage")" = pending-user-edit ]
+[ ! -f "$tmp/commit-count" ] && [ ! -f "$tmp/reload-count" ]
+rm "$PODKOP_CONFIG.stage"
+result="$(cas_test_apply_fresh "$payload")"
 [ "$(printf '%s' "$result" | jq -r '.success')" = true ]
 [ "$(printf '%s' "$result" | jq -r '.state')" = success ]
 [ "$(printf '%s' "$result" | jq -r '.committed')" = true ]
@@ -170,7 +211,7 @@ cp "$PODKOP_CONFIG" "$tmp/config-before-rollback"
 cp "$SUBSCRIPTION_CACHE_DIR/main.links" "$tmp/cache-before-rollback"
 : > "$tmp/fail-reload-once"
 payload='{"sections":[{"section":"main","changes":[{"id":"11111111111111111111111111111111","enabled":true}]}]}'
-if result="$(set_subscription_sections_enabled "$payload")"; then
+if result="$(cas_test_apply_fresh "$payload")"; then
     printf '%s\n' 'reload failure unexpectedly succeeded' >&2
     exit 1
 fi
@@ -255,8 +296,11 @@ fi
 [ "$(jq -r '.committed' "$signal_result")" = false ]
 [ "$(jq -r '.rolledBack' "$signal_result")" = false ]
 
+# The invalid section has no revision; keep a well-formed impossible token.
 invalid_batch='{"sections":[{"section":"main","changes":[{"id":"11111111111111111111111111111111","enabled":true}]},{"section":"not_subscription","changes":[{"id":"22222222222222222222222222222222","enabled":false}]}]}'
 config_hash="$(sha256sum "$PODKOP_CONFIG" | awk '{print $1}')"
+main_revision="$(cas_test_fresh_payload "$payload" | jq -r '.sections[0].expectedRevision')"
+invalid_batch="$(printf '%s' "$invalid_batch" | jq --arg revision "$main_revision" --arg invalid "$(printf '%064d' 0)" '.sections |= map(.expectedRevision=(if .section=="main" then $revision else $invalid end))')"
 if result="$(set_subscription_sections_enabled "$invalid_batch")"; then
     printf '%s\n' 'partially invalid batch unexpectedly succeeded' >&2
     exit 1
@@ -268,7 +312,7 @@ fi
 
 invalid='{"sections":[{"section":"main","changes":[{"id":"not-an-id","enabled":false}]}]}'
 config_hash="$(sha256sum "$PODKOP_CONFIG" | awk '{print $1}')"
-if result="$(set_subscription_sections_enabled "$invalid")"; then
+if result="$(cas_test_apply_fresh "$invalid")"; then
     printf '%s\n' 'invalid payload unexpectedly succeeded' >&2
     exit 1
 fi
@@ -277,11 +321,59 @@ fi
 [ "$(sha256sum "$PODKOP_CONFIG" | awk '{print $1}')" = "$config_hash" ]
 [ "$(cat "$tmp/reload-count")" -eq 3 ]
 [ "$(cat "$tmp/commit-count")" -eq 2 ]
+# A no-change pending apply must preserve the section failure from the function,
+# not lose it in a subshell. It must not report success or touch the draft/UCI.
+subscription_reload_seamless() {
+    PODKOP_SECTION_ERROR=section_memory_unavailable
+    return 1
+}
+: > "$tmp/pending"
+payload='{"sections":[{"section":"main","changes":[{"id":"11111111111111111111111111111111","enabled":false}]}]}'
+if result="$(cas_test_apply_fresh "$payload")"; then
+    printf '%s\n' 'memory-unavailable no-change apply unexpectedly succeeded' >&2
+    exit 1
+fi
+[ "$(printf '%s' "$result" | jq -r '.error')" = section_memory_unavailable ] || {
+    printf '%s\n' 'no-change apply lost the section memory error' >&2; exit 1;
+}
+
+# A proven preactivation rejection still restores UCI/cache, but never reloads
+# the unchanged worker. An unproven failure keeps the normal rollback reload.
+: > "$tmp/fail-memory-once"
+payload='{"sections":[{"section":"main","changes":[{"id":"11111111111111111111111111111111","enabled":true}]}]}'
+before="$(cat "$tmp/reload-count")"
+if result="$(cas_test_apply_fresh "$payload")"; then exit 1; fi
+[ "$(printf '%s' "$result" | jq -r '.error')" = section_memory_low ] || {
+    printf '%s\n' 'changed apply lost the section memory error' >&2; exit 1;
+}
+[ "$(printf '%s' "$result" | jq -r '.state')" = rolled_back ]
+[ "$(cat "$tmp/reload-count")" -eq "$((before + 1))" ] || {
+    printf '%s\n' 'preactivation memory rejection reloaded the untouched runtime' >&2; exit 1;
+}
+cmp -s "$tmp/config-before-rollback" "$PODKOP_CONFIG"
+cmp -s "$tmp/cache-before-rollback" "$SUBSCRIPTION_CACHE_DIR/main.links"
+PODKOP_SECTION_ERROR=section_memory_low
+PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=1
+: > "$tmp/fail-reload-once"
+before="$(cat "$tmp/reload-count")"
+if result="$(cas_test_apply_fresh "$payload")"; then exit 1; fi
+[ "$(printf '%s' "$result" | jq -r '.error')" = reload_failed ]
+[ "$(cat "$tmp/reload-count")" -eq "$((before + 2))" ] || {
+    printf '%s\n' 'stale unchanged flag suppressed the required runtime rollback' >&2; exit 1;
+}
+: > "$tmp/fail-unproven-once"
+before="$(cat "$tmp/reload-count")"
+if result="$(cas_test_apply_fresh "$payload")"; then exit 1; fi
+[ "$(printf '%s' "$result" | jq -r '.error')" = section_runtime_health_failed ]
+[ "$(cat "$tmp/reload-count")" -eq "$((before + 2))" ] || {
+    printf '%s\n' 'unproven unchanged flag suppressed the required runtime rollback' >&2; exit 1;
+}
 HARNESS_EOF
 chmod +x "$tmp/harness.sh"
 
+export CAS_TEST_RUNTIME="$runtime" CAS_TEST_ADAPTER="$repo_root/tests/cas-fake-state.sh"
 if ! sh -x "$tmp/harness.sh" "$tmp" > "$tmp/harness.log" 2>&1; then
-    sed -n '1,260p' "$tmp/harness.log" >&2
+    tail -n 100 "$tmp/harness.log" >&2
     fail 'v2 transaction/rollback harness failed'
 fi
 
@@ -358,11 +450,14 @@ FIXTURE_EOF
         fail "v2 upgrade did not install exactly one atomic lock for Podkop $version"
     sh -n "$fixture" || fail "v2-upgraded Podkop $version fixture has invalid shell syntax"
 
+    # Parallel suites must not contend on the production-style /tmp lock.
+    sed -i "s|/tmp/podkop-subscription-action.lock|$tmp/podkop-subscription-action.lock|g" "$fixture"
+
     if invalid_result="$("$fixture" set_subscription_sections_enabled '{}')"; then
         fail "v2-upgraded Podkop $version fixture accepted an invalid payload"
     fi
     [ "$(printf '%s' "$invalid_result" | jq -r '.phase')" = validation ] ||
-        fail "v2-upgraded Podkop $version fixture did not return structured validation JSON"
+        fail "v2-upgraded Podkop $version fixture did not return structured validation JSON: $invalid_result"
 
     PODKOP_SUBSCRIPTION_APPLY_V2_TARGET="$fixture" \
         PODKOP_SUBSCRIPTION_APPLY_V2_SOURCE="$runtime" \

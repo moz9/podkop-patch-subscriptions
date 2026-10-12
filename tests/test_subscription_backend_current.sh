@@ -24,9 +24,38 @@ for version in 0.7.20 0.7.22; do
     sed -n '/^has_latest_subscription_backend() {/,/^}/p' "$repo/i" |
         sed "s| /usr/bin/podkop 2>| $work/runtime 2>|g; s|/usr/lib/podkop/helpers.sh|$work/helpers|g" > "$work/predicate"
     . "$work/predicate"
+    # Backend freshness also requires the installed rc.common restart guard.
+    # Exercise its real delivery rather than inserting the marker by hand.
+    PODKOP_INIT_SCRIPT="$work/init"
+    printf '%s\n' '#!/bin/sh /etc/rc.common' 'USE_PROCD=1' \
+        'start_service() { /usr/bin/podkop start; }' \
+        'stop_service() { /usr/bin/podkop stop; }' \
+        'reload_service() { /usr/bin/podkop reload; }' > "$PODKOP_INIT_SCRIPT"
+    if has_latest_subscription_backend; then
+        echo "FAIL: installer accepts an unguarded $version init script" >&2
+        exit 1
+    fi
+    PODKOP_SOURCES_SAFE_RESTART_ONLY=1 PODKOP_SOURCES_TARGET="$work/runtime" \
+        PODKOP_SOURCES_SOURCE="$repo/openwrt/runtime-$version/usr/bin/podkop" \
+        PODKOP_SOURCES_INIT_TARGET="$PODKOP_INIT_SCRIPT" \
+        sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
     if ! has_latest_subscription_backend; then
         echo "FAIL: installer rejects the delivered $version backend as outdated" >&2
         exit 1
     fi
+    cp "$work/runtime" "$work/complete-runtime"
+    for missing in marker downloader refresh; do
+        cp "$work/complete-runtime" "$work/runtime"
+        case "$missing" in
+            marker) sed -i '/^# subscription_resource_admission_v1$/d' "$work/runtime";;
+            downloader) sed -i '/^download_subscription_once() {/,/^}/s/download_status/legacy_status/g' "$work/runtime";;
+            refresh) sed -i '/^refresh_subscription_cache() {/,/^}/s/subscription_resource_cache/legacy_cache/g' "$work/runtime";;
+        esac
+        if has_latest_subscription_backend; then
+            echo "FAIL: installer accepts partial resource delivery: $missing" >&2
+            exit 1
+        fi
+    done
+    cp "$work/complete-runtime" "$work/runtime"
 done
 echo 'PASS: installer recognizes the delivered backend and permits no-op updates'

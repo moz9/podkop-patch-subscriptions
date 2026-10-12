@@ -1,0 +1,473 @@
+#!/bin/sh
+# One permanent sing-box. Section applies replace only the requested outbound pool.
+# bootstrap is structural; migrate/apply activate and verify or restore saved state.
+set -eu
+umask 077
+ROOT="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
+FRONTEND="${PODKOP_SECTION_FRONTEND_CONFIG:-/etc/sing-box/config.json}"
+SING_BOX="${PODKOP_SECTION_SING_BOX:-/usr/bin/sing-box}"
+MAIN_INIT="${PODKOP_SINGLE_INIT:-/etc/init.d/sing-box}"
+WORKER_INIT="${PODKOP_SECTION_INIT:-/etc/init.d/podkop-section-worker}"
+LOCK_PATH="${PODKOP_SECTION_LOCK:-}"
+WORK="" SWAPPED=0 COMMITTED=0 ACTIVATED=0 WORKERS_WERE_RUNNING=0 KEEP_WORK=0
+MANIFEST="" SNAPSHOT_SWAPPED=0 CONTEXT_SWAPPED=0
+ACTION_LOCK_HELD=0
+ACTION_LOCK_DIR="${PODKOP_MUTATION_LOCK_DIR:-/tmp/podkop-subscription-action.lock.d}"
+ACTION_LOCK_FILE="${PODKOP_MUTATION_LEGACY_LOCK_FILE:-/tmp/podkop-subscription-action.lock}"
+error() { printf 'section_runtime: %s\n' "$1" >&2; return 1; }
+finish() {
+    set +e
+    result="$1"
+    trap - EXIT HUP INT TERM
+    if [ "$SWAPPED" = 1 ] && [ "$COMMITTED" != 1 ]; then
+        restored=1
+        for file in logical.json frontend.json metadata.json runtime-mode; do
+            if [ -f "$WORK/before/$file" ]; then cp -p "$WORK/before/$file" "$ROOT/$file" || restored=0
+            else rm -f "$ROOT/$file" || restored=0; fi
+        done
+        if [ -f "$WORK/before/active.json" ]; then cp -p "$WORK/before/active.json" "$FRONTEND" || restored=0; fi
+        if [ "$CONTEXT_SWAPPED" = 1 ]; then
+            if cmp -s "$WORK/context-before" "$ROOT/context.sha256"; then :
+            elif cmp -s "$WORK/context-after" "$ROOT/context.sha256"; then
+                cp -p "$WORK/context-before" "$ROOT/context.sha256" || restored=0
+            else restored=0; fi
+        fi
+        if [ "$SNAPSHOT_SWAPPED" = 1 ]; then
+            if cmp -s "$WORK/before/snapshot.json" "$MANIFEST"; then :
+            elif cmp -s "$WORK/snapshot-after.json" "$MANIFEST"; then cp -p "$WORK/before/snapshot.json" "$MANIFEST" || restored=0
+            else restored=0; fi
+        fi
+        if [ "$ACTIVATED" = 1 ]; then
+            "$MAIN_INIT" restart 9>&- >/dev/null 2>&1 || restored=0
+            wait_main_ready || restored=0
+            if [ "$WORKERS_WERE_RUNNING" = 1 ]; then
+                "$WORKER_INIT" start 9>&- >/dev/null 2>&1 || restored=0
+                worker_attempt=0
+                until workers_running; do worker_attempt=$((worker_attempt+1)); [ "$worker_attempt" -lt 8 ] || { restored=0; break; }; sleep 1; done
+            fi
+        fi
+        if [ "$restored" != 1 ]; then
+            error rollback_not_ready
+            printf 'section_runtime: recovery_backup=%s\n' "$WORK" >&2
+            KEEP_WORK=1
+            result=1
+        fi
+    fi
+    [ -z "${snapshot_tmp:-}" ] || rm -f "$snapshot_tmp"
+    [ -z "$WORK" ] || [ "$KEEP_WORK" = 1 ] || rm -rf "$WORK"
+    action_lock_release
+    exit "$result"
+}
+trap 'finish $?' EXIT
+trap 'exit 1' HUP INT TERM
+resource_floor() (
+    available="$(awk '/^MemAvailable:/ {print $2;exit}' "${PODKOP_SINGLE_MEMINFO:-/proc/meminfo}")"
+    case "$available" in ''|*[!0-9]*) error memory_unavailable; return 1;; esac
+    [ "$available" -ge 28672 ] || { error memory_floor; return 1; }
+)
+action_legacy_busy() {
+    [ -e "$ACTION_LOCK_FILE" ] || return 1
+    owner="$(awk 'NR==1{print $1}' "$ACTION_LOCK_FILE" 2>/dev/null)"
+    case "$owner" in ''|*[!0-9]*) return 0;; esac
+    [ ! -d "/proc/$owner" ] || return 0
+    rm -f "$ACTION_LOCK_FILE" || return 0
+    return 1
+}
+action_lock_release() {
+    [ "$ACTION_LOCK_HELD" = 1 ] || return 0
+    if [ "$(awk 'NR==1{print $1}' "$ACTION_LOCK_DIR/owner" 2>/dev/null)" = "$$" ]; then
+        rm -f "$ACTION_LOCK_DIR/owner"
+        rmdir "$ACTION_LOCK_DIR" 2>/dev/null || true
+    fi
+    if [ "$(awk 'NR==1{print $1}' "$ACTION_LOCK_FILE" 2>/dev/null)" = "$$" ]; then rm -f "$ACTION_LOCK_FILE"; fi
+    ACTION_LOCK_HELD=0
+}
+action_lock_acquire() {
+    if [ -n "${PODKOP_SINGLE_ACTION_OWNER:-}" ]; then
+        owner="${PODKOP_SINGLE_ACTION_OWNER%% *}"
+        expected_start="${PODKOP_SINGLE_ACTION_OWNER#* }"
+        case "$owner:$expected_start" in *[!0-9:]*) error lock_owner_mismatch; return 1;; esac
+        parent_pid="$(awk '{print $4}' "/proc/$$/stat")"
+        [ "$owner" = "$parent_pid" ] && [ "$owner" -gt 1 ] &&
+        [ "$(awk '{print $22}' "/proc/$owner/stat" 2>/dev/null)" = "$expected_start" ] &&
+        [ "$(awk 'NR==1{print $1}' "$ACTION_LOCK_DIR/owner" 2>/dev/null)" = "$owner" ] &&
+        [ "$(awk 'NR==1{print $1}' "$ACTION_LOCK_FILE" 2>/dev/null)" = "$owner" ] ||
+            { error lock_owner_mismatch; return 1; }
+        # Borrow a verified direct-parent lock; the parent remains its owner.
+        return 0
+    fi
+    action_legacy_busy && { error busy; return 1; }
+    if [ -d "$ACTION_LOCK_DIR" ]; then
+        owner="$(awk 'NR==1{print $1}' "$ACTION_LOCK_DIR/owner" 2>/dev/null)"
+        case "$owner" in ''|*[!0-9]*) error busy; return 1;; esac
+        [ ! -d "/proc/$owner" ] || { error busy; return 1; }
+        rm -f "$ACTION_LOCK_DIR/owner"
+        rmdir "$ACTION_LOCK_DIR" 2>/dev/null || { error busy; return 1; }
+    fi
+    mkdir "$ACTION_LOCK_DIR" 2>/dev/null || { error busy; return 1; }
+    ACTION_LOCK_HELD=1
+    printf '%s single_migrate %s\n' "$$" "$(date +%s)" > "$ACTION_LOCK_DIR/owner" || return 1
+    action_legacy_busy && { error busy; return 1; }
+    (set -C; printf '%s single_migrate %s\n' "$$" "$(date +%s)" > "$ACTION_LOCK_FILE") 2>/dev/null || { error busy; return 1; }
+}
+lock_root() {
+    command -v flock >/dev/null 2>&1 || { error lock_unavailable; return 1; }
+    [ -n "$LOCK_PATH" ] || LOCK_PATH="/var/run/podkop-section-runtime-$(printf '%s' "$ROOT" | sha256sum | cut -c 1-16).lock"
+    exec 9>> "$LOCK_PATH"
+    flock -n 9 || { error busy; return 1; }
+    : > "$LOCK_PATH"
+    printf '%s %s\n' "$$" "$(awk '{print $22}' "/proc/$$/stat")" >&9
+    chmod 600 "$LOCK_PATH"
+    mkdir -p "$ROOT"; chmod 700 "$ROOT"
+    # A crash or failed rollback may leave the only recoverable old graph here.
+    # Never overwrite it or assume that current on-disk state was committed.
+    for abandoned in "$ROOT"/.single-transaction.*; do
+        [ ! -d "$abandoned" ] || { error recovery_required; printf 'section_runtime: recovery_backup=%s\n' "$abandoned" >&2; return 1; }
+    done
+    WORK="$(mktemp -d "$ROOT/.single-transaction.XXXXXX")"
+}
+canonical() { jq -ceS '.outbounds|=sort_by(.tag)' "$1"; }
+same_graph() { canonical "$1" > "$WORK/a" && canonical "$2" > "$WORK/b" && cmp -s "$WORK/a" "$WORK/b"; }
+valid_section() { case "$1" in ''|*[!a-zA-Z0-9_]*) return 1;; esac; }
+make_metadata() {
+    names="$2"
+    case "$names" in \[*) ;; *) valid_section "$names" || { error invalid_section; return 1; }; names="$(jq -cn --arg s "$names" '[$s]')";; esac
+    printf '%s' "$names" | jq -e 'type=="array" and length<=32 and (unique|length)==length and all(.[];type=="string" and length>0 and all(explode[];(.>=65 and .<=90) or (.>=97 and .<=122) or (.>=48 and .<=57) or .==95))' >/dev/null || { error invalid_sections; return 1; }
+    api="$(jq -er '.experimental.clash_api.external_controller|select(type=="string" and contains(":"))' "$1")" || { error api_unavailable; return 1; }
+    port="${api##*:}"
+    case "$port" in ''|*[!0-9]*) error api_unavailable; return 1;; esac
+    [ "$port" -ge 1024 ] && [ "$port" -le 65535 ] || { error api_unavailable; return 1; }
+    jq -n --argjson names "$names" --argjson p "$port" '{version:3,mode:"single",section:($names[0]//""),sections:[$names[]|{section:.,api_port:$p}],allocations:[]}' > "$WORK/metadata.json"
+}
+check_candidate() {
+    jq -e 'type=="object" and (.outbounds|type=="array" and length>0) and ([.outbounds[].tag]|unique|length)==(.outbounds|length)' "$1" >/dev/null 2>&1 &&
+    "$SING_BOX" check -c "$1" 9>&- >/dev/null 2>&1 || { error candidate_invalid; return 1; }
+}
+backup() {
+    mkdir "$WORK/before"
+    for file in logical.json frontend.json metadata.json runtime-mode; do
+        [ ! -f "$ROOT/$file" ] || cp -p "$ROOT/$file" "$WORK/before/$file" || return 1
+    done
+    [ ! -f "$FRONTEND" ] || cp -p "$FRONTEND" "$WORK/before/active.json"
+}
+stage() {
+    cp "$1" "$WORK/logical.json"
+    cp "$1" "$WORK/frontend.json"
+    printf 'single\n' > "$WORK/runtime-mode"
+    chmod 600 "$WORK"/*.json "$WORK/runtime-mode"
+}
+install_state() {
+    for file in frontend.json logical.json metadata.json; do mv "$WORK/$file" "$ROOT/$file" || return 1; done
+}
+process_identity() (
+    pid="$(ubus call service list '{"name":"sing-box"}' 2>/dev/null | jq -er '[."sing-box".instances[]?|select(.running==true)|.pid]|select(length==1)|.[0]|select(type=="number" and .>1 and floor==.)')" || return 1
+    case "$pid" in ''|*[!0-9]*) return 1;; esac
+    [ -r "/proc/$pid/cmdline" ] || return 1
+    tr '\000' '\n' < "/proc/$pid/cmdline" | awk -v bin="$SING_BOX" -v cfg="$FRONTEND" '
+        NR==1 && $0!=bin {bad=1;exit}
+        prev=="-c" && $0==cfg {found=1}
+        {prev=$0}
+        END {exit (bad || !found)}' || return 1
+    kill -0 "$pid" 2>/dev/null || return 1
+    printf '%s %s\n' "$pid" "$(awk '{print $22}' "/proc/$pid/stat")"
+)
+owns_listener() (
+    pid="$1" port="$2" transport="${3:-auto}"
+    suffix=":$(printf '%04X' "$port")"
+    sockets="$(awk -v suffix="$suffix" 'substr($2,length($2)-4)==suffix && $4=="0A" {print $10}' "/proc/$pid/net/tcp" "/proc/$pid/net/tcp6" 2>/dev/null)"
+    if [ "$transport" != tcp ]; then
+        sockets="$sockets $(awk -v suffix="$suffix" 'substr($2,length($2)-4)==suffix && $4=="07" {print $10}' "/proc/$pid/net/udp" "/proc/$pid/net/udp6" 2>/dev/null)"
+    fi
+    [ -n "$sockets" ] || return 1
+    for inode in $sockets; do
+        for fd in /proc/"$pid"/fd/*; do [ "$(readlink "$fd" 2>/dev/null)" = "socket:[$inode]" ] && return 0; done
+    done
+    return 1
+)
+workers_running() {
+    ubus call service list '{"name":"podkop-section-worker"}' 2>/dev/null | jq -e 'any(."podkop-section-worker".instances[]?;.running==true)' >/dev/null
+}
+workers_stopped() {
+    ubus call service list '{"name":"podkop-section-worker"}' 2>/dev/null | jq -e 'type=="object" and all(."podkop-section-worker".instances[]?;.running!=true)' >/dev/null
+}
+capture_worker_identities() {
+    ubus call service list '{"name":"podkop-section-worker"}' > "$WORK/worker-service.json" 2>/dev/null || return 1
+    jq -e 'type=="object" and all(."podkop-section-worker".instances[]?|select(.running==true);
+      .pid|type=="number" and .>1 and floor==.)' "$WORK/worker-service.json" >/dev/null || return 1
+    jq -r '."podkop-section-worker".instances[]?|select(.running==true)|.pid' "$WORK/worker-service.json" > "$WORK/worker-pids" || return 1
+    : > "$WORK/worker-identities"
+    while IFS= read -r worker_pid; do
+        [ -r "/proc/$worker_pid/stat" ] || continue
+        worker_start="$(awk '{print $22}' "/proc/$worker_pid/stat")" || return 1
+        printf '%s %s\n' "$worker_pid" "$worker_start" >> "$WORK/worker-identities"
+    done < "$WORK/worker-pids"
+}
+wait_workers_stopped() {
+    stop_attempt=0
+    while [ "$stop_attempt" -lt 8 ]; do
+        stopped=1
+        workers_stopped || stopped=0
+        while read -r worker_pid worker_start; do
+            [ -r "/proc/$worker_pid/stat" ] || continue
+            actual_start="$(awk '{print $22}' "/proc/$worker_pid/stat" 2>/dev/null)" || continue
+            [ "$actual_start" != "$worker_start" ] || stopped=0
+        done < "$WORK/worker-identities"
+        [ "$stopped" = 1 ] && return 0
+        stop_attempt=$((stop_attempt+1)); sleep 1
+    done
+    return 1
+}
+main_ready() (
+    identity="$(process_identity)" || return 1
+    pid="${identity%% *}"
+    api="$(jq -er '.experimental.clash_api.external_controller|select(type=="string" and contains(":"))' "$FRONTEND")" || return 1
+    port="${api##*:}"
+    owns_listener "$pid" "$port" tcp || return 1
+    ports="$(jq -er '[.inbounds[]?|select(.type!="tun")|.listen_port?|select(type=="number")]|.[]' "$FRONTEND")" || return 1
+    for port in $ports; do owns_listener "$pid" "$port" || return 1; done
+    secret="$(jq -r '.experimental.clash_api.secret//""' "$FRONTEND")" || return 1
+    curl -fsS --max-time 2 --header "Authorization: Bearer $secret" "http://$api/version" 2>/dev/null | jq -e 'type=="object" and (.version|type=="string")' >/dev/null || return 1
+    printf '%s\n' "$identity"
+)
+wait_main_ready() (
+    previous="${1:-}" attempt=0
+    while [ "$attempt" -lt 8 ]; do
+        identity="$(main_ready)" || identity=""
+        [ -n "$identity" ] && { [ -z "$previous" ] || [ "$identity" != "$previous" ]; } && return 0
+        attempt=$((attempt+1)); sleep 1
+    done
+    return 1
+)
+non_target() {
+    jq -ceS --arg s "$2" '
+      def member: .==($s+"-out") or .==($s+"-urltest-out") or
+        (startswith($s+"-") and endswith("-out") and
+          (ltrimstr($s+"-")|rtrimstr("-out")|length>0 and all(explode[];.>=48 and .<=57)));
+      .outbounds|=(map(select((.tag|member)|not))|sort_by(.tag))' "$1"
+}
+snapshot_runtime_hash() {
+    # Match section-hooks.sh exactly, including the ordered sha256sum path text.
+    if jq -e '.mode=="single"' "$ROOT/metadata.json" >/dev/null 2>&1; then
+        set -- "$FRONTEND" "$ROOT/logical.json" "$ROOT/metadata.json"
+    elif jq -e '.version==2' "$ROOT/metadata.json" >/dev/null 2>&1; then
+        set -- "$FRONTEND" "$ROOT/logical.json" "$ROOT/metadata.json"
+        names="$(jq -er '.sections[].section' "$ROOT/metadata.json")" || return 1
+        for name in $names; do valid_section "$name" || return 1; set -- "$@" "$ROOT/workers/$name/worker.json"; done
+    elif [ -f "$ROOT/worker.json" ]; then
+        set -- "$FRONTEND" "$ROOT/worker.json" "$ROOT/logical.json"
+    else
+        sha256sum "$FRONTEND" | awk '{print $1}'
+        return $?
+    fi
+    for file in "$@"; do [ -s "$file" ] && [ ! -L "$file" ] || return 1; done
+    hashes="$(sha256sum "$@")" || return 1
+    printf '%s\n' "$hashes" | sha256sum | awk '{print $1}'
+}
+prepare_context_translation() (
+    set +eu
+    export PODKOP_LIBRARY_ONLY=1
+    # shellcheck disable=SC1090
+    . "${PODKOP_SINGLE_CORE:-/usr/bin/podkop}" >/dev/null || exit 1
+    command -v podkop_section_context_hash >/dev/null || exit 1
+    [ -s "$ROOT/context.sha256" ] && [ ! -L "$ROOT/context.sha256" ] || exit 1
+    cp -p "$ROOT/context.sha256" "$WORK/context-before" || exit 1
+    old_context="$(podkop_section_context_hash)" || exit 1
+    # Preserve pre-existing global drift instead of blessing saved intent.
+    if [ "$(cat "$WORK/context-before")" != "$old_context" ]; then
+        cp -p "$WORK/context-before" "$WORK/context-after" || exit 1
+    else
+        translated_names="$(jq -c '[.sections[].section]' "$WORK/metadata.json")" || exit 1
+        podkop_section_names() { printf '%s\n' "$translated_names"; }
+        podkop_section_context_hash > "$WORK/context-after" || exit 1
+        [ -s "$WORK/context-after" ] || exit 1
+    fi
+)
+snapshot_nonempty_rows_rules() (
+    # Read-only native reconstruction, never refreshing evidence or policy.
+    set +eu
+    export PODKOP_LIBRARY_ONLY=1
+    # shellcheck disable=SC1090
+    . "${PODKOP_SINGLE_CORE:-/usr/bin/podkop}" >/dev/null || exit 1
+    command -v subscription_services_snapshot_section >/dev/null || exit 1
+    jq -e '
+      def hex($n): type=="string" and length==$n and all(explode[];(.>=48 and .<=57) or (.>=97 and .<=102));
+      .version==1 and (.config|hex(64)) and (.policy|hex(64)) and
+      all(.sections[];(.context|hex(64)) and (.service|hex(64)) and
+        (.section|type=="string" and length>0 and all(explode[];.==95 or (.>=48 and .<=57) or (.>=65 and .<=90) or (.>=97 and .<=122)))) and
+      all(.rules[];.sha|hex(64))' "$MANIFEST" >/dev/null || exit 1
+    if ! jq -e '.continuity.mode=="section-only" and (.continuity.section as $s|any(.sections[];.section==$s))' "$MANIFEST" >/dev/null; then
+        current_policy="$(subscription_services_snapshot_policy_hash)" || exit 1
+        jq -e --arg policy "$current_policy" '.policy==$policy' "$MANIFEST" >/dev/null || exit 1
+    fi
+    export SNAPSHOT_CAPTURE=0 SNAPSHOT_BASE="$MANIFEST"
+    SNAPSHOT_FAILED=0
+    SNAPSHOT_SECTIONS="$WORK/admission-rows"
+    : > "$SNAPSHOT_SECTIONS" || exit 1
+    jq -r '.sections[].section' "$MANIFEST" > "$WORK/admission-names" || exit 1
+    while IFS= read -r admission_section; do
+        for admission_path in "$(get_subscription_cache_path "$admission_section")" "$(get_subscription_all_cache_path "$admission_section")" "$(get_subscription_items_cache_path "$admission_section")" "$(subscription_services_cache_path "$admission_section")"; do
+            [ -f "$admission_path" ] && [ ! -L "$admission_path" ] || exit 1
+        done
+        subscription_services_snapshot_section "$admission_section" || exit 1
+    done < "$WORK/admission-names"
+    [ "$SNAPSHOT_FAILED" = 0 ] || exit 1
+    jq -cS '.sections|sort_by(.section)' "$MANIFEST" > "$WORK/admission-expected" &&
+    jq -scS 'sort_by(.section)' "$SNAPSHOT_SECTIONS" > "$WORK/admission-actual" &&
+    cmp -s "$WORK/admission-expected" "$WORK/admission-actual" || exit 1
+    rules_root="${TMP_RULESET_FOLDER:-/tmp/podkop/ruleset}"
+    snapshot_dir="$(dirname "$MANIFEST")"
+    generation="$(jq -er '.generation' "$MANIFEST")" || exit 1
+    case "$generation" in generation.*) case "${generation#generation.}" in ''|*[!A-Za-z0-9]*) exit 1;; esac;; *) exit 1;; esac
+    [ ! -L "$rules_root" ] && [ -d "$snapshot_dir/$generation" ] && [ ! -L "$snapshot_dir/$generation" ] || exit 1
+    jq -r '[.route.rule_set[]?|select(.type=="local")|.path]|unique[]' "$ROOT/logical.json" > "$WORK/admission-paths" || exit 1
+    : > "$WORK/admission-rule-names"
+    while IFS= read -r rule_path; do
+        rule_name="${rule_path#"$rules_root/"}"
+        case "$rule_name" in ''|.|..|*[!A-Za-z0-9_.-]*) exit 1;; esac
+        case "$rule_name" in *.json|*.srs) :;; *) exit 1;; esac
+        [ "$rule_path" = "$rules_root/$rule_name" ] &&
+        [ -f "$rule_path" ] && [ ! -L "$rule_path" ] &&
+        [ -f "$snapshot_dir/$generation/$rule_name" ] && [ ! -L "$snapshot_dir/$generation/$rule_name" ] || exit 1
+        rule_sha="$(jq -er --arg name "$rule_name" '.rules[]|select(.name==$name)|.sha' "$MANIFEST")" || exit 1
+        [ "$(sha256sum "$rule_path"|awk '{print $1}')" = "$rule_sha" ] &&
+        [ "$(sha256sum "$snapshot_dir/$generation/$rule_name"|awk '{print $1}')" = "$rule_sha" ] || exit 1
+        jq -cn --arg name "$rule_name" '$name' >> "$WORK/admission-rule-names" || exit 1
+    done < "$WORK/admission-paths"
+    jq -sc 'sort' "$WORK/admission-rule-names" > "$WORK/admission-rule-actual" &&
+    jq -c '.rules|map(.name)|sort' "$MANIFEST" > "$WORK/admission-rule-expected" &&
+    cmp -s "$WORK/admission-rule-actual" "$WORK/admission-rule-expected" || exit 1
+)
+snapshot_nonempty_split_proof() {
+    proof_manager="${PODKOP_SECTION_MANAGER:-$(dirname "$0")/podkop-section-runtime}"
+    proof_output="$WORK/admission-split"
+    rm -rf "$proof_output"
+    if jq -e '.version==2' "$ROOT/metadata.json" >/dev/null; then
+        proof_names="$(jq -c '[.sections[].section]' "$ROOT/metadata.json")" || return 1
+        PODKOP_SECTION_MODE="split" "$proof_manager" prepare "$ROOT/logical.json" "$proof_names" "$proof_output" 9>&- >/dev/null 2>&1 || return 1
+        same_graph "$proof_output/frontend.json" "$FRONTEND" || return 1
+        jq -r '.sections[].section' "$ROOT/metadata.json" > "$WORK/admission-worker-names" || return 1
+        while IFS= read -r proof_section; do
+            valid_section "$proof_section" &&
+            same_graph "$proof_output/workers/$proof_section/worker.json" "$ROOT/workers/$proof_section/worker.json" || return 1
+        done < "$WORK/admission-worker-names"
+    else
+        proof_section="$(jq -er '.section' "$ROOT/metadata.json")" &&
+        proof_port="$(jq -er '.port' "$ROOT/metadata.json")" &&
+        proof_api="$(jq -er '.api_port' "$ROOT/metadata.json")" || return 1
+        valid_section "$proof_section" || return 1
+        PODKOP_SECTION_MODE="split" "$proof_manager" prepare "$ROOT/logical.json" "$proof_section" "$proof_port" "$proof_api" "$proof_output" 9>&- >/dev/null 2>&1 || return 1
+        same_graph "$proof_output/frontend.json" "$FRONTEND" &&
+        same_graph "$proof_output/worker.json" "$ROOT/worker.json" || return 1
+    fi
+    PODKOP_SECTION_MODE="split" "$proof_manager" wait-ready 9>&- >/dev/null 2>&1 &&
+    main_ready >/dev/null
+}
+bootstrap() {
+    resource_floor && lock_root || return 1
+    check_candidate "$1" && make_metadata "$1" "$2" && stage "$1" && backup || return 1
+    SWAPPED=1
+    install_state || return 1
+    mv "$WORK/runtime-mode" "$ROOT/runtime-mode" || return 1
+    COMMITTED=1
+}
+migrate() {
+    resource_floor && action_lock_acquire && lock_root || return 1
+    MANIFEST="${PODKOP_SINGLE_SNAPSHOT_MANIFEST:-/etc/podkop/subscriptions/service-runtime/snapshot.json}"
+    # Translate an exact admitted graph, never refresh stale service evidence.
+    if [ -e "$MANIFEST" ] || [ -L "$MANIFEST" ]; then
+        [ ! -L "$MANIFEST" ] && [ ! -L "$(dirname "$MANIFEST")" ] &&
+        jq -e '.version==1 and (.sections|type=="array") and
+          ([.sections[].section]|length==(unique|length)) and (.rules|type=="array") and
+          ([.rules[].name]|length==(unique|length))' "$MANIFEST" >/dev/null 2>&1 || { error service_snapshot_translation_required; return 1; }
+        old_snapshot_hash="$(snapshot_runtime_hash)" || { error service_snapshot_invalid; return 1; }
+        jq -e --arg hash "$old_snapshot_hash" '.config==$hash' "$MANIFEST" >/dev/null || { error service_snapshot_invalid; return 1; }
+        cp -p "$MANIFEST" "$WORK/snapshot-before.json" || return 1
+        if jq -e '.sections|length>0' "$MANIFEST" >/dev/null; then
+            snapshot_nonempty_rows_rules && snapshot_nonempty_split_proof ||
+                { error service_snapshot_translation_required; return 1; }
+            NONEMPTY_ADMISSION=1
+        fi
+    fi
+    [ -f "$FRONTEND" ] && [ ! -L "$FRONTEND" ] || { error frontend_unavailable; return 1; }
+    if [ -f "$ROOT/metadata.json" ]; then
+        [ -f "$ROOT/frontend.json" ] && [ -f "$ROOT/logical.json" ] || { error missing_state; return 1; }
+        same_graph "$ROOT/frontend.json" "$FRONTEND" || { error frontend_changed; return 1; }
+        same_graph "$ROOT/logical.json" "$1" || { error logical_changed; return 1; }
+    fi
+    check_candidate "$1" && make_metadata "$1" "$2" && stage "$1" && backup || return 1
+    [ ! -f "$WORK/snapshot-before.json" ] || cp -p "$WORK/snapshot-before.json" "$WORK/before/snapshot.json" || return 1
+    workers_running && WORKERS_WERE_RUNNING=1
+    previous="$(process_identity)" || previous=""
+    if [ "${NONEMPTY_ADMISSION:-0}" = 1 ]; then
+        cmp -s "$WORK/snapshot-before.json" "$MANIFEST" &&
+        [ "$(snapshot_runtime_hash)" = "$old_snapshot_hash" ] &&
+        snapshot_nonempty_rows_rules && snapshot_nonempty_split_proof ||
+            { error service_snapshot_changed; return 1; }
+    fi
+    capture_worker_identities || { error worker_state_unavailable; return 1; }
+    if [ -e "$ROOT/context.sha256" ] || [ -L "$ROOT/context.sha256" ]; then
+        prepare_context_translation || { error context_translation_failed; return 1; }
+    fi
+    SWAPPED=1; ACTIVATED=1
+    "$WORKER_INIT" stop 9>&- >/dev/null 2>&1 || { error worker_stop_failed; return 1; }
+    wait_workers_stopped || { error worker_stop_failed; return 1; }
+    install_state || return 1
+    cp "$ROOT/frontend.json" "$WORK/active.json" && mv "$WORK/active.json" "$FRONTEND" || return 1
+    "$MAIN_INIT" restart 9>&- >/dev/null 2>&1 && wait_main_ready "$previous" && workers_stopped && resource_floor || { error single_migration_failed; return 1; }
+    if [ -f "$WORK/context-before" ]; then
+        cmp -s "$WORK/context-before" "$ROOT/context.sha256" || { error context_changed; return 1; }
+        cp -p "$WORK/context-after" "$WORK/context-install" || return 1
+        CONTEXT_SWAPPED=1
+        mv "$WORK/context-install" "$ROOT/context.sha256" || return 1
+    fi
+    mv "$WORK/runtime-mode" "$ROOT/runtime-mode" || return 1
+    if [ -f "$WORK/snapshot-before.json" ]; then
+        cmp -s "$WORK/snapshot-before.json" "$MANIFEST" || { error service_snapshot_changed; return 1; }
+        new_snapshot_hash="$(snapshot_runtime_hash)" || return 1
+        jq --arg hash "$new_snapshot_hash" '.config=$hash' "$WORK/snapshot-before.json" > "$WORK/snapshot-after.json" || return 1
+        snapshot_tmp="$(mktemp "$(dirname "$MANIFEST")/.single-rebind.XXXXXX")" || return 1
+        cp "$WORK/snapshot-after.json" "$snapshot_tmp" && chmod 600 "$snapshot_tmp" || { rm -f "$snapshot_tmp"; return 1; }
+        cmp -s "$WORK/snapshot-before.json" "$MANIFEST" || { rm -f "$snapshot_tmp"; error service_snapshot_changed; return 1; }
+        SNAPSHOT_SWAPPED=1
+        mv "$snapshot_tmp" "$MANIFEST" || { rm -f "$snapshot_tmp"; return 1; }
+    elif [ -e "$MANIFEST" ] || [ -L "$MANIFEST" ]; then
+        error service_snapshot_changed; return 1
+    fi
+    COMMITTED=1
+}
+apply() {
+    valid_section "$2" || { error invalid_section; return 1; }
+    resource_floor && lock_root || return 1
+    jq -e --arg s "$2" '.mode=="single" and any(.sections[];.section==$s)' "$ROOT/metadata.json" >/dev/null || { error unregistered_section; return 1; }
+    non_target "$ROOT/logical.json" "$2" > "$WORK/before-nontarget" &&
+    non_target "$1" "$2" > "$WORK/after-nontarget" &&
+    cmp -s "$WORK/before-nontarget" "$WORK/after-nontarget" || { error non_target_changed; return 1; }
+    same_graph "$ROOT/logical.json" "$FRONTEND" || { error frontend_changed; return 1; }
+    check_candidate "$1" || return 1
+    previous="$(main_ready)" || { error frontend_not_ready; return 1; }
+    workers_stopped || { error unexpected_worker; return 1; }
+    if same_graph "$1" "$ROOT/logical.json"; then return 0; fi
+    stage "$1" && cp "$ROOT/metadata.json" "$WORK/metadata.json" && backup || return 1
+    SWAPPED=1; ACTIVATED=1
+    install_state || return 1
+    cp "$ROOT/frontend.json" "$WORK/active.json" && mv "$WORK/active.json" "$FRONTEND" || return 1
+    "$MAIN_INIT" restart 9>&- >/dev/null 2>&1 && wait_main_ready "$previous" && workers_stopped && resource_floor || { error single_apply_failed; return 1; }
+    COMMITTED=1
+}
+status() (
+    identity="$(main_ready)" || identity="0 0"
+    workers_stopped || identity="0 0"
+    pid="${identity%% *}" start="${identity#* }"
+    jq -c --argjson p "$pid" --argjson t "$start" '{mode:"single",runtimeMode:"single",registryVersion:3,section:.section,ready:($p>1),pid:$p,starttime:$t,sections:[.sections[]|{section:.section,ready:($p>1),pid:$p,starttime:$t}]}' "$ROOT/metadata.json" 2>/dev/null ||
+      printf '{"mode":"single","runtimeMode":"single","ready":false,"sections":[]}\n'
+)
+case "${1:-}" in
+    bootstrap) [ "$#" = 3 ] || exit 1; bootstrap "$2" "$3";;
+    migrate|single-migrate) [ "$#" = 3 ] || exit 1; migrate "$2" "$3";;
+    apply) [ "$#" = 3 ] || exit 1; apply "$2" "$3";;
+    preflight) [ "$#" = 1 ] || exit 1; resource_floor;;
+    status) [ "$#" = 1 ] || exit 1; status;;
+    wait-ready) wait_main_ready && workers_stopped;;
+    *) error invalid_command; exit 1;;
+esac
+

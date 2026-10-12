@@ -780,6 +780,7 @@ var PodkopShellMethods = {
     Podkop.AvailableMethods.GET_SUBSCRIPTION_ITEMS,
     [section]
   ),
+  getSubscriptionSnapshot: async () => callBaseMethod("get_subscription_snapshot", [], "/usr/bin/podkop", 3e4),
   getSubscriptionSources: async (section) => callBaseMethod("get_subscription_sources", [section]),
   getSubscriptionServices: async (section) => callBaseMethod("get_subscription_services", [section]),
   checkSubscriptionServices: async (section, id, services) => callBaseMethod("subscription_services_check", [section, id, JSON.stringify(services)], "/usr/bin/podkop", 9e4),
@@ -790,25 +791,18 @@ var PodkopShellMethods = {
     Podkop.AvailableMethods.GET_SUBSCRIPTION_ITEMS_CACHED,
     [section]
   ),
-  setSubscriptionLinkEnabled: async (section, linkId, enabled) => callBaseMethod(
-    Podkop.AvailableMethods.SET_SUBSCRIPTION_LINK_ENABLED,
-    [section, linkId, enabled ? "1" : "0"]
+  setSubscriptionLinkEnabled: async (section, linkId, enabled, expectedRevision) => PodkopShellMethods.setSubscriptionSectionsEnabled(
+    {[section]: [{id:linkId,enabled}]}, {[section]:expectedRevision}
   ),
-  setSubscriptionLinksEnabled: async (section, changes) => callBaseMethod(
-    Podkop.AvailableMethods.SET_SUBSCRIPTION_LINKS_ENABLED,
-    [
-      section,
-      ...changes.flatMap(({ id, enabled }) => [id, enabled ? "1" : "0"])
-    ],
-    "/usr/bin/podkop",
-    6e4
+  setSubscriptionLinksEnabled: async (section, changes, expectedRevision) => PodkopShellMethods.setSubscriptionSectionsEnabled(
+    {[section]:changes}, {[section]:expectedRevision}
   ),
-  setSubscriptionSectionsEnabled: async (changesBySection) => callBaseMethod(
+  setSubscriptionSectionsEnabled: async (changesBySection, expectedRevisions = {}) => callBaseMethod(
     Podkop.AvailableMethods.SET_SUBSCRIPTION_SECTIONS_ENABLED,
     [
       JSON.stringify({
         sections: Object.entries(changesBySection).map(
-          ([section, changes]) => buildSubscriptionSectionChanges(section, changes)
+          ([section, changes]) => buildSubscriptionSectionChanges(section, changes, expectedRevisions[section])
         )
       })
     ],
@@ -817,12 +811,13 @@ var PodkopShellMethods = {
   )
 };
 
-function buildSubscriptionSectionChanges(section, changes) {
+function buildSubscriptionSectionChanges(section, changes, expectedRevision) {
+  if (!/^[a-f0-9]{64}$/.test(expectedRevision || "")) throw new Error(expectedRevision ? "invalid_revision" : "revision_required");
   const mode = changes.find(change => change.id === "selection:mode");
   const include = changes.find(change => change.id === "tags:include");
   const exclude = changes.find(change => change.id === "tags:exclude");
   const services = changes.find(change => change.id === "services:required");
-  return { section,
+  return { section, expectedRevision,
     ...(mode ? {selectionMode: typeof mode.enabled === "string" ? mode.enabled : mode.enabled ? "selected" : "all"} : {}),
     ...(include ? {includeTags:include.enabled} : {}),
     ...(exclude ? {excludeTags:exclude.enabled} : {}),
@@ -1148,24 +1143,34 @@ var UPDATE_INTERVAL_OPTIONS = {
   "1d": "Every day",
   "3d": "Every 3 days"
 };
-var DNS_SERVER_OPTIONS = {
-  "1.1.1.1": "1.1.1.1 (Cloudflare)",
-  "8.8.8.8": "8.8.8.8 (Google)",
-  "9.9.9.9": "9.9.9.9 (Quad9)",
-  "dns.adguard-dns.com": "dns.adguard-dns.com (AdGuard Default)",
-  "unfiltered.adguard-dns.com": "unfiltered.adguard-dns.com (AdGuard Unfiltered)",
-  "family.adguard-dns.com": "family.adguard-dns.com (AdGuard Family)"
+var DNS_MAIN_CATALOG = {"version":1,"servers":[{"value":"1.1.1.1","label":"1.1.1.1 (Cloudflare)","protocols":["udp","tcp"],"id":"cloudflare","profile":"unfiltered"},{"value":"223.5.5.5","label":"223.5.5.5 (AliDNS)","protocols":["udp","tcp"],"id":"223_5_5_5","profile":"catalog"},{"value":"223.6.6.6","label":"223.6.6.6 (AliDNS)","protocols":["udp","tcp"],"id":"223_6_6_6","profile":"catalog"},{"value":"193.233.112.67","label":"193.233.112.67 (GeoHide Primary)","protocols":["udp","tcp"],"id":"193_233_112_67","profile":"catalog"},{"value":"193.233.112.68","label":"193.233.112.68 (GeoHide Secondary)","protocols":["udp","tcp"],"id":"193_233_112_68","profile":"catalog"},{"value":"95.182.120.241","label":"95.182.120.241 (GeoHide Third)","protocols":["udp","tcp"],"id":"95_182_120_241","profile":"catalog"},{"value":"45.90.28.0","label":"45.90.28.0 (NextDNS Primary)","protocols":["udp","tcp"],"id":"45_90_28_0","profile":"catalog"},{"value":"45.90.30.0","label":"45.90.30.0 (NextDNS Secondary)","protocols":["udp","tcp"],"id":"45_90_30_0","profile":"catalog"},{"value":"77.88.8.1","label":"77.88.8.1 (Yandex)","protocols":["udp","tcp"],"id":"77_88_8_1","profile":"unfiltered"},{"value":"77.88.8.8","label":"77.88.8.8 (Yandex)","protocols":["udp","tcp"],"id":"77_88_8_8","profile":"unfiltered"},{"value":"8.8.8.8","label":"8.8.8.8 (Google)","protocols":["udp","tcp"],"id":"google","profile":"unfiltered"},{"value":"80.253.249.40","label":"80.253.249.40 (dns.malw.link)","protocols":["udp","tcp"],"id":"80_253_249_40","profile":"catalog"},{"value":"95.216.204.218","label":"95.216.204.218 (dns.malw.link)","protocols":["udp","tcp"],"id":"95_216_204_218","profile":"catalog"},{"value":"9.9.9.9","label":"9.9.9.9 (Quad9)","protocols":["udp","tcp"],"id":"quad9","profile":"security"},{"value":"149.112.112.112","label":"149.112.112.112 (Quad9)","protocols":["udp","tcp"],"id":"149_112_112_112","profile":"security"},{"value":"9.9.9.11","label":"9.9.9.11 (Quad9 ECS)","protocols":["udp","tcp"],"id":"quad9_ecs","profile":"security"},{"value":"149.112.112.11","label":"149.112.112.11 (Quad9 ECS)","protocols":["udp","tcp"],"id":"149_112_112_11","profile":"security"},{"value":"9.9.9.10","label":"9.9.9.10 (Quad9 Unsecured)","protocols":["udp","tcp"],"id":"9_9_9_10","profile":"catalog"},{"value":"149.112.112.10","label":"149.112.112.10 (Quad9 Unsecured)","protocols":["udp","tcp"],"id":"149_112_112_10","profile":"catalog"},{"value":"dns.adguard-dns.com","label":"AdGuard Default","protocols":["doh","dot","doq"],"endpoints":{"doh":{"host":"dns.adguard-dns.com","port":443,"path":"/dns-query"},"dot":{"host":"dns.adguard-dns.com","port":853},"doq":{"host":"dns.adguard-dns.com","port":853}},"id":"adguard_default","profile":"security"},{"value":"family.adguard-dns.com","label":"AdGuard Family","protocols":["doh","dot","doq"],"endpoints":{"doh":{"host":"family.adguard-dns.com","port":443,"path":"/dns-query"},"dot":{"host":"family.adguard-dns.com","port":853},"doq":{"host":"family.adguard-dns.com","port":853}},"id":"adguard_family","profile":"family"},{"value":"unfiltered.adguard-dns.com","label":"AdGuard Unfiltered","protocols":["doh","dot","doq"],"endpoints":{"doh":{"host":"unfiltered.adguard-dns.com","port":443,"path":"/dns-query"},"dot":{"host":"unfiltered.adguard-dns.com","port":853},"doq":{"host":"unfiltered.adguard-dns.com","port":853}},"id":"adguard_unfiltered","profile":"unfiltered"},{"value":"dns.alidns.com","label":"AliDNS","protocols":["doh","dot","doq","h3"],"aliases":["223.5.5.5","223.6.6.6"],"endpoints":{"doh":{"host":"dns.alidns.com","port":443,"path":"/dns-query"},"dot":{"host":"dns.alidns.com","port":853},"doq":{"host":"dns.alidns.com","port":853},"h3":{"host":"dns.alidns.com","port":443,"path":"/dns-query"}},"id":"alidns","profile":"catalog"},{"value":"cloudflare-dns.com","label":"Cloudflare","protocols":["doh","dot","h3"],"aliases":["1.1.1.1","1.0.0.1","one.one.one.one","1dot1dot1dot1.cloudflare-dns.com"],"endpoints":{"doh":{"host":"cloudflare-dns.com","port":443,"path":"/dns-query"},"dot":{"host":"one.one.one.one","port":853},"h3":{"host":"cloudflare-dns.com","port":443,"path":"/dns-query"}},"id":"cloudflare","profile":"unfiltered"},{"value":"dns.comss.one","label":"Comss.one","protocols":["doh","dot","doq"],"endpoints":{"doh":{"host":"dns.comss.one","port":443,"path":"/dns-query"},"dot":{"host":"dns.comss.one","port":853},"doq":{"host":"dns.comss.one","port":853}},"id":"comss","profile":"catalog"},{"value":"geohide.ru","label":"GeoHide","protocols":["doh","dot","doq","h3"],"aliases":["dns.geohide.ru"],"endpoints":{"doh":{"host":"geohide.ru","port":443,"path":"/dns-query"},"dot":{"host":"geohide.ru","port":853},"doq":{"host":"geohide.ru","port":853},"h3":{"host":"geohide.ru","port":443,"path":"/dns-query"}},"id":"geohide","profile":"catalog"},{"value":"eu.geohide.ru","label":"GeoHide Europe","protocols":["doh","dot","doq","h3"],"endpoints":{"doh":{"host":"eu.geohide.ru","port":443,"path":"/dns-query"},"dot":{"host":"eu.geohide.ru","port":853},"doq":{"host":"eu.geohide.ru","port":853},"h3":{"host":"eu.geohide.ru","port":443,"path":"/dns-query"}},"id":"geohide_eu","profile":"catalog"},{"value":"us.geohide.ru","label":"GeoHide USA","protocols":["doh","dot","doq","h3"],"endpoints":{"doh":{"host":"us.geohide.ru","port":443,"path":"/dns-query"},"dot":{"host":"us.geohide.ru","port":853},"doq":{"host":"us.geohide.ru","port":853},"h3":{"host":"us.geohide.ru","port":443,"path":"/dns-query"}},"id":"geohide_us","profile":"catalog"},{"value":"freedns.controld.com/p0","label":"ControlD Free p0","protocols":["doh","dot","doq","h3"],"aliases":["p0.freedns.controld.com"],"endpoints":{"doh":{"host":"freedns.controld.com","port":443,"path":"/p0"},"dot":{"host":"p0.freedns.controld.com","port":853},"doq":{"host":"p0.freedns.controld.com","port":853},"h3":{"host":"freedns.controld.com","port":443,"path":"/p0"}},"id":"controld_unfiltered","profile":"unfiltered"},{"value":"dns.google","label":"Google","protocols":["doh","dot","h3"],"aliases":["8.8.8.8","8.8.4.4"],"endpoints":{"doh":{"host":"dns.google","port":443,"path":"/dns-query"},"dot":{"host":"dns.google","port":853},"h3":{"host":"dns.google","port":443,"path":"/dns-query"}},"id":"google","profile":"unfiltered"},{"value":"dns.malw.link","label":"dns.malw.link","protocols":["doh","dot"],"aliases":["80.253.249.40","95.216.204.218"],"endpoints":{"doh":{"host":"dns.malw.link","port":443,"path":"/dns-query"},"dot":{"host":"dns.malw.link","port":853}},"id":"malw","profile":"catalog"},{"value":"dns.quad9.net","label":"Quad9","protocols":["doh","dot","doq","h3"],"aliases":["9.9.9.9","149.112.112.112"],"endpoints":{"doh":{"host":"dns.quad9.net","port":443,"path":"/dns-query"},"dot":{"host":"dns.quad9.net","port":853},"doq":{"host":"dns.quad9.net","port":853},"h3":{"host":"dns.quad9.net","port":443,"path":"/dns-query"}},"id":"quad9","profile":"security"},{"value":"dns11.quad9.net","label":"Quad9 ECS","protocols":["doh","dot","doq","h3"],"aliases":["9.9.9.11","149.112.112.11"],"endpoints":{"doh":{"host":"dns11.quad9.net","port":443,"path":"/dns-query"},"dot":{"host":"dns11.quad9.net","port":853},"doq":{"host":"dns11.quad9.net","port":853},"h3":{"host":"dns11.quad9.net","port":443,"path":"/dns-query"}},"id":"quad9_ecs","profile":"security"},{"value":"dns10.quad9.net","label":"Quad9 Unsecured","protocols":["doh","dot","doq","h3"],"aliases":["9.9.9.10","149.112.112.10"],"endpoints":{"doh":{"host":"dns10.quad9.net","port":443,"path":"/dns-query"},"dot":{"host":"dns10.quad9.net","port":853},"doq":{"host":"dns10.quad9.net","port":853},"h3":{"host":"dns10.quad9.net","port":443,"path":"/dns-query"}},"id":"quad9_unsecured","profile":"catalog"},{"value":"dns.nextdns.io","label":"NextDNS","protocols":["doh","dot","doq"],"endpoints":{"doh":{"host":"dns.nextdns.io","port":443,"path":"/dns-query"},"dot":{"host":"dns.nextdns.io","port":853},"doq":{"host":"dns.nextdns.io","port":853}},"id":"nextdns","profile":"catalog"},{"value":"anycast.uncensoreddns.org","label":"UncensoredDNS Anycast","protocols":["doh","dot"],"endpoints":{"doh":{"host":"anycast.uncensoreddns.org","port":443,"path":"/dns-query"},"dot":{"host":"anycast.uncensoreddns.org","port":853}},"id":"uncensored_anycast","profile":"catalog"},{"value":"unicast.uncensoreddns.org","label":"UncensoredDNS Unicast","protocols":["doh","dot"],"endpoints":{"doh":{"host":"unicast.uncensoreddns.org","port":443,"path":"/dns-query"},"dot":{"host":"unicast.uncensoreddns.org","port":853}},"id":"uncensored_unicast","profile":"catalog"},{"value":"xbox-dns.ru","label":"Xbox DNS","protocols":["doh","dot"],"endpoints":{"doh":{"host":"xbox-dns.ru","port":443,"path":"/dns-query"},"dot":{"host":"xbox-dns.ru","port":853}},"id":"xbox_dns","profile":"catalog"},{"value":"common.dot.dns.yandex.net","label":"Yandex","protocols":["doh","dot"],"endpoints":{"doh":{"host":"common.dot.dns.yandex.net","port":443,"path":"/dns-query"},"dot":{"host":"common.dot.dns.yandex.net","port":853}},"id":"yandex","profile":"unfiltered"},{"value":"94.140.14.140","label":"AdGuard Unfiltered","id":"adguard_unfiltered","profile":"unfiltered","protocols":["udp","tcp"]},{"value":"76.76.2.0","label":"Control D Unfiltered","id":"controld_unfiltered","profile":"unfiltered","protocols":["udp","tcp"]},{"value":"dns.mullvad.net","label":"Mullvad","id":"mullvad","profile":"privacy","protocols":["doh","dot"],"endpoints":{"doh":{"host":"dns.mullvad.net","port":443,"path":"/dns-query"},"dot":{"host":"dns.mullvad.net","port":853}}}],"recovery":{"udp":["1.1.1.1","223.5.5.5","223.6.6.6","193.233.112.67","193.233.112.68","95.182.120.241","77.88.8.1","77.88.8.8","8.8.8.8","80.253.249.40","95.216.204.218","9.9.9.9","149.112.112.112","9.9.9.11","149.112.112.11","9.9.9.10","149.112.112.10","45.90.28.0","45.90.30.0"],"tcp":["1.1.1.1","223.5.5.5","223.6.6.6","193.233.112.67","193.233.112.68","95.182.120.241","77.88.8.1","77.88.8.8","8.8.8.8","80.253.249.40","95.216.204.218","9.9.9.9","149.112.112.112","9.9.9.11","149.112.112.11","9.9.9.10","149.112.112.10","45.90.28.0","45.90.30.0"],"doh":["dns.adguard-dns.com","unfiltered.adguard-dns.com","dns.alidns.com","cloudflare-dns.com","dns.comss.one","geohide.ru","eu.geohide.ru","us.geohide.ru","freedns.controld.com/p0","dns.google","dns.malw.link","dns.quad9.net","dns11.quad9.net","dns10.quad9.net","dns.nextdns.io","anycast.uncensoreddns.org","unicast.uncensoreddns.org","xbox-dns.ru","common.dot.dns.yandex.net"],"dot":["dns.adguard-dns.com","unfiltered.adguard-dns.com","dns.alidns.com","cloudflare-dns.com","dns.comss.one","geohide.ru","eu.geohide.ru","us.geohide.ru","freedns.controld.com/p0","dns.google","dns.malw.link","dns.quad9.net","dns11.quad9.net","dns10.quad9.net","dns.nextdns.io","anycast.uncensoreddns.org","unicast.uncensoreddns.org","xbox-dns.ru","common.dot.dns.yandex.net"],"doq":["dns.adguard-dns.com","unfiltered.adguard-dns.com","dns.alidns.com","dns.comss.one","geohide.ru","eu.geohide.ru","us.geohide.ru","freedns.controld.com/p0","dns.quad9.net","dns11.quad9.net","dns10.quad9.net","dns.nextdns.io"],"h3":["dns.alidns.com","cloudflare-dns.com","geohide.ru","eu.geohide.ru","us.geohide.ru","freedns.controld.com/p0","dns.google","dns.quad9.net","dns11.quad9.net","dns10.quad9.net"]}};
+var DNS_BOOTSTRAP_CATALOG = {"version":1,"servers":[{"value":"1.0.0.1","label":"1.0.0.1 (Cloudflare DNS)","protocols":["udp","tcp","doh","dot","h3"],"endpoints":{"doh":{"host":"1.0.0.1","port":443,"path":"/dns-query","server_name":"cloudflare-dns.com"},"dot":{"host":"1.0.0.1","port":853,"server_name":"cloudflare-dns.com"},"h3":{"host":"1.0.0.1","port":443,"path":"/dns-query","server_name":"cloudflare-dns.com"}},"id":"cloudflare_2","profile":"unfiltered"},{"value":"1.1.1.1","label":"1.1.1.1 (Cloudflare DNS)","protocols":["udp","tcp","doh","dot","h3"],"endpoints":{"doh":{"host":"1.1.1.1","port":443,"path":"/dns-query","server_name":"cloudflare-dns.com"},"dot":{"host":"1.1.1.1","port":853,"server_name":"cloudflare-dns.com"},"h3":{"host":"1.1.1.1","port":443,"path":"/dns-query","server_name":"cloudflare-dns.com"}},"id":"cloudflare_1","profile":"unfiltered"},{"value":"223.5.5.5","label":"223.5.5.5 (AliDNS)","protocols":["udp","tcp","doh","dot"],"endpoints":{"doh":{"host":"223.5.5.5","port":443,"path":"/dns-query","server_name":"dns.alidns.com"},"dot":{"host":"223.5.5.5","port":853,"server_name":"dns.alidns.com"}},"id":"223_5_5_5","profile":"catalog"},{"value":"223.6.6.6","label":"223.6.6.6 (AliDNS)","protocols":["udp","tcp","doh","dot"],"endpoints":{"doh":{"host":"223.6.6.6","port":443,"path":"/dns-query","server_name":"dns.alidns.com"},"dot":{"host":"223.6.6.6","port":853,"server_name":"dns.alidns.com"}},"id":"223_6_6_6","profile":"catalog"},{"value":"193.233.112.67","label":"193.233.112.67 (GeoHide Primary)","protocols":["udp","tcp"],"id":"193_233_112_67","profile":"catalog"},{"value":"193.233.112.68","label":"193.233.112.68 (GeoHide Secondary)","protocols":["udp","tcp"],"id":"193_233_112_68","profile":"catalog"},{"value":"95.182.120.241","label":"95.182.120.241 (GeoHide Third)","protocols":["udp","tcp"],"id":"95_182_120_241","profile":"catalog"},{"value":"45.90.28.0","label":"45.90.28.0 (NextDNS Primary)","protocols":["udp","tcp"],"id":"45_90_28_0","profile":"catalog"},{"value":"45.90.30.0","label":"45.90.30.0 (NextDNS Secondary)","protocols":["udp","tcp"],"id":"45_90_30_0","profile":"catalog"},{"value":"76.76.2.0","label":"76.76.2.0 (ControlD DNS)","protocols":["udp","tcp"],"id":"controld_unfiltered","profile":"unfiltered"},{"value":"76.76.10.0","label":"76.76.10.0 (ControlD DNS)","protocols":["udp","tcp"],"id":"76_76_10_0","profile":"unfiltered"},{"value":"77.88.8.1","label":"77.88.8.1 (Yandex DNS)","protocols":["udp","tcp","doh","dot"],"endpoints":{"doh":{"host":"77.88.8.1","port":443,"path":"/dns-query","server_name":"common.dot.dns.yandex.net"},"dot":{"host":"77.88.8.1","port":853,"server_name":"common.dot.dns.yandex.net"}},"id":"yandex_2","profile":"unfiltered"},{"value":"77.88.8.8","label":"77.88.8.8 (Yandex DNS)","protocols":["udp","tcp","doh","dot"],"endpoints":{"doh":{"host":"77.88.8.8","port":443,"path":"/dns-query","server_name":"common.dot.dns.yandex.net"},"dot":{"host":"77.88.8.8","port":853,"server_name":"common.dot.dns.yandex.net"}},"id":"yandex_1","profile":"unfiltered"},{"value":"8.8.4.4","label":"8.8.4.4 (Google DNS)","protocols":["udp","tcp","doh","dot","h3"],"endpoints":{"doh":{"host":"8.8.4.4","port":443,"path":"/dns-query","server_name":"dns.google"},"dot":{"host":"8.8.4.4","port":853,"server_name":"dns.google"},"h3":{"host":"8.8.4.4","port":443,"path":"/dns-query","server_name":"dns.google"}},"id":"google_2","profile":"unfiltered"},{"value":"8.8.8.8","label":"8.8.8.8 (Google DNS)","protocols":["udp","tcp","doh","dot","h3"],"endpoints":{"doh":{"host":"8.8.8.8","port":443,"path":"/dns-query","server_name":"dns.google"},"dot":{"host":"8.8.8.8","port":853,"server_name":"dns.google"},"h3":{"host":"8.8.8.8","port":443,"path":"/dns-query","server_name":"dns.google"}},"id":"google_1","profile":"unfiltered"},{"value":"80.253.249.40","label":"80.253.249.40 (dns.malw.link DNS)","protocols":["udp","tcp"],"id":"80_253_249_40","profile":"catalog"},{"value":"95.216.204.218","label":"95.216.204.218 (dns.malw.link DNS)","protocols":["udp","tcp"],"id":"95_216_204_218","profile":"catalog"},{"value":"9.9.9.9","label":"9.9.9.9 (Quad9 DNS)","protocols":["udp","tcp","doh","dot","doq","h3"],"endpoints":{"doh":{"host":"9.9.9.9","port":443,"path":"/dns-query","server_name":"dns.quad9.net"},"dot":{"host":"9.9.9.9","port":853,"server_name":"dns.quad9.net"},"doq":{"host":"9.9.9.9","port":853,"server_name":"dns.quad9.net"},"h3":{"host":"9.9.9.9","port":443,"path":"/dns-query","server_name":"dns.quad9.net"}},"id":"quad9_1","profile":"security"},{"value":"149.112.112.112","label":"149.112.112.112 (Quad9 DNS)","protocols":["udp","tcp","doh","dot","doq","h3"],"endpoints":{"doh":{"host":"149.112.112.112","port":443,"path":"/dns-query","server_name":"dns.quad9.net"},"dot":{"host":"149.112.112.112","port":853,"server_name":"dns.quad9.net"},"doq":{"host":"149.112.112.112","port":853,"server_name":"dns.quad9.net"},"h3":{"host":"149.112.112.112","port":443,"path":"/dns-query","server_name":"dns.quad9.net"}},"id":"149_112_112_112","profile":"security"},{"value":"9.9.9.11","label":"9.9.9.11 (Quad9 ECS DNS)","protocols":["udp","tcp","doh","dot","doq","h3"],"endpoints":{"doh":{"host":"9.9.9.11","port":443,"path":"/dns-query","server_name":"dns11.quad9.net"},"dot":{"host":"9.9.9.11","port":853,"server_name":"dns11.quad9.net"},"doq":{"host":"9.9.9.11","port":853,"server_name":"dns11.quad9.net"},"h3":{"host":"9.9.9.11","port":443,"path":"/dns-query","server_name":"dns11.quad9.net"}},"id":"quad9_ecs","profile":"security"},{"value":"149.112.112.11","label":"149.112.112.11 (Quad9 ECS DNS)","protocols":["udp","tcp","doh","dot","doq","h3"],"endpoints":{"doh":{"host":"149.112.112.11","port":443,"path":"/dns-query","server_name":"dns11.quad9.net"},"dot":{"host":"149.112.112.11","port":853,"server_name":"dns11.quad9.net"},"doq":{"host":"149.112.112.11","port":853,"server_name":"dns11.quad9.net"},"h3":{"host":"149.112.112.11","port":443,"path":"/dns-query","server_name":"dns11.quad9.net"}},"id":"149_112_112_11","profile":"security"},{"value":"9.9.9.10","label":"9.9.9.10 (Quad9 Unsecured DNS)","protocols":["udp","tcp","doh","dot","doq","h3"],"endpoints":{"doh":{"host":"9.9.9.10","port":443,"path":"/dns-query","server_name":"dns10.quad9.net"},"dot":{"host":"9.9.9.10","port":853,"server_name":"dns10.quad9.net"},"doq":{"host":"9.9.9.10","port":853,"server_name":"dns10.quad9.net"},"h3":{"host":"9.9.9.10","port":443,"path":"/dns-query","server_name":"dns10.quad9.net"}},"id":"9_9_9_10","profile":"catalog"},{"value":"149.112.112.10","label":"149.112.112.10 (Quad9 Unsecured DNS)","protocols":["udp","tcp","doh","dot","doq","h3"],"endpoints":{"doh":{"host":"149.112.112.10","port":443,"path":"/dns-query","server_name":"dns10.quad9.net"},"dot":{"host":"149.112.112.10","port":853,"server_name":"dns10.quad9.net"},"doq":{"host":"149.112.112.10","port":853,"server_name":"dns10.quad9.net"},"h3":{"host":"149.112.112.10","port":443,"path":"/dns-query","server_name":"dns10.quad9.net"}},"id":"149_112_112_10","profile":"catalog"},{"value":"208.67.222.222","label":"208.67.222.222 (OpenDNS)","protocols":["udp","tcp","doh","dot"],"endpoints":{"doh":{"host":"208.67.222.222","port":443,"path":"/dns-query"},"dot":{"host":"208.67.222.222","port":853}},"id":"208_67_222_222","profile":"catalog"},{"value":"94.140.14.140","label":"AdGuard Unfiltered","id":"adguard_unfiltered","profile":"unfiltered","protocols":["udp","tcp"]}],"recovery":{"udp":["1.1.1.1","1.0.0.1","193.233.112.67","193.233.112.68","95.182.120.241","77.88.8.8","77.88.8.1","8.8.8.8","8.8.4.4","9.9.9.9","149.112.112.112","9.9.9.11","149.112.112.11","9.9.9.10","149.112.112.10","208.67.222.222","45.90.28.0","45.90.30.0"],"tcp":["1.1.1.1","1.0.0.1","193.233.112.67","193.233.112.68","95.182.120.241","77.88.8.8","77.88.8.1","8.8.8.8","8.8.4.4","9.9.9.9","149.112.112.112","9.9.9.11","149.112.112.11","9.9.9.10","149.112.112.10","208.67.222.222","45.90.28.0","45.90.30.0"],"doh":["1.1.1.1","1.0.0.1","223.5.5.5","223.6.6.6","77.88.8.8","77.88.8.1","8.8.8.8","8.8.4.4","9.9.9.9","149.112.112.112","9.9.9.11","149.112.112.11","9.9.9.10","149.112.112.10","208.67.222.222"],"dot":["1.1.1.1","1.0.0.1","223.5.5.5","223.6.6.6","77.88.8.8","77.88.8.1","8.8.8.8","8.8.4.4","9.9.9.9","149.112.112.112","9.9.9.11","149.112.112.11","9.9.9.10","149.112.112.10","208.67.222.222"],"doq":["9.9.9.9","149.112.112.112","9.9.9.11","149.112.112.11","9.9.9.10","149.112.112.10"],"h3":["1.1.1.1","1.0.0.1","8.8.8.8","8.8.4.4","9.9.9.9","149.112.112.112","9.9.9.11","149.112.112.11","9.9.9.10","149.112.112.10"]}};
+var DNS_SUPPORTED_PROTOCOLS = ["udp", "tcp", "doh", "dot"];
+function getDnsServerOptionsForType(type, bootstrap = false) {
+  if (!DNS_SUPPORTED_PROTOCOLS.includes(type)) return {};
+  const catalog = bootstrap ? DNS_BOOTSTRAP_CATALOG : DNS_MAIN_CATALOG;
+  return Object.fromEntries(catalog.servers.filter(row => row.protocols.includes(type)).map(row => [row.value, row.label]));
+}
+function validateDnsByType(value, type, bootstrap = false) {
+  if (!DNS_SUPPORTED_PROTOCOLS.includes(type)) return {valid:false,message:_("Этот протокол DNS не поддерживается")};
+  const catalog = bootstrap ? DNS_BOOTSTRAP_CATALOG : DNS_MAIN_CATALOG;
+  const known = catalog.servers.filter(row => row.value === value || (row.aliases || []).includes(value));
+  if (known.length && !known.some(row => row.protocols.includes(type))) return {valid:false,message:_("Этот DNS-провайдер не поддерживает выбранный протокол")};
+  if (["udp","tcp"].includes(type) || bootstrap) return validateIPV4(value);
+  // Canonical catalog values can be URI-like while a TLS/QUIC endpoint uses
+  // another host (for example Control D p0). Runtime resolves that metadata.
+  if (known.length) return {valid:true,message:_("Valid")};
+  if (["dot","doq"].includes(type) && value.includes("/")) return {valid:false,message:_("Этот протокол DNS не использует HTTP-путь")};
+  return validateDNS(value);
+}
+var DNS_SERVER_OPTIONS = Object.fromEntries(DNS_MAIN_CATALOG.servers.map(row => [row.value,row.label]));
+var URLTEST_DOWNLOAD_URL_OPTIONS = {
+  "https://speed.cloudflare.com/__down?bytes=65536": "Cloudflare — 64 КиБ",
+  "https://ajax.googleapis.com/ajax/libs/jquery/3.7.1/jquery.min.js": "Google — jQuery",
+  "https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js": "jsDelivr — jQuery",
+  "https://cachefly.cachefly.net/1mb.test": "CacheFly — 1 МиБ"
 };
-var BOOTSTRAP_DNS_SERVER_OPTIONS = {
-  "77.88.8.8": "77.88.8.8 (Yandex DNS)",
-  "77.88.8.1": "77.88.8.1 (Yandex DNS)",
-  "1.1.1.1": "1.1.1.1 (Cloudflare DNS)",
-  "1.0.0.1": "1.0.0.1 (Cloudflare DNS)",
-  "8.8.8.8": "8.8.8.8 (Google DNS)",
-  "8.8.4.4": "8.8.4.4 (Google DNS)",
-  "9.9.9.9": "9.9.9.9 (Quad9 DNS)",
-  "9.9.9.11": "9.9.9.11 (Quad9 DNS)"
-};
+var BOOTSTRAP_DNS_SERVER_OPTIONS = Object.fromEntries(DNS_BOOTSTRAP_CATALOG.servers.map(row => [row.value,row.label]));
 var DIAGNOSTICS_UPDATE_INTERVAL = 1e4;
 var CACHE_TIMEOUT = DIAGNOSTICS_UPDATE_INTERVAL - 1e3;
 var ERROR_POLL_INTERVAL = 1e4;
@@ -1630,6 +1635,9 @@ var initialStore = {
     actionStatus: "idle",
     actionMessage: "",
     pendingChanges: {},
+    draftRevisions: {},
+    draftConflicts: {},
+    snapshotBundleMismatch: false,
     collapsedSections: {},
     collapsedSources: {},
     latencyByRow: {},
@@ -5387,6 +5395,8 @@ function getStatusLabel({
   }
   if (item.subscriptionDisabled) return "Подписка отключена";
   if (effectiveEnabled && tagFiltered) return "Исключён фильтром тегов";
+  if (effectiveEnabled && serviceExcluded?.includes('google_country')) return 'Исключён: страна по Google';
+  if (effectiveEnabled && serviceExcluded?.includes('exit_country')) return 'Исключён: страна выхода';
   if (effectiveEnabled && serviceExcluded?.length) return 'Исключён: сервисы';
   if (pending) {
     return effectiveEnabled ? _("Will be included") : _("Will be excluded");
@@ -5415,7 +5425,7 @@ function getSubscriptionRowStatusTitle({item, effectiveEnabled, tagFiltered, ser
   if (!effectiveEnabled) return 'Узел не выбран вручную.';
   if (tagFiltered) return 'Узел не подходит под фильтр тегов этой секции.';
   if (!serviceExcluded.length) return 'Узел проходит выбранные фильтры и попадёт в набор при применении.';
-  const labels = {gemini:'Gemini', chatgpt:'ChatGPT'};
+  const labels = {gemini:'Gemini', chatgpt:'ChatGPT', google_country:'Страна по Google', exit_country:'Страна по IP'};
   return serviceExcluded.map(service => `${labels[service] || service}: ${getSubscriptionServiceStateLabel(item.services?.[service])}`).join('; ');
 }
 function renderEmptyState(text) {
@@ -5476,7 +5486,7 @@ function getSourceSummary({
   if (unsupportedCount > 0) {
     parts.push(`${_("Unsupported")}: ${unsupportedCount}`);
   }
-  if (group.error) parts.push(group.error === "download_failed" ? "Сервер подписки недоступен — сохранён предыдущий список" : "Сервер вернул неподдерживаемый формат подписки");
+  if (group.error) parts.push(String(group.error).startsWith("subscription_") ? getSubscriptionResourceErrorMessage(group.error) || "Обновление подписки остановлено — предыдущий список сохранён" : group.error === "download_failed" ? "Сервер подписки недоступен — сохранён предыдущий список" : "Сервер вернул неподдерживаемый формат подписки");
   return parts.join(" | ");
 }
 function getToolbarMessage({
@@ -5495,12 +5505,12 @@ function getToolbarMessage({
   if (failed) {
     return actionMessage || _("Failed to load subscription configs");
   }
-  if (actionStatus === "verifying") return actionMessage || "Проверяем результат применения на роутере. Повторное применение не запускается.";
+  if (actionStatus === "verifying") return actionMessage || "Проверяем применение; повторять не нужно.";
   if (applying || status === "applying") {
     return _("Applying changes. Podkop will be restarted once.");
   }
-  if (runtimeStatus?.unknown) return "Проверяем связь с роутером. Пока состояние неизвестно, запуск операций недоступен.";
-  if (runtimeStatus?.busy && actionStatus !== "running") return "Podkop завершает другую операцию. Кнопки станут доступны автоматически; повторять нажатие сейчас не нужно.";
+  if (runtimeStatus?.unknown) return "Нет статуса роутера; операции заблокированы.";
+  if (runtimeStatus?.busy && actionStatus !== "running") return "Podkop занят; дождитесь завершения.";
   if (actionStatus === "running") {
     return actionMessage || _("Action is running");
   }
@@ -5516,11 +5526,11 @@ function getToolbarMessage({
   if (pendingCount > 0) {
     return `${_("Unsaved changes")}: ${pendingCount}. ${_("Click Apply to restart Podkop once.")}`;
   }
-  if (runtimeStatus?.pending) return "Конфиги или результаты проверок обновлены, но ещё не применены. Нажмите «Применить», когда допустим краткий перерыв соединений.";
+  if (runtimeStatus?.pending) return "Нажмите «Применить»; возможен краткий перерыв соединений.";
   if (status === "success") {
     return _("Changes applied. Podkop has been restarted.");
   }
-  return 'Настройте отбор узлов и нажмите «Применить». Проверки и изменения выбора сами рабочее подключение не переключают.';
+  return 'Выберите узлы и нажмите «Применить».';
 }
 function getToolbarClass(status, actionStatus, pendingCount) {
   if (status === "applying") {
@@ -5544,6 +5554,8 @@ function renderToolbar({
   loading,
   failed,
   applyUnconfirmed,
+  draftConflicts,
+  snapshotBundleMismatch,
   applying,
   status,
   action,
@@ -5561,9 +5573,9 @@ function renderToolbar({
   const speedRunning = action === "speed" && actionRunning;
   const blocked = runtimeStatus?.busy || runtimeStatus?.unknown;
   const canRunAction = !loading && !failed && !applying && !actionRunning && !blocked;
-  const canRunSubscriptionAction = canRunAction && pendingCount === 0;
-  const canRefresh = !loading && !applying && !actionRunning && !blocked && (failed || applyUnconfirmed || pendingCount === 0);
-  const canApply = (pendingCount > 0 || runtimeStatus?.pending) && canRunAction;
+  const canRunSubscriptionAction = canRunAction && !snapshotBundleMismatch && pendingCount === 0;
+  const canRefresh = !loading && !applying && !actionRunning && !blocked && (failed || applyUnconfirmed || snapshotBundleMismatch || Object.keys(draftConflicts || {}).length || pendingCount === 0);
+  const canApply = (pendingCount > 0 || runtimeStatus?.pending) && canRunAction && !snapshotBundleMismatch && !Object.keys(draftConflicts || {}).length;
   const canReset = pendingCount > 0 && !applying && !actionRunning;
   return E(
     "div",
@@ -5592,8 +5604,8 @@ function renderToolbar({
       E("div", { class: "pdk_subscriptions-page__toolbar-actions" }, [
         renderButton({
           text: _("Refresh"),
-          title: failed || applyUnconfirmed ? "Повторить чтение подписок" : _("Refresh subscription configs"),
-          ariaLabel: failed || applyUnconfirmed ? "Повторить чтение подписок" : _("Refresh subscription configs"),
+          title: failed || applyUnconfirmed || snapshotBundleMismatch || Object.keys(draftConflicts || {}).length ? "Повторить чтение подписок" : _("Refresh subscription configs"),
+          ariaLabel: failed || applyUnconfirmed || snapshotBundleMismatch || Object.keys(draftConflicts || {}).length ? "Повторить чтение подписок" : _("Refresh subscription configs"),
           icon: renderRotateCcwIcon24,
           hideText: true,
           onClick: onRefresh,
@@ -5962,12 +5974,32 @@ function getSubscriptionServiceSummary(section, services, pendingChanges) {
 function getSubscriptionServiceStateLabel(result) {
   if (!result) return 'Не проверен — исключён';
   if (!isSubscriptionServiceEvidenceFresh(result)) return 'Проверка устарела или дата некорректна — исключён';
+  if (String(result.reason || '').startsWith('google_country_')) {
+    const declared=/^[A-Z]{2}$/.test(result.declaredCountry || '') ? result.declaredCountry : '?';
+    const observed=/^[A-Z]{2}$/.test(result.googleCountry || '') ? result.googleCountry : '?';
+    if (result.state === 'pass' && result.reason === 'google_country_match') return `${declared} → ${observed}: страна по Google совпадает`;
+    if (result.state === 'fail' && result.reason === 'google_country_mismatch') return `${declared} → ${observed}: страна по Google не совпадает — исключён`;
+    const reason={google_country_declared_missing:'В названии не указана страна',
+      google_country_declared_ambiguous:'Страна в названии неоднозначна',
+      google_country_unavailable:'Страна по Google не определена'}[result.reason] || 'Страна по Google не определена';
+    return `${reason} — исключён`;
+  }
+  if (String(result.reason || '').startsWith('exit_country_')) {
+    const declared=/^[A-Z]{2}$/.test(result.declaredCountry || '') ? result.declaredCountry : '?';
+    const observed=/^[A-Z]{2}$/.test(result.exitCountry || '') ? result.exitCountry : '?';
+    if (result.state === 'pass' && result.reason === 'exit_country_match') return `${declared} → ${observed}: страна совпадает`;
+    if (result.state === 'fail' && result.reason === 'exit_country_mismatch') return `${declared} → ${observed}: страна не совпадает — исключён`;
+    const reason={exit_country_sources_disagree:'Источники расходятся',exit_country_unavailable:'Страна выхода не определена',
+      exit_country_declared_missing:'В названии не указана страна',exit_country_declared_ambiguous:'Страна в названии неоднозначна'}[result.reason] || 'Страна не подтверждена';
+    return `${reason} — исключён`;
+  }
   const region = /^[A-Z]{3}$/.test(result.region || '') ? ` (${result.region})` : '';
   if (!result.manual && result.state === 'pass' && result.reason === 'region_precheck_passed') return `Регион${region} предварительно проходит`;
   if (result.state === 'fail' && result.reason === 'region_denied') return `Регион${region} отклонён — исключён`;
   if (result.state === 'pass') return result.manual ? 'Подтверждён вами' : 'Предварительно проходит';
   if (result.state === 'fail') return 'Недоступен — исключён';
-  return result.network === 'pass' || result.network === true ? 'Не определено · Требует подтверждения чата — исключён' : 'Не определено · Ошибка соединения — исключён';
+  const curl=Number.isInteger(result.curlCode) && result.curlCode>0 && result.curlCode<=99 ? ` (curl ${result.curlCode})` : '';
+  return result.network === 'pass' || result.network === true ? 'Не определено · Требует подтверждения чата — исключён' : `Не определено · Ошибка соединения${curl} — исключён`;
 }
 function canConfirmSubscriptionService(service, result) {
   return ['gemini','chatgpt'].includes(service) && result?.state === 'unknown' &&
@@ -5976,13 +6008,17 @@ function canConfirmSubscriptionService(service, result) {
 function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onToggle, actions) {
   const selected = getEffectiveRequiredServices(pendingChanges, section);
   if (!section.serviceSupport) return E('small', {role:'status'}, 'Эта версия backend не поддерживает фильтр сервисов. Обновите патч.');
-  const labels = {gemini:'Gemini (регион)',chatgpt:'ChatGPT (веб-чат)'};
+  const labels = {gemini:'Gemini (регион)',chatgpt:'ChatGPT (веб-чат)',
+    ...section.serviceCatalog?.some(service=>service.id==='google_country') ? {google_country:'Страна по Google'} : {},
+    ...section.serviceCatalog?.some(service=>service.id==='exit_country') ? {exit_country:'Страна по IP'} : {}};
   const busy = actions?.modeDisabled || disabled;
   const checkRunning = actions?.serviceRunning && actions.serviceSection === section.code;
   const candidates = getSubscriptionServiceCheckTargets(section,selected,true,pendingChanges);
   const targets = getSubscriptionServiceCheckTargets(section,selected,false,pendingChanges);
   const summary = getSubscriptionServiceSummary(section,selected,pendingChanges);
   const routingHint = getSubscriptionServiceRoutingHint(section,selected);
+  const requestsPerNode = selected.length + (selected.includes('exit_country') ? 1 : 0) -
+    (selected.includes('gemini') && selected.includes('google_country') ? 1 : 0);
   return E('div', {class:'pdk_subscriptions-page__service-filter',style:'margin:8px 0'}, [
     E('div', {style:'display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px'}, [
     E('span', {}, 'Обязательные сервисы:'),
@@ -5999,35 +6035,48 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
       ? `Подходят: ${summary.passed} из ${summary.candidates} · Свежие результаты: ${summary.fresh} · Нужна проверка: ${summary.needsCheck} · Отказ: ${summary.failed} · Не определено: ${summary.unknown}`
       : 'Фильтр выключен · выберите сервис для проверки'),
     E('small', {'data-service-next-step':'true', style:'display:block;margin:4px 0'}, !selected.length
-      ? 'Выберите сервис, если доступ к нему обязателен для этой секции.'
+      ? 'Выберите обязательные проверки.'
       : !summary.candidates
-      ? 'Нет кандидатов для проверки. Проверьте включённые подписки, теги и ручной выбор.'
+      ? 'Нет кандидатов. Проверьте подписки, теги и ручной выбор.'
       : summary.needsCheck
-      ? 'Нажмите «Проверить новые/устаревшие». Рабочее подключение при проверке не переключается.'
+      ? 'Проверьте новые/устаревшие узлы. Рабочий прокси не переключается.'
       : summary.unknown
-      ? 'Неопределённые узлы исключены. Откройте результаты: подтверждайте только чат, который вы действительно проверили через этот узел. Для новой попытки нажмите «Перепроверить всё».'
+      ? 'Неопределённые узлы исключены. Откройте результаты; подтверждайте только лично проверенный чат.'
       : summary.failed
-      ? 'Свежие отказы исключены. Причины доступны в результатах; для новой попытки нажмите «Перепроверить всё».'
-      : 'Все кандидаты предварительно подходят. Изменённый набор начнёт работать только после «Применить».'),
+      ? 'Отказы исключены. Причины в результатах; повтор: «Перепроверить всё».'
+      : 'Узлы предварительно подходят. Набор изменится после «Применить».'),
+    ...selected.includes('gemini') && selected.includes('google_country') ? [E('div', {role:'status',style:'margin:4px 0'}, [
+      E('small', {}, 'Дополнительно требуется совпадение страны с названием. '),
+      E('button', {type:'button',class:'cbi-button',disabled:busy?'disabled':void 0,
+        click:()=>onToggle(section.code,{id:'services:required',enabled:section.requiredServices||[]},selected.filter(service=>service!=='google_country'))}, 'Не требовать совпадения с названием')
+    ])] : [],
+    E('a', {href:'https://github.com/moz9/podkop-patch-subscriptions/blob/backport/subscriptions-20261008/docs/user-guide.md',target:'_blank',rel:'noopener noreferrer'}, 'Справка'),
     E('details', {}, [E('summary', {}, 'Подробнее'),
-      E('p', {}, 'Gemini: предварительная региональная проверка по ответу публичной страницы. Она не гарантирует ответ чата или доступ аккаунта. HTTP 200 или страница входа не доказывают работу чата. Неопределённый результат, отказ региона и отсутствие проверки — разные состояния.'),
-      E('p', {}, 'Для конфигов подписок; отдельные proxy-ссылки не проверяются. Секция с отдельными proxy-ссылками не может использовать этот фильтр. Непроверенные и устаревшие узлы не допускаются в новое применение. Истечение срока не переключает рабочий прокси: может сохраняться прежний допущенный набор. Проверки не переключают рабочий прокси и не применяют изменения.'),
+      E('p', {}, 'Все выбранные проверки обязательны. Совпадение страны не подтверждает доступность Gemini. Gemini проверяет регион; HTTP 200 не доказывает работу чата. Страна по Google и страна по IP проверяются отдельно. Без свежего успешного результата узел исключён из нового применения. Проверки не переключают рабочий прокси; старый набор может продолжать работать.'),
       ...routingHint ? [E('p', {},routingHint)]:[],
-      E('p', {}, `Результаты кешируются на 24 часа. До ${targets.length*selected.length} проверок сервисов. Ориентир сетевой части: до ${targets.length*selected.length*4} с плюс запуск временных процессов; это не гарантированный срок. Свежие результаты, включая отказы и неопределённые, повторно не проверяются.`)
+      E('p', {}, 'Кеш: 24 часа. До '+targets.length*requestsPerNode+' сетевых запросов; до '+targets.length*requestsPerNode*4+' с плюс запуск процессов (не гарантированный срок). Свежие результаты повторяются только через «Перепроверить всё». Для конфигов подписок; отдельные proxy-ссылки не проверяются.')
     ]),
-    E('details', {}, [E('summary', {}, 'Результаты по узлам и сервисам'),
-      ...!selected.length ? [E('small', {}, 'Выберите сервис для просмотра результатов.')]:[],
+    E('details', {}, [E('summary', {}, 'Результаты проверок по конфигам'),
+      ...!selected.length ? [E('small', {}, 'Выберите проверку для просмотра результатов.')]:[],
       ...candidates.map(item=>E('div', {style:'margin:6px 0'}, [E('span', {}, item.name||item.id),
         ...selected.map(service=>{
           const result=item.services?.[service];
           const reasons={region_precheck_passed:'Предварительная региональная проверка пройдена',anonymous_models_available:'Анонимный список моделей доступен',challenge_required:'Требуется CAPTCHA или другая проверка',region_denied:'Регион отклонён сервисом',region_unknown:'Результат региона не определён',region_marker_missing:'Маркер региона отсутствует',region_marker_ambiguous:'Маркер региона неоднозначен',region_missing:'Регион отсутствует в ответе',region_ambiguous:'Регион неоднозначен'};
           return E('div', {style:'margin-left:12px'}, [E('span', {title:reasons[result?.reason]||result?.reason||''}, `${labels[service]||service}: ${getSubscriptionServiceStateLabel(result)}`),
+            ...service === 'google_country' && result ? [E('small',{style:'display:block;margin-left:12px'},
+              `Регион в ответе Gemini: ${/^[A-Z]{3}$/.test(result.region || '') ? result.region : 'не определён'}`)] : [],
+            ...service === 'exit_country' ? (result?.observations || []).map(observation=>E('small',{style:'display:block;margin-left:12px'},
+              `${observation.provider}: ${observation.ip || 'IP не определён'} · ${observation.country || 'страна не определена'}`)) : [],
             ...canConfirmSubscriptionService(service,result) ? [E('button',{type:'button',class:'cbi-button',disabled:busy?'disabled':void 0,
               click:()=>handleConfirmSubscriptionService(section.code,item.id,service)},'Я проверил реальный чат через этот узел')]:[]]);
         })]))])
   ]);
 }
 function getSubscriptionTagChoices(section, savedTags) {
+  const cache = getSubscriptionTagChoices.cache || (getSubscriptionTagChoices.cache = new WeakMap());
+  const cacheKey = JSON.stringify(savedTags);
+  const cached = cache.get(section.items);
+  if (cached?.has(cacheKey)) return cached.get(cacheKey);
   const choices = new Map();
   const regionNames = typeof Intl !== 'undefined' && typeof Intl.DisplayNames === 'function'
     ? (() => { try { return new Intl.DisplayNames(['ru'], {type:'region', fallback:'none'}); } catch (_) { return null; } })()
@@ -6061,7 +6110,12 @@ function getSubscriptionTagChoices(section, savedTags) {
   for (const tag of savedTags) if (tag !== '@game:only' && tag !== '@game:exclude' && !choices.has(tag)) {
     choices.set(tag, {value:tag, label:`${tag} — сохранённый шаблон`, missing:!section.items.some(item => subscriptionTagMatches(tag,item.name || item.tag || ''))});
   }
-  return [...choices.values()].sort((a,b) => a.label.localeCompare(b.label, 'ru'));
+  const result = [...choices.values()].sort((a,b) => a.label.localeCompare(b.label, 'ru'));
+  const entries=cached || new Map();
+  if (entries.size>=8) entries.delete(entries.keys().next().value);
+  entries.set(cacheKey,result);
+  cache.set(section.items,entries);
+  return result;
 }
 var subscriptionTagPickerOpen = {};
 function renderSubscriptionTagPicker(section, pendingChanges, kind, disabled, onToggle) {
@@ -6074,12 +6128,14 @@ function renderSubscriptionTagPicker(section, pendingChanges, kind, disabled, on
     E('details', {class:'pdk_tag-picker__dropdown', open:subscriptionTagPickerOpen[key] ? 'open' : void 0,
       toggle:event => { subscriptionTagPickerOpen[key] = event.target.open; }}, [
       E('summary', {}, picked.length ? picked.map(choice => choice.label).join(' · ') : (kind === 'include' ? 'Все теги' : 'Не исключать')),
-      E('div', {class:'pdk_tag-picker__choices'}, choices.length ? choices.map(choice => E('label', {class:'pdk_tag-picker__choice'}, [
+      E('div', {class:'pdk_tag-picker__choices', 'data-subscription-scroll-key':key}, choices.length ? choices.map(choice => E('label', {class:'pdk_tag-picker__choice'}, [
         E('input', {type:'checkbox', value:choice.value, checked:selected.includes(choice.value) ? 'checked' : void 0,
           disabled:disabled ? 'disabled' : void 0,
           change:event => {
             subscriptionTagPickerOpen[key] = true;
-            const next = event.target.checked ? [...new Set([...selected,choice.value])] : selected.filter(tag => tag !== choice.value);
+            const liveChoices=event.target.closest?.('.pdk_tag-picker__choices');
+            const next = liveChoices ? Array.from(liveChoices.querySelectorAll('input:checked'),input=>input.value) :
+              event.target.checked ? [...new Set([...selected,choice.value])] : selected.filter(tag => tag !== choice.value);
             onToggle(section.code,{id:`tags:${kind}`,enabled:section[`${kind}Tags`] || []},next);
           }}),
         E('span', {}, [choice.label, ...(choice.description ? [` — ${choice.description}`] : [])]),
@@ -6118,9 +6174,11 @@ function subscriptionTagMatches(pattern, name) {
     let hit = false;
     for (let i = 0; i < body.length; i++) {
       if (body[i] === "-" && i > 0 && i + 1 < body.length) continue;
-      if (i + 2 < body.length && body[i + 1] === "-" &&
-          code >= body[i].codePointAt(0) && code <= body[i + 2].codePointAt(0)) hit = true;
-      else if (body[i] === character) hit = true;
+      if (i + 2 < body.length && body[i + 1] === "-") {
+        // A reversed range must not fall back to its first literal endpoint:
+        // keep malformed-class behavior identical to the backend glob matcher.
+        if (code >= body[i].codePointAt(0) && code <= body[i + 2].codePointAt(0)) hit = true;
+      } else if (body[i] === character) hit = true;
     }
     return negated ? !hit : hit;
   };
@@ -6199,6 +6257,14 @@ function renderSection({
   const gameMode = gameTags.includes('@game:only')
     ? (gameTags.includes('@game:exclude') ? 'conflict' : 'gaming')
     : gameTags.includes('@game:exclude') ? 'non-gaming' : 'all';
+  const runtimeStatus = sourceActions?.runtimeStatus;
+  const singleRuntime = runtimeStatus?.runtimeMode === "single";
+  const isolated = runtimeStatus?.isolatedSection;
+  const isolatedSections = runtimeStatus?.isolatedSections || (isolated ? [isolated] : []);
+  const sectionIsolated = isolatedSections.includes(section.code);
+  const isolationBlocked = isolatedSections.length > 0 && (!sectionIsolated || runtimeStatus.isolatedReady !== true);
+  const sectionPending = Object.keys(pendingChanges).some(key => key.startsWith(`${section.code}:`));
+  const sectionRuntimePending = Array.isArray(runtimeStatus?.pendingSections) ? runtimeStatus.pendingSections.includes(section.code) : runtimeStatus?.pending;
   return E("div", { class: "pdk_subscriptions-page__section" }, [
     E("button", {type:"button", class:"pdk_subscriptions-page__section-title",
       style:"display:block;width:100%;text-align:left;cursor:pointer",
@@ -6207,8 +6273,15 @@ function renderSection({
       "aria-expanded":collapsed ? "false" : "true",
       click:()=>onToggleSection(section.code)},
       `${collapsed ? "▸" : "▾"} ${section.displayName} · ${getSectionCollapsedSummary(section, pendingChanges)}`),
+    ...sourceActions?.onApply ? [E("button", {type:"button",class:"pdk_subscriptions-page__section-apply",
+      disabled:applying || sourceActions?.modeDisabled || sourceActions?.snapshotBundleMismatch || sourceActions?.draftConflicts?.[section.code] || isolationBlocked || (!sectionPending && !sectionRuntimePending) ? "disabled" : void 0,
+      title:isolationBlocked ? (!sectionIsolated ? "Новая секция ещё не подготовлена. Сначала примените структуру через общие настройки Podkop." : "Сервис ещё не готов к применению.") : singleRuntime ? "Применить только выбор этой секции; черновики остальных сохранятся. Возможен краткий разрыв соединений всех секций." : "Применить только выбор этой секции; черновики остальных секций сохранятся.",
+      click:()=>sourceActions?.onApply?.(section.code)}, !singleRuntime && sectionIsolated && runtimeStatus.isolatedReady === true
+        ? `Применить ${section.code} без перезапуска других секций` : `Применить ${section.displayName}`)]:[],
+    ...sectionIsolated ? [E("small", {style:"display:block;margin:4px 0"},runtimeStatus.isolatedReady === true
+      ? singleRuntime ? "Сохраняется только эта секция. Один sing-box: возможен краткий разрыв соединений всех секций." : "Только эта секция; остальные не перезапускаются."
+      : "Изоляция не готова; применение заблокировано.")]:[],
     ...collapsed ? [] : [
-    E("small", {style:"display:block;margin:8px 0"}, "Настройте теги и нужные сервисы. Проверьте узлы и итоговый набор, затем нажмите «Применить»."),
     E("label", {style:"display:flex;align-items:center;gap:8px;margin:8px 0"}, [
       E("input", {type:"checkbox", checked:getEffectiveSelectionMode(pendingChanges, section) !== "auto" ? "checked" : void 0,
         disabled:applying || sourceActions?.modeDisabled ? "disabled" : void 0,
@@ -6217,7 +6290,7 @@ function renderSection({
       E("span", {}, "Ручной отбор конфигов")
     ]),
     ...getEffectiveSelectionMode(pendingChanges, section) === "auto" ? [
-      E("small", {style:"display:block;margin:4px 0"}, "Узлы включённых подписок выбираются автоматически. К применению допускаются только прошедшие фильтры тегов и сервисов. Сохранённые ручные исключения сейчас не действуют.")
+      E("small", {style:"display:block;margin:4px 0"}, "Автоотбор по тегам и сервисам. Ручные исключения не действуют.")
     ] : [E("label", {style:"display:block;margin:8px 0"}, [
       E("span", {}, "Конфиги этой секции: "),
       E("select", {
@@ -6228,8 +6301,8 @@ function renderSection({
         E("option", {value:"selected", selected:getEffectiveSelectionMode(pendingChanges, section) === "selected" ? "selected" : void 0}, "Только выбранные")
       ]),
       E("small", {style:"display:block;margin-top:4px"}, getEffectiveSelectionMode(pendingChanges, section) === "selected"
-        ? "Новые конфиги не включаются автоматически. Оставьте галочки только у нужных узлов и нажмите «Применить»."
-        : "Новые конфиги подписок включаются автоматически. Выключенные вручную остаются выключенными.")
+        ? "Новые конфиги не включаются автоматически."
+        : "Новые узлы включаются; ручные исключения сохраняются.")
     ])],
     E("div", {class:"pdk_tag-pickers"}, [
       ...["include","exclude"].map(kind => renderSubscriptionTagPicker(section,pendingChanges,kind,applying || sourceActions?.modeDisabled,onToggle))
@@ -6251,16 +6324,16 @@ function renderSection({
         ...[['all','Все'],['gaming','Игровые'],['non-gaming','Неигровые']].map(([value,label]) =>
           E("option", {value,selected:gameMode === value ? "selected" : void 0},label))
       ]),
-      E("small", {style:"display:block;margin-top:4px"}, "Игровые — со словом «Игровой» в названии. Неигровые — без этой метки. Страны и остальные фильтры продолжают действовать.")
+      E("small", {style:"display:block;margin-top:4px"}, "Тип определяется словом «Игровой» в названии. Проверки страны независимы.")
     ]),
     ...section.serviceSupport !== undefined ? [renderSubscriptionServiceFilter(section,pendingChanges,applying,onToggle,sourceActions)]:[],
-    E("details", {}, [E("summary", {}, "Как работают теги"), E("small", {}, "Префиксы определены из названий узлов: SE, FI, US и другие. Флаг и буквенный код одной страны считаются одним тегом. Исключение важнее разрешения. При ручном отборе фильтр дополнительно ограничивает ваш выбор.")]),
+    E("details", {}, [E("summary", {}, "Как работают теги"), E("small", {}, "Теги берутся из названий. Флаг и код страны равнозначны. Исключение важнее разрешения; фильтры действуют и при ручном выборе.")]),
     E("small", {style:"display:block;margin:4px 0"}, tagPreview.uncertain
       ? `По прежнему режиму подходят: ${tagPreview.enabled}. После смены режима итоговое число определится при применении.`
       : tagPreview.enabled === 0
       ? "К применению: 0. Сохранение будет отклонено. Проверьте причины исключения ниже."
       : `К применению: ${tagPreview.enabled} из ${section.items.length} конфигов.`),
-    E("small", {style:"display:block;margin:4px 0"}, `Исключено: несовместимые — ${tagPreview.unsupported}; подписки выключены — ${tagPreview.sourceExcluded}; не выбраны вручную — ${tagPreview.manualExcluded}; теги — ${tagPreview.filtered}; сервисы — ${tagPreview.serviceExcluded}. Причины учитываются по порядку, без двойного счёта.`),
+    E("small", {style:"display:block;margin:4px 0"}, `Исключено: несовместимые — ${tagPreview.unsupported}; подписки выключены — ${tagPreview.sourceExcluded}; не выбраны вручную — ${tagPreview.manualExcluded}; теги — ${tagPreview.filtered}; сервисы — ${tagPreview.serviceExcluded}. Без двойного счёта.`),
     sourceGroups.length === 0 ? renderEmptyState(
       _("Subscription cache is empty. Click refresh to load configs.")
     ) : E(
@@ -6325,6 +6398,8 @@ function renderSubscriptionSections({
   loading,
   failed,
   applyUnconfirmed,
+  draftConflicts,
+  snapshotBundleMismatch,
   applying,
   status,
   action,
@@ -6353,6 +6428,8 @@ function renderSubscriptionSections({
       loading,
       failed,
       applyUnconfirmed,
+      draftConflicts,
+      snapshotBundleMismatch,
       applying,
       status,
       action,
@@ -6366,6 +6443,8 @@ function renderSubscriptionSections({
       onSpeedtest,
       runtimeStatus
     }),
+    ...snapshotBundleMismatch ? [E("p",{role:"alert"},"Версии интерфейса и backend не совпадают. Обновите патч и перезагрузите страницу. Применение заблокировано; ваш выбор сохранён.")] : [],
+    ...renderSubscriptionDraftConflicts(draftConflicts,pendingChanges,loading || failed || applying || snapshotBundleMismatch || actionStatus === "running" || actionStatus === "verifying"),
     loading && !sections.length ? renderEmptyState(_("Loading")) : failed && !sections.length ? renderEmptyState(actionMessage || _("Failed to load subscription configs")) : renderSections2({
       sections,
       pendingChanges,
@@ -6373,14 +6452,15 @@ function renderSubscriptionSections({
       collapsedSources,
       latencyByRow,
       speedByRow,
-      applying: applying || loading || failed || actionStatus === "running" || actionStatus === "verifying",
+      applying: applying || loading || failed || snapshotBundleMismatch || actionStatus === "running" || actionStatus === "verifying",
       onToggle,
       onToggleSection,
       onToggleSource,
       sourceActions: {
+        runtimeStatus, onApply, draftConflicts, snapshotBundleMismatch,
         target:actionTarget,
-        modeDisabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying",
-        disabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || pendingCount > 0,
+        modeDisabled:applying || loading || failed || snapshotBundleMismatch || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying",
+        disabled:applying || loading || failed || snapshotBundleMismatch || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || pendingCount > 0,
         refreshDisabled:applying || loading || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || (!failed && !applyUnconfirmed && pendingCount > 0),
         speedRunning:action === "speed" && actionStatus === "running",
         serviceRunning:action === "services" && actionStatus === "running",
@@ -6444,16 +6524,17 @@ var speedtestRunToken = 0;
 var subscriptionsLifecycleRegistered = false;
 var subscriptionStatusTimer;
 var subscriptionStatusGeneration = 0;
+var subscriptionReadGeneration = 0;
 function subscriptionStateLabel(widget) {
-  if (widget.applying) return ["busy", "Применяется", "Сохраняем выбор и применяем настройки. Повторное нажатие не требуется."];
-  if (widget.actionStatus === "verifying") return ["busy", "Проверяем результат", "Ответ на применение задержался. Ждём завершения операции и сверяем сохранённые настройки. Повторно применять не нужно."];
-  if (widget.actionStatus === "running") return ["busy", widget.action === "refresh" ? "Обновляется" : "Тестируется", "Дождитесь завершения текущей операции. Бенчмарк можно остановить его кнопкой."];
-  if (widget.runtimeStatus?.unknown) return ["unknown", "Нет статуса", "Не удалось получить состояние роутера. Проверка повторяется автоматически; при истёкшей сессии войдите заново."];
-  if (widget.runtimeStatus?.busy) return ["busy", "Podkop занят", "Применяются настройки или выполняется другая операция. Кнопки станут доступны после завершения; повторять нажатие не нужно."];
+  if (widget.applying) return ["busy", "Применяется", "Дождитесь применения; повторять не нужно."];
+  if (widget.actionStatus === "verifying") return ["busy", "Проверяем результат", "Проверяем результат; повторять применение не нужно."];
+  if (widget.actionStatus === "running") return ["busy", widget.action === "refresh" ? "Обновляется" : "Тестируется", "Дождитесь завершения или остановите бенчмарк."];
+  if (widget.runtimeStatus?.unknown) return ["unknown", "Нет статуса", "Статус проверяется повторно. При истёкшей сессии войдите заново."];
+  if (widget.runtimeStatus?.busy) return ["busy", "Podkop занят", "Дождитесь завершения операции."];
   if (widget.loading) return ["busy", "Загрузка", "Читаем состояние подписок."];
-  if (widget.failed || widget.actionStatus === "error") return ["error", "Ошибка", "Причина указана рядом. Несохранённый выбор сохранён в этой вкладке."];
-  if (widget.pendingCount > 0 || widget.runtimeStatus?.pending) return ["pending", "Нужно применить", "Есть несохранённый выбор, обновлённые конфиги или результаты проверок, ещё не применённые Podkop. Нажмите «Применить»; соединения могут кратко прерваться."];
-  return ["ready", "Готово", "Подписки доступны для действий. Это состояние операций, не проверка доступности всех прокси."];
+  if (widget.failed || widget.actionStatus === "error") return ["error", "Ошибка", "См. причину ошибки. Ваш выбор сохранён."];
+  if (widget.pendingCount > 0 || widget.runtimeStatus?.pending) return ["pending", "Нужно применить", "Нажмите «Применить»; возможен краткий перерыв соединений."];
+  return ["ready", "Готово", "Операции доступны; работоспособность прокси не проверена."];
 }
 function renderSubscriptionState(widget) {
   const [kind,label,title] = subscriptionStateLabel(widget);
@@ -6489,19 +6570,31 @@ async function reconcileSubscriptionApplyTimeout(snapshot, generation) {
     if (generation !== subscriptionStatusGeneration || store.get().subscriptionItemsWidget.applyVerification !== snapshot) { releaseSubscriptionApplyRead(snapshot,generation); return; }
     const current = store.get().subscriptionItemsWidget;
     const remaining = rebaseSubscriptionDraft(snapshot.pendingChanges,data);
-    const confirmed = Object.keys(remaining).length === 0 && current.runtimeStatus?.busy === false && current.runtimeStatus?.pending === false;
-    store.set({subscriptionItemsWidget:{...current,data,loading:false,failed:false,applying:false,
+    const expectedSections = snapshot.isolatedSections || (snapshot.isolatedSection ? [snapshot.isolatedSection] : []);
+    const actualSections = current.runtimeStatus?.isolatedSections || (current.runtimeStatus?.isolatedSection ? [current.runtimeStatus.isolatedSection] : []);
+    const isolationConfirmed = expectedSections.length === 0 && actualSections.length === 0 ||
+      (current.runtimeStatus?.isolatedReady === true && actualSections.includes(snapshot.sectionCode) &&
+        expectedSections.length === actualSections.length && expectedSections.every(section=>actualSections.includes(section)));
+    const targetPending = snapshot.sectionCode && Array.isArray(current.runtimeStatus?.pendingSections) ? current.runtimeStatus.pendingSections.includes(snapshot.sectionCode) : current.runtimeStatus?.pending;
+    const confirmed = Object.keys(remaining).length === 0 && current.runtimeStatus?.busy === false && targetPending === false && isolationConfirmed;
+    const pendingChanges = confirmed ? reconcileConfirmedSubscriptionDraft(current.pendingChanges,snapshot.pendingChanges,data) : {...current.pendingChanges};
+    const draftState = getSubscriptionDraftState(current,data,pendingChanges);
+    if (!confirmed) for (const code of Object.keys(snapshot.draftRevisions || {})) {
+      if (Object.keys(snapshot.pendingChanges).some(key=>key.startsWith(`${code}:`))) draftState.draftConflicts[code]="apply_unconfirmed";
+    }
+    store.set({subscriptionItemsWidget:{...current,data,loading:false,failed:false,applying:false,...draftState,
       applyVerification:null,applyVerificationReading:false,applyUnconfirmed:confirmed ? null : snapshot,
-      pendingChanges:rebaseSubscriptionDraft(current.pendingChanges,data),status:confirmed ? "success" : "error",
+      pendingChanges,status:confirmed ? "success" : "error",
       action:"apply",actionStatus:confirmed ? "success" : "error",actionError:confirmed ? "" : "apply_unconfirmed",
       actionMessage:confirmed ? "Применено. Сохранённые настройки проверены; Podkop завершил операцию."
-        : current.runtimeStatus?.pending
+        : targetPending
         ? "Настройки прочитаны, но конфиги или результаты проверок ещё не применены. Ваш выбор сохранён. Проверьте его перед повторным применением."
         : "Podkop завершил операцию, но часть выбранных настроек не подтверждена. Ваш оставшийся выбор сохранён. Проверьте его перед повторным применением."}});
-  } catch (_) {
+  } catch (error) {
     if (generation !== subscriptionStatusGeneration || store.get().subscriptionItemsWidget.applyVerification !== snapshot) { releaseSubscriptionApplyRead(snapshot,generation); return; }
     store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,loading:false,failed:true,applying:false,
       applyVerification:null,applyVerificationReading:false,applyUnconfirmed:snapshot,status:"error",actionStatus:"error",actionError:"apply_unconfirmed",
+      snapshotBundleMismatch:store.get().subscriptionItemsWidget.snapshotBundleMismatch || /subscription_snapshot_unsupported|revision_required|invalid_revision/.test(error?.message || ""),
       actionMessage:"Не удалось прочитать результат применения. Ваш выбор сохранён. Нажмите «Повторить чтение подписок» — это не запускает повторное применение."}});
   }
 }
@@ -6541,11 +6634,11 @@ function isSpeedtestRunning() {
 }
 function canRunServiceAction() {
   const widget = store.get().subscriptionItemsWidget;
-  return !widget.loading && !widget.failed && !widget.applying && !widget.applyVerification && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && getPendingCount2(widget.pendingChanges) === 0;
+  return !widget.loading && !widget.failed && !widget.snapshotBundleMismatch && !widget.applying && !widget.applyVerification && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && getPendingCount2(widget.pendingChanges) === 0;
 }
 function canRefreshSubscriptions() {
   const widget = store.get().subscriptionItemsWidget;
-  return !widget.loading && !widget.applying && !widget.applyVerification && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && (widget.failed || getPendingCount2(widget.pendingChanges) === 0 || !!widget.applyUnconfirmed);
+  return !widget.loading && !widget.applying && !widget.applyVerification && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && (widget.failed || widget.snapshotBundleMismatch || getPendingCount2(widget.pendingChanges) === 0 || !!widget.applyUnconfirmed || Object.keys(widget.draftConflicts || {}).length > 0);
 }
 function setActionState({
   action,
@@ -6572,17 +6665,26 @@ function handleCancelSubscriptionServices() {
   store.set({subscriptionItemsWidget:{...widget,serviceCancel:true,actionMessage:'Остановка запрошена. Ждём завершения текущего узла; новые проверки не запускаются.'}});
 }
 async function refreshSubscriptionServiceEvidence(sectionCode) {
-  const response = await PodkopShellMethods.getSubscriptionServices(sectionCode);
-  if (!response.success || response.data?.success !== true || !Array.isArray(response.data.results)) throw new Error(response.data?.error || response.error || 'service_support_missing');
+  const generation = subscriptionStatusGeneration;
+  const data = await readSubscriptionSectionsWithRetry();
+  if (generation !== subscriptionStatusGeneration) return;
   const widget = store.get().subscriptionItemsWidget;
-  const byId = new Map(response.data.results.map(result=>[result.id,normalizeSubscriptionServiceEvidence(result)]));
-  store.set({subscriptionItemsWidget:{...widget,data:widget.data.map(section=>section.code!==sectionCode?section:{...section,
-    serviceSupport:true,requiredServices:response.data.requiredServices || [],
-    items:section.items.map(item=>({...item,services:byId.get(item.id)||{}}))})}});
+  if (!data.some(section=>section.code===sectionCode)) throw new Error("revision_conflict");
+  // A check updates stored proof, so refresh its token as part of the same snapshot.
+  // An existing draft keeps its original base and requires review if proof changed.
+  store.set({subscriptionItemsWidget:{...widget,data,...getSubscriptionDraftState(widget,data)}});
+}
+function getSubscriptionServiceCheckError(error, sectionCode, item, stage) {
+  const raw=String(error?.message||'');
+  const code=/^[a-z][a-z0-9_]{0,79}$/.test(raw)?raw:/timeout|timed out/i.test(raw)?'request_timeout':'request_failed';
+  const diagnostic=error?.diagnostic||{};
+  const safeStage=/^[a-z][a-z0-9_]{0,39}$/.test(diagnostic.stage||'')?diagnostic.stage:stage;
+  const safeName=String(item?.name||item?.id||'—').replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\S+:\/\/\S+/g,'[адрес]').slice(0,120);
+  return {code,stage:safeStage,message:`${sectionCode} / ${safeName}: ${safeStage} · ${code}. Рабочий прокси не изменён.`};
 }
 async function handleCheckSubscriptionServices(sectionCode, services, force = false) {
   const widget = store.get().subscriptionItemsWidget;
-  if (widget.loading || widget.failed || widget.applying || widget.applyVerification || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown || isActionRunning()) return;
+  if (widget.loading || widget.failed || widget.snapshotBundleMismatch || widget.applying || widget.applyVerification || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown || isActionRunning()) return;
   const section = widget.data.find(section=>section.code===sectionCode);
   if (!section?.serviceSupport || !services.length) return;
   const items = getSubscriptionServiceCheckTargets(section,services,force,widget.pendingChanges);
@@ -6592,26 +6694,43 @@ async function handleCheckSubscriptionServices(sectionCode, services, force = fa
   }
   store.set({subscriptionItemsWidget:{...widget,serviceCancel:false}});
   setActionState({action:'services',actionStatus:'running',actionTarget:{sectionCode},actionMessage:'Подготовка изолированной проверки сервисов. Рабочий прокси не переключается.'});
+  let currentItem;
+  let currentStage='service_request';
+  const failures=[];
   try {
     for (let index=0;index<items.length;index++) {
       if (store.get().subscriptionItemsWidget.serviceCancel) break;
       const item=items[index];
+      currentItem=item;
+      currentStage='service_request';
       setActionState({action:'services',actionStatus:'running',actionMessage:`Сервисы: ${section.displayName||sectionCode} / ${item.name||item.id} (${index+1}/${items.length}): ${services.join(', ')}`});
+      try {
       const response=await PodkopShellMethods.checkSubscriptionServices(sectionCode,item.id,services);
-      if (!response.success || response.data?.success !== true) throw new Error(response.data?.error||response.error||'service_check_failed');
+      if (!response.success || response.data?.success !== true) {
+        const error=new Error(response.data?.error||response.error||'service_check_failed');
+        error.diagnostic=response.data?.diagnostic||response.data;
+        throw error;
+      }
+      currentStage='read_results';
       await refreshSubscriptionServiceEvidence(sectionCode);
+      } catch(error) {
+        const detail=getSubscriptionServiceCheckError(error,sectionCode,item,currentStage);
+        if (detail.code==='service_busy' || detail.code==='service_support_missing') throw error;
+        failures.push(detail);
+      }
     }
     const persistedFilter=store.get().subscriptionItemsWidget.data.find(section=>section.code===sectionCode)?.requiredServices?.length>0;
-    setActionState({action:'services',actionStatus:'idle',actionMessage:(store.get().subscriptionItemsWidget.serviceCancel?'Проверка остановлена. Полученные результаты сохранены.':'Проверка завершена. Результаты показаны по узлам и сервисам.') + (persistedFilter?' Нажмите «Применить», чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.':' Изменения рабочего подключения не применены.')});
+    setActionState({action:'services',actionStatus:failures.length===items.length?'error':'idle',actionError:failures[0]?.code,actionMessage:(store.get().subscriptionItemsWidget.serviceCancel?'Проверка остановлена. Полученные результаты сохранены.':'Проверка завершена. Результаты показаны по узлам и сервисам.') + (failures.length?` Ошибок: ${failures.length}. ${failures[0].message}`:'') + (persistedFilter?' Нажмите «Применить», чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.':' Изменения рабочего подключения не применены.')});
   } catch (error) {
-    setActionState({action:'services',actionStatus:'error',actionError:error?.message,actionMessage:getSubscriptionActionErrorMessage(error,'Не удалось завершить проверку сервисов. Сохранён ваш выбор; рабочий прокси не изменён.')});
+    const detail=getSubscriptionServiceCheckError(error,sectionCode,currentItem,currentStage);
+    setActionState({action:'services',actionStatus:'error',actionTarget:{sectionCode,itemId:currentItem?.id},actionError:detail.code,actionMessage:detail.message});
   }
 }
 function handleConfirmSubscriptionService(sectionCode, itemId, service) {
   const widget=store.get().subscriptionItemsWidget;
   const section=widget.data.find(section=>section.code===sectionCode);
   const item=section?.items.find(item=>item.id===itemId);
-  if (!canConfirmSubscriptionService(service,item?.services?.[service]) || widget.loading || widget.applying || isActionRunning() || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown) return;
+  if (!canConfirmSubscriptionService(service,item?.services?.[service]) || widget.loading || widget.failed || widget.snapshotBundleMismatch || widget.applying || isActionRunning() || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown) return;
   ui.showModal('Подтверждение реального чата', [
     E('p',{},`Подтверждайте только если вы самостоятельно открыли ${service==='gemini'?'Gemini':'ChatGPT'} именно через узел «${item.name||item.id}» и получили ответ на сообщение. Открытие сайта или страницы входа недостаточно. Проверка здесь не переключает прокси. Данные входа не сохраняются.`),
     E('div',{class:'right'},[
@@ -6630,95 +6749,72 @@ function handleConfirmSubscriptionService(sectionCode, itemId, service) {
   ]);
 }
 async function readSubscriptionSections() {
-  // The backend commits selection/tag changes outside LuCI's cached UCI object.
-  // Bypass cached load without unloading local unsaved form changes.
-  const configSections = Object.values(await uci.callLoad("podkop"));
-  return Promise.all(configSections.filter(section =>
-    section.connection_type === "proxy" && section.proxy_config_type === "subscription_urltest"
-  ).map(async section => {
-    const [items, sources] = await Promise.all([
-      PodkopShellMethods.getSubscriptionItemsCached(section[".name"]),
-      PodkopShellMethods.getSubscriptionSources(section[".name"]),
-    ]);
-    if (!sources.success) throw new Error(sources.error || "subscription_items_load_failed");
-    if (!Array.isArray(sources.data)) throw new Error(sources.data?.error || "source_support_missing");
-    if (!items.success || !Array.isArray(items.data)) {
-      throw new Error(items.success ? items.data?.error || "invalid_subscription_items" : items.error);
+  // Saved policy, cached identities and service proof share one lock and one token.
+  // Never stitch together independent reads or read LuCI's unsaved UCI deltas.
+  if (!PodkopShellMethods.getSubscriptionSnapshot) throw new Error("subscription_snapshot_unsupported");
+  const response = await PodkopShellMethods.getSubscriptionSnapshot();
+  if (!response.success || response.data?.success !== true) {
+    const detail = response.data?.error || response.error || "subscription_snapshot_unsupported";
+    throw new Error(/unknown.*(?:method|command)|not.?found|not.?supported/i.test(detail) ? "subscription_snapshot_unsupported" : detail);
+  }
+  const snapshot = response.data;
+  if (snapshot.version !== 1 || !Array.isArray(snapshot.sections)) throw new Error("subscription_snapshot_unsupported");
+  const codes = new Set();
+  for (const section of snapshot.sections) {
+    if (!section || typeof section.code !== "string" || !section.code || codes.has(section.code) ||
+      !/^[a-f0-9]{64}$/.test(section.revision || "") || !Array.isArray(section.items) || !Array.isArray(section.sources)) {
+      throw new Error("subscription_snapshot_unsupported");
     }
-    let serviceData;
-    try {
-      const response=await PodkopShellMethods.getSubscriptionServices?.(section[".name"]);
-      if (response?.success && response.data?.success===true && Array.isArray(response.data.results)) serviceData=response.data;
-    } catch (_) { /* Other subscription controls remain usable; service filtering fails closed. */ }
-    const serviceResults=new Map((serviceData?.results||[]).map(result=>[result.id,normalizeSubscriptionServiceEvidence(result)]));
-    return {code:section[".name"], displayName:section[".name"],
-      selectionMode: section.subscription_selection_mode || (normalizeSubscriptionTags(section.subscription_excluded_link_ids).some(id => String(id || "").trim()) ? "all" : "auto"),
-      includeTags:normalizeSubscriptionTags(section.subscription_include_tags),
-      excludeTags:normalizeSubscriptionTags(section.subscription_exclude_tags),
-      communityLists:normalizeSubscriptionTags(section.community_lists),
-      requiredServices:serviceData?.requiredServices || normalizeSubscriptionTags(section.subscription_required_services),
-      serviceSupport:!!serviceData,
-      items:items.data.map(item=>({...item,services:serviceResults.get(item.id)||{}})), sources:sources.data};
-  }));
+    codes.add(section.code);
+  }
+  return snapshot.sections.map(section=>({...section,items:section.items.map(item=>({...item,services:normalizeSubscriptionServiceEvidence(item)}))}));
 }
 async function readSubscriptionSectionsWithRetry(onRetry) {
   for (let attempt = 0; attempt < 3; attempt++) {
     try { return await readSubscriptionSections(); }
     catch (error) {
-      if (attempt === 2 || /source_support_missing|access.?denied|permission|unauthori[sz]ed|login/i.test(error?.message || "")) throw error;
+      if (attempt === 2 || /subscription_snapshot_unsupported|revision_required|invalid_revision|source_support_missing|access.?denied|permission|unauthori[sz]ed|login/i.test(error?.message || "")) throw error;
       onRetry?.(attempt + 1, error);
       await sleep(1500);
     }
   }
 }
-async function fetchSubscriptionItems(status = "idle", refreshedSource, preserveDraft = true) {
+async function fetchSubscriptionItems(status = "idle", refreshedSource) {
   const prev = store.get().subscriptionItemsWidget;
-  store.set({
-    subscriptionItemsWidget: {
-      ...prev,
-      loading: true,
-      failed: false,
-      applying: false,
-      actionMessage:status === "success" ? "Выбор применён. Читаем сохранённое состояние подписок." : "Читаем сохранённое состояние подписок."
-    }
-  });
+  const generation = subscriptionStatusGeneration;
+  const readGeneration = ++subscriptionReadGeneration;
+  const isCurrent = () => generation === subscriptionStatusGeneration && readGeneration === subscriptionReadGeneration;
+  store.set({subscriptionItemsWidget:{...prev,loading:true,failed:false,applying:false,
+    actionMessage:status === "success" ? "Выбор применён. Читаем сохранённое состояние подписок." : "Читаем сохранённое состояние подписок."}});
   try {
     const data = await readSubscriptionSectionsWithRetry(attempt => {
-      store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,
+      if (isCurrent()) store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,
         actionMessage:`${status === "success" ? "Выбор применён. " : ""}Связь при чтении прервалась. Повторяем чтение (${attempt + 1}/3), без перезапуска Podkop.`}});
     });
-    store.set({
-      subscriptionItemsWidget: {
-        ...store.get().subscriptionItemsWidget,
-        loading: false,
-        failed: false,
-        applying: false,
-        status,
-        action: "none",
-        actionStatus: "idle",
-        actionMessage: "",
-        pendingChanges: preserveDraft ? rebaseSubscriptionDraft(store.get().subscriptionItemsWidget.pendingChanges, data) : {},
-        latencyByRow: refreshedSource?.sourceId ? retainOtherSubscriptionResults(prev.latencyByRow, data, refreshedSource) : {},
-        speedByRow: refreshedSource?.sourceId ? retainOtherSubscriptionResults(prev.speedByRow, data, refreshedSource) : {},
-        data
-      }
-    });
+    if (!isCurrent()) return false;
+    const current = store.get().subscriptionItemsWidget;
+    let pendingChanges = {...current.pendingChanges};
+    // Only a known successful mutation can reconcile its own submitted choices.
+    // Ordinary reads and failures preserve every choice, including removed rows.
+    const committed = current.applyCommitted;
+    if (committed) pendingChanges = reconcileConfirmedSubscriptionDraft(pendingChanges,committed.pendingChanges);
+    const draftState = getSubscriptionDraftState(current,data,pendingChanges);
+    store.set({subscriptionItemsWidget:{...current,loading:false,failed:false,applying:false,
+      status,action:"none",actionStatus:"idle",actionMessage:"",applyCommitted:null,
+      pendingChanges,...draftState,
+      latencyByRow:refreshedSource?.sourceId ? retainOtherSubscriptionResults(prev.latencyByRow,data,refreshedSource) : {},
+      speedByRow:refreshedSource?.sourceId ? retainOtherSubscriptionResults(prev.speedByRow,data,refreshedSource) : {},data}});
     return true;
   } catch (error) {
+    if (!isCurrent()) return false;
     logger.error("[SUBSCRIPTIONS]", "failed to fetch subscription items", error?.message);
-    store.set({
-      subscriptionItemsWidget: {
-        ...store.get().subscriptionItemsWidget,
-        loading: false,
-        failed: true,
-        applying: false,
-        status: "error",
-        actionStatus: "error",
-        actionMessage: status === "success"
-          ? "Выбор применён, но не удалось обновить отображение подписок. Последний список и ваш выбор сохранены. Повторите чтение; повторное применение не требуется."
-          : getSubscriptionActionErrorMessage(error, "Не удалось прочитать подписки после трёх попыток. Последний список и ваш выбор сохранены. Повторите чтение подписок.")
-      }
-    });
+    const current = store.get().subscriptionItemsWidget;
+    store.set({subscriptionItemsWidget:{...current,loading:false,failed:true,applying:false,status:"error",actionStatus:"error",
+      snapshotBundleMismatch:current.snapshotBundleMismatch || /subscription_snapshot_unsupported|revision_required|invalid_revision/.test(error?.message || ""),
+      actionMessage:status === "success"
+        ? "Выбор применён, но не удалось обновить отображение подписок. Последний список и ваш выбор сохранены. Повторите чтение; повторное применение не требуется."
+        : getSubscriptionActionErrorMessage(error,"Не удалось прочитать подписки после трёх попыток. Последний список и ваш выбор сохранены. Повторите чтение подписок.")}});
+    return false;
   }
 }
 function retainOtherSubscriptionResults(results, sections, target) {
@@ -6726,9 +6822,100 @@ function retainOtherSubscriptionResults(results, sections, target) {
   const existing = new Set(sections.flatMap(section => section.items.map(item => getRowId2(section.code,item.id))));
   return Object.fromEntries(Object.entries(results || {}).filter(([id]) => existing.has(id) && !refreshed.has(id)));
 }
-function rebaseSubscriptionDraft(draft, sections) {
+function getSubscriptionDraftState(widget, sections, pendingChanges = widget.pendingChanges) {
+  const byCode = new Map(sections.map(section=>[section.code,section]));
+  const codes = new Set(Object.keys(pendingChanges).map(key=>key.slice(0,key.indexOf(":"))));
+  const draftRevisions = {};
+  const draftConflicts = {};
+  let snapshotBundleMismatch = !!widget.snapshotBundleMismatch;
+  for (const code of codes) {
+    // Never acquire a new base just because a read returned newer saved data.
+    const base = widget.draftRevisions?.[code];
+    const section = byCode.get(code);
+    if (base) draftRevisions[code] = base;
+    if (!/^[a-f0-9]{64}$/.test(base || "")) snapshotBundleMismatch = true;
+    const reason = widget.draftConflicts?.[code] || (!base ? "revision_required" : !section ? "section_removed" : section.revision !== base ? "revision_conflict" : "");
+    if (reason) draftConflicts[code] = reason;
+  }
+  return {draftRevisions,draftConflicts,snapshotBundleMismatch};
+}
+function getMissingSubscriptionDraftRows(sectionCode, pendingChanges, sections) {
+  const section = sections.find(section=>section.code===sectionCode);
+  const ids = new Set(section?.items.map(item=>item.id) || []);
+  const sourceIds = new Set(section?.sources.map(source=>source.id) || []);
+  return Object.keys(pendingChanges).filter(key=>{
+    if (!key.startsWith(`${sectionCode}:`)) return false;
+    if (!section) return true;
+    const id = key.slice(sectionCode.length + 1);
+    if (["selection:mode","tags:include","tags:exclude","services:required"].includes(id)) return false;
+    return id.startsWith("source:") ? !sourceIds.has(id.slice(7)) : !ids.has(id);
+  });
+}
+function reconcileConfirmedSubscriptionDraft(current, submitted, sections) {
+  // Acknowledged commits may normalize mode-dependent choices. Timeouts need saved-value proof.
+  const unmatched = sections ? rebaseSubscriptionDraft(submitted,sections) : {};
+  return Object.fromEntries(Object.entries(current).filter(([key,value])=>
+    !(key in submitted) || key in unmatched || JSON.stringify(value)!==JSON.stringify(submitted[key])));
+}
+function renderSubscriptionDraftConflicts(draftConflicts, pendingChanges, disabled) {
+  const conflicts = Object.keys(draftConflicts || {});
+  if (!conflicts.length) return [];
+  return [E("div",{class:"pdk-subscriptions-page__draft-conflicts",role:"alert"},[
+    E("p",{},"Сохранённые настройки, список узлов или результаты проверок изменились. Ваш выбор сохранён. Сверьте изменения перед повторным применением."),
+    ...conflicts.map(code=>E("div",{},[
+      E("span",{},`${code}: требуется проверка черновика. `),
+      E("button",{type:"button",class:"cbi-button",disabled:disabled?"disabled":void 0,
+        click:()=>handleReviewSubscriptionDraft(code)},"Сверить изменения")
+    ]))
+  ])];
+}
+function handleReviewSubscriptionDraft(sectionCode) {
+  const widget = store.get().subscriptionItemsWidget;
+  if (!widget.draftConflicts?.[sectionCode] || widget.loading || widget.failed || widget.applying || widget.applyVerification || widget.snapshotBundleMismatch || isActionRunning()) return;
+  const section = widget.data.find(section=>section.code===sectionCode);
+  const rows = Object.entries(widget.pendingChanges).filter(([key])=>key.startsWith(`${sectionCode}:`));
+  const signature = JSON.stringify(rows);
+  const revision = section?.revision;
+  const missing = getMissingSubscriptionDraftRows(sectionCode,widget.pendingChanges,widget.data);
+  const missingSet = new Set(missing);
+  ui.showModal(`Сверить изменения: ${sectionCode}`,[
+    E("p",{},section
+      ? "Ниже ваш несохранённый выбор. Сохранённые настройки и результаты проверок уже обновлены на странице. Подтверждение примет эту версию за основу; применение выполняется отдельной кнопкой."
+      : "Секция удалена. Её несохранённый выбор сохранён ниже; применить его нельзя."),
+    E("ul",{},rows.slice(0,50).map(([key,value])=>E("li",{},`${key}: ${JSON.stringify(value)}${missingSet.has(key)?" — больше нет в текущем списке":""}`))),
+    ...rows.length>50 ? [E("p",{},`Всего изменений: ${rows.length}. Показаны первые 50.`)] : [],
+    ...missing.length ? [E("p",{},`Отсутствующих пунктов: ${missing.length}. Они будут удалены из черновика только после вашего подтверждения.`)] : [],
+    E("div",{class:"right"},[
+      E("button",{type:"button",class:"cbi-button",click:()=>ui.hideModal()},"Назад"),
+      E("button",{type:"button",class:"cbi-button cbi-button-apply",click:()=>{
+        const current = store.get().subscriptionItemsWidget;
+        const currentSection = current.data.find(section=>section.code===sectionCode);
+        const currentRows = Object.entries(current.pendingChanges).filter(([key])=>key.startsWith(`${sectionCode}:`));
+        if (current.loading || current.failed || current.applying || current.applyVerification || current.snapshotBundleMismatch || isActionRunning() ||
+          currentSection?.revision!==revision || JSON.stringify(currentRows)!==signature) {
+          ui.hideModal();
+          setActionState({action:"apply",actionStatus:"error",actionMessage:"Данные изменились во время просмотра. Сверьте изменения ещё раз."});
+          return;
+        }
+        const pendingChanges = Object.fromEntries(Object.entries(current.pendingChanges).filter(([key])=>!missingSet.has(key)));
+        const draftRevisions = {...current.draftRevisions};
+        const draftConflicts = {...current.draftConflicts};
+        delete draftConflicts[sectionCode];
+        if (section && currentRows.length>missing.length) draftRevisions[sectionCode]=revision;
+        else delete draftRevisions[sectionCode];
+        store.set({subscriptionItemsWidget:{...current,pendingChanges,draftRevisions,draftConflicts,
+          applyUnconfirmed:Object.keys(draftConflicts).length ? current.applyUnconfirmed : null,
+          status:Object.keys(pendingChanges).length?"dirty":"idle",actionStatus:"idle",actionError:"",
+          actionMessage:"Изменения сверены. Проверьте выбранные узлы и нажмите «Применить», когда будете готовы."}});
+        ui.hideModal();
+      }},missing.length ? "Удалить отсутствующие пункты и подтвердить просмотр" : "Подтвердить просмотр")
+    ])
+  ]);
+}
+function rebaseSubscriptionDraft(draft, sections, sectionCode) {
   const remaining = {...draft};
   for (const section of sections) {
+    if (sectionCode && section.code !== sectionCode) continue;
     const modeKey = `${section.code}:selection:mode`;
     if (modeKey in remaining && getEffectiveSelectionMode(remaining,section) === (section.selectionMode || "auto")) delete remaining[modeKey];
     for (const kind of ["include","exclude"]) {
@@ -6751,20 +6938,22 @@ function rebaseSubscriptionDraft(draft, sections) {
 }
 function handleToggle(sectionCode, item, enabled) {
   const widget = store.get().subscriptionItemsWidget;
-  const rowId = getRowId2(sectionCode, item.id);
-  const pendingChanges = { ...widget.pendingChanges };
-  if (JSON.stringify(enabled) === JSON.stringify(item.enabled)) {
-    delete pendingChanges[rowId];
-  } else {
-    pendingChanges[rowId] = enabled;
+  if (widget.loading || widget.failed || widget.applying || widget.applyVerification || widget.snapshotBundleMismatch || isActionRunning()) return;
+  const section = widget.data.find(section=>section.code===sectionCode);
+  if (!/^[a-f0-9]{64}$/.test(section?.revision || "")) {
+    store.set({subscriptionItemsWidget:{...widget,snapshotBundleMismatch:true,actionStatus:"error",
+      actionMessage:getSubscriptionActionErrorMessage(new Error("revision_required"),"")}});
+    return;
   }
-  store.set({
-    subscriptionItemsWidget: {
-      ...widget,
-      status: getPendingCount2(pendingChanges) > 0 ? "dirty" : "idle",
-      pendingChanges
-    }
-  });
+  const rowId = getRowId2(sectionCode,item.id);
+  const pendingChanges = {...widget.pendingChanges};
+  if (JSON.stringify(enabled) === JSON.stringify(item.enabled)) delete pendingChanges[rowId];
+  else pendingChanges[rowId] = enabled;
+  const draftRevisions = {...widget.draftRevisions};
+  if (!draftRevisions[sectionCode]) draftRevisions[sectionCode] = section.revision;
+  store.set({subscriptionItemsWidget:{...widget,pendingChanges,
+    ...getSubscriptionDraftState({...widget,draftRevisions},widget.data,pendingChanges),
+    status:getPendingCount2(pendingChanges)>0?"dirty":"idle"}});
 }
 function handleReset() {
   const widget = store.get().subscriptionItemsWidget;
@@ -6776,6 +6965,9 @@ function handleReset() {
       actionStatus: "idle",
       actionMessage: "",
       applyUnconfirmed: null,
+      applyCommitted: null,
+      draftRevisions: {},
+      draftConflicts: {},
       pendingChanges: {}
     }
   });
@@ -6819,44 +7011,87 @@ function getChangesBySection(pendingChanges) {
     {}
   );
 }
-async function handleApply() {
+async function handleApply(sectionCode) {
   const widget = store.get().subscriptionItemsWidget;
-  const pendingChanges = widget.pendingChanges;
-  if ((getPendingCount2(pendingChanges) === 0 && !widget.runtimeStatus?.pending) || widget.applying || widget.loading || widget.applyVerification || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown || isActionRunning()) {
+  sectionCode = typeof sectionCode === "string" ? sectionCode : undefined;
+  const isolated = widget.runtimeStatus?.isolatedSection;
+  const isolatedSections = widget.runtimeStatus?.isolatedSections || (isolated ? [isolated] : []);
+  if (!sectionCode && isolatedSections.length) {
+    const dirtySections = [...new Set([...Object.keys(widget.pendingChanges).map(key=>key.split(':')[0]), ...(widget.runtimeStatus?.pendingSections || [])])];
+    if (dirtySections.length > 1 || dirtySections.length === 0 && isolatedSections.length > 1) {
+      const error = new Error('apply_sections_separately');
+      setActionState({action:"apply",actionStatus:"error",actionError:error.message,actionMessage:getSubscriptionActionErrorMessage(error,"")});
+      return;
+    }
+    sectionCode = dirtySections[0] || isolatedSections[0];
+  }
+  if (isolatedSections.length && (!isolatedSections.includes(sectionCode) || widget.runtimeStatus.isolatedReady !== true)) {
+    const error = new Error(widget.runtimeStatus.isolatedReady !== true ? "section_isolation_unavailable" : "isolated_section_only");
+    setActionState({action:"apply",actionStatus:"error",actionError:error.message,actionMessage:getSubscriptionActionErrorMessage(error,"Применение недоступно.")});
+    return;
+  }
+  sectionCode = sectionCode || undefined;
+  let pendingChanges = sectionCode ? Object.fromEntries(Object.entries(widget.pendingChanges).filter(([key])=>key.startsWith(`${sectionCode}:`))) : widget.pendingChanges;
+  const sectionRuntimePending = sectionCode && Array.isArray(widget.runtimeStatus?.pendingSections) ? widget.runtimeStatus.pendingSections.includes(sectionCode) : widget.runtimeStatus?.pending;
+  if ((getPendingCount2(pendingChanges) === 0 && !sectionRuntimePending) || widget.applying || widget.loading || widget.failed || widget.applyVerification || widget.applyCommitted || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown || isActionRunning()) {
+    return;
+  }
+  if (widget.snapshotBundleMismatch) return;
+  const changesBySection = getChangesBySection(pendingChanges);
+  if (!Object.keys(changesBySection).length && sectionRuntimePending) {
+    const section = widget.data.find(section=>(!sectionCode || section.code===sectionCode) && section.items.some(item=>item.supported));
+    const item = section?.items.find(item=>item.supported);
+    if (!item) {
+      setActionState({action:"apply",actionStatus:"error",actionMessage:getSubscriptionActionErrorMessage(new Error("subscription_cache_missing"),"")});
+      return;
+    }
+    changesBySection[section.code] = [{id:item.id,enabled:item.enabled}];
+    pendingChanges = {[getRowId2(section.code,item.id)]:item.enabled};
+  }
+  const draftRevisions = {...widget.draftRevisions};
+  for (const code of Object.keys(changesBySection)) {
+    // Runtime-only activation starts a new draft from the displayed snapshot.
+    if (!Object.keys(widget.pendingChanges).some(key=>key.startsWith(`${code}:`))) draftRevisions[code]=widget.data.find(section=>section.code===code)?.revision;
+    if (!/^[a-f0-9]{64}$/.test(draftRevisions[code] || "")) {
+      store.set({subscriptionItemsWidget:{...widget,snapshotBundleMismatch:true,actionStatus:"error",
+        actionMessage:getSubscriptionActionErrorMessage(new Error("revision_required"),"")}});
+      return;
+    }
+  }
+  const allPending = {...widget.pendingChanges,...pendingChanges};
+  const draftState = getSubscriptionDraftState({...widget,draftRevisions},widget.data,allPending);
+  if (Object.keys(changesBySection).some(code=>draftState.draftConflicts[code])) {
+    store.set({subscriptionItemsWidget:{...widget,pendingChanges:allPending,...draftState,actionStatus:"error",
+      actionMessage:getSubscriptionActionErrorMessage(new Error("revision_conflict"),"")}});
     return;
   }
   store.set({
     subscriptionItemsWidget: {
       ...widget,
+      ...draftState,
+      pendingChanges:allPending,
       applying: true,
       applyUnconfirmed: null,
       status: "applying"
     }
   });
   try {
-    const changesBySection = getChangesBySection(pendingChanges);
-    if (!Object.keys(changesBySection).length && widget.runtimeStatus?.pending) {
-      const section = widget.data.find(section=>section.items.some(item=>item.supported));
-      const item = section?.items.find(item=>item.supported);
-      if (!item) throw new Error("subscription_cache_missing");
-      changesBySection[section.code] = [{id:item.id,enabled:item.enabled}];
-    }
-    const result = await PodkopShellMethods.setSubscriptionSectionsEnabled(
-      changesBySection
-    );
+    const result = await PodkopShellMethods.setSubscriptionSectionsEnabled(changesBySection,draftRevisions);
     if (!result.success || !result.data || result.data.success !== true) {
       throw new Error(
         result.success && result.data?.state === "rollback_failed" ? "rollback_failed" : result.success ? result.data?.error : result.error
       );
     }
     showToast(_("Saved!"), "success");
-    await fetchSubscriptionItems("success", null, false);
+    store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,
+      applyCommitted:{pendingChanges:{...pendingChanges},sectionCode}}});
+    await fetchSubscriptionItems("success");
   } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to apply subscription changes");
     logger.error("[SUBSCRIPTIONS]", error);
     if (/timeout|timed out/i.test(error?.message || "")) {
       store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,applying:false,status:"verifying",action:"apply",actionStatus:"verifying",
-        actionError:"",applyVerification:{pendingChanges:{...pendingChanges},data:widget.data},
+        actionError:"",applyVerification:{pendingChanges:{...pendingChanges},draftRevisions:{...draftRevisions},data:widget.data,sectionCode,isolatedSection:isolated || undefined,isolatedSections},
         actionMessage:"Ответ на применение задержался. Проверяем результат на роутере автоматически; повторно применять не нужно."}});
       return;
     }
@@ -6864,6 +7099,14 @@ async function handleApply() {
       getSubscriptionActionErrorMessage(error, _("Failed to save!")),
       "error"
     );
+    const revisionConflict = /revision_conflict/.test(error?.message || "");
+    const bundleMismatch = /revision_required|invalid_revision|subscription_snapshot_unsupported/.test(error?.message || "");
+    if (revisionConflict || bundleMismatch) {
+      const current = store.get().subscriptionItemsWidget;
+      const draftConflicts = {...current.draftConflicts};
+      if (revisionConflict) for (const code of Object.keys(changesBySection)) draftConflicts[code]="revision_conflict";
+      store.set({subscriptionItemsWidget:{...current,draftConflicts,snapshotBundleMismatch:current.snapshotBundleMismatch || bundleMismatch}});
+    }
     await fetchSubscriptionItems("error");
     setActionState({action:"apply",actionStatus:"error",actionError:error?.message,actionMessage:getSubscriptionActionErrorMessage(error,"Не удалось подтвердить применение. Ваш выбор сохранён; проверьте состояние и повторите «Применить».")});
   } finally {
@@ -6875,7 +7118,7 @@ async function handleRefreshSubscriptions(target) {
   if (!canRefreshSubscriptions()) {
     return;
   }
-  if (store.get().subscriptionItemsWidget.failed || store.get().subscriptionItemsWidget.applyUnconfirmed) {
+  if (store.get().subscriptionItemsWidget.failed || store.get().subscriptionItemsWidget.snapshotBundleMismatch || store.get().subscriptionItemsWidget.applyUnconfirmed || Object.keys(store.get().subscriptionItemsWidget.draftConflicts || {}).length) {
     // Recover the display, not the subscription or working proxy configuration.
     const snapshot = store.get().subscriptionItemsWidget.applyUnconfirmed;
     if (snapshot) {
@@ -7175,8 +7418,34 @@ function getErrorText(error) {
   }
   return "";
 }
+function getSubscriptionResourceErrorMessage(detail) {
+  if (/subscription_too_many_nodes/.test(detail)) return "Подписка или объединённый список превышает лимит числа конфигов до удаления дублей (по умолчанию 2048). Уменьшите список у провайдера или разделите его на секции. Предыдущий список сохранён.";
+  if (/subscription_too_large/.test(detail)) return "Ответ подписки превышает лимит размера (по умолчанию 1 МиБ). Уменьшите список у провайдера. Предыдущий список сохранён целиком.";
+  if (/subscription_link_too_large/.test(detail)) return "Один конфиг подписки длиннее 16 КиБ. Проверьте формат ответа у провайдера. Предыдущий список сохранён.";
+  if (/subscription_cache_too_large/.test(detail)) return "Подписка и её кеш превышают безопасный бюджет обработки. Уменьшите список у провайдера. Предыдущий список сохранён.";
+  if (/subscription_cache_invalid/.test(detail)) return "Кеш подписки повреждён или превышает заданный лимит числа конфигов. Обновление остановлено; рабочее подключение не изменено. Проверьте кеш перед повтором.";
+  if (/subscription_insufficient_memory/.test(detail)) return "Недостаточно свободной памяти для безопасного обновления подписки. Завершите проверки или уменьшите список у провайдера и повторите. Предыдущий список сохранён.";
+  if (/subscription_memory_unavailable/.test(detail)) return "Не удалось определить доступную память роутера. Обновление остановлено; предыдущий список сохранён. Проверьте состояние роутера и повторите.";
+  if (/subscription_resource_limits_invalid/.test(detail)) return "Некорректные ограничения обработки подписки. Проверьте параметры лимитов; обновление остановлено, предыдущий список сохранён.";
+  if (/subscription_parse_failed/.test(detail)) return "Не удалось полностью обработать ответ подписки. Частичный список не сохранён. Проверьте память и формат ответа, затем повторите обновление.";
+  if (/subscription_download_incomplete/.test(detail)) return "Ответ подписки получен не полностью. Частичный список не сохранён. Проверьте соединение с провайдером и повторите обновление.";
+  return "";
+}
 function getSubscriptionActionErrorMessage(error, fallback) {
   const detail = getErrorText(error);
+  if (/subscription_(too_large|too_many_nodes|link_too_large|cache_too_large|cache_invalid|insufficient_memory|memory_unavailable|resource_limits_invalid|parse_failed|download_incomplete)/.test(detail)) return getSubscriptionResourceErrorMessage(detail);
+  if (/subscription_snapshot_unsupported|revision_required|invalid_revision/.test(detail)) return "Версии интерфейса и backend не совпадают. Обновите патч и перезагрузите страницу. Применение заблокировано; ваш выбор сохранён.";
+  if (/revision_conflict/.test(detail)) return "Сохранённые настройки, список узлов или результаты проверок изменились. Ваш выбор сохранён. Нажмите «Сверить изменения» и подтвердите просмотр перед повторным применением.";
+  if (/section_memory_low/.test(detail)) return "Недостаточно свободной памяти для безопасного применения секции. Рабочий процесс не изменён; ваш выбор сохранён. Дождитесь освобождения памяти и повторите применение.";
+  if (/section_memory_unavailable/.test(detail)) return "Не удалось проверить доступную память для безопасного применения секции. Рабочий процесс не изменён; ваш выбор сохранён. Проверьте состояние роутера и повторите применение.";
+  if (/section_runtime_/.test(detail)) return "Не удалось безопасно применить секцию. Ваш выбор сохранён; проверьте состояние секции и журнал Podkop перед повторной попыткой.";
+  if (/service_results_stale_or_missing/.test(detail)) return 'Результаты обязательных проверок устарели, относятся к другим настройкам или не найдены. Запустите проверку выбранных сервисов и повторите применение. Рабочее подключение не изменено; ваш выбор сохранён.';
+  if (/service_no_eligible_nodes/.test(detail)) return 'После выбранных фильтров нет ни одного узла с действующими положительными результатами всех обязательных проверок. Проверьте результаты по узлам или измените фильтры. Рабочее подключение не изменено; ваш выбор сохранён.';
+  if (/section_isolation_unavailable/.test(detail)) return "Изоляция секции недоступна или ещё не готова. Применение без перезапуска других секций не выполнено; ваш выбор сохранён.";
+  if (/shared_config_changed/.test(detail)) return "Общие настройки изменились. Нужен общий перезапуск через обычные настройки Podkop; черновики подписок сохранены.";
+  if (/apply_sections_separately/.test(detail)) return "Примените выбранную секцию отдельной кнопкой. Черновики других секций сохранены.";
+  if (/isolated_section_only/.test(detail)) return "Секция ещё не подготовлена. Черновики сохранены. Новую структуру секций сначала нужно применить через общие настройки Podkop.";
+  if (/uci_pending_changes/.test(detail)) return "Есть несохранённые общие настройки LuCI. Сначала сохраните или отмените их в обычных настройках Podkop; черновики подписок сохранены.";
   if (/service_snapshot_storage_unavailable/.test(detail)) return 'Не удалось подготовить безопасную копию рабочего подключения: проверьте свободное место или локальные списки. Изменения фильтра не применены; ваш выбор сохранён. При нехватке места освободите его и повторите применение.';
   if (/service_manual_links_unsupported/.test(detail)) return 'Фильтр сервисов нельзя применить: в секции есть отдельные proxy-ссылки, которые пока не проверяются. Перенесите их в отдельную секцию или отключите фильтр сервисов. Настройки не применены; ваш выбор сохранён.';
   if (/probe_start_failed/.test(detail)) return "Не удалось запустить временный процесс проверки. Рабочее подключение не изменено.";
@@ -7223,14 +7492,30 @@ function getSubscriptionActionErrorMessage(error, fallback) {
       return fallback;
   }
 }
+function retainSubscriptionTagPickers(previous, next) {
+  const existing=new Map(Array.from(previous.querySelectorAll('[data-subscription-scroll-key]'),node=>[node.dataset.subscriptionScrollKey,node]));
+  for (const choices of next.querySelectorAll('[data-subscription-scroll-key]')) {
+    const old=existing.get(choices.dataset.subscriptionScrollKey);
+    if (!old) continue;
+    const inputs=Array.from(choices.querySelectorAll('input'));
+    const oldInputs=Array.from(old.querySelectorAll('input'));
+    if (inputs.length!==oldInputs.length || inputs.some((input,index)=>input.value!==oldInputs[index].value)) continue;
+    inputs.forEach((input,index)=>{oldInputs[index].checked=input.checked;oldInputs[index].disabled=input.disabled;});
+    old.parentElement.querySelector('summary').textContent=choices.parentElement.querySelector('summary').textContent;
+    choices.parentElement.replaceWith(old.parentElement);
+  }
+}
 async function renderSubscriptionItemsWidget() {
   logger.debug("[SUBSCRIPTIONS]", "renderSubscriptionItemsWidget");
   const subscriptionItemsWidget = store.get().subscriptionItemsWidget;
   const container = document.getElementById("subscriptions-sections-grid");
+  const focused=document.activeElement;
   const renderedWidget = renderSubscriptionSections({
     loading: subscriptionItemsWidget.loading,
     failed: subscriptionItemsWidget.failed,
     applyUnconfirmed: subscriptionItemsWidget.applyUnconfirmed,
+    draftConflicts: subscriptionItemsWidget.draftConflicts,
+    snapshotBundleMismatch: subscriptionItemsWidget.snapshotBundleMismatch,
     applying: subscriptionItemsWidget.applying,
     status: subscriptionItemsWidget.status,
     action: subscriptionItemsWidget.action,
@@ -7254,7 +7539,10 @@ async function renderSubscriptionItemsWidget() {
     onToggleSource: handleToggleSource
   });
   return preserveScrollForPage(() => {
+    if (renderSubscriptionItemsWidget.previousData===subscriptionItemsWidget.data) retainSubscriptionTagPickers(container,renderedWidget);
+    renderSubscriptionItemsWidget.previousData=subscriptionItemsWidget.data;
     container.replaceChildren(renderedWidget);
+    if (focused?.isConnected && container.contains(focused)) focused.focus({preventScroll:true});
   });
 }
 async function onStoreUpdate3(next, prev, diff) {
@@ -7979,7 +8267,16 @@ function splitProxyString(str) {
 // src/helpers/preserveScrollForPage.ts
 function preserveScrollForPage(renderFn) {
   const scrollY = window.scrollY;
+  const pickerScroll = new Map();
+  document.querySelectorAll('.pdk_tag-picker__choices[data-subscription-scroll-key]').forEach(el => {
+    pickerScroll.set(el.getAttribute('data-subscription-scroll-key'), el.scrollTop);
+  });
   renderFn();
+  // Restore while the replacement is attached, before another render or user scroll.
+  document.querySelectorAll('.pdk_tag-picker__choices[data-subscription-scroll-key]').forEach(el => {
+    const key = el.getAttribute('data-subscription-scroll-key');
+    if (pickerScroll.has(key)) el.scrollTop = pickerScroll.get(key);
+  });
   requestAnimationFrame(() => {
     window.scrollTo({ top: scrollY });
   });
@@ -8018,6 +8315,11 @@ return baseclass.extend({
   DIAGNOSTICS_INITIAL_DELAY,
   DIAGNOSTICS_UPDATE_INTERVAL,
   DNS_SERVER_OPTIONS,
+  DNS_MAIN_CATALOG,
+  DNS_BOOTSTRAP_CATALOG,
+  DNS_SUPPORTED_PROTOCOLS,
+  getDnsServerOptionsForType,
+  validateDnsByType,
   DOMAIN_LIST_OPTIONS,
   DashboardTab,
   DiagnosticTab,

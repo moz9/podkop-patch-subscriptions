@@ -5,7 +5,33 @@ tmp="$(mktemp -d)"
 if command -v cygpath >/dev/null 2>&1; then tmp="$(cygpath -m "$tmp")"; fi
 trap 'rm -rf "$tmp"' EXIT INT TERM
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# OpenWrt may build jq without ONIGURUMA. All snapshot paths must work without
+# regex builtins, even though the developer machine's jq provides them.
+jq() {
+    local snapshot_jq_arg
+    for snapshot_jq_arg do
+        case "$snapshot_jq_arg" in *'test('*|*'match('*|*'capture('*|*'scan('*)
+            echo 'jq fixture: regex unavailable (ONIGURUMA disabled)' >&2
+            return 1;;
+        esac
+    done
+    command jq "$@"
+}
 [ -f "$repo/openwrt/podkop-service-snapshot.sh" ] || fail 'safe admitted-runtime snapshot helper missing'
+# Latest supported runtime carries all prior capability markers. A router with
+# those markers but without continuity must not hit the "already installed" gate.
+for snapshot_runtime in "$repo"/openwrt/runtime-*/usr/bin/podkop; do snapshot_latest_runtime="$snapshot_runtime"; done
+sed 's/subscription_services_snapshot_continuity_prepare/subscription_services_snapshot_pre_continuity_prepare/g' "$snapshot_latest_runtime" > "$tmp/pre-continuity"
+PODKOP_SOURCES_TARGET="$tmp/pre-continuity" PODKOP_SOURCES_SOURCE="$snapshot_latest_runtime" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" > "$tmp/upgrade-result"
+grep -Fqx 'subscription_services_snapshot_continuity_prepare() (' "$tmp/pre-continuity" || fail 'capability markers skipped continuity retrofit'
+for snapshot_start_function in start_main sing_box_init_config; do
+    sed -n "/^$snapshot_start_function() {$/,/^}$/p" "$tmp/pre-continuity" | grep -Fq 'subscription_services_snapshot_continuity_prepare' || fail 'continuity caller retrofit missing'
+done
+sed -n '/^# subscription_service_snapshot_v1 begin$/,/^# subscription_service_snapshot_v1 end$/p' "$tmp/pre-continuity" > "$tmp/retrofitted-helper"
+cmp -s "$tmp/retrofitted-helper" "$repo/openwrt/podkop-service-snapshot.sh" || fail 'retrofitted snapshot helper drift'
+cp "$tmp/pre-continuity" "$tmp/retrofitted-once"
+PODKOP_SOURCES_TARGET="$tmp/pre-continuity" PODKOP_SOURCES_SOURCE="$snapshot_latest_runtime" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" > "$tmp/upgrade-result"
+cmp -s "$tmp/pre-continuity" "$tmp/retrofitted-once" || fail 'continuity delivery is not idempotent'
 . "$repo/openwrt/podkop-service-snapshot.sh"
 PODKOP_SERVICE_SNAPSHOT_DIR="$tmp/snapshot"
 TMP_RULESET_FOLDER="$tmp/rules"
@@ -17,9 +43,9 @@ printf 'subscription-secret-proxy\n' > "$tmp/active"
 printf '[{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","supported":true}]\n' > "$tmp/items"
 printf '{"results":[{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","services":{"gemini":{"state":"pass"}}}]}\n' > "$tmp/services"
 config_get() { case "$3" in config_path) eval "$1=\"\$tmp/config\"";; esac; }
-config_foreach() { "$1" main; }
-validate_subscription_urltest_section() { return 0; }
-subscription_required_services_json() { printf '["gemini"]\n'; }
+config_foreach() { "$1" main; [ "${extra_section:-0}" = 0 ] || "$1" extra; }
+validate_subscription_urltest_section() { [ "${section_enabled:-1}" = 1 ]; }
+subscription_required_services_json() { [ "${required_valid:-1}" = 1 ] || return 1; [ "${required_none:-0}" = 1 ] && { printf '[]\n'; return; }; printf '["gemini"]\n'; }
 subscription_services_context() { printf 'context-one\n'; }
 get_subscription_cache_path() { printf '%s/active\n' "$tmp"; }
 get_subscription_all_cache_path() { printf '%s/all\n' "$tmp"; }
@@ -28,7 +54,7 @@ get_subscription_link_id() { printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n'; }
 subscription_services_cache_path() { printf '%s/services\n' "$tmp"; }
 subscription_services_preflight() { [ "${proof_fresh:-1}" = 1 ]; }
 subscription_services_policy() { printf '{"required":["gemini"],"results":[{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","services":{"gemini":{"state":"pass"}}}]}\n'; }
-uci() { [ "$1:$2" = '-q:export' ] || return 1; printf 'config settings\n option secret %s\n option shutdown_correctly %s\n' "${policy_value:-private-config}" "${shutdown_value:-0}"; }
+uci() { [ "$1:$2" = '-q:export' ] || return 1; printf 'config settings\n option secret %s\n option shutdown_correctly %s\n option dns_benchmark_endpoints %s\n' "${policy_value:-private-config}" "${shutdown_value:-0}" "${benchmark_catalog:-old}"; }
 mkdir -p "$tmp/bin"
 printf '#!/bin/sh\n[ "${TEST_CONFIG_VALID:-1}" = 1 ]\n' > "$tmp/bin/sing-box"
 chmod 755 "$tmp/bin/sing-box"
@@ -38,6 +64,50 @@ PATH="$snapshot_test_bin:$PATH"; export PATH
 subscription_sing_box_reload_ready() { [ "${runtime_ready:-1}" = 1 ]; }
 log() { :; }
 subscription_services_snapshot_save || fail 'fresh verified runtime not captured'
+jq -e '.sections[0].requiredServices==["gemini"]' "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json" >/dev/null || fail 'new admission omitted exact required-service basis'
+subscription_services_preflight_section() { [ "${proof_fresh:-1}" = 1 ] || SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED=1; }
+mkdir "$tmp/scoped"
+cp "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json" "$tmp/scoped-original"
+# A stale target-only admission can be reconstructed without capturing desired
+# shared policy or admitting any untouched peer. Structural isolation is the
+# manager's separately-tested precondition.
+jq '.config="old-compound"' "$tmp/scoped-original" > "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+subscription_services_snapshot_section_stage main "$tmp/scoped" || fail 'target-only stale admission reconstruction rejected'
+policy_value=not-applied
+subscription_services_snapshot_section_commit main "$tmp/scoped" || fail 'target-only admission commit failed'
+jq -e '.sections[0].requiredServices==["gemini"]' "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json" >/dev/null || fail 'scoped admission omitted exact required-service basis'
+[ "$(jq -c '{policy,generation,rules}' "$tmp/scoped-original")" = "$(jq -c '{policy,generation,rules}' "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json")" ] || fail 'scoped apply blessed shared desired settings'
+unset policy_value
+cp "$tmp/scoped-original" "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+jq '.config="old-compound" | .sections += [(.sections[0]|.section="peer")]' "$tmp/scoped-original" > "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+! subscription_services_snapshot_section_stage main "$tmp/scoped" || fail 'stale peer admission was silently blessed'
+cp "$tmp/scoped-original" "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+jq '.sections += [(.sections[0]|.section="peer"|.context="untouched-peer-context")]' "$tmp/scoped-original" > "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+peer_before="$(jq -c '.sections[]|select(.section=="peer")' "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json")"
+subscription_services_snapshot_section_stage main "$tmp/scoped" || fail 'exact peer baseline rejected scoped stage'
+subscription_services_snapshot_section_commit main "$tmp/scoped" || fail 'exact peer baseline rejected scoped commit'
+[ "$peer_before" = "$(jq -c '.sections[]|select(.section=="peer")' "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json")" ] || fail 'scoped commit modified peer admission'
+cp "$tmp/scoped-original" "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+required_none=1
+subscription_services_snapshot_section_stage main "$tmp/scoped" || fail 'disabling target requirements could not stage'
+subscription_services_snapshot_section_commit main "$tmp/scoped" || fail 'disabling target requirements could not commit'
+jq -e '.sections==[]' "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json" >/dev/null || fail 'disabled target admission persisted'
+subscription_services_snapshot_continuity_prepare || fail 'empty admission caused invalid continuity semantics'
+unset required_none
+cp "$tmp/scoped-original" "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+proof_fresh=0
+jq '.sections |= map(del(.requiredServices))' "$tmp/scoped-original" > "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+! subscription_services_snapshot_section_stage main "$tmp/scoped" || fail 'scoped target expired proof admitted'
+cp "$tmp/scoped-original" "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+proof_fresh=1
+subscription_services_snapshot_section_stage main "$tmp/scoped" || fail 'scoped stage failed'
+printf 'changed-rule\n' > "$TMP_RULESET_FOLDER/user-main.json"
+! subscription_services_snapshot_section_stage main "$tmp/scoped" || fail 'scoped stage accepted changed shared rule'
+printf '{"version":3,"rules":[]}\n' > "$TMP_RULESET_FOLDER/user-main.json"
+subscription_services_snapshot_section_stage main "$tmp/scoped" || fail 'restored scoped stage failed'
+jq '.policy="concurrent"' "$tmp/scoped-original" > "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+! subscription_services_snapshot_section_commit main "$tmp/scoped" || fail 'scoped commit overwrote concurrent snapshot'
+cp "$tmp/scoped-original" "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
 cp "$tmp/config" "$tmp/original-config"
 ! grep -Rq 'subscription-secret\|private-config' "$PODKOP_SERVICE_SNAPSHOT_DIR" || fail 'snapshot leaks proxy or UCI secrets'
 proof_fresh=0
@@ -82,7 +152,7 @@ printf 'private-outside-file\n' > "$tmp/outside.json"
 cp "$tmp/original-config" "$tmp/config"
 proof_fresh=0
 check_requirements() { :; }
-migration() { :; }
+migration() { touch "$tmp/migrated"; }
 process_validate_service() { :; }
 br_netfilter_disable() { :; }
 route_table_rule_mark() { :; }
@@ -106,18 +176,81 @@ PODKOP_SKIP_LIST_UPDATE=1
 TMP_SING_BOX_FOLDER="$tmp/sb"
 eval "$(sed -n '/^sing_box_init_config() {$/,/^}$/p' "$repo/openwrt/runtime-0.7.22/usr/bin/podkop")"
 eval "$(sed -n '/^start_main() {$/,/^}$/p' "$repo/openwrt/runtime-0.7.22/usr/bin/podkop" | sed 's|/usr/sbin/ntpd .*|:|;s|/etc/init.d/sing-box start|snapshot_test_daemon_start|')"
+# Native stop removes RAM rules. Benchmark catalogs and service caches may refresh
+# without changing the saved already-admitted graph. Neither is fresh admission.
+benchmark_catalog=refreshed
+printf '{"results":[{"id":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","services":{"gemini":{"state":"unknown"}}}]}\n' > "$tmp/services"
+rm "$TMP_RULESET_FOLDER/user-main.json"
+! subscription_services_snapshot_prepare || fail 'strict admission unexpectedly accepted changed desired settings'
 start_main || fail 'expired-proof boot did not preserve admitted runtime'
+[ -s "$TMP_RULESET_FOLDER/user-main.json" ] || fail 'cold start did not restore exact saved RAM rule'
 [ -e "$tmp/daemon-started" ] || fail 'preserved runtime not started'
 [ ! -e "$tmp/generated" ] || fail 'expired proof was used to build a new candidate'
+[ ! -e "$tmp/migrated" ] || fail 'continuity changed desired UCI through native migration'
 [ "$before" = "$(sha256sum "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json")" ] || fail 'preservation refreshed snapshot'
 policy_value=changed
 rm "$tmp/daemon-started"
-start_main && fail 'changed-policy boot reused snapshot' || :
-[ ! -e "$tmp/daemon-started" ] || fail 'changed-policy boot started stale runtime'
+start_main || fail 'desired draft blocked unchanged saved-runtime continuity'
+[ -e "$tmp/daemon-started" ] || fail 'saved-runtime continuity did not start daemon'
+[ ! -e "$tmp/generated" ] || fail 'continuity applied desired configuration changes'
+cmp -s "$tmp/config" "$tmp/original-config" || fail 'continuity changed saved runtime graph'
+[ "$before" = "$(sha256sum "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json")" ] || fail 'continuity refreshed evidence'
 unset policy_value
 proof_fresh=1
+PODKOP_SERVICE_RESTART_CONTINUITY=1
+start_main || fail 'guarded restart did not start exact admitted runtime'
+[ ! -e "$tmp/generated" ] || fail 'fresh evidence regenerated graph during ordinary admitted restart'
+[ ! -e "$tmp/migrated" ] || fail 'ordinary admitted restart applied desired migration'
+[ "$before" = "$(sha256sum "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json")" ] || fail 'ordinary admitted restart refreshed admission'
+unset PODKOP_SERVICE_RESTART_CONTINUITY
+proof_fresh=0
+unset benchmark_catalog
+cp "$tmp/original-services" "$tmp/services"
+section_enabled=0
+! subscription_services_snapshot_continuity_prepare || fail 'disabled required section reused snapshot'
+section_enabled=1; extra_section=1
+! subscription_services_snapshot_continuity_prepare || fail 'new required section reused snapshot'
+extra_section=0
+required_valid=0
+! subscription_services_snapshot_continuity_prepare || fail 'invalid required services silently reused snapshot'
+required_valid=1
+printf '\n' >> "$tmp/config"
+! subscription_services_snapshot_continuity_prepare || fail 'changed runtime graph reused snapshot'
+cp "$tmp/original-config" "$tmp/config"
+cp "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json" "$tmp/original-manifest"
+generation="$(jq -r '.generation' "$tmp/original-manifest")"
+cp "$PODKOP_SERVICE_SNAPSHOT_DIR/$generation/user-main.json" "$tmp/original-rule"
+rm "$TMP_RULESET_FOLDER/user-main.json"
+printf 'tampered\n' > "$PODKOP_SERVICE_SNAPSHOT_DIR/$generation/user-main.json"
+! subscription_services_snapshot_continuity_prepare || fail 'tampered saved rule restored'
+[ ! -e "$TMP_RULESET_FOLDER/user-main.json" ] || fail 'failed validation partially restored rules'
+cp "$tmp/original-rule" "$PODKOP_SERVICE_SNAPSHOT_DIR/$generation/user-main.json"
+jq '.rules=[]' "$tmp/original-manifest" > "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+! subscription_services_snapshot_continuity_prepare || fail 'manifest omitted runtime local rule'
+jq '.rules[0].name="../outside.json"' "$tmp/original-manifest" > "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+! subscription_services_snapshot_continuity_prepare || fail 'manifest traversal accepted'
+jq '.rules += [.rules[0]]' "$tmp/original-manifest" > "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+! subscription_services_snapshot_continuity_prepare || fail 'duplicate manifest local rule accepted'
+jq '.rules[0].sha=("g"*64)' "$tmp/original-manifest" > "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+! subscription_services_snapshot_continuity_prepare || fail 'nonhex SHA accepted without regex support'
+cp "$tmp/original-manifest" "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json"
+MSYS=winsymlinks:nativestrict ln -s "$tmp/original-rule" "$TMP_RULESET_FOLDER/user-main.json"
+[ -L "$TMP_RULESET_FOLDER/user-main.json" ] || fail 'destination symlink fixture is not a real symlink'
+! subscription_services_snapshot_continuity_prepare || fail 'symlink ruleset destination accepted'
+rm "$TMP_RULESET_FOLDER/user-main.json"
+rm "$PODKOP_SERVICE_SNAPSHOT_DIR/$generation/user-main.json"
+MSYS=winsymlinks:nativestrict ln -s "$tmp/original-rule" "$PODKOP_SERVICE_SNAPSHOT_DIR/$generation/user-main.json"
+[ -L "$PODKOP_SERVICE_SNAPSHOT_DIR/$generation/user-main.json" ] || fail 'source symlink fixture is not a real symlink'
+! subscription_services_snapshot_continuity_prepare || fail 'symlink saved ruleset accepted'
+rm "$PODKOP_SERVICE_SNAPSHOT_DIR/$generation/user-main.json"
+cp "$tmp/original-rule" "$PODKOP_SERVICE_SNAPSHOT_DIR/$generation/user-main.json"
+subscription_services_snapshot_continuity_prepare || fail 'exact admitted runtime continuity failed'
+printf 'different existing rule\n' > "$TMP_RULESET_FOLDER/user-main.json"
+! subscription_services_snapshot_continuity_prepare || fail 'continuity overwrote a different existing ruleset'
+cp "$tmp/original-rule" "$TMP_RULESET_FOLDER/user-main.json"
+proof_fresh=1
 df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nfixture 2000 1900 100 95%% /\n'; }
-start_main && fail 'required-filter start reported success without a safe snapshot' || :
+start_main || fail 'exact admitted boot unnecessarily required space for new snapshot'
 unset -f df
 cp "$tmp/original-config" "$tmp/config"
 cp "$tmp/original-config" "$tmp/candidate"
@@ -144,11 +277,39 @@ subscription_services_snapshot_save || fail 'default-off mode was affected by sn
 # Exercise the actual row emitter without thousands of per-node probe/fork operations.
 links="$(jq -cn '[range(0;2048) | {id:(("00000000000000000000000000000000"+tostring)[-32:]),sha:("a"*64)}]')"
 ids="$(printf '%s' "$links" | jq -c 'map(.id)')"
-section=main; context=large-fixture; service_sha=proof-fixture
+section=main; context=large-fixture; service_sha=proof-fixture; required='["gemini"]'
 SNAPSHOT_SECTIONS="$tmp/large-row"; SNAPSHOT_FAILED=0
 snapshot_test_emitter="$(awk '/^[ ]*(jq -cn|printf.*jq -c).*--arg section/ {emit=1} emit {print} emit && /SNAPSHOT_SECTIONS/ {exit}' "$repo/openwrt/podkop-service-snapshot.sh")"
 [ -n "$snapshot_test_emitter" ] || fail 'snapshot row emitter missing'
 eval "$snapshot_test_emitter"
 [ "$SNAPSHOT_FAILED" = 0 ] || fail 'large admitted snapshot exceeded process argument limits'
 jq -e '.section=="main" and (.admittedLinks|length)==2048 and (.admittedIds|length)==2048 and .admittedIds==(.admittedLinks|map(.id))' "$SNAPSHOT_SECTIONS" >/dev/null || fail 'large admitted snapshot changed identities'
-echo 'PASS: exact admitted-runtime boot preservation, policy/cache/config gates, private metadata and RAM ruleset recovery'
+# Preserve the existing opt-in section graph hash: config + worker + logical.
+# Raw hashing is still required for rules and when section isolation is disabled.
+PODKOP_SECTION_ROOT="$tmp/section"
+mkdir -p "$PODKOP_SECTION_ROOT"
+cp "$tmp/config" "$PODKOP_SECTION_ROOT/worker.json"
+cp "$tmp/config" "$PODKOP_SECTION_ROOT/logical.json"
+for snapshot_hook in podkop_section_root podkop_section_single_mode; do
+    eval "$(sed -n "/^$snapshot_hook() {/p" "$repo/openwrt/podkop-section-hooks.sh")"
+done
+eval "$(sed -n '/^podkop_section_runtime_hash() {$/,/^}$/p' "$repo/openwrt/podkop-section-hooks.sh")"
+podkop_section_enabled() { return 0; }
+snapshot_raw_config_hash="$(sha256sum "$tmp/config" | awk '{print $1}')"
+snapshot_expected_graph_hash="$(sha256sum "$tmp/config" "$PODKOP_SECTION_ROOT/worker.json" "$PODKOP_SECTION_ROOT/logical.json" | sha256sum | awk '{print $1}')"
+[ "$(subscription_services_snapshot_hash "$tmp/config")" = "$snapshot_expected_graph_hash" ] || fail 'existing section graph hash override lost'
+[ "$snapshot_expected_graph_hash" != "$snapshot_raw_config_hash" ] || fail 'graph hash fixture does not distinguish raw config hashing'
+[ "$(subscription_services_snapshot_hash "$TMP_RULESET_FOLDER/user-main.json")" = "$(sha256sum "$TMP_RULESET_FOLDER/user-main.json" | awk '{print $1}')" ] || fail 'section graph hash affected local rule hashing'
+printf '\n' >> "$PODKOP_SECTION_ROOT/worker.json"
+[ "$(subscription_services_snapshot_hash "$tmp/config")" != "$snapshot_expected_graph_hash" ] || fail 'worker change did not invalidate section graph hash'
+printf 'single\n' > "$PODKOP_SECTION_ROOT/runtime-mode"
+printf '{"mode":"single","sections":[]}\n' > "$PODKOP_SECTION_ROOT/metadata.json"
+snapshot_expected_single_hash="$(sha256sum "$tmp/config" "$PODKOP_SECTION_ROOT/logical.json" "$PODKOP_SECTION_ROOT/metadata.json" | sha256sum | awk '{print $1}')"
+[ "$(subscription_services_snapshot_hash "$tmp/config")" = "$snapshot_expected_single_hash" ] || fail 'single admission did not hash config/logical/metadata'
+printf '\n' >> "$PODKOP_SECTION_ROOT/worker.json"
+[ "$(subscription_services_snapshot_hash "$tmp/config")" = "$snapshot_expected_single_hash" ] || fail 'single admission depends on dormant worker'
+printf '\n' >> "$PODKOP_SECTION_ROOT/metadata.json"
+[ "$(subscription_services_snapshot_hash "$tmp/config")" != "$snapshot_expected_single_hash" ] || fail 'single metadata change did not invalidate admission'
+podkop_section_enabled() { return 1; }
+[ "$(subscription_services_snapshot_hash "$tmp/config")" = "$snapshot_raw_config_hash" ] || fail 'disabled section isolation changed raw config hash'
+echo 'PASS: strict admission and frozen-runtime cold-start continuity, regex-free jq, preserved section graph hash, section/config/path/hash/symlink gates, no migration or new evidence'

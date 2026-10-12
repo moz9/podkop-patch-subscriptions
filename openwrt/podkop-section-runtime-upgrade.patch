@@ -1,0 +1,195 @@
+--- a/openwrt/runtime-0.7.22/usr/bin/podkop
++++ b/openwrt/runtime-0.7.22/usr/bin/podkop
+@@ -33,6 +33,13 @@ check_required_file "$PODKOP_LIB/rulesets.sh"
+ 
+ config_load "$PODKOP_CONFIG"
+ 
++if [ -r /usr/lib/podkop/section-hooks.sh ]; then
++    . /usr/lib/podkop/section-hooks.sh
++elif [ -n "$(uci -q get podkop.settings.subscription_isolated_section)" ]; then
++    echo '{"success":false,"error":"section_isolation_unavailable"}'
++    exit 1
++fi
++
+ SUBSCRIPTION_CACHE_DIR="/etc/podkop/subscriptions"
+ COMMUNITY_SUBNET_CACHE_DIR="/etc/podkop/community-subnets"
+ 
+@@ -160,6 +167,14 @@ start_main() {
+     remove_cron_job
+     config_foreach add_cron_job "section"
+     config_foreach add_subscription_cron_job "section"
++    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
++        if command -v podkop_section_start_workers >/dev/null; then
++            podkop_section_start_workers || return 1
++        else
++            /etc/init.d/podkop-section-worker restart || return 1
++            /usr/bin/podkop-section-runtime wait-ready >/dev/null || return 1
++        fi
++    fi
+     /etc/init.d/sing-box start || return 1
+ 
+     if [ "$PODKOP_SERVICE_REUSE_ADMITTED_CONFIG" = 0 ]; then
+@@ -237,6 +248,7 @@ stop_main() {
+ 
+     log "Stop sing-box"
+     /etc/init.d/sing-box stop
++    [ ! -x /etc/init.d/podkop-section-worker ] || /etc/init.d/podkop-section-worker stop
+ }
+ 
+ start() {
+@@ -1408,7 +1420,28 @@ subscription_reconcile_choices() {
+-get_subscription_operation_status() {
+-    local busy=false pending=false
+-    subscription_runtime_busy && busy=true
+-    [ ! -f "$(subscription_reload_pending_file)" ] || pending=true
+-    jq -cn --argjson busy "$busy" --argjson pending "$pending" \
+-        '{busy:$busy,pending:$pending,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+-}
++get_subscription_operation_status() {
++    # single_runtime_status_v1: scoped settings, shared process lifecycle.
++    if command -v podkop_section_single_mode >/dev/null && podkop_section_single_mode; then
++        local single_busy=false single_pending=false single_names single_status single_pending_sections
++        subscription_runtime_busy && single_busy=true
++        [ ! -f "$(subscription_reload_pending_file)" ] || single_pending=true
++        single_names="$(podkop_section_names)" || single_names='[]'
++        single_status="$(podkop_section_manager status 2>/dev/null)" || single_status='{}'
++        if command -v subscription_pending_sections_json >/dev/null; then
++            single_pending_sections="$(subscription_pending_sections_json)" || single_pending_sections='[]'
++        elif [ "$single_pending" = true ]; then single_pending_sections="$single_names"
++        else single_pending_sections='[]'; fi
++        printf '%s' "$single_status" | jq -c --argjson busy "$single_busy" --argjson pending "$single_pending" \
++            --argjson names "$single_names" --argjson pendingSections "$single_pending_sections" \
++            '{busy:$busy,pending:$pending,pendingSections:$pendingSections,runtimeMode:"single",isolatedSection:($names[0]//""),isolatedSections:$names,sections:(.sections//[]),isolatedReady:(.ready==true and ($names|length)>0),retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
++        return
++    fi
++    local busy=false pending=false isolated="" ready=false pending_sections='[]'
++    subscription_runtime_busy && busy=true
++    [ ! -f "$(subscription_reload_pending_file)" ] || pending=true
++    pending_sections="$(subscription_pending_sections_json)" || pending_sections='[]'
++    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
++        isolated="$(podkop_section_name)"
++        podkop_section_ready && ready=true
++    fi
++    jq -cn --argjson busy "$busy" --argjson pending "$pending" --arg isolated "$isolated" --argjson ready "$ready" --argjson pendingSections "$pending_sections" \
++        '{busy:$busy,pending:$pending,pendingSections:$pendingSections,isolatedSection:$isolated,isolatedReady:$ready,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
++}
+@@ -2335,6 +2351,10 @@ subscription_apply_v2_print_result() {
+ }
+ 
+ subscription_apply_v2_reload() {
++    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
++        podkop_section_apply
++        return $?
++    fi
+     PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
+ }
+ 
+@@ -2380,9 +2400,9 @@ subscription_apply_v2_restore() {
+     esac
+ 
+     config_load "$PODKOP_CONFIG"
+     if [ "${PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED:-0}" != 1 ]; then
+-        if ! subscription_apply_v2_reload; then
++        if ! PODKOP_SECTION_ROLLBACK=1 subscription_apply_v2_reload; then
+             restore_ok=0
+         fi
+     fi
+ 
+@@ -2462,6 +2482,13 @@ set_subscription_sections_enabled() {
+     fi
+     trap 'subscription_apply_v2_interrupted' INT TERM HUP
+ 
++    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
++        if ! podkop_section_preflight "$payload"; then
++            subscription_apply_v2_fail validation "${PODKOP_SECTION_ERROR:-section_isolation_unavailable}" false
++            return $?
++        fi
++    fi
++
+     payload_file="$SUBSCRIPTION_APPLY_V2_TMP/payload.json"
+     sections_file="$SUBSCRIPTION_APPLY_V2_TMP/sections.jsonl"
+     validated_sections_file="$SUBSCRIPTION_APPLY_V2_TMP/validated-sections"
+@@ -2731,6 +2758,10 @@ set_subscription_sections_enabled() {
+ 
+ # subscription_seamless_reload begin
+ subscription_sing_box_pid() {
++    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
++        ubus call service list '{"name":"sing-box"}' | jq -r '.["sing-box"].instances[]? | select(.running==true) | .pid' | head -n 1
++        return
++    fi
+     pidof sing-box 2> /dev/null | awk '{ print $1; exit }'
+ }
+ 
+@@ -2753,6 +2784,11 @@ subscription_reload_pending_file() {
+ 
+ subscription_reload_seamless() {
+     local config_path backup_path pending_path before_hash after_hash pid recovery_pid attempts max_attempts delay
++    if [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" = 1 ] && command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
++        podkop_section_apply || return 1
++        subscription_pending_clear "$PODKOP_SECTION_TARGET" || return 1
++        return 0
++    fi
+ 
+     # subscription_deferred_apply_v1: downloading is never permission to interrupt traffic.
+     if [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != "1" ]; then
+@@ -3140,1 +3176,1 @@ subscription_isolated_test() {
+-    config="$(jq -ce 'select(.dns|type=="object")' /etc/sing-box/config.json)" || probe_error dns_config_invalid
++    config="$(jq -ce 'select(.dns|type=="object")' "$(if command -v podkop_section_logical_path >/dev/null; then podkop_section_logical_path; else echo /etc/sing-box/config.json; fi)")" || probe_error dns_config_invalid
+@@ -3238,7 +3274,7 @@ subscription_services_context() {
+     dns="$(jq -ceS '.dns | select(type=="object" and (.servers|type=="array"))' /etc/sing-box/config.json)" || return 1
+     settings="$(uci -q show podkop.settings)" || return 1
+     # Bind desired DNS settings too, so edits before a runtime rebuild cannot reuse old checks.
+-    settings="$(printf '%s\n' "$settings" | sed '/^podkop.settings.shutdown_correctly=/d' | LC_ALL=C sort)"
++    settings="$(printf '%s\n' "$settings" | sed '/^podkop.settings.shutdown_correctly=/d; /^podkop.settings.subscription_isolated_section=/d' | LC_ALL=C sort)"
+     { printf '%s\n' "$dns" "$settings"; printf '%s\n' "service-web-v2:$udp"; } | sha256sum | awk '{print $1}'
+ }
+ 
+@@ -3485,8 +3521,15 @@ subscription_services_snapshot_dir() {
+ }
+ 
+ subscription_services_snapshot_hash() {
+-    local digest
++    local digest snapshot_config_path
+     [ -f "$1" ] && [ ! -L "$1" ] || return 1
++    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
++        config_get snapshot_config_path settings config_path
++        if [ "$1" = "$snapshot_config_path" ]; then
++            podkop_section_runtime_hash "$1"
++            return $?
++        fi
++    fi
+     digest="$(sha256sum "$1")" || return 1
+     digest="${digest%% *}"
+     [ "${#digest}" = 64 ] || return 1
+@@ -4898,6 +4941,13 @@ sing_box_save_config() {
+     log "Save sing-box temporary config to $temp_file_path" "debug"
+     sing_box_cm_save_config_to_file "$config" "$temp_file_path"
+ 
++    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
++        if ! podkop_section_bootstrap "$temp_file_path"; then
++            rm -f "$temp_file_path"
++            return 1
++        fi
++    fi
++
+     sing_box_config_check "$temp_file_path"
+ 
+     current_config_hash=$(md5sum "$sing_box_config_path" 2> /dev/null | awk '{print $1}')
+@@ -5920,8 +5970,17 @@ clash_api() {
+         auth_header=""
+     fi
+ 
++    local section_clash_url
++    if command -v podkop_section_api_url >/dev/null && section_clash_url="$(podkop_section_api_url "${2:-}")"; then
++        CLASH_URL="$section_clash_url"
++        auth_header=""
++    fi
+     case "$action" in
+     get_proxies)
++        if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
++            podkop_section_api_merge "$CLASH_URL" "$auth_header"
++            return $?
++        fi
+         curl -s --header "$auth_header" "$CLASH_URL/proxies" | jq .
+         ;;
+ 

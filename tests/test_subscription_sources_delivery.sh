@@ -28,7 +28,18 @@ for version in 0.7.20 0.7.22; do
     cp "$target" "$work/first"
     PODKOP_SOURCES_TARGET="$target" PODKOP_SOURCES_SOURCE="$source" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
     cmp -s "$target" "$work/first"
+    # Existing markers must not hide an outdated transaction rollback helper.
+    sed -i '/^subscription_apply_v2_restore() {$/,/^}$/s/PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED/PRE_FIX_RUNTIME_FLAG/' "$target"
+    PODKOP_SOURCES_TARGET="$target" PODKOP_SOURCES_SOURCE="$source" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
+    sed -n '/^subscription_apply_v2_restore() {$/,/^}$/p' "$target" | grep -Fq 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' || {
+        echo 'FAIL: existing v2 markers skipped the runtime-unchanged rollback guard' >&2; exit 1;
+    }
+    sh -n "$target"
 done
+[ "$(grep -Fc 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' "$repo/i")" -ge 2 ] || {
+    echo 'FAIL: installer can skip the memory-safe transaction retrofit' >&2; exit 1;
+}
+cmp -s "$repo/i" "$repo/openwrt/install.sh"
 grep -Fq 'download "$RAW_BASE/$SOURCES_UPGRADE_FILE"' "$repo/i"
 grep -Fq 'PODKOP_SOURCES_SOURCE="$tmp_dir/podkop.runtime-0.7.20"' "$repo/i"
 echo 'PASS: existing runtime upgrade, backup, idempotence and installer delivery'

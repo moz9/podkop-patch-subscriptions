@@ -9,6 +9,7 @@ trap 'rm -rf "$test_root"' EXIT INT TERM
 manager_functions="$test_root/podkop-update-manager-functions.sh"
 sed \
     -e 's/\r$//' \
+    -e "s|^STATE_DIR=.*|STATE_DIR=\"$test_root/bootstrap-state\"|" \
     -e "s|^STATE_DIR=\"/tmp/podkop-update-manager\"$|STATE_DIR=\"$test_root/bootstrap-state\"|" \
     -e '/^case "$1" in/,$d' \
     "$manager" > "$manager_functions"
@@ -21,11 +22,14 @@ LOG_FILE="$STATE_DIR/update.log"
 LOCK_DIR="$STATE_DIR/lock"
 CAPTURE_FILE="$test_root/installer-argv"
 mkdir -p "$STATE_DIR"
+PINNED_ROOT="file://$test_root/release"
 
 write_status() { :; }
 log_line() { :; }
 download_file() {
     printf '#!/bin/sh\nexit 0\n' > "$2"
+    installer_hash="$(sha256sum "$2" | awk '{print $1}')"
+    jq -cn --arg hash "$installer_hash" '{sha256:{i:$hash}}' > "$STATE_DIR/manifest.json"
 }
 run_with_timeout() {
     shift
