@@ -8,10 +8,11 @@ trap 'rm -rf "$test_root"' EXIT INT TERM
 manager_functions="$test_root/podkop-update-manager-functions.sh"
 sed \
     -e 's/\r$//' \
-    -e "s|^STATE_DIR=\"/tmp/podkop-update-manager\"$|STATE_DIR=\"$test_root/state\"|" \
+    -e "s|^STATE_DIR=.*|STATE_DIR=\"$test_root/state\"|" \
     -e '/^case "$1" in/,$d' \
     "$repo_root/openwrt/podkop-update-manager" > "$manager_functions"
 . "$manager_functions"
+MANIFEST_URL="file://$test_root/release/openwrt/update-manifest.json"
 
 expect_update() {
     current="$1"
@@ -91,7 +92,7 @@ download_file() {
 }
 
 cat > "$fixture_manifest" <<'JSON'
-{"schemaVersion":1,"channel":"podkop-pe","patchVersion":"20260720-update-center-force-v1","supportedPodkopVersions":["0.7.23"],"sha256":{}}
+{"schemaVersion":1,"channel":"podkop-pe","patchVersion":"20260720-update-center-force-v1","supportedPodkopVersions":["0.7.24"],"sha256":{}}
 JSON
 printf '%s\n' '{"tag_name":"v0.7.23"}' > "$fixture_release"
 
@@ -134,7 +135,7 @@ if ! jq -e '.state == "error" and .message == "manifest_failed"' "$STATUS_FILE" 
 fi
 
 cat > "$fixture_manifest" <<'JSON'
-{"schemaVersion":1,"channel":"main","patchVersion":"20261007-pe-v6","supportedPodkopVersions":["0.7.23"],"sha256":{}}
+{"schemaVersion":1,"channel":"main","patchVersion":"20261007-pe-v6","supportedPodkopVersions":["0.7.24"],"sha256":{}}
 JSON
 if perform_check 1; then
     printf 'FAIL: PE update center accepted a normal-channel manifest\n' >&2

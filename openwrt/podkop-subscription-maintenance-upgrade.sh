@@ -746,14 +746,6 @@ fi
 if [ "$download_ok" -ne 1 ] && command -v wget > /dev/null 2>&1; then
     if wget -T 30 -O "$tmp" "$install_url" > "$log_file" 2>&1; then
         download_ok=1
-    else
-        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
-            if wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
-                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/i" >> "$log_file" 2>&1; then
-                download_ok=1
-                break
-            fi
-        done
     fi
 fi
 
@@ -1938,14 +1930,6 @@ if command -v curl > /dev/null 2>&1; then
 else
     if run_with_timeout 45 wget -T 30 -O "$tmp" "$install_url"; then
         download_ok=1
-    else
-        for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
-            if run_with_timeout 45 wget -T 30 --no-check-certificate --header="Host: raw.githubusercontent.com" \
-                -O "$tmp" "https://$ip/moz9/podkop-patch-subscriptions/main/i"; then
-                download_ok=1
-                break
-            fi
-        done
     fi
 fi
 
@@ -2112,12 +2096,6 @@ if [ -f "$helper_target" ] && { ! grep -q "raw.githubusercontent.com:443" "$help
 		print "            https://raw.githubusercontent.com/*)"
 		print "                raw_path=\"${url#https://raw.githubusercontent.com/}\""
 		print "                raw_path=\"${raw_path%%\\?*}\""
-		print "                if command -v wget > /dev/null 2>&1; then"
-		print "                    for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do"
-		print "                        wget -T 30 --no-check-certificate --header=\"Host: raw.githubusercontent.com\" \\"
-		print "                            -O \"$filepath\" \"https://$ip/$raw_path\" && [ -s \"$filepath\" ] && return 0"
-		print "                    done"
-		print "                fi"
 		print "                if command -v curl > /dev/null 2>&1; then"
 		print "                    for ip in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do"
 		print "                        curl -fsSL --connect-timeout 10 -m 30 \\"

@@ -7,6 +7,10 @@ library="$test_root/installer-functions.sh"
 PODKOP_PATCH_ACTION_LOCK_FILE="$test_root/action.lock"
 PODKOP_PATCH_ACTION_LOCK_DIR="$test_root/action.lock.d"
 PODKOP_PATCH_BACKUP_ROOT="$test_root/backups"
+# This harness exercises the explicit service-restart rollback mode.
+# Production keeps its prepared/deferred default of 1.
+PODKOP_PATCH_DEFER_SERVICE_START=0
+export PODKOP_PATCH_DEFER_SERVICE_START
 mkdir -p "$PODKOP_PATCH_BACKUP_ROOT"
 export PODKOP_PATCH_ACTION_LOCK_FILE PODKOP_PATCH_ACTION_LOCK_DIR PODKOP_PATCH_BACKUP_ROOT
 
@@ -22,6 +26,10 @@ fail_test() {
 
 sed \
     -e 's/\r$//' \
+    -e "s|/tmp/luci-|$test_root/luci-|g" \
+    -e "s|/etc/init.d/rpcd|$test_root/absent-rpcd|g" \
+    -e "s|/etc/init.d/uhttpd|$test_root/absent-uhttpd|g" \
+    -e "s|/etc/init.d/memdoc|$test_root/absent-memdoc|g" \
     -e '/^tmp_dir="$(mktemp -d)"$/,$d' \
     "$repo_root/i" > "$library"
 
@@ -177,6 +185,14 @@ PODKOP_PATCH_RELOAD_LOG="$service_root/reload.log"
 
 query_state="running"
 query_service_running_state() { printf '%s\n' "$query_state"; }
+
+printf '%s\n' stopped > "$main_state_file"
+printf '%s\n' stopped > "$failover_state_file"
+PODKOP_PATCH_DEFER_SERVICE_START=1
+restore_patch_service_state || fail_test 'deferred rollback policy failed'
+[ "$(cat "$main_state_file")" = stopped ] && [ "$(cat "$failover_state_file")" = stopped ] ||
+    fail_test 'prepared/deferred rollback unexpectedly activated services'
+PODKOP_PATCH_DEFER_SERVICE_START=0
 
 printf '%s\n' stopped > "$main_state_file"
 printf '%s\n' stopped > "$failover_state_file"

@@ -33,7 +33,7 @@ assert.ok(select,'separate game filter must be visible');
 assert.equal(walk(select).find(x=>x.tag==='option'&&x.attrs.selected)?.attrs.value,'gaming');
 select.attrs.change({target:{value:'non-gaming'}});
 assert.deepEqual(JSON.parse(JSON.stringify(changed)),['main',{id:'tags:exclude',enabled:section.excludeTags},['@prefix:US','old*','@game:exclude']]);
-const payload=c.buildSubscriptionSectionChanges(changed[0],[{id:changed[1].id,enabled:changed[2]}]);
+const payload=c.buildSubscriptionSectionChanges(changed[0],[{id:changed[1].id,enabled:changed[2]}],'a'.repeat(64));
 assert.deepEqual(Array.from(payload.excludeTags),['@prefix:US','old*','@game:exclude'],'same existing transaction persists game choice');
 select.attrs.change({target:{value:'all'}});
 assert.deepEqual(Array.from(changed[2]),['@prefix:US','old*'],'All removes only game policy');

@@ -2,22 +2,24 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 import assert from 'node:assert/strict';
 const js = fs.readFileSync(new URL('../openwrt/main.js', import.meta.url), 'utf8');
+const revision = 'a'.repeat(64);
+const buildSection = (code,changes) => c.buildSubscriptionSectionChanges(code,changes,revision);
 const c = vm.createContext({});
 for (const name of ['buildSubscriptionSectionChanges', 'getEffectiveSelectionMode', 'rebaseSubscriptionDraft']) {
   const match = js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}`));
   assert.ok(match, `${name} must exist`);
   vm.runInContext(match[0], c);
 }
-const payload = c.buildSubscriptionSectionChanges('geo', [
+const payload = buildSection('geo', [
   {id:'selection:mode', enabled:true}, {id:'us', enabled:true},
   {id:'de', enabled:false}, {id:'source:one', enabled:true}
 ]);
 assert.deepEqual(JSON.parse(JSON.stringify(payload)), {
-  section:'geo', selectionMode:'selected', changes:[{id:'us',enabled:true},{id:'de',enabled:false}],
+  section:'geo', expectedRevision:revision, selectionMode:'selected', changes:[{id:'us',enabled:true},{id:'de',enabled:false}],
   sources:[{id:'one',enabled:true}]
 });
-assert.equal(c.buildSubscriptionSectionChanges('main', []).selectionMode, undefined);
-assert.equal(c.buildSubscriptionSectionChanges('geo', [{id:'selection:mode',enabled:false}]).selectionMode, 'all');
+assert.equal(buildSection('main', []).selectionMode, undefined);
+assert.equal(buildSection('geo', [{id:'selection:mode',enabled:false}]).selectionMode, 'all');
 assert.equal(c.getEffectiveSelectionMode({}, {code:'geo'}), 'auto');
 assert.equal(c.getEffectiveSelectionMode({'geo:selection:mode':true}, {code:'geo',selectionMode:'all'}), 'selected');
 assert.equal(c.getEffectiveSelectionMode({'geo:selection:mode':false}, {code:'geo',selectionMode:'selected'}), 'all');
@@ -25,8 +27,8 @@ assert.deepEqual({...c.rebaseSubscriptionDraft({'geo:selection:mode':true}, [{co
 assert.deepEqual({...c.rebaseSubscriptionDraft({'geo:selection:mode':true}, [{code:'geo',selectionMode:'all',items:[]}])}, {'geo:selection:mode':true});
 assert.match(js, /Только выбранные/);
 assert.match(js, /Новые конфиги не включаются автоматически/);
-assert.match(js, /selectionMode: section\.subscription_selection_mode/);
-assert.match(js, /buildSubscriptionSectionChanges\(section, changes\)/);
+assert.match(js,/getSubscriptionSnapshot\(\)/,'selection mode is read from the coherent backend snapshot');
+assert.match(js, /buildSubscriptionSectionChanges\(section, changes, expectedRevisions\[section\]\)/);
 c.E = (tag, attrs, children) => ({tag, attrs, children});
 c._ = x => x;
 c.getSourceGroups = () => [];

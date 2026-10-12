@@ -23,6 +23,7 @@ cp "$work/init/podkop-dns-failover" "$work/init/podkop"
 chmod +x "$work/init/"*
 sed "s|/etc/init.d/|$work/init/|g" "$work/activation" > "$work/activation-safe"
 abort_with_restore() { fail_test "$*"; }
+write_patch_journal() { [ "$1" = committed ] || fail_test "unexpected journal phase"; }
 reload_calls=0
 run_podkop_reload_with_retry() { reload_calls=$((reload_calls + 1)); }
 light_reload=0

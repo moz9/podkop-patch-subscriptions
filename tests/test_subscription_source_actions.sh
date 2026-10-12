@@ -4,8 +4,14 @@ repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 . "$repo/openwrt/podkop-subscription-sources.sh"
-for name in refresh_subscription_cache subscription_update_section_handler subscription_update subscription_update_json; do
-    sed -n "/^$name() {$/,/^}$/p" "$repo/openwrt/runtime-0.7.23/usr/bin/podkop" >> "$work/functions"
+source_action_runtime="$repo/openwrt/runtime-0.7.23/usr/bin/podkop"
+source_action_functions='refresh_subscription_cache subscription_update_section_handler subscription_update subscription_update_json'
+if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+    source_action_runtime="$repo/openwrt/runtime-0.7.24/usr/bin/podkop"
+    source_action_functions="$source_action_functions subscription_pending_sections_json subscription_pending_mark"
+fi
+for name in $source_action_functions; do
+    sed -n "/^$name() {$/,/^}$/p" "$source_action_runtime" >> "$work/functions"
 done
 . "$work/functions"
 get_subscription_link_id() { printf '%s' "$1" | md5sum | cut -d ' ' -f 1; }
@@ -56,6 +62,10 @@ printf '%s\n' shared other > "$work/main.links"
 printf '[]\n' > "$work/main.skipped"
 printf '{"%s":"download_failed"}\n' "$two" > "$work/main.items.refresh-errors"
 subscription_update_json main "$one" | jq -e '.success' >/dev/null
+if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+    # This source is disabled: metadata changes do not change the effective links.
+    [ ! -f "$work/pending" ] || { echo 'FAIL: disabled source with unchanged active links marked activation pending'; exit 1; }
+fi
 [ "$(cat "$work/downloads")" = https://one.example/sub ] || { echo 'FAIL: single source action downloads other subscriptions'; exit 1; }
 jq -e --arg old "$old" --arg other "$other" --arg shared "$shared" 'all(.[]; .id!=$old) and any(.[];.id==$other) and any(.[];.id==$shared and (.sourceIds|length)==2)' "$work/main.items" >/dev/null
 jq -e --arg two "$two" '.[$two]=="download_failed"' "$work/main.items.refresh-errors" >/dev/null

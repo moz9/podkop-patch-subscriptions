@@ -426,6 +426,10 @@ apply_migration() {
     log 'Миграция на PE завершена. Сохранённые настройки восстановлены; команда запуска успешна. Внешнее соединение этим не проверено.'
 }
 main() {
+    case "${1:---check}" in
+        --help|-h) log 'This prepared 0.7.24 adapter does not provide a package migration. Existing router packages and frozen runtimes must not be replaced by this historical 0.7.22 migration.'; return 0 ;;
+        *) die 'Prepared 0.7.24 adapter: separate verified package migration required; no changes made' ;;
+    esac
     ROOT=${ROOT%/}
     mode=check
     case "${1:---check}" in --check) ;; --apply) mode=apply ;; --resume) mode=resume ;; --rollback) mode=rollback ;; --help|-h) log "Использование: $0 [--check|--apply|--resume КОПИЯ|--rollback КОПИЯ]. Без аргументов: только проверка. --apply меняет пакеты. --resume продолжает миграцию, --rollback восстанавливает прежний Podkop; оба используют проверенную копию без сети."; return 0 ;; *) die 'неизвестный аргумент; используйте --help' ;; esac

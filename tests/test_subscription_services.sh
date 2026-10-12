@@ -8,6 +8,13 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 . "$repo/openwrt/podkop-subscription-sources.sh"
 . "$repo/openwrt/podkop-service-checks.sh"
 . "$repo/openwrt/podkop-subscription-probe.sh"
+if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+    # Current helpers call the real section-aware pending API outside their block.
+    for pending_function in subscription_pending_sections_json subscription_pending_mark; do
+        sed -n "/^$pending_function() {$/,/^}$/p" "$repo/openwrt/runtime-0.7.24/usr/bin/podkop" >> "$tmp/pending-functions"
+    done
+    . "$tmp/pending-functions"
+fi
 grep -Fq -- '--connect-timeout 2 -m 4' "$repo/openwrt/podkop-service-checks.sh" || fail 'fast network budget missing'
 [ "$(grep -c 'https://chatgpt.com/backend-anon/models' "$repo/openwrt/podkop-service-checks.sh")" -eq 1 ] || fail 'ChatGPT endpoint not single fixed GET'
 PODKOP_SERVICE_CACHE_DIR="$tmp/state"
@@ -145,9 +152,17 @@ subscription_items_with_sources() { cat "$2"; }
 get_subscription_sources() { printf '[]\n'; }
 printf '[]\n' > "$tmp/tags.main.include"
 printf '[]\n' > "$tmp/tags.main.exclude"
-subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]'
+before_required_items="$(sha256sum "$tmp/items")"
+before_required_pending="$(if [ -f "$tmp/pending" ]; then sha256sum "$tmp/pending"; else echo absent; fi)"
+unset SUBSCRIPTION_SOURCES_CHANGED
+if subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]'; then
+    fail 'missing exact-context service proof allowed activation prepare'
+fi
+[ "$SUBSCRIPTION_SOURCES_ERROR" = service_results_stale_or_missing ] || fail 'missing proof refusal is not explicit'
 [ "$SUBSCRIPTION_SOURCES_REMAINING" = 0 ] || fail 'transaction did not enforce proposed requirements'
-[ "$SUBSCRIPTION_SOURCES_CHANGED" = 1 ] || fail 'requirement changes not counted'
+[ "${SUBSCRIPTION_SOURCES_CHANGED:-0}" = 0 ] || fail 'refused prepare claimed staged changes'
+[ "$before_required_items" = "$(sha256sum "$tmp/items")" ] || fail 'refused prepare changed cached items'
+[ "$before_required_pending" = "$(if [ -f "$tmp/pending" ]; then sha256sum "$tmp/pending"; else echo absent; fi)" ] || fail 'refused prepare changed pending activation'
 collect_urltest_proxy_links() { printf 'manual-link\n' > "$2"; return 0; }
 subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]' && fail 'untested manual mix admitted' || :
 [ "$SUBSCRIPTION_SOURCES_ERROR" = service_manual_links_unsupported ] || fail 'manual mix failure is not explicit'

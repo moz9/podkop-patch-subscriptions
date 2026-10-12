@@ -4,6 +4,12 @@ repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 . "$repo/openwrt/podkop-subscription-sources.sh"
+if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+    for pending_function in subscription_pending_sections_json subscription_pending_mark subscription_pending_clear; do
+        sed -n "/^$pending_function() {$/,/^}$/p" "$repo/openwrt/runtime-0.7.24/usr/bin/podkop" >> "$work/pending-functions"
+    done
+    . "$work/pending-functions"
+fi
 fail() { echo "FAIL: $*" >&2; exit 1; }
 if sed -n '/^subscription_source_policy() {/,/^}/p' "$repo/openwrt/podkop-subscription-sources.sh" | grep -Eq '(^|[^[:alnum:]_])(gsub|test|match|sub)\('; then
  fail 'tag policy must not require jq regex builtins (router jq lacks Oniguruma)'
@@ -38,13 +44,21 @@ subscription_source_policy '[]' '[]' "$work/country.items" all '[]' '["*🇫🇮
  | jq -e '.[0].runtimeEnabled and .[1].runtimeEnabled and (.[2].runtimeEnabled|not)' >/dev/null || fail 'detected country group must include new matching nodes'
 subscription_source_policy '[]' '[]' "$work/country.items" selected '["fi","nl"]' '["*🇫🇮*"]' '["*🇳🇱*"]' \
  | jq -e '.[0].runtimeEnabled and (.[1].runtimeEnabled|not) and (.[2].runtimeEnabled|not)' >/dev/null || fail 'country filters must intersect the explicit node selection'
-for version in 0.7.20 0.7.22 0.7.23; do
+canonical_pe_version=0.7.23
+if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+    canonical_pe_version=0.7.24
+fi
+for version in 0.7.20 0.7.22 0.7.23 0.7.24; do
  runtime="$repo/openwrt/runtime-$version/usr/bin/podkop"
  sed -n '/^# subscription_apply_v2 begin$/,/^# subscription_apply_v2 end$/p' "$runtime" > "$work/backend"
  for name in apply_subscription_exclusions_to_cached_links set_subscription_links_enabled normalize_subscription_enabled_value; do
    sed -n "/^$name() {$/,/^}$/p" "$runtime" >> "$work/backend"
  done
  . "$work/backend"
+ CAS_TEST_RUNTIME="$runtime"
+ . "$repo/tests/cas-fake-state.sh"
+ printf '{"dns":{"servers":[]}}\n' > "$work/cas-dns.json"
+ PODKOP_SUBSCRIPTION_CAS_DNS_CONFIG="$work/cas-dns.json"
  PODKOP_CONFIG="$work/config"
  SUBSCRIPTION_CACHE_DIR="$work/cache"
  mkdir -p "$SUBSCRIPTION_CACHE_DIR"
@@ -64,6 +78,7 @@ for version in 0.7.20 0.7.22 0.7.23; do
    [ "$1" != -q ] || shift
    local command="$1" key="${2:-}" section option value stage="$PODKOP_CONFIG.stage"
    case "$command" in
+   changes) [ ! -f "$stage" ] || printf 'fake-pending-delta\n'; return 0;;
    revert) rm -f "$stage"; return 0;;
    commit) mv "$stage" "$PODKOP_CONFIG"; echo commit >> "$work/commits"; return 0;;
    esac
@@ -102,7 +117,7 @@ for version in 0.7.20 0.7.22 0.7.23; do
  jq --arg two "$two" --arg b "$b" '.main.subscription_disabled_source_ids=[$two] | .peer={subscription_selection_mode:"selected",subscription_selected_link_ids:[$b]}' "$PODKOP_CONFIG" > "$PODKOP_CONFIG.next"; mv "$PODKOP_CONFIG.next" "$PODKOP_CONFIG"
  peer_before="$(jq -c '.peer' "$PODKOP_CONFIG")"
  payload="$(jq -cn --arg b "$b" '{sections:[{section:"main",selectionMode:"selected",changes:[{id:$b,enabled:false}]}]}')"
- result="$(set_subscription_sections_enabled "$payload")"
+ result="$(cas_test_apply_fresh "$payload")"
  printf '%s' "$result" | jq -e '.success and .committed and .changed==2' >/dev/null || fail 'mode and toggles must apply together'
  jq -e --arg stable "$stable" '.main.subscription_selection_mode=="selected" and .main.subscription_selected_link_ids==[$stable]' "$PODKOP_CONFIG" >/dev/null || fail 'mode switch must seed effective stable IDs and exclude disabled sources'
  [ "$peer_before" = "$(jq -c '.peer' "$PODKOP_CONFIG")" ] || fail 'selection leaked into another section'
@@ -118,35 +133,36 @@ for version in 0.7.20 0.7.22 0.7.23; do
  [ "$(cat "$SUBSCRIPTION_CACHE_DIR/main.links")" = alpha ] || fail 'new nodes must remain unselected'
  # Selecting a disabled-source node persists its preference without routing it.
  payload="$(jq -cn --arg c "$c" '{sections:[{section:"main",changes:[{id:$c,enabled:true}]}]}')"
- set_subscription_sections_enabled "$payload" | jq -e '.success' >/dev/null
+ cas_test_apply_fresh "$payload" | jq -e '.success' >/dev/null
  jq -e --arg c "$c" 'any(.[]; .id==$c and .enabled and (.runtimeEnabled|not))' "$SUBSCRIPTION_CACHE_DIR/main.items" >/dev/null
  before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links")"
  payload="$(jq -cn --arg a "$a" '{sections:[{section:"main",changes:[{id:$a,enabled:false}]}]}')"
- result="$(set_subscription_sections_enabled "$payload" || true)"
+ result="$(cas_test_apply_fresh "$payload" || true)"
  printf '%s' "$result" | jq -e '.success==false and .error=="cannot_disable_last_enabled_link" and .committed==false' >/dev/null
  [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links")" ] || fail 'empty effective selection mutated config'
  # Legacy toggle must add to the allowlist, not change the blacklist.
- set_subscription_links_enabled main "$b" 1 | jq -e '.success' >/dev/null
+ revision="$(cas_test_fresh_payload '{"sections":[{"section":"main","changes":[]}]} ' | jq -r '.sections[0].expectedRevision')"
+ set_subscription_links_enabled main "$revision" "$b" 1 | jq -e '.success' >/dev/null
  jq -e --arg b "$b" '.main.subscription_selected_link_ids|index($b)!=null' "$PODKOP_CONFIG" >/dev/null
  # Mode-only transaction, invalid mode, rollback and all-mode reversion.
  before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items")"
  : > "$work/fail-reload"
- result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"all","changes":[]}]}' || true)"
+ result="$(cas_test_apply_fresh '{"sections":[{"section":"main","selectionMode":"all","changes":[]}]}' || true)"
  printf '%s' "$result" | jq -e '.state=="rolled_back" and .rolledBack' >/dev/null || fail 'mode failure must roll back'
  [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items")" ] || fail 'mode rollback mismatch'
- result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"invalid","changes":[]}]}' || true)"
+ result="$(cas_test_apply_fresh '{"sections":[{"section":"main","selectionMode":"invalid","changes":[]}]}' || true)"
  printf '%s' "$result" | jq -e '.phase=="validation" and .error=="invalid_payload"' >/dev/null
- set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"all","changes":[]}]}' | jq -e '.success' >/dev/null
+ cas_test_apply_fresh '{"sections":[{"section":"main","selectionMode":"all","changes":[]}]}' | jq -e '.success' >/dev/null
  jq -e '.main.subscription_selection_mode=="all"' "$PODKOP_CONFIG" >/dev/null
  [ "$(cat "$SUBSCRIPTION_CACHE_DIR/main.links")" = "$(printf 'alpha\nbeta\ndelta')" ] || fail 'all mode must restore normal blacklist policy'
  # Tag-only edits share the transaction; filters never erase individual choices.
  jq --arg a "$a" --arg b "$b" --arg c "$c" --arg d "$d" 'map(.name=(if .id==$a then "🇷🇺 Москва 1" elif .id==$b then "US West" elif .id==$c then "🇷🇺 Москва 2" elif .id==$d then "US East" else .name end))' "$SUBSCRIPTION_CACHE_DIR/main.items" > "$work/items"; mv "$work/items" "$SUBSCRIPTION_CACHE_DIR/main.items"
  before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")"
- result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","includeTags":["NO MATCH"],"changes":[]}]} ' || true)"
+ result="$(cas_test_apply_fresh '{"sections":[{"section":"main","includeTags":["NO MATCH"],"changes":[]}]} ' || true)"
  printf '%s' "$result" | jq -e '.error=="cannot_disable_last_enabled_link" and .committed==false' >/dev/null || fail 'empty tag pool must be guarded'
  [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")" ] || fail 'empty tag pool changed state'
  payload='{"sections":[{"section":"main","includeTags":["🇷🇺 Москва ?"],"excludeTags":["*2"],"changes":[]}]}'
- result="$(set_subscription_sections_enabled "$payload")"
+ result="$(cas_test_apply_fresh "$payload")"
  printf '%s' "$result" | jq -e '.success and .changed==2' >/dev/null || fail 'tag lists did not commit together'
  jq -e '.main.subscription_include_tags==["🇷🇺 Москва ?"] and .main.subscription_exclude_tags==["*2"]' "$PODKOP_CONFIG" >/dev/null || fail 'tag values with spaces were not persisted'
  [ "$(cat "$SUBSCRIPTION_CACHE_DIR/main.links")" = alpha ] || fail 'tag policy did not gate runtime links'
@@ -154,10 +170,10 @@ for version in 0.7.20 0.7.22 0.7.23; do
  [ "$peer_before" = "$(jq -c '.peer' "$PODKOP_CONFIG")" ] || fail 'tag policy leaked to peer section'
  before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")"
  : > "$work/fail-reload"
- result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","excludeTags":["US*"],"changes":[]}]} ' || true)"
+ result="$(cas_test_apply_fresh '{"sections":[{"section":"main","excludeTags":["US*"],"changes":[]}]} ' || true)"
  printf '%s' "$result" | jq -e '.state=="rolled_back" and .rolledBack' >/dev/null || fail 'tag reload failure must roll back'
  [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")" ] || fail 'tag rollback mismatch'
- result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","includeTags":["bad\nnewline"],"changes":[]}]} ' || true)"
+ result="$(cas_test_apply_fresh '{"sections":[{"section":"main","includeTags":["bad\nnewline"],"changes":[]}]} ' || true)"
  printf '%s' "$result" | jq -e '.phase=="validation" and .error=="invalid_payload"' >/dev/null || fail 'newline tag must be rejected'
  rm -f "$work/commits" "$work/reloads"
 done
@@ -184,7 +200,7 @@ collect_urltest_proxy_links() { return 1; }
 log() { :; }
 subscription_services_snapshot_capacity() { return 1; }
 before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")"
-result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}' || true)"
+result="$(cas_test_apply_fresh '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}' || true)"
 printf '%s' "$result" | jq -e '.success==false and .committed==false and .error=="service_snapshot_storage_unavailable"' >/dev/null || fail 'storage preflight did not reject real transaction'
 [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'low storage preflight changed config/cache/runtime'
 subscription_services_snapshot_capacity() { return 0; }
@@ -200,7 +216,7 @@ subscription_sing_box_pid() { printf '123\n'; }
 subscription_signal_sing_box_reload() { printf 'signal\n' >> "$work/service-signals"; }
 subscription_sing_box_reload_ready() { return 0; }
 subscription_apply_v2_reload() { PODKOP_SUBSCRIPTION_APPLY_NOW=1 PODKOP_SUBSCRIPTION_RELOAD_DELAY=0 subscription_reload_seamless; }
-result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}' || true)"
+result="$(cas_test_apply_fresh '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}' || true)"
 printf '%s' "$result" | jq -e '.success==false and .state=="rolled_back" and .rolledBack' >/dev/null || fail 'snapshot save failure did not roll back real transaction'
 [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'late snapshot failure failed to restore UCI/cache/full config'
 [ "$(wc -l < "$work/service-signals")" -eq 2 ] || fail 'late snapshot failure did not signal candidate then previous runtime'
@@ -215,12 +231,12 @@ subscription_services_store main "$a" '{"gemini":{"state":"pass","network":"pass
 [ -f "$work/pending" ] || fail 'enabled filter refresh did not expose pending activation'
 [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'diagnostic evidence refresh activated working state'
 sing_box_init_config() { printf 'generate\n' >> "$work/service-generations"; }
-result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}' || true)"
+result="$(cas_test_apply_fresh '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}' || true)"
 printf '%s' "$result" | jq -e '.success==false and .error=="reload_failed" and .committed==false' >/dev/null || fail 'unchanged transaction hid snapshot save failure'
 [ -f "$work/pending" ] || fail 'same-config snapshot failure lost pending retry'
 [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'same-config snapshot failure changed working state'
 df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted\nfixture 65536 0 65536 0%% /\n'; }
-result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}')"
+result="$(cas_test_apply_fresh '{"sections":[{"section":"main","changes":[],"requiredServices":["gemini"]}]}')"
 printf '%s' "$result" | jq -e '.success and .changed==0 and .state=="no_changes"' >/dev/null || fail 'unchanged pending transaction failed to apply'
 [ ! -f "$work/pending" ] || fail 'successful same-config snapshot left pending activation'
 [ -s "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json" ] || fail 'unchanged transaction did not capture admitted evidence snapshot'
@@ -229,7 +245,7 @@ printf '%s' "$result" | jq -e '.success and .changed==0 and .state=="no_changes"
 [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'same-config activation changed UCI/cache/config'
 echo 'PASS: refreshed service proof marks explicit Apply; unchanged transaction captures snapshot and retains pending on failure'
 # Existing installations need the complete policy, transaction and legacy toggle retrofit.
-for version in 0.7.20 0.7.22 0.7.23; do
+for version in 0.7.20 0.7.22 0.7.23 0.7.24; do
  runtime="$repo/openwrt/runtime-$version/usr/bin/podkop"
  sed '/^# subscription_tag_glob_portable_v1$/d' "$runtime" > "$work/delivery"
  PODKOP_SOURCES_TARGET="$work/delivery" PODKOP_SOURCES_SOURCE="$runtime" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
@@ -240,7 +256,7 @@ for version in 0.7.20 0.7.22 0.7.23; do
    cmp -s "$work/delivered.function" "$work/canonical.function" || fail "allowlist retrofit has stale $name"
  done
  sed -n '/^# subscription_sources_v1 begin$/,/^# subscription_sources_v1 end$/p' "$work/delivery" > "$work/delivered.sources"
- if [ "$version" != 0.7.23 ]; then
+ if [ "$version" != "$canonical_pe_version" ]; then
    sed -n '/^# subscription_sources_v1 begin$/,/^# subscription_sources_v1 end$/p' "$runtime" > "$work/pe.sources"
    cmp -s "$work/delivered.sources" "$work/pe.sources" || fail 'PE allowlist retrofit has stale source policy'
  else

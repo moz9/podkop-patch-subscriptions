@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import {createHash} from 'node:crypto';
+const stamped = row => ({...row,revision:createHash('sha256').update(JSON.stringify(row)).digest('hex')});
+const savedSnapshot = row => ({success:true,data:{success:true,version:1,sections:[stamped(row)]}});
 
 const source = fs.readFileSync(new URL('../openwrt/main.js', import.meta.url), 'utf8');
 const controllerStart = source.indexOf('// src/podkop/tabs/subscriptions/initController.ts');
@@ -32,14 +35,20 @@ function makeHarness({savedSection = initialSection, status = {busy: true, pendi
   let currentSaved = savedSection;
   let currentStatus = status;
   let shouldFailRead = readError;
+  let modal;
   let widget = {
     loading: false, failed: false, applying: false, status: 'dirty',
     action: 'none', actionStatus: 'idle', actionMessage: '', actionError: '',
     runtimeStatus: {busy: false, pending: false},
-    pendingChanges: {...intendedDraft}, data: [initialSection],
+    pendingChanges: {...intendedDraft}, draftRevisions:{main:stamped(initialSection).revision}, data: [stamped(initialSection)],
     latencyByRow: {}, speedByRow: {}
   };
   const methods = {
+    async getSubscriptionSnapshot() {
+      calls.reads++;
+      if (shouldFailRead) throw new Error('read failed');
+      return savedSnapshot(currentSaved);
+    },
     async setSubscriptionSectionsEnabled() {
       calls.apply++;
       throw new Error('Command timed out');
@@ -66,16 +75,9 @@ function makeHarness({savedSection = initialSection, status = {busy: true, pendi
       unsubscribe() {}
     },
     PodkopShellMethods: methods,
-    uci: {async callLoad() {
-      calls.reads++;
-      if (shouldFailRead) throw new Error('read failed');
-      return {main: {
-        '.name': 'main', connection_type: 'proxy', proxy_config_type: 'subscription_urltest',
-        subscription_selection_mode: currentSaved.selectionMode,
-        subscription_include_tags: currentSaved.includeTags,
-        subscription_exclude_tags: currentSaved.excludeTags
-      }};
-    }},
+    uci: {callLoad() {throw new Error('snapshot reads cannot touch LuCI UCI');}},
+    E:(tag,attrs,children)=>({tag,attrs,children}),
+    ui:{showModal:(_title,children)=>{modal=children;},hideModal(){}},
     window: {setTimeout: (callback, ms) => {calls.timers.push({callback, ms}); queueMicrotask(callback); return calls.timers.length;}},
     setTimeout: (callback, ms) => {calls.timers.push({callback, ms}); return calls.timers.length;},
     clearTimeout() {},
@@ -87,11 +89,13 @@ function makeHarness({savedSection = initialSection, status = {busy: true, pendi
   });
   vm.runInContext(extract('getEffectiveSelectionMode'), context);
   vm.runInContext(extract('normalizeSubscriptionTags'), context);
+  vm.runInContext(extract('normalizeSubscriptionServiceEvidence'), context);
   vm.runInContext(source.slice(controllerStart, controllerEnd), context);
   vm.runInContext(extract('handleRefreshSubscriptions'), context);
   vm.runInContext(extract('onPageUnmount3'), context);
   return {
     context, calls,
+    confirmReview() {context.handleReviewSubscriptionDraft('main');assert.ok(modal);modal.at(-1).children.at(-1).attrs.click();},
     get widget() {return widget;},
     setSaved(section) {currentSaved = section;},
     setStatus(value) {currentStatus = value;},
@@ -160,8 +164,12 @@ const confirmedSection = {
     return {success: true, data: {success: true}};
   };
   await h.context.handleApply();
+  assert.equal(h.calls.apply,1,'unconfirmed apply cannot bypass explicit review');
+  await h.context.fetchSubscriptionItems();
+  h.confirmReview();
+  await h.context.handleApply();
   assert.equal(h.widget.status, 'success');
-  assert.equal(h.widget.applyUnconfirmed, null, 'a later explicitly confirmed apply supersedes the old unconfirmed snapshot');
+  assert.equal(h.widget.applyUnconfirmed, null, 'a later explicitly reviewed apply supersedes the old unconfirmed snapshot');
   assert.equal(h.calls.apply, 2, 'the second write is only the user-triggered apply');
 }
 
@@ -252,21 +260,16 @@ const confirmedSection = {
   await h.context.handleApply();
   h.setSaved(confirmedSection);
   h.setStatus({busy: false, pending: false});
-  const savedUci = {main: {
-    '.name': 'main', connection_type: 'proxy', proxy_config_type: 'subscription_urltest',
-    subscription_selection_mode: confirmedSection.selectionMode,
-    subscription_include_tags: confirmedSection.includeTags,
-    subscription_exclude_tags: confirmedSection.excludeTags
-  }};
+  const savedUci = savedSnapshot(confirmedSection);
   let finishRead;
-  h.context.uci.callLoad = () => new Promise(resolve => {finishRead = resolve;});
+  h.context.PodkopShellMethods.getSubscriptionSnapshot = () => new Promise(resolve => {finishRead = resolve;});
   const oldRead = h.context.refreshSubscriptionRuntimeStatus();
   for (let i = 0; i < 10 && !finishRead; i++) await Promise.resolve();
   assert.equal(typeof finishRead, 'function', 'the old generation started its fresh read');
   vm.runInContext('subscriptionStatusGeneration++', h.context);
   finishRead(savedUci);
   await oldRead;
-  h.context.uci.callLoad = async () => savedUci;
+  h.context.PodkopShellMethods.getSubscriptionSnapshot = async () => savedUci;
   await h.context.refreshSubscriptionRuntimeStatus();
   assert.equal(h.widget.status, 'success', 'a remounted tab may retry the stale generation read');
   assert.equal(h.calls.apply, 1, 'stale read recovery remains read-only');
@@ -277,15 +280,10 @@ const confirmedSection = {
   await h.context.handleApply();
   h.setSaved(confirmedSection);
   h.setStatus({busy: false, pending: false});
-  const savedUci = {main: {
-    '.name': 'main', connection_type: 'proxy', proxy_config_type: 'subscription_urltest',
-    subscription_selection_mode: confirmedSection.selectionMode,
-    subscription_include_tags: confirmedSection.includeTags,
-    subscription_exclude_tags: confirmedSection.excludeTags
-  }};
+  const savedUci = savedSnapshot(confirmedSection);
   let finishOldRead;
   let readAttempts = 0;
-  h.context.uci.callLoad = () => {
+  h.context.PodkopShellMethods.getSubscriptionSnapshot = () => {
     readAttempts++;
     return readAttempts === 1 ? new Promise(resolve => {finishOldRead = resolve;}) : Promise.resolve(savedUci);
   };

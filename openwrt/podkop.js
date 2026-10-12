@@ -29,7 +29,7 @@ const EntryPoint = {
     const podkopMap = new form.Map(
       "podkop",
       "Podkop PE — настройки",
-      "Экспериментальная версия на Podkop 0.7.23 и podkop-engine. Канал обновлений PE.",
+      "Экспериментальная версия на Podkop 0.7.24 и podkop-engine. Канал обновлений PE.",
     );
     // Enable tab views
     podkopMap.tabbed = true;
@@ -61,7 +61,7 @@ const EntryPoint = {
     };
 
     // Render settings content
-    settings.createSettingsContent(settingsSection);
+    settings.createSettingsContent(settingsSection, singBoxFeatures);
 
     // Diagnostic tab
     const diagnosticSection = podkopMap.section(

@@ -486,7 +486,7 @@ write_community_service_probes() {
             ;;
         anime)
             printf '%s\n' \
-                'community|anime|shikimori.one' \
+                'community|anime|shikimori.io' \
                 'community|anime|mangadex.org'
             ;;
         youtube)
@@ -505,9 +505,10 @@ write_community_service_probes() {
                 'community|tiktok|tiktokv.com'
             ;;
         google_ai)
-            printf '%s\n' \
-                'community|google_ai|gemini.google.com' \
-                'community|google_ai|generativelanguage.googleapis.com'
+            # DNS selection checks transport, not Gemini regional eligibility.
+            # The isolated section keeps its selected route; admission to AI
+            # services remains exclusively in the subscription service filters.
+            printf '%s\n' 'community|google_ai|www.google.com'
             ;;
         google_play)
             printf '%s\n' \
@@ -817,10 +818,10 @@ run_dns_query() {
     esac
 
     if [ "$expected" = "NXDOMAIN" ]; then
-        [ "$status" = "NXDOMAIN" ] || return 1
+        [ "$status" = "NXDOMAIN" ] || { printf 'unexpected_status:%s\n' "${status:-no_response}" >&2; return 1; }
     else
-        [ "$status" = "NOERROR" ] || return 1
-        printf '%s\n' "$output" | dns_output_has_usable_a "$endpoint_ip" || return 1
+        [ "$status" = "NOERROR" ] || { printf 'unexpected_status:%s\n' "${status:-no_response}" >&2; return 1; }
+        printf '%s\n' "$output" | dns_output_has_usable_a "$endpoint_ip" || { printf 'no_usable_a\n' >&2; return 1; }
     fi
 
     printf '%s\n' "$elapsed"
@@ -832,6 +833,51 @@ resolve_host() {
 
     dig @"$bootstrap" "$host" A +timeout=2 +tries=1 +short 2> /dev/null |
         awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }'
+}
+
+# Independent packet-level bootstrap health, including numeric main endpoints.
+# Bootstrap must have a numeric endpoint: resolving the resolver through ambient
+# system DNS would turn this into a circular test of a different DNS pair.
+probe_bootstrap() {
+    local protocol="$1" server="$2" primary_host="${3:-}"
+    local endpoint endpoint_ip port path tls_hostname domain expected checks success reason result elapsed
+
+    case "$protocol" in
+        udp|tcp|doh|dot) ;;
+        *) jq -cn --arg protocol "$protocol" --arg server "$server" \
+            '{success:false,protocol:$protocol,server:$server,error:"unsupported_engine_protocol",checks:[]}'; return 1;;
+    esac
+    endpoint="$(dns_catalog_endpoint "$protocol" "$server" bootstrap)" || {
+        jq -cn --arg protocol "$protocol" --arg server "$server" \
+            '{success:false,protocol:$protocol,server:$server,error:"unsupported_catalog_protocol",checks:[]}'
+        return 1
+    }
+    endpoint_ip="$(printf '%s' "$endpoint" | jq -r '.host//empty')"
+    port="$(printf '%s' "$endpoint" | jq -r '.port//empty')"
+    path="$(printf '%s' "$endpoint" | jq -r '.path//"/dns-query"')"
+    tls_hostname="$(printf '%s' "$endpoint" | jq -r '.server_name//empty')"
+    if ! is_ipv4 "$endpoint_ip"; then
+        jq -cn --arg protocol "$protocol" --arg server "$server" \
+            '{success:false,protocol:$protocol,server:$server,error:"bootstrap_endpoint_not_numeric",checks:[]}'
+        return 1
+    fi
+    # The actual main resolver hostname is required only when it needs resolving.
+    if is_ipv4 "$primary_host"; then primary_host=''; fi
+    checks='[]'; success=true
+    for domain in $primary_host example.com github.com podkop-bootstrap-test.invalid; do
+        expected=NOERROR; [ "$domain" != podkop-bootstrap-test.invalid ] || expected=NXDOMAIN
+        if result="$(run_dns_query "$protocol" "$endpoint_ip" "$tls_hostname" "$path" "$domain" "$expected" "$port" 2>&1)"; then
+            elapsed="$result"; reason=''; result=true
+        else
+            reason="${result:-dns_query_failed}"; elapsed=null; result=false; success=false
+        fi
+        checks="$(jq -cn --argjson checks "$checks" --arg domain "$domain" --arg reason "$reason" \
+            --argjson success "$result" --argjson elapsed "${elapsed:-null}" \
+            '$checks + [{domain:$domain,success:$success,reason:$reason,elapsedMs:$elapsed}]')"
+    done
+    jq -cn --arg protocol "$protocol" --arg server "$server" --argjson success "$success" --argjson checks "$checks" \
+        '{success:$success,protocol:$protocol,server:$server,error:(if $success then "" else "bootstrap_query_failed" end),checks:$checks}'
+    [ "$success" = true ]
 }
 
 read_configured_pair() {
@@ -872,7 +918,7 @@ probe_configured_pair() {
     local slot="$1"
     local pair protocol dns_server bootstrap host endpoint_ip tls_hostname path domain elapsed successes total
     local play_dns_available chatgpt_dns_available chatgpt_api_dns_available error
-    local bootstrap_protocol prefix benchmark endpoint endpoint_port
+    local bootstrap_protocol prefix benchmark endpoint endpoint_port bootstrap_result benchmark_result
 
     prefix=''; [ "$slot" != secondary ] || prefix=secondary_
     bootstrap_protocol="$(uci -q get "podkop.settings.${prefix}bootstrap_dns_type" 2>/dev/null || true)"
@@ -883,15 +929,6 @@ probe_configured_pair() {
             return 1
             ;;
     esac
-    case "$protocol:${bootstrap_protocol:-udp}" in
-        *:tcp|*:doh|*:dot)
-            benchmark="${PODKOP_DNS_BENCHMARK_COMMAND:-/usr/bin/podkop-dns-benchmark}"
-            [ -x "$benchmark" ] || return 1
-            sh "$benchmark" probe_pair "$slot"
-            return $?
-            ;;
-    esac
-
     pair="$(read_configured_pair "$slot" || true)"
     if [ -z "$pair" ]; then
         jq -cn --arg slot "$slot" '{success:false,slot:$slot,error:"pair_not_configured"}'
@@ -905,6 +942,24 @@ probe_configured_pair() {
         return 1
     }
     host="$(printf '%s' "$endpoint" | jq -r '.host')"
+    if ! bootstrap_result="$(probe_bootstrap "${bootstrap_protocol:-udp}" "$bootstrap" "$host")"; then
+        jq -cn --arg slot "$slot" --arg protocol "$protocol" --argjson bootstrap "$bootstrap_result" \
+            '{success:false,slot:$slot,protocol:$protocol,error:"bootstrap_failed",bootstrap:$bootstrap}'
+        return 1
+    fi
+    case "${bootstrap_protocol:-udp}" in
+        tcp|doh|dot)
+            benchmark="${PODKOP_DNS_BENCHMARK_COMMAND:-/usr/bin/podkop-dns-benchmark}"
+            if [ -x "$benchmark" ] && benchmark_result="$(sh "$benchmark" probe_pair "$slot")" && \
+                printf '%s' "$benchmark_result" | jq -se 'length==1 and (.[0]|type=="object" and .success==true)' >/dev/null 2>&1; then
+                printf '%s\n' "$benchmark_result" | jq --argjson bootstrap "$bootstrap_result" '. + {bootstrap:$bootstrap}'
+                return 0
+            fi
+            jq -cn --arg slot "$slot" --argjson bootstrap "$bootstrap_result" \
+                '{success:false,slot:$slot,error:"pair_probe_failed",bootstrap:$bootstrap}'
+            return 1
+            ;;
+    esac
     endpoint_port="$(printf '%s' "$endpoint" | jq -r '.port')"
     path="$(printf '%s' "$endpoint" | jq -r '.path//"/dns-query"')"
     endpoint_ip="$host"
@@ -2062,6 +2117,7 @@ Commands:
   benchmark_start [auto|udp|doh|dot|udp,doh|udp,dot|doh,dot]
   apply_start <protocol> <candidate_id> <bootstrap_ipv4> <expected_dns_server> [secondary_protocol secondary_candidate_id secondary_bootstrap_ipv4 expected_secondary_dns_server]
   probe_pair <primary|secondary>
+  probe_bootstrap <udp|tcp|doh|dot> <server> [primary-host]
   rollback_start
   status
   version
@@ -2086,6 +2142,10 @@ case "${1:-}" in
             primary|secondary) probe_configured_pair "$2" ;;
             *) echo '{"success":false,"error":"invalid_slot"}'; exit 1 ;;
         esac
+        ;;
+    probe_bootstrap)
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo '{"success":false,"error":"arguments_required"}'; exit 1; }
+        probe_bootstrap "$2" "$3" "${4:-}"
         ;;
     rollback_start)
         start_worker "rollback"

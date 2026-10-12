@@ -4,7 +4,12 @@ repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 fail() { echo "FAIL: $*" >&2; exit 1; }
-for runtime in "$repo"/openwrt/runtime-*/usr/bin/podkop; do
+set -- "$repo"/openwrt/runtime-*/usr/bin/podkop
+if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+    jq -e '.supportedPodkopVersions==["0.7.24"]' "$repo/openwrt/update-manifest.json" >/dev/null
+    set -- "$repo/openwrt/runtime-0.7.24/usr/bin/podkop"
+fi
+for runtime do
     grep -Fqx '# subscription_services_v1 begin' "$runtime" || fail 'runtime service helper missing'
     sed -n '/^# subscription_services_v1 begin$/,/^# subscription_services_v1 end$/p' "$runtime" > "$tmp/helper"
     cmp "$tmp/helper" "$repo/openwrt/podkop-service-checks.sh" || fail 'runtime helper drift'

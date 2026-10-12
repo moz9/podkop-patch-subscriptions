@@ -29,7 +29,7 @@ download_source_runtime() {
 		return 0
 	fi
 	if command -v wget >/dev/null 2>&1 &&
-		wget --no-check-certificate -T 45 -O "$output" "$url"; then
+		wget -T 45 -O "$output" "$url"; then
 		source_runtime="$output"
 		return 0
 	fi

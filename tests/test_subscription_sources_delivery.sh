@@ -3,13 +3,19 @@ set -eu
 repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
-for version in 0.7.20 0.7.22 0.7.23; do
+versions='0.7.20 0.7.22 0.7.23'
+pe_version=0.7.23
+if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+    jq -e '.supportedPodkopVersions==["0.7.24"]' "$repo/openwrt/update-manifest.json" >/dev/null
+    versions=0.7.24; pe_version=0.7.24
+fi
+for version in $versions; do
     source="$repo/openwrt/runtime-$version/usr/bin/podkop"
     sed -n '/^# subscription_sources_v1 begin$/,/^# subscription_sources_v1 end$/p' "$source" > "$work/sources"
     sed -n '/^# subscription_isolated_probe_v1 begin$/,/^# subscription_isolated_probe_v1 end$/p' "$source" > "$work/probe"
     # The canonical helper follows current native PE. Historical runtimes keep
     # their own original selection/prefix semantics and retrofit from themselves.
-    if [ "$version" = 0.7.23 ]; then
+    if [ "$version" = "$pe_version" ]; then
         cmp -s "$work/sources" "$repo/openwrt/podkop-subscription-sources.sh"
     fi
     cmp -s "$work/probe" "$repo/openwrt/podkop-subscription-probe.sh"
@@ -34,9 +40,20 @@ for version in 0.7.20 0.7.22 0.7.23; do
     cp "$target" "$work/first"
     PODKOP_SOURCES_TARGET="$target" PODKOP_SOURCES_SOURCE="$source" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
     cmp -s "$target" "$work/first"
+    # Existing markers must not hide an outdated transaction rollback helper.
+    sed -i '/^subscription_apply_v2_restore() {$/,/^}$/s/PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED/PRE_FIX_RUNTIME_FLAG/' "$target"
+    PODKOP_SOURCES_TARGET="$target" PODKOP_SOURCES_SOURCE="$source" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
+    sed -n '/^subscription_apply_v2_restore() {$/,/^}$/p' "$target" | grep -Fq 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' || {
+        echo 'FAIL: existing v2 markers skipped the runtime-unchanged rollback guard' >&2; exit 1;
+    }
+    sh -n "$target"
 done
+[ "$(grep -Fc 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' "$repo/i")" -ge 2 ] || {
+    echo 'FAIL: installer can skip the memory-safe transaction retrofit' >&2; exit 1;
+}
+cmp -s "$repo/i" "$repo/openwrt/install.sh"
 # PE installs these blocks natively; the helper above is historical regression.
-grep -Fq 'download "$RAW_BASE/$RUNTIME_PE_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.23"' "$repo/i"
+grep -Fq 'download "$RAW_BASE/$RUNTIME_PE_PODKOP_FILE" "$tmp_dir/podkop.runtime-'"$pe_version"'"' "$repo/i"
 sed -n '/^install_prebuilt_pe_runtime() {/,/^}/p' "$repo/i" |
-    grep -Fq 'cp "$tmp_dir/podkop.runtime-0.7.23" /usr/bin/podkop'
+    grep -Fq 'cp "$tmp_dir/podkop.runtime-'"$pe_version"'" /usr/bin/podkop'
 echo 'PASS: native PE sources/probe delivery and historical backup/idempotence regressions'
