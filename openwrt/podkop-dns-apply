@@ -103,8 +103,11 @@ dns_reserve_saved_uci_json() (
         if [ "$#" != 2 ]; then printf 'invalid\000\000\000'; return 1; fi
         printf 'list\000%s\000%s\000' "$1" "$2"
     }
-    { eval "$exported" || printf 'invalid\000\000\000'; } | jq -Rsc '
-      split("\u0000")[:-1] as $parts |
+    # A non-NUL terminator preserves the final field with jq 1.6 raw slurp.
+    { eval "$exported" || printf 'invalid\000\000\000'; printf '%s' 'PODKOP_UCI_JSON_END'; } | jq -Rsc '
+      split("\u0000")
+      | if .[-1]!="PODKOP_UCI_JSON_END" then error("invalid_saved_uci") else .[:-1] end
+      | . as $parts |
       if ($parts|length)%3!=0 then error("invalid_saved_uci") else . end |
       [range(0;($parts|length);3) as $i|$parts[$i:$i+3]] |
       reduce .[] as $row ({values:{},current:null,index:0};

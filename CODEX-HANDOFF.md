@@ -6,7 +6,7 @@
 
 ## Зафиксированный источник
 
-- Кандидат: `20261012-safety-cas-v2-candidate`.
+- Кандидат: `20261012-safety-cas-v3-candidate`.
 - Commit исходников для установки: `1eb638db2212805a12a33776744827df0862d0a1` ([GitHub](https://github.com/moz9/podkop-patch-subscriptions/commit/1eb638db2212805a12a33776744827df0862d0a1)).
 - SHA-256 `i`: `a7cfd2b0500e38d96943c8a29a52a868f37fa2c2b8e0f98edaf7a011be47ca65`.
 - SHA-256 `openwrt/update-manifest.json`: `369d89e3fa3dfe08dab07c68ea7d9b94debfdbe7ed016238734ea8cf09296c4a`.

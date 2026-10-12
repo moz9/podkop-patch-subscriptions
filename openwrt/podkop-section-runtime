@@ -58,7 +58,7 @@ prepare() (
     [ ! -e "$output" ] || { error output_exists; return 1; }
     staged="$(mktemp -d "${output}.tmp.XXXXXX")" || return 1
     if ! jq -e --arg s "$section" --argjson port "$port" --argjson api "$api" '
-      def require($condition;$label): if $condition then . else error("section_graph/"+$label) end;
+      def require($condition;$reason): if $condition then . else error("section_graph/"+$reason) end;
       def resolver_tag: if type=="string" then . elif type=="object" then .server // "" else "" end;
       def member_name:
         startswith($s+"-") and endswith("-out") and

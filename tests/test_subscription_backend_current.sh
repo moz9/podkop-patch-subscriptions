@@ -44,11 +44,13 @@ for version in 0.7.20 0.7.22; do
         exit 1
     fi
     cp "$work/runtime" "$work/complete-runtime"
-    for missing in marker downloader refresh jqmarker jqbinding; do
+    for missing in marker downloader refresh jqmarker jqbinding ucijsonmarker ucijsonframing; do
         cp "$work/complete-runtime" "$work/runtime"
         case "$missing" in
             marker) sed -i '/^# subscription_resource_admission_v1$/d' "$work/runtime";;
             jqmarker) sed -i '/^# subscription_jq16_policy_v1$/d' "$work/runtime";;
+            ucijsonmarker) sed -i '/^# subscription_jq16_uci_v1$/d' "$work/runtime";;
+            ucijsonframing) sed -i '/printf.*PODKOP_UCI_JSON_END/s/PODKOP_UCI_JSON_END/OLD_JSON_END/' "$work/runtime";;
             jqbinding) sed -i '/^subscription_source_policy() {/,/^}/s/include_patterns/include/g' "$work/runtime";;
             downloader) sed -i '/^download_subscription_once() {/,/^}/s/download_status/legacy_status/g' "$work/runtime";;
             refresh) sed -i '/^refresh_subscription_cache() {/,/^}/s/subscription_resource_cache/legacy_cache/g' "$work/runtime";;
