@@ -551,14 +551,19 @@ dns_apply_controller() {
     printf '%s:%s\n' "$host" "$port"
 }
 dns_apply_choices() {
-    local mode="$1" runtime="$2" saved="$3" controller headers response tag encoded body wanted
-    if ! jq -e '.outbounds|any(.type=="selector" or .type=="urltest")' "$runtime" >/dev/null; then
+    local mode="$1" runtime="$2" saved="$3" controller headers response tag encoded body wanted groups
+    # Distinguish a valid no-group runtime from absent or malformed evidence.
+    groups="$(jq -rs 'if length!=1 or (.[0]|type)!="object" or (.[0].outbounds|type)!="array"
+      then error("invalid_dns_runtime") else .[0].outbounds|any(.type=="selector" or .type=="urltest") end' "$runtime")" || return 1
+    if [ "$groups" = false ]; then
         [ "$mode" != capture ] || printf '{"proxies":{}}\n' > "$saved"; return 0
     fi
     controller="$(dns_apply_controller "$runtime")" || return 1
     headers="$DA_WORK/api-headers"; response="$DA_WORK/api-response"
     jq -r 'if (.experimental.clash_api.secret//"")=="" then empty else "Authorization: Bearer "+.experimental.clash_api.secret end' "$runtime" > "$headers" || return 1
     if [ "$mode" = restore ]; then
+        jq -se --slurpfile config "$runtime" 'length==1 and (.[0]|type=="object" and (.proxies|type)=="object" and
+          (. as $saved|all($config[0].outbounds[]|select(.type=="selector");.tag as $tag|($saved.proxies[$tag].now|type)=="string")))' "$saved" >/dev/null || return 1
         jq -r '.outbounds[]|select(.type=="selector")|.tag' "$runtime" > "$DA_WORK/selector-tags" || return 1
         while IFS= read -r tag; do
             wanted="$(jq -er --arg tag "$tag" '.proxies[$tag].now|select(type=="string")' "$saved")" || return 1
@@ -571,9 +576,11 @@ dns_apply_choices() {
     fi
     (unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy NO_PROXY no_proxy;
       curl -fsS --noproxy '*' --connect-timeout 2 --max-time 5 --max-filesize 524288 --header "@$headers" -o "$response" "http://$controller/proxies" 2>/dev/null) || return 1
-    jq -e --slurpfile config "$runtime" '. as $api|all($config[0].outbounds[]|select(.type=="selector" or .type=="urltest");. as $group|($api.proxies[$group.tag].now|type)=="string" and ($api.proxies[$group.tag].all|sort)==($group.outbounds|sort))' "$response" >/dev/null || return 1
+    # Slurp guarantees one predicate result even on jq 1.6 with empty input.
+    jq -se --slurpfile config "$runtime" 'length==1 and (.[0]|type=="object" and (.proxies|type)=="object" and
+      (. as $api|all($config[0].outbounds[]|select(.type=="selector" or .type=="urltest");. as $group|($api.proxies[$group.tag]|type)=="object" and ($api.proxies[$group.tag].now|type)=="string" and ($api.proxies[$group.tag].all|type)=="array" and ($api.proxies[$group.tag].all|sort)==($group.outbounds|sort))))' "$response" >/dev/null || return 1
     if [ "$mode" = capture ]; then cp "$response" "$saved"; else
-        jq -e --slurpfile expected "$saved" --slurpfile config "$runtime" '. as $api|all($config[0].outbounds[]|select(.type=="selector");.tag as $tag|$api.proxies[$tag].now==$expected[0].proxies[$tag].now)' "$response" >/dev/null
+        jq -se --slurpfile expected "$saved" --slurpfile config "$runtime" 'length==1 and ($expected|length)==1 and (.[0] as $api|all($config[0].outbounds[]|select(.type=="selector");.tag as $tag|$api.proxies[$tag].now==$expected[0].proxies[$tag].now))' "$response" >/dev/null
     fi
 }
 dns_apply_all_choices() {

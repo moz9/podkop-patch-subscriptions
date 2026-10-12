@@ -19,6 +19,20 @@ fail() {
     exit 1
 }
 
+service_guards_present() {
+    local file="$1"
+    grep -Fqx '# subscription_jq16_service_guards_v1' "$file" &&
+        sed -n '/^subscription_services_confirm() ($/,/^)/p' "$file" | grep -F 'jq -se --arg service "$service"' | grep -F 'length==1 and (.[0]|type)=="object" and .[0].services[$service].network=="pass"' >/dev/null &&
+        sed -n '/^subscription_services_classify() {/,/^}/p' "$file" | grep -F 'jq -se' | grep -F 'length==1 and (.[0] | type=="object" and (.models|type=="array" and length>0 and all(.[]; type=="object" and ((.slug // .id)|type=="string" and length>0))))' >/dev/null &&
+        sed -n '/^subscription_services_validate() {/,/^}/p' "$file" | grep -F 'jq -se' | grep -F 'length==1 and (.[0] | type=="array" and length<=' >/dev/null &&
+        sed -n '/^subscription_services_read() {/,/^}/p' "$file" | grep -F 'jq -cs --arg context' >/dev/null &&
+        sed -n '/^subscription_services_read() {/,/^}/p' "$file" | grep -F 'if length==1 and (.[0]|type)=="object" and (.[0].results|type)=="array" then .[0] else {} end' >/dev/null &&
+        sed -n '/^subscription_services_policy() {/,/^}/p' "$file" | grep -F 'jq -cs --argjson required "$required"' | grep -F 'if length==1 and (.[0]|type)=="array" then {required:$required,results:.[0]} else error("invalid_service_results") end' >/dev/null &&
+        sed -n '/^subscription_source_policy() {/,/^}/p' "$file" | grep -F '[ "$#" -lt 8 ] || services="$8"' >/dev/null &&
+        sed -n '/^subscription_source_policy() {/,/^}/p' "$file" | grep -F '"$services" | jq -cs ' >/dev/null &&
+        sed -n '/^subscription_source_policy() {/,/^}/p' "$file" | grep -F 'if length==1 and (.[0]|type)=="object" and (.[0].required|type)=="array" and (.[0].results|type)=="array" then .[0] else error("invalid_service_policy") end' >/dev/null
+}
+
 cas_help_present() {
     sed -n '/^show_help() {$/,/^}$/p' "$1" | awk '
     $0=="    get_subscription_snapshot" { snapshot=1 }
@@ -41,6 +55,7 @@ extract_cas_help() {
 cas_capabilities_present() {
     local file="$1"
     cas_help_present "$file" &&
+        service_guards_present "$file" &&
         grep -Fqx '# subscription_apply_v2 begin' "$file" &&
         grep -Fqx '# subscription_apply_v2 end' "$file" &&
         grep -Fqx '# subscription_cas_v1 begin' "$file" &&

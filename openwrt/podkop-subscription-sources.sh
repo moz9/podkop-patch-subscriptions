@@ -434,11 +434,12 @@ subscription_cached_source_append() {
 }
 
 subscription_source_policy() {
-    local services="${8:-}"
-    [ -n "$services" ] || services='{"required":[],"results":[]}'
-    printf '%s\n' "$services" | jq -c --argjson country_map "$(if command -v subscription_services_country_map >/dev/null 2>&1; then subscription_services_country_map; else printf '{}\n'; fi)" --argjson now "$(date +%s)" --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
+    local services='{"required":[],"results":[]}'
+    [ "$#" -lt 8 ] || services="$8"
+    printf '%s\n' "$services" | jq -cs --argjson country_map "$(if command -v subscription_services_country_map >/dev/null 2>&1; then subscription_services_country_map; else printf '{}\n'; fi)" --argjson now "$(date +%s)" --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
         --argjson include_patterns "${6:-[]}" --argjson exclude "${7:-[]}" --slurpfile policy_items "$3" '
-        . as $services
+        if length==1 and (.[0]|type)=="object" and (.[0].required|type)=="array" and (.[0].results|type)=="array" then .[0] else error("invalid_service_policy") end
+        | . as $services
         | ($services.results | map({key:.id,value:.services}) | from_entries) as $service_status
         | $policy_items[0]
         |

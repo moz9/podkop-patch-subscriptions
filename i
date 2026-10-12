@@ -29,7 +29,7 @@ SECTION_WORKER_INIT_FILE="podkop-section-worker.init"
 SECTION_HOOKS_FILE="podkop-section-hooks.sh"
 SECTION_UPGRADE_FILE="podkop-section-upgrade.sh"
 SECTION_UPGRADE_PATCH_FILE="podkop-section-runtime-upgrade.patch"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261012-safety-cas-v3-candidate"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261012-safety-cas-v4-candidate"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -63,7 +63,7 @@ RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
 RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261012_safety_cas_v3_candidate"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261012_safety_cas_v4_candidate"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -208,13 +208,13 @@ www/luci-static/resources/view/podkop_patch_20261008_dashboard_parity_v4/setting
 www/luci-static/resources/view/podkop_patch_20261008_dashboard_parity_v4/dashboard.js
 www/luci-static/resources/view/podkop_patch_20261008_dashboard_parity_v4/diagnostic.js
 usr/lib/lua/luci/i18n/podkop.ru.lmo
-www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v3_candidate/main.js
-www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v3_candidate/podkop.js
-www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v3_candidate/section.js
-www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v3_candidate/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v3_candidate/settings.js
-www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v3_candidate/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v3_candidate/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v4_candidate/main.js
+www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v4_candidate/podkop.js
+www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v4_candidate/section.js
+www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v4_candidate/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v4_candidate/settings.js
+www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v4_candidate/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261012_safety_cas_v4_candidate/diagnostic.js
 "
 
 PERSISTENT_PATHS="
@@ -1271,6 +1271,20 @@ abort_with_restore() {
 	fail "$1"
 }
 
+service_guards_present() {
+    local file="$1"
+    grep -Fqx '# subscription_jq16_service_guards_v1' "$file" &&
+        sed -n '/^subscription_services_confirm() ($/,/^)/p' "$file" | grep -F 'jq -se --arg service "$service"' | grep -F 'length==1 and (.[0]|type)=="object" and .[0].services[$service].network=="pass"' >/dev/null &&
+        sed -n '/^subscription_services_classify() {/,/^}/p' "$file" | grep -F 'jq -se' | grep -F 'length==1 and (.[0] | type=="object" and (.models|type=="array" and length>0 and all(.[]; type=="object" and ((.slug // .id)|type=="string" and length>0))))' >/dev/null &&
+        sed -n '/^subscription_services_validate() {/,/^}/p' "$file" | grep -F 'jq -se' | grep -F 'length==1 and (.[0] | type=="array" and length<=' >/dev/null &&
+        sed -n '/^subscription_services_read() {/,/^}/p' "$file" | grep -F 'jq -cs --arg context' >/dev/null &&
+        sed -n '/^subscription_services_read() {/,/^}/p' "$file" | grep -F 'if length==1 and (.[0]|type)=="object" and (.[0].results|type)=="array" then .[0] else {} end' >/dev/null &&
+        sed -n '/^subscription_services_policy() {/,/^}/p' "$file" | grep -F 'jq -cs --argjson required "$required"' | grep -F 'if length==1 and (.[0]|type)=="array" then {required:$required,results:.[0]} else error("invalid_service_results") end' >/dev/null &&
+        sed -n '/^subscription_source_policy() {/,/^}/p' "$file" | grep -F '[ "$#" -lt 8 ] || services="$8"' >/dev/null &&
+        sed -n '/^subscription_source_policy() {/,/^}/p' "$file" | grep -F '"$services" | jq -cs ' >/dev/null &&
+        sed -n '/^subscription_source_policy() {/,/^}/p' "$file" | grep -F 'if length==1 and (.[0]|type)=="object" and (.[0].required|type)=="array" and (.[0].results|type)=="array" then .[0] else error("invalid_service_policy") end' >/dev/null
+}
+
 has_latest_subscription_backend() {
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
 	[ "${count:-0}" -ge 2 ] &&
@@ -1311,6 +1325,7 @@ has_latest_subscription_backend() {
 		grep -Fqx '# subscription_tag_glob_portable_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_game_filter_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_services_v1 end' /usr/bin/podkop 2>/dev/null &&
+		service_guards_present /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_gemini_region_v2' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_probe_context_v2' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_service_snapshot_v1 end' /usr/bin/podkop 2>/dev/null &&
@@ -2244,6 +2259,7 @@ if ! sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop | grep 
     ! grep -Fqx '# subscription_tag_glob_portable_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_game_filter_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_services_v1 end' /usr/bin/podkop ||
+    ! service_guards_present /usr/bin/podkop ||
     ! grep -Fqx '# subscription_gemini_region_v2' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_probe_context_v2' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_service_snapshot_v1 end' /usr/bin/podkop ||

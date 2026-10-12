@@ -11,6 +11,8 @@ done
 sh "$test_dir/test_subscription_jq_compat.sh"
 sh "$test_dir/test_section_jq_compat.sh"
 sh "$test_dir/test_uci_json_jq_compat.sh"
+sh "$test_dir/test_service_jq_compat.sh"
+sh "$test_dir/test_dns_choices_json_jq_compat.sh"
 node "$test_dir/test_subscription_filter_parity.mjs"
 node "$test_dir/test_subscription_reconcile_index.mjs"
 for suite in subscription_download_completion subscription_download_lifecycle subscription_resource_admission; do
