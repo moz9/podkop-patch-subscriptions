@@ -7,6 +7,7 @@
 # subscription_tag_prefix_v1
 # subscription_tag_filters_v1
 # subscription_tag_glob_portable_v1
+# subscription_jq16_policy_v1
 # subscription_service_filter_v1
 # subscription_game_filter_v1
 # subscription_resource_admission_v1
@@ -435,7 +436,7 @@ subscription_source_policy() {
     local services="${8:-}"
     [ -n "$services" ] || services='{"required":[],"results":[]}'
     printf '%s\n' "$services" | jq -c --argjson country_map "$(if command -v subscription_services_country_map >/dev/null 2>&1; then subscription_services_country_map; else printf '{}\n'; fi)" --argjson now "$(date +%s)" --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
-        --argjson include "${6:-[]}" --argjson exclude "${7:-[]}" --slurpfile policy_items "$3" '
+        --argjson include_patterns "${6:-[]}" --argjson exclude "${7:-[]}" --slurpfile policy_items "$3" '
         . as $services
         | ($services.results | map({key:.id,value:.services}) | from_entries) as $service_status
         | $policy_items[0]
@@ -531,7 +532,7 @@ subscription_source_policy() {
             | .sourceEnabled = (if ((.sourceIds // []) | length) > 0 then
                 any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
                 else ($disabled | length) == 0 end)
-            | .tagExcluded = ((($include|length)>0 and (matches($include; $item.name // $item.tag // "")|not)) or matches($exclude; $item.name // $item.tag // ""))
+            | .tagExcluded = ((($include_patterns|length)>0 and (matches($include_patterns; $item.name // $item.tag // "")|not)) or matches($exclude; $item.name // $item.tag // ""))
             | .serviceExcluded = (all($services.required[]; . as $service
                 | $service_status[$item.id][$service] as $proof
                 | $proof.state=="pass" and (if $service=="exit_country" then

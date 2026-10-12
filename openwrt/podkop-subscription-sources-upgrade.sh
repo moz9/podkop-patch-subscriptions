@@ -123,6 +123,8 @@ if cas_help_present "$target" &&
     grep -Fqx '# subscription_tag_prefix_v1' "$target" &&
     grep -Fqx '# subscription_tag_filters_v1' "$target" &&
     grep -Fqx '# subscription_tag_glob_portable_v1' "$target" &&
+    grep -Fqx '# subscription_jq16_policy_v1' "$target" &&
+    sed -n '/^subscription_source_policy() {/,/^}/p' "$target" | grep -F -- '--argjson include_patterns ' >/dev/null &&
     grep -Fqx '# subscription_service_filter_v1' "$target" &&
     grep -Fqx '# subscription_game_filter_v1' "$target" &&
     grep -Fqx '# subscription_services_v1 end' "$target" &&
