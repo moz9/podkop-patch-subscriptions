@@ -1,4 +1,5 @@
 # subscription_services_v1 begin
+# subscription_jq16_service_guards_v1
 # subscription_gemini_region_v2
 # Public website diagnostics only: no API keys, cookies or production selectors.
 subscription_services_catalog() {
@@ -6,7 +7,7 @@ subscription_services_catalog() {
 }
 
 subscription_services_validate() {
-    printf '%s' "$1" | jq -e 'type=="array" and length<=4 and all(.[]; .=="gemini" or .=="chatgpt" or .=="exit_country" or .=="google_country") and length==(unique|length)' >/dev/null 2>&1
+    printf '%s' "$1" | jq -se 'length==1 and (.[0] | type=="array" and length<=4 and all(.[]; .=="gemini" or .=="chatgpt" or .=="exit_country" or .=="google_country") and length==(unique|length))' >/dev/null 2>&1
 }
 
 subscription_required_services_json() {
@@ -37,10 +38,11 @@ subscription_services_read() {
     [ -n "$context" ] || return 1
     now="$(date +%s)"; path="$(subscription_services_cache_path "$section")"
     if [ -s "$path" ] && [ "$(wc -c < "$path")" -le 2097152 ]; then
-        jq -c --arg context "$context" --argjson now "$now" --argjson country_map "$(subscription_services_country_map)" '
+        jq -cs --arg context "$context" --argjson now "$now" --argjson country_map "$(subscription_services_country_map)" '
             def fresh:
                 (.checkedAt|type=="number") and .checkedAt>0 and .checkedAt<=$now
                 and (.expiresAt|type=="number") and .expiresAt>$now and .expiresAt<=(.checkedAt+86400);
+            (if length==1 and (.[0]|type)=="object" and (.[0].results|type)=="array" then .[0] else {} end) |
             if .context==$context then [.results[]? | select(fresh) | . as $row
                 | .services |= (with_entries(select((.key!="google_country" and .key!="exit_country") or (.value | fresh)))
                     | with_entries(.value |= (
@@ -80,7 +82,7 @@ subscription_services_policy() {
     [ -n "$required" ] || required="$(subscription_required_services_json "$1")" || return 1
     subscription_services_validate "$required" || return 1
     if [ "$required" = '[]' ]; then results='[]'; else results="$(subscription_services_read "$1")" || return 1; fi
-    printf '%s\n' "$results" | jq -c --argjson required "$required" '{required:$required,results:.}'
+    printf '%s\n' "$results" | jq -cs --argjson required "$required" 'if length==1 and (.[0]|type)=="array" then {required:$required,results:.[0]} else error("invalid_service_results") end'
 }
 
 get_subscription_services() {
@@ -380,7 +382,7 @@ subscription_services_classify() {
             reason=challenge_required
         fi
     else
-        if [ "$rc" -eq 0 ] && [ "$code" = 200 ] && printf '%s' "$body" | jq -e 'type=="object" and (.models|type=="array" and length>0 and all(.[]; type=="object" and ((.slug // .id)|type=="string" and length>0)))' >/dev/null 2>&1; then
+        if [ "$rc" -eq 0 ] && [ "$code" = 200 ] && printf '%s' "$body" | jq -se 'length==1 and (.[0] | type=="object" and (.models|type=="array" and length>0 and all(.[]; type=="object" and ((.slug // .id)|type=="string" and length>0))))' >/dev/null 2>&1; then
             state=pass; reason=anonymous_models_available
         fi
         if [ "$rc" -eq 0 ] && printf '%s' "$body" | grep -Eiq 'unusual traffic|captcha|cf-chl-|access denied'; then
@@ -463,7 +465,7 @@ subscription_services_confirm() (
     jq -e --arg id "$id" 'any(.[]; .id==$id and .supported)' "$(get_subscription_items_cache_path "$section")" >/dev/null 2>&1 || { subscription_services_error subscription_link_not_available; exit 1; }
     results="$(subscription_services_read "$section")" || exit 1
     row="$(printf '%s' "$results" | jq -c --arg id "$id" '.[] | select(.id==$id)')"
-    printf '%s' "$row" | jq -e --arg service "$service" '.services[$service].network=="pass"' >/dev/null 2>&1 || { subscription_services_error recent_network_check_required; exit 1; }
+    printf '%s' "$row" | jq -se --arg service "$service" 'length==1 and (.[0]|type)=="object" and .[0].services[$service].network=="pass"' >/dev/null 2>&1 || { subscription_services_error recent_network_check_required; exit 1; }
     if [ "$enabled" = true ] && ! printf '%s' "$row" | jq -e --arg service "$service" '.services[$service].state=="unknown"' >/dev/null; then
         subscription_services_error confirmation_requires_unknown_state
         exit 1

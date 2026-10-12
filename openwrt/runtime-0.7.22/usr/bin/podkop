@@ -1684,11 +1684,12 @@ subscription_cached_source_append() {
 }
 
 subscription_source_policy() {
-    local services="${8:-}"
-    [ -n "$services" ] || services='{"required":[],"results":[]}'
-    printf '%s\n' "$services" | jq -c --argjson country_map "$(if command -v subscription_services_country_map >/dev/null 2>&1; then subscription_services_country_map; else printf '{}\n'; fi)" --argjson now "$(date +%s)" --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
+    local services='{"required":[],"results":[]}'
+    [ "$#" -lt 8 ] || services="$8"
+    printf '%s\n' "$services" | jq -cs --argjson country_map "$(if command -v subscription_services_country_map >/dev/null 2>&1; then subscription_services_country_map; else printf '{}\n'; fi)" --argjson now "$(date +%s)" --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
         --argjson include_patterns "${6:-[]}" --argjson exclude "${7:-[]}" --slurpfile policy_items "$3" '
-        . as $services
+        if length==1 and (.[0]|type)=="object" and (.[0].required|type)=="array" and (.[0].results|type)=="array" then .[0] else error("invalid_service_policy") end
+        | . as $services
         | ($services.results | map({key:.id,value:.services}) | from_entries) as $service_status
         | $policy_items[0]
         |
@@ -3926,6 +3927,7 @@ subscription_speedtest() {
 }
 # subscription_isolated_probe_v1 end
 # subscription_services_v1 begin
+# subscription_jq16_service_guards_v1
 # subscription_gemini_region_v2
 # Public website diagnostics only: no API keys, cookies or production selectors.
 subscription_services_catalog() {
@@ -3933,7 +3935,7 @@ subscription_services_catalog() {
 }
 
 subscription_services_validate() {
-    printf '%s' "$1" | jq -e 'type=="array" and length<=2 and all(.[]; .=="gemini" or .=="chatgpt") and length==(unique|length)' >/dev/null 2>&1
+    printf '%s' "$1" | jq -se 'length==1 and (.[0] | type=="array" and length<=2 and all(.[]; .=="gemini" or .=="chatgpt") and length==(unique|length))' >/dev/null 2>&1
 }
 
 subscription_required_services_json() {
@@ -3964,10 +3966,11 @@ subscription_services_read() {
     [ -n "$context" ] || return 1
     now="$(date +%s)"; path="$(subscription_services_cache_path "$section")"
     if [ -s "$path" ] && [ "$(wc -c < "$path")" -le 2097152 ]; then
-        jq -c --arg context "$context" --argjson now "$now" '
+        jq -cs --arg context "$context" --argjson now "$now" '
             def fresh:
                 (.checkedAt|type=="number") and .checkedAt>0 and .checkedAt<=$now
                 and (.expiresAt|type=="number") and .expiresAt>$now and .expiresAt<=(.checkedAt+86400);
+            (if length==1 and (.[0]|type)=="object" and (.[0].results|type)=="array" then .[0] else {} end) |
             if .context==$context then [.results[]? | select(fresh) | . as $row
                 | .services |= (with_entries(.value |= (
                     . + {checkedAt:(.checkedAt // $row.checkedAt),expiresAt:(.expiresAt // $row.expiresAt)}))
@@ -3983,7 +3986,7 @@ subscription_services_policy() {
     [ -n "$required" ] || required="$(subscription_required_services_json "$1")" || return 1
     subscription_services_validate "$required" || return 1
     if [ "$required" = '[]' ]; then results='[]'; else results="$(subscription_services_read "$1")" || return 1; fi
-    printf '%s\n' "$results" | jq -c --argjson required "$required" '{required:$required,results:.}'
+    printf '%s\n' "$results" | jq -cs --argjson required "$required" 'if length==1 and (.[0]|type)=="array" then {required:$required,results:.[0]} else error("invalid_service_results") end'
 }
 
 get_subscription_services() {
@@ -4082,7 +4085,7 @@ subscription_services_classify() {
             reason=challenge_required
         fi
     else
-        if [ "$rc" -eq 0 ] && [ "$code" = 200 ] && printf '%s' "$body" | jq -e 'type=="object" and (.models|type=="array" and length>0 and all(.[]; type=="object" and ((.slug // .id)|type=="string" and length>0)))' >/dev/null 2>&1; then
+        if [ "$rc" -eq 0 ] && [ "$code" = 200 ] && printf '%s' "$body" | jq -se 'length==1 and (.[0] | type=="object" and (.models|type=="array" and length>0 and all(.[]; type=="object" and ((.slug // .id)|type=="string" and length>0))))' >/dev/null 2>&1; then
             state=pass; reason=anonymous_models_available
         fi
         if [ "$rc" -eq 0 ] && printf '%s' "$body" | grep -Eiq 'unusual traffic|captcha|cf-chl-|access denied'; then
@@ -4142,7 +4145,7 @@ subscription_services_confirm() (
     jq -e --arg id "$id" 'any(.[]; .id==$id and .supported)' "$(get_subscription_items_cache_path "$section")" >/dev/null 2>&1 || { subscription_services_error subscription_link_not_available; exit 1; }
     results="$(subscription_services_read "$section")" || exit 1
     row="$(printf '%s' "$results" | jq -c --arg id "$id" '.[] | select(.id==$id)')"
-    printf '%s' "$row" | jq -e --arg service "$service" '.services[$service].network=="pass"' >/dev/null 2>&1 || { subscription_services_error recent_network_check_required; exit 1; }
+    printf '%s' "$row" | jq -se --arg service "$service" 'length==1 and (.[0]|type)=="object" and .[0].services[$service].network=="pass"' >/dev/null 2>&1 || { subscription_services_error recent_network_check_required; exit 1; }
     if [ "$enabled" = true ] && ! printf '%s' "$row" | jq -e --arg service "$service" '.services[$service].state=="unknown"' >/dev/null; then
         subscription_services_error confirmation_requires_unknown_state
         exit 1

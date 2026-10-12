@@ -25,7 +25,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261012-pe-v20-0724-candidate"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261012-pe-v21-0724-candidate"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -62,7 +62,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_PE_PODKOP_FILE="runtime-0.7.24/usr/bin/podkop"
 RUNTIME_PE_PODKOP_JS_FILE="runtime-0.7.24/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261012_pe_v20_0724_candidate"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261012_pe_v21_0724_candidate"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -199,14 +199,14 @@ www/luci-static/resources/view/podkop_patch_20261007_pe_v8/diagnostic.js
 www/luci-static/resources/view/podkop_patch_20261007_pe_v8/dns_benchmark.js
 
 usr/lib/lua/luci/i18n/podkop.ru.lmo
-www/luci-static/resources/view/podkop_patch_20261012_pe_v20_0724_candidate/main.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v20_0724_candidate/podkop.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v20_0724_candidate/section.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v20_0724_candidate/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v20_0724_candidate/settings.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v20_0724_candidate/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v20_0724_candidate/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v20_0724_candidate/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v21_0724_candidate/main.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v21_0724_candidate/podkop.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v21_0724_candidate/section.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v21_0724_candidate/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v21_0724_candidate/settings.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v21_0724_candidate/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v21_0724_candidate/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v21_0724_candidate/dns_benchmark.js
 "
 
 PERSISTENT_PATHS="
@@ -1284,6 +1284,20 @@ abort_with_restore() {
 	fail "$1"
 }
 
+service_guards_present() {
+    local file="$1"
+    grep -Fqx '# subscription_jq16_service_guards_v1' "$file" &&
+        sed -n '/^subscription_services_confirm() ($/,/^)/p' "$file" | grep -F 'jq -se --arg service "$service"' | grep -F 'length==1 and (.[0]|type)=="object" and .[0].services[$service].network=="pass"' >/dev/null &&
+        sed -n '/^subscription_services_classify() {/,/^}/p' "$file" | grep -F 'jq -se' | grep -F 'length==1 and (.[0] | type=="object" and (.models|type=="array" and length>0 and all(.[]; type=="object" and ((.slug // .id)|type=="string" and length>0))))' >/dev/null &&
+        sed -n '/^subscription_services_validate() {/,/^}/p' "$file" | grep -F 'jq -se' | grep -F 'length==1 and (.[0] | type=="array" and length<=' >/dev/null &&
+        sed -n '/^subscription_services_read() {/,/^}/p' "$file" | grep -F 'jq -cs --arg context' >/dev/null &&
+        sed -n '/^subscription_services_read() {/,/^}/p' "$file" | grep -F 'if length==1 and (.[0]|type)=="object" and (.[0].results|type)=="array" then .[0] else {} end' >/dev/null &&
+        sed -n '/^subscription_services_policy() {/,/^}/p' "$file" | grep -F 'jq -cs --argjson required "$required"' | grep -F 'if length==1 and (.[0]|type)=="array" then {required:$required,results:.[0]} else error("invalid_service_results") end' >/dev/null &&
+        sed -n '/^subscription_source_policy() {/,/^}/p' "$file" | grep -F '[ "$#" -lt 8 ] || services="$8"' >/dev/null &&
+        sed -n '/^subscription_source_policy() {/,/^}/p' "$file" | grep -F '"$services" | jq -cs ' >/dev/null &&
+        sed -n '/^subscription_source_policy() {/,/^}/p' "$file" | grep -F 'if length==1 and (.[0]|type)=="object" and (.[0].required|type)=="array" and (.[0].results|type)=="array" then .[0] else error("invalid_service_policy") end' >/dev/null
+}
+
 has_latest_subscription_backend() {
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
 	[ "${count:-0}" -ge 2 ] &&
@@ -1319,6 +1333,7 @@ has_latest_subscription_backend() {
 		grep -Fqx '# subscription_tag_glob_portable_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_game_filter_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_services_v1 end' /usr/bin/podkop 2>/dev/null &&
+		service_guards_present /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_gemini_region_v2' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_probe_context_v2' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_service_snapshot_v1 end' /usr/bin/podkop 2>/dev/null &&
@@ -2290,6 +2305,7 @@ if ! sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop | grep 
     ! grep -Fqx '# subscription_tag_glob_portable_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_game_filter_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_services_v1 end' /usr/bin/podkop ||
+    ! service_guards_present /usr/bin/podkop ||
     ! grep -Fqx '# subscription_gemini_region_v2' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_probe_context_v2' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_service_snapshot_v1 end' /usr/bin/podkop ||
