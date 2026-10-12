@@ -1,0 +1,3 @@
+#!/bin/sh
+printf '%s\n' 'BLOCKED: service (system/router action)' >> /tmp/ci-guard.log
+exit 126

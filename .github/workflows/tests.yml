@@ -1,22 +1,24 @@
-name: Tests
+name: Offline candidate checks
 
 on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   validate:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      - run: sudo apt-get update && sudo apt-get install -y jq shellcheck
-      - run: sh tests/run.sh
-      - name: Check router shell scripts
-        run: |
-          shellcheck -s sh -S error a i s openwrt/install.sh \
-            openwrt/*.sh openwrt/podkop-dns-failover openwrt/podkop-dns-failover.init \
-            openwrt/podkop-dns-optimizer openwrt/podkop-update-manager \
-            openwrt/runtime-0.7.20/usr/bin/podkop openwrt/runtime-0.7.22/usr/bin/podkop
+      - name: Install sandbox and verification prerequisites
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap util-linux python3 jq shellcheck
+      - name: Run offline, read-only candidate checks
+        run: sh scripts/verify-candidate-ci.sh
