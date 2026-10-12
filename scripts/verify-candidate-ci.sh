@@ -48,11 +48,12 @@ set -- "$@" --proc /proc --dev /dev --tmpfs /tmp --tmpfs /run \
     --remount-ro / --chdir /src \
     --setenv PATH /ci/guard-bin:/node-bin:/usr/bin:/bin \
     --setenv HOME /tmp/ci-home --setenv TMPDIR /tmp --setenv LC_ALL C --setenv TZ UTC \
-    -- /bin/sh /ci/run-inside.sh "$mode"
+    -- /usr/bin/python3 /ci/close-fds-exec.py /bin/sh /ci/run-inside.sh "$mode"
 
 # Clear the environment BEFORE namespace setup as well as at the sandbox
 # boundary. Namespace failure is fatal; never retry without isolation.
 exec env -i PATH=/usr/bin:/bin LC_ALL=C TZ=UTC \
     timeout --signal=TERM --kill-after=15s 12m \
     "$unshare" --user --map-root-user --net --fork --kill-child \
-    "$python" "$tooling/ci/netns-loopback.py" "$parent_netns" "$@"
+    "$python" "$tooling/ci/netns-loopback.py" "$parent_netns" \
+    "$python" "$tooling/ci/close-fds-exec.py" "$@"
