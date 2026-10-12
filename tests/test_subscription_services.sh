@@ -126,10 +126,16 @@ jq -e --arg id "$id" 'any(.results[]; .id==$id and .expiresAt==0)' "$path" >/dev
 subscription_services_confirm main "$id" gemini true > "$tmp/error" && fail 'expired network confirmed' || :
 jq -e '.error=="recent_network_check_required"' "$tmp/error" >/dev/null
 now="$(date +%s)"
+# Keep the future observation in the future even if scheduling crosses a second.
+# Scope the clock override to the malformed/future timestamp and TTL assertions.
+service_fixture_now="$now"
+date() { if [ "$*" = +%s ]; then printf '%s\n' "$service_fixture_now"; else command date "$@"; fi; }
 jq -cn --arg id "$id" --argjson now "$now" '{context:"test-context",results:[null,-1,($now+1)]|map({id:$id,checkedAt:.,expiresAt:($now+3600),services:{gemini:{state:"pass"}}})}' > "$path"
 subscription_services_policy main '["gemini"]' | jq -e '.results==[]' >/dev/null || fail 'malformed or future checkedAt evidence admitted'
 jq -cn --arg id "$id" --argjson now "$now" '{context:"test-context",results:[{id:$id,checkedAt:$now,expiresAt:($now+86401),services:{gemini:{state:"pass"}}}]}' > "$path"
 subscription_services_policy main '["gemini"]' | jq -e '.results==[]' >/dev/null || fail 'out-of-bounds TTL evidence admitted'
+unset -f date
+unset service_fixture_now
 jq -cn --argjson now "$now" '{context:"test-context",results:[range(0;300)|{id:(("00000000000000000000000000000000"+tostring)[-32:]),checkedAt:$now,expiresAt:($now+86400),services:{}}]}' > "$path"
 subscription_services_store main "$id" '{"gemini":{"state":"fail","network":"fail","reason":"network_failed"}}'
 [ "$(jq '.results|length' "$path")" = 301 ] || fail 'many-config cache churns after 256 rows'
