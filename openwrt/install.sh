@@ -25,7 +25,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261012-pe-v18-0724-candidate"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261012-pe-v19-0724-candidate"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -62,7 +62,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_PE_PODKOP_FILE="runtime-0.7.24/usr/bin/podkop"
 RUNTIME_PE_PODKOP_JS_FILE="runtime-0.7.24/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261012_pe_v18_0724_candidate"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261012_pe_v19_0724_candidate"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -199,14 +199,14 @@ www/luci-static/resources/view/podkop_patch_20261007_pe_v8/diagnostic.js
 www/luci-static/resources/view/podkop_patch_20261007_pe_v8/dns_benchmark.js
 
 usr/lib/lua/luci/i18n/podkop.ru.lmo
-www/luci-static/resources/view/podkop_patch_20261012_pe_v18_0724_candidate/main.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v18_0724_candidate/podkop.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v18_0724_candidate/section.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v18_0724_candidate/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v18_0724_candidate/settings.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v18_0724_candidate/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v18_0724_candidate/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v18_0724_candidate/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v19_0724_candidate/main.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v19_0724_candidate/podkop.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v19_0724_candidate/section.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v19_0724_candidate/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v19_0724_candidate/settings.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v19_0724_candidate/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v19_0724_candidate/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v19_0724_candidate/dns_benchmark.js
 "
 
 PERSISTENT_PATHS="
@@ -1305,6 +1305,8 @@ has_latest_subscription_backend() {
 		sed -n '/^set_subscription_sections_enabled() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -F 'expectedRevision' >/dev/null &&
 		sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -Fq 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' &&
 		grep -Fqx '# subscription_resource_admission_v1' /usr/bin/podkop 2>/dev/null &&
+		grep -Fqx '# subscription_jq16_policy_v1' /usr/bin/podkop 2>/dev/null &&
+		sed -n '/^subscription_source_policy() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -Fq -- '--argjson include_patterns' &&
 		sed -n '/^download_subscription_once() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -Fq 'download_status' &&
 		sed -n '/^refresh_subscription_cache() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -Fq 'subscription_resource_cache' &&
 		grep -Fq '# subscription_sources_v1 begin' /usr/bin/podkop 2>/dev/null &&
@@ -2271,6 +2273,8 @@ fi
 
 if ! sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop | grep -Fq 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' ||
     ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
+    ! grep -Fqx '# subscription_jq16_policy_v1' /usr/bin/podkop ||
+    ! sed -n '/^subscription_source_policy() {/,/^}/p' /usr/bin/podkop | grep -Fq -- '--argjson include_patterns' ||
     ! grep -Fqx '# subscription_cas_v1 begin' /usr/bin/podkop ||
     ! grep -Fqx 'get_subscription_snapshot)' /usr/bin/podkop ||
     ! grep -Fqx '    set_subscription_link_enabled "$2" "$3" "$4" "$5"' /usr/bin/podkop ||
