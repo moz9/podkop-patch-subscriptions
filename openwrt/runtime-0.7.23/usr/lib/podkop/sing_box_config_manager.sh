@@ -256,7 +256,7 @@ sing_box_cm_add_dns_route_rule() {
         '.dns.rules += [{
             action: "route",
             server: $server,
-            $service_tag: $tag
+            ($service_tag): $tag
         }]'
 }
 
@@ -1115,7 +1115,7 @@ sing_box_cm_add_route_rule() {
             action: "route",
             inbound: $inbound,
             outbound: $outbound,
-            $service_tag: $tag
+            ($service_tag): $tag
         }]'
 }
 
@@ -1217,7 +1217,7 @@ sing_box_cm_add_reject_route_rule() {
         '.route.rules += [{
             action: "reject",
             inbound: $inbound,
-            $service_tag: $tag
+            ($service_tag): $tag
         }]'
 }
 
@@ -1267,7 +1267,7 @@ sing_box_cm_add_options_route_rule() {
         --arg tag "$tag" \
         '.route.rules += [{
             action: "route-options",
-            $service_tag: $tag
+            ($service_tag): $tag
         }]'
 }
 

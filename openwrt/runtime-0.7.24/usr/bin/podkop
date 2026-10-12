@@ -1299,6 +1299,7 @@ append_subscription_skipped_proxy_link() {
 # subscription_tag_filters_v1
 # subscription_tag_glob_portable_v1
 # subscription_jq16_policy_v1
+# subscription_jq16_uci_v1
 # subscription_service_filter_v1
 # subscription_game_filter_v1
 # subscription_resource_admission_v1
@@ -2082,8 +2083,12 @@ subscription_cas_config_json() (
     config() { printf 'c\000%s\000%s\000' "$1" "$2"; }
     option() { printf 'o\000%s\000%s\000' "$1" "$2"; }
     list() { printf 'l\000%s\000%s\000' "$1" "$2"; }
-    eval "$data" | jq -Rsc '
-      split("\u0000") | .[:-1] | . as $a
+    # A non-NUL terminator preserves the final field with jq 1.6 raw slurp.
+    { eval "$data" || printf 'invalid\000\000\000'; printf '%s' 'PODKOP_UCI_JSON_END'; } | jq -Rsc '
+      split("\u0000")
+      | if .[-1]!="PODKOP_UCI_JSON_END" then error("invalid_export") else .[:-1] end
+      | if length%3!=0 then error("invalid_export") else . end
+      | . as $a
       | reduce range(0; length; 3) as $i ({rows:{},section:null};
           if $a[$i]=="c" then .section=$a[$i+2] | .rows[.section]={".type":$a[$i+1]}
           elif $a[$i]=="o" then .rows[.section][$a[$i+1]]=$a[$i+2]

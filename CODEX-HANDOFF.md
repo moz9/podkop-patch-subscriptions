@@ -6,7 +6,7 @@
 
 ## Зафиксированный источник
 
-- Кандидат: `20261012-pe-v19-0724-candidate`.
+- Кандидат: `20261012-pe-v20-0724-candidate`.
 - Commit исходников для установки: `a623b0680062d52a9a9360176603ba68664da785` ([GitHub](https://github.com/moz9/podkop-patch-subscriptions/commit/a623b0680062d52a9a9360176603ba68664da785)).
 - SHA-256 `i`: `5964cdc864e2e27752f89dbb74dab9e5aa488d75b24f07f14cb3aa32405b90a3`.
 - SHA-256 `openwrt/update-manifest.json`: `cb8315f01f925c719145d88280c7d0474fbf804c5b123476850345f436427919`.

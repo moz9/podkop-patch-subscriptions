@@ -117,6 +117,8 @@ if cas_help_present "$target" &&
     grep -Fqx '# subscription_tag_filters_v1' "$target" &&
     grep -Fqx '# subscription_tag_glob_portable_v1' "$target" &&
     grep -Fqx '# subscription_jq16_policy_v1' "$target" &&
+    grep -Fqx '# subscription_jq16_uci_v1' "$target" &&
+    sed -n '/^subscription_cas_config_json() ($/,/^)/p' "$target" | grep -F "printf '%s' 'PODKOP_UCI_JSON_END'" >/dev/null &&
     sed -n '/^subscription_source_policy() {/,/^}/p' "$target" | grep -F -- '--argjson include_patterns ' >/dev/null &&
     grep -Fqx '# subscription_service_filter_v1' "$target" &&
     grep -Fqx '# subscription_game_filter_v1' "$target" &&

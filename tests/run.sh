@@ -9,6 +9,9 @@ for suite in dns_endpoint_cancel dns_endpoint_production dns_native_watch_cleanu
     sh "$test_dir/test_$suite.sh"
 done
 sh "$test_dir/test_subscription_jq_compat.sh"
+sh "$test_dir/test_section_jq_compat.sh"
+sh "$test_dir/test_uci_json_jq_compat.sh"
+sh "$test_dir/test_config_manager_jq_compat.sh"
 node "$test_dir/test_subscription_filter_parity.mjs"
 node "$test_dir/test_subscription_reconcile_index.mjs"
 for suite in subscription_download_completion subscription_download_lifecycle subscription_resource_admission; do
