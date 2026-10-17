@@ -1,13 +1,14 @@
 #!/bin/sh
 # Existing candidate-only, configuration-preserving hotfix. No service/package actions.
 # Immutable payload identity, independent of the branch serving this entrypoint.
-PE_PAYLOAD_COMMIT=c4b67eba6c55d3590556fae13ca09fbce226b207
+PE_PAYLOAD_COMMIT=822c4d1af3e4f79f96083bcc96a392388ccb7fd1
 PE_SNAPSHOT_SHA256=19999ca5534bd4e9b93fbc3587ac9318a7825929aff3a023ee055a0ec5d83c70
 PE_PROBE_SHA256=606dd34fbf2cba315507cf81a274e05841e253e482d326585485e68972eebbf4
 PE_BENCHMARK_SHA256=9116a194e30a9e87a26237f231f22677fe441f6765ad785ac43ff8de5d5205d3
 PE_UI_SHA256=6eda2f86c785464e6d26bf7689d8ac269e85ba43acd5ba48937d68e05e97c7da
 PE_SERVICES_SHA256=580e2243bbe7e74732b5e54332f33307489404a5f396510c4de6731b2ffed00c
 PE_MAIN_UI_SHA256=ac3cd2bf46c563f383fa6a1ceb51aa224ad79c76639591f76e56cd77ea3fc352
+PE_DNS_APPLY_SHA256=4ec5b22929e064427948f81e2954827b1651a76e6c1fd12f469cf6a00c293abd
 
 pe_fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 pe_identity() {
@@ -45,7 +46,7 @@ pe_checks_idle() {
     ! ps w | grep -E '[/]usr/bin/podkop (subscription_(services_check|ping|speedtest)|start|restart|reload)|podkop-dns-benchmark worker|podkop-update-manager worker' | grep -v grep >/dev/null
 }
 pe_mode() {
-    case "$1" in 1|2) printf 755;; 3|4|5|6) printf 644;; *) return 1;; esac
+    case "$1" in 1|2|7) printf 755;; 3|4|5|6) printf 644;; *) return 1;; esac
 }
 pe_permissions() {
     [ "$(stat -c '%a' "$1")" = "$(pe_mode "$2")" ]
@@ -88,7 +89,7 @@ pe_main() {
     [ "$(id -u)" = 0 ] || pe_fail 'root required'
     for pe_tool in curl jq sha256sum awk grep cmp mktemp ash stat chmod chown; do command -v "$pe_tool" >/dev/null || pe_fail "missing $pe_tool"; done
     pe_hex "$PE_PAYLOAD_COMMIT" 40 || pe_fail 'unpublished payload commit pin'
-    for pe_hash in "$PE_SNAPSHOT_SHA256" "$PE_PROBE_SHA256" "$PE_BENCHMARK_SHA256" "$PE_UI_SHA256" "$PE_SERVICES_SHA256" "$PE_MAIN_UI_SHA256"; do
+    for pe_hash in "$PE_SNAPSHOT_SHA256" "$PE_PROBE_SHA256" "$PE_BENCHMARK_SHA256" "$PE_UI_SHA256" "$PE_SERVICES_SHA256" "$PE_MAIN_UI_SHA256" "$PE_DNS_APPLY_SHA256"; do
         pe_hex "$pe_hash" 64 || pe_fail 'unpublished payload hash pin'
     done
     [ -f /usr/bin/podkop ] && [ ! -L /usr/bin/podkop ] || pe_fail 'unsupported runtime path'
@@ -124,11 +125,13 @@ pe_main() {
     pe_fetch dns_benchmark.js "$PE_UI_SHA256" || pe_fail 'UI payload verification failed'
     pe_fetch podkop-service-checks.sh "$PE_SERVICES_SHA256" || pe_fail 'service payload verification failed'
     pe_fetch main.js "$PE_MAIN_UI_SHA256" || pe_fail 'main UI payload verification failed'
+    pe_fetch podkop-dns-apply "$PE_DNS_APPLY_SHA256" || pe_fail 'DNS apply payload verification failed'
     printf '%s\n' '1|/usr/bin/podkop' '2|/usr/bin/podkop-dns-benchmark' \
         '3|/www/luci-static/resources/view/podkop/dns_benchmark.js' \
         '4|/www/luci-static/resources/view/podkop_patch_20261017_pe_fastfix_v1_candidate/dns_benchmark.js' \
         '5|/www/luci-static/resources/view/podkop/main.js' \
-        '6|/www/luci-static/resources/view/podkop_patch_20261017_pe_fastfix_v1_candidate/main.js' > "$pe_work/targets"
+        '6|/www/luci-static/resources/view/podkop_patch_20261017_pe_fastfix_v1_candidate/main.js' \
+        '7|/usr/bin/podkop-dns-apply' > "$pe_work/targets"
     while IFS='|' read -r pe_n pe_target; do
         [ -f "$pe_target" ] && [ ! -L "$pe_target" ] || pe_fail "missing/linked target: $pe_target"
         [ "$(stat -c '%u:%g' "$pe_target")" = 0:0 ] || pe_fail "unsupported target ownership: $pe_target"
@@ -142,7 +145,8 @@ pe_main() {
     cp "$pe_work/dns_benchmark.js" "$pe_work/new.4"
     cp "$pe_work/main.js" "$pe_work/new.5"
     cp "$pe_work/main.js" "$pe_work/new.6"
-    ash -n "$pe_work/new.1" && ash -n "$pe_work/new.2" || pe_fail 'staged shell syntax rejected'
+    cp "$pe_work/podkop-dns-apply" "$pe_work/new.7"
+    ash -n "$pe_work/new.1" && ash -n "$pe_work/new.2" && ash -n "$pe_work/new.7" || pe_fail 'staged shell syntax rejected'
     pe_checks_idle || pe_fail 'runtime operation appeared during staging'
     pe_configs > "$pe_work/config.unsorted" && sort "$pe_work/config.unsorted" > "$pe_work/config.now"
     cmp -s "$pe_work/config.before" "$pe_work/config.now" || pe_fail 'configuration changed during staging'

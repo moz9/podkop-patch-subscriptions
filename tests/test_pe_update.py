@@ -121,7 +121,7 @@ pe_stage "$1" "$2" 1 "$(id -u):$(id -g)"
             stage = root / 'stage'
             source.write_text('payload')
             source.chmod(0o600)
-            for index, mode in ((1, 0o755), (2, 0o755), (3, 0o644), (4, 0o644)):
+            for index, mode in ((1, 0o755), (2, 0o755), (3, 0o644), (4, 0o644), (7, 0o755)):
                 stage.write_text('old')
                 stage.chmod(0o755)
                 result = self.run_helper('''
