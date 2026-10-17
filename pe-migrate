@@ -6,6 +6,15 @@ fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 fetch() { curl --proto '=https' --proto-redir '=https' -fSL --connect-timeout 10 --max-time 120 "$1" -o "$2"; }
 verify() { printf '%s  %s\n' "$1" "$2" | sha256sum -c -; }
 version() { apk list --installed --manifest | awk -v p="$1" '$1==p {n++;v=$2} END {if(n>1)exit 1; print v}'; }
+config_fingerprints() {
+    # BusyBox tar does not restore directory mtimes. Compare saved bytes/paths,
+    # not archive headers, so restoring identical settings is not a false failure.
+    while IFS= read -r p; do
+        find "$1/$p" -type f -exec sha256sum '{}' ';' || return 1
+        find "$1/$p" -type d -print || return 1
+        if find "$1/$p" -type l | grep -q .; then return 1; fi
+    done < "$2"
+}
 plan_check() {
     # Parse transaction ACTIONS, not advisory text such as "consider apk upgrade".
     awk -v old="$2" -v new="$3" '
@@ -69,6 +78,8 @@ main() {
     done > "$work/config.paths"
     tar -cf "$work/config.tar" -C / -T "$work/config.paths"
     tar -tf "$work/config.tar" >/dev/null
+    config_fingerprints '' "$work/config.paths" > "$work/config.unsorted" || fail 'cannot fingerprint saved settings'
+    sort "$work/config.unsorted" > "$work/config.fingerprints"
     cp /etc/apk/world "$work/world.before"
     apk list --installed --manifest > "$work/packages.before"
     # The adapter has its own snapshot/rollback for patch files. Keep additional
@@ -117,8 +128,9 @@ main() {
       sh "$source/openwrt/pe-install.sh"
     # Adapter may migrate DNS defaults; user's saved selection takes precedence.
     tar -xf "$work/config.tar" -C /
-    tar -cf "$work/config.after.tar" -C / -T "$work/config.paths"
-    cmp -s "$work/config.tar" "$work/config.after.tar" || fail 'configuration preservation check failed'
+    config_fingerprints '' "$work/config.paths" > "$work/config.after.unsorted" || fail 'cannot verify saved settings'
+    sort "$work/config.after.unsorted" > "$work/config.after.fingerprints"
+    cmp -s "$work/config.fingerprints" "$work/config.after.fingerprints" || fail 'configuration preservation check failed'
     cp "$stock" "$checkpoint/stock-sing-box.apk"
     sha256sum "$checkpoint/stock-sing-box.apk" > "$checkpoint/stock.sha256"
     sha256sum -c "$checkpoint/stock.sha256"

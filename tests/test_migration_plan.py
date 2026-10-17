@@ -8,6 +8,22 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / 'pe-migrate').read_text().split('# MIGRATION_MAIN')[0]
 
 class Plans(unittest.TestCase):
+    def test_config_bytes_not_directory_mtime(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = pathlib.Path(d)
+            (root / 'config').mkdir()
+            f = root / 'config/settings'
+            f.write_text('saved selection')
+            paths = root / 'paths'
+            paths.write_text('config\n')
+            def fingerprint():
+                return subprocess.check_output(['sh', '-c', SOURCE + '\nconfig_fingerprints "$1" "$2"', 'test', d, str(paths)])
+            before = fingerprint()
+            os.utime(root / 'config', (1, 1))
+            self.assertEqual(before, fingerprint())
+            f.write_text('changed selection')
+            self.assertNotEqual(before, fingerprint())
+
     def test_failover_upgrade_preserves_bounded_diagnostic_fallback(self):
         with tempfile.TemporaryDirectory() as d:
             target = pathlib.Path(d) / 'podkop'
