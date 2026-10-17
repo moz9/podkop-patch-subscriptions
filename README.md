@@ -27,6 +27,16 @@ The 96 MiB storage floor is deliberately conservative for the compressed APKs, e
 - The five exact engine features are checked after installation. The original PE adapter is `openwrt/pe-install.sh`, package mutation remains disabled there, and it is always invoked with local verified assets and `PODKOP_PATCH_DEFER_SERVICE_START=1`.
 - LuCI RPC/web services may reload during adapter installation. Podkop/engine/failsafe are not started or enabled by this controller. The honest success state is **INSTALLED / STOPPED**, not confirmed routing. Enter subscriptions yourself in LuCI and coordinate activation separately. No reboot is requested.
 
+## After entering subscriptions
+
+In LuCI open **Services → Podkop**, enter your own subscription(s), select the section's nodes/filters and save/apply that selection. Do not post subscription URLs in public reports. After the configuration is saved, the explicit runtime activation command is:
+
+```sh
+/usr/bin/podkop start
+```
+
+The installed 0.7.24 runtime implements this `start` dispatcher; source inspection confirms the command, **not a successful first activation on Redmi AX6**. It can change DNS/firewall routing. If it reports an error, do not reboot or repeatedly apply: retain the checkpoint and report the error without secrets. Do not run the deferred engine uci-defaults blindly. After activation, verify DNS and a real client website; this publication does not claim those checks passed.
+
 `a`, `m`, and `s` are inherited payload support files, NOT alternate entry points for this candidate. In particular, old migration helpers are not suitable for this fresh 0.7.24 path. Do not run them.
 
 ## Verification and limitations
