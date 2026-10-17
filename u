@@ -61,7 +61,7 @@ main() {
       pe)
         if grep -Fxq '# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261017-pe-fastfix-v1-candidate' /usr/bin/podkop &&
            sing-box version | grep -Fxq 'sing-box version 1.14.2-pdk-r14'; then
-            download_run b3c3c9050e27ccad7c2ce95a1a5526c01c981b6b pe-update b3a9cf9e603f7f286e8a57d5444438b475b74e37389456e67ac4bdc94fc7dd88
+            download_run 4cbc04e3c5f7caac8fe4a2d292efcd0506384f24 pe-update b39d46b3bcd23607e216378aa0c0d2db2ac76254d1f405e7ce192bcc0e67398e
         else
             die 'existing PE differs from the verified candidate; automatic replacement is not yet supported'
         fi
