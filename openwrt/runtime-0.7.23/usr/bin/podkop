@@ -3185,15 +3185,15 @@ subscription_probe_config() {
 }
 
 subscription_probe_resources() {
-    # 16 MiB for the working services plus 16 MiB for the private check/run.
+    # Leave 48 MiB for working services and 48 MiB for the private engine.
     # Refuse unknown RAM; swap is not a safe launch budget on these routers.
     local mode="$1" requested="${2:-1}" active="${3:-0}" total available
     SUBSCRIPTION_PROBE_ERROR=''
     SUBSCRIPTION_PROBE_STREAMS="$requested"
-    SUBSCRIPTION_PROBE_REQUIRED_KB=32768
+    SUBSCRIPTION_PROBE_REQUIRED_KB=98304
     # Once the child is resident, protect the live floor without reserving its
     # own launch budget twice. Curl streams still need their separate reserve.
-    [ "$active" = 0 ] || SUBSCRIPTION_PROBE_REQUIRED_KB=16384
+    [ "$active" = 0 ] || SUBSCRIPTION_PROBE_REQUIRED_KB=49152
     total="$(awk '/^MemTotal:/ {print $2; exit}' "${PODKOP_SUBSCRIPTION_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null)" || total=''
     available="$(awk '/^MemAvailable:/ {print $2; exit}' "${PODKOP_SUBSCRIPTION_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null)" || available=''
     case "$total:$available" in *[!0-9:]*|:*|*:) SUBSCRIPTION_PROBE_ERROR=memory_unavailable; return 1;; esac
@@ -3202,6 +3202,29 @@ subscription_probe_resources() {
         SUBSCRIPTION_PROBE_REQUIRED_KB=$((SUBSCRIPTION_PROBE_REQUIRED_KB + SUBSCRIPTION_PROBE_STREAMS * 2048))
     fi
     [ "$available" -ge "$SUBSCRIPTION_PROBE_REQUIRED_KB" ] || { SUBSCRIPTION_PROBE_ERROR=insufficient_memory; return 1; }
+}
+
+subscription_probe_private_priority() {
+    local score
+    # ONLY inside a private child immediately before exec. Prefer sacrificing
+    # optional diagnostics to traffic under global OOM; this is not a RAM cap.
+    printf '1000\n' > /proc/self/oom_score_adj 2>/dev/null &&
+        read -r score < /proc/self/oom_score_adj && [ "$score" = 1000 ]
+}
+
+subscription_probe_wait_listener() {
+    local pid="$1" port="$2" delay=1 limit=5
+    SUBSCRIPTION_PROBE_ERROR=''
+    # Probe fractional-sleep support without adding a delay. Keep the old
+    # five-second allowance on shells with integer-only sleep.
+    if sleep 0.0 2>/dev/null; then delay=0.1; limit=50; fi
+    tries=0
+    while ! netstat -ln 2>/dev/null | grep -q ":$port "; do
+        kill -0 "$pid" 2>/dev/null || { SUBSCRIPTION_PROBE_ERROR=probe_start_failed; return 1; }
+        [ "$tries" -lt "$limit" ] || { SUBSCRIPTION_PROBE_ERROR=probe_listener_timeout; return 1; }
+        sleep "$delay"
+        tries=$((tries + 1))
+    done
 }
 
 subscription_isolated_test() {
@@ -3281,19 +3304,13 @@ subscription_isolated_test() {
     probe_stage=memory_admission
     subscription_probe_resources "$mode" "$streams" || probe_error "$SUBSCRIPTION_PROBE_ERROR"
     probe_stage=config_check
-    sing-box check -c "$work/config.json" >"$work/check.log" 2>&1 || probe_error invalid_config
+    (subscription_probe_private_priority && exec sing-box check -c "$work/config.json") >"$work/check.log" 2>&1 || probe_error invalid_config
     probe_stage=memory_admission
     subscription_probe_resources "$mode" "$streams" || probe_error "$SUBSCRIPTION_PROBE_ERROR"
     probe_stage=listener_start
-    sing-box run -c "$work/config.json" >"$work/runtime.log" 2>&1 &
+    (subscription_probe_private_priority && exec sing-box run -c "$work/config.json") >"$work/runtime.log" 2>&1 &
     probe_pid=$!
-    tries=0
-    while ! netstat -ln 2>/dev/null | grep -q ":$port "; do
-        kill -0 "$probe_pid" 2>/dev/null || probe_error probe_start_failed
-        [ "$tries" -lt 5 ] || probe_error probe_listener_timeout
-        sleep 1
-        tries=$((tries + 1))
-    done
+    subscription_probe_wait_listener "$probe_pid" "$port" || probe_error "$SUBSCRIPTION_PROBE_ERROR"
     probe_stage=memory_admission
     subscription_probe_resources "$mode" "$streams" 1 || probe_error "$SUBSCRIPTION_PROBE_ERROR"
     proxy="http://127.0.0.1:$port"

@@ -1232,12 +1232,16 @@ db_pair_test() {
     db_check_pair "$@"
     if [ "${db_native_mode:-0}" = 1 ]; then current="$(db_fingerprint ordering)" || current=''
     else current="$(db_fingerprint)" || current=''; fi
-    if [ "$fingerprint" != "$current" ] || db_busy; then db_pair_json="$(printf '%s' "$db_pair_json" | jq '.success=false|.error="configuration_changed"')"; fi
+    error=''
+    if [ "$fingerprint" != "$current" ]; then error=configuration_changed
+    elif db_busy; then error=service_busy; fi
+    if [ -n "$error" ]; then db_pair_json="$(printf '%s' "$db_pair_json" | jq --arg error "$error" '.success=false|.error=$error')"; fi
     if printf '%s' "$db_pair_json" | jq -e '.success' >/dev/null; then
         error=''
         db_write_proof "$db_pair_json" "$fingerprint" || error=proof_unavailable
         current="$(db_fingerprint)" || current=''
-        if [ "$fingerprint" != "$current" ] || db_busy; then error=configuration_changed; fi
+        if [ "$fingerprint" != "$current" ]; then error=configuration_changed
+        elif db_busy; then error=service_busy; fi
         db_runtime_safe || error="$db_child_error"
         [ ! -f "$DB_DIR/cancel" ] || error=cancelled
         if [ -z "$error" ] && db_state done pair_test pair_verified 100 1 1 ''; then

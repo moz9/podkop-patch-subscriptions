@@ -195,8 +195,25 @@ subscription_services_snapshot_section_stage() (
     if [ ! -e "$manifest" ]; then
         SNAPSHOT_HAS_REQUIRED=0
         config_foreach subscription_services_snapshot_enabled_section section
-        [ "$SNAPSHOT_HAS_REQUIRED" = 0 ] || exit 1
-        : > "$work/snapshot-unfiltered"
+        if [ "$SNAPSHOT_HAS_REQUIRED" = 0 ]; then
+            : > "$work/snapshot-unfiltered"
+            exit 0
+        fi
+        # First admission has no predecessor. Only the target may require
+        # services: never certify untouched peers from their pending caches.
+        SNAPSHOT_SECTIONS="$work/required-sections.jsonl"; : > "$SNAPSHOT_SECTIONS"
+        SNAPSHOT_FAILED=0
+        config_foreach subscription_services_snapshot_continuity_section section
+        [ "$SNAPSHOT_FAILED" = 0 ] || exit 1
+        jq -se --arg target "$target" 'length>0 and all(.[]; .==$target)' "$SNAPSHOT_SECTIONS" >/dev/null || exit 1
+        SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED=0
+        subscription_services_preflight_section "$target"
+        [ "$SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED" = 0 ] || exit 1
+        SNAPSHOT_SECTIONS="$work/snapshot-target.jsonl"; : > "$SNAPSHOT_SECTIONS"
+        SNAPSHOT_FAILED=0; SNAPSHOT_CAPTURE=1
+        subscription_services_snapshot_section "$target"
+        [ "$SNAPSHOT_FAILED" = 0 ] && [ -s "$SNAPSHOT_SECTIONS" ] || exit 1
+        : > "$work/snapshot-initial"
         exit 0
     fi
     [ -s "$manifest" ] || exit 1
@@ -239,6 +256,16 @@ subscription_services_snapshot_section_stage() (
 subscription_services_snapshot_section_commit() (
     local target="$1" work="$2" dir config_path config_sha tmpfile name hash
     dir="$(subscription_services_snapshot_dir)"
+    if [ -f "$work/snapshot-initial" ]; then
+        [ ! -e "$dir/snapshot.json" ] && [ ! -L "$dir/snapshot.json" ] || exit 1
+        # Recheck the exact admission captured before runtime application.
+        SNAPSHOT_SECTIONS="$work/snapshot-commit.jsonl"; : > "$SNAPSHOT_SECTIONS"
+        SNAPSHOT_FAILED=0; SNAPSHOT_CAPTURE=1
+        subscription_services_snapshot_section "$target"
+        [ "$SNAPSHOT_FAILED" = 0 ] && cmp -s "$work/snapshot-target.jsonl" "$SNAPSHOT_SECTIONS" || exit 1
+        subscription_services_snapshot_save
+        exit $?
+    fi
     if [ -f "$work/snapshot-unfiltered" ]; then
         [ ! -e "$dir/snapshot.json" ] && [ ! -L "$dir/snapshot.json" ] || exit 1
         exit 0
