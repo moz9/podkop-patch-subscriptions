@@ -1,4 +1,5 @@
 import pathlib
+import os
 import subprocess
 import tempfile
 import unittest
@@ -7,6 +8,19 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE = (ROOT / 'pe-migrate').read_text().split('# MIGRATION_MAIN')[0]
 
 class Plans(unittest.TestCase):
+    def test_failover_upgrade_preserves_bounded_diagnostic_fallback(self):
+        with tempfile.TemporaryDirectory() as d:
+            target = pathlib.Path(d) / 'podkop'
+            target.write_bytes((ROOT / 'openwrt/runtime-0.7.24/usr/bin/podkop').read_bytes())
+            env = dict(os.environ, PODKOP_DNS_FAILOVER_TARGET=str(target), PODKOP_DNS_FAILOVER_SHELL='sh')
+            script = str(ROOT / 'openwrt/podkop-dns-failover-upgrade.sh')
+            subprocess.run(['sh', script], env=env, check=True)
+            subprocess.run(['sh', '-n', str(target)], check=True)
+            content = target.read_bytes()
+            subprocess.run(['sh', script], env=env, check=True)
+            self.assertEqual(content, target.read_bytes())
+            self.assertIn(b'config_get dns_type "settings" "dns_type"', content)
+
     def check(self, text):
         with tempfile.TemporaryDirectory() as d:
             p = pathlib.Path(d) / 'plan'

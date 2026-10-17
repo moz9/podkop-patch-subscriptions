@@ -16,7 +16,12 @@ if grep -q '^load_active_dns_settings() {' "$target" 2> /dev/null &&
     exit 0
 fi
 
-awk '
+check_ready=0
+if sed -n '/^check_dns_available() {/,/^}/p' "$target" | grep -q 'command -v load_active_dns_settings'; then
+    check_ready=1
+fi
+
+awk -v check_ready="$check_ready" '
 BEGIN {
     inserted = 0
     in_dns = 0
@@ -78,6 +83,11 @@ $0 == "check_dns_available() {" {
 }
 
 in_check && $0 ~ /^[[:space:]]+local dns_type dns_server bootstrap_dns_server$/ {
+    if (check_ready) {
+        print
+        check_values = 1
+        next
+    }
     print "    local dns_type dns_server bootstrap_dns_server"
     print "    load_active_dns_settings"
     print "    dns_type=\"$ACTIVE_DNS_TYPE\""
@@ -87,7 +97,7 @@ in_check && $0 ~ /^[[:space:]]+local dns_type dns_server bootstrap_dns_server$/ 
     next
 }
 
-in_check && check_values && $0 ~ /^[[:space:]]+config_get (dns_type|dns_server|bootstrap_dns_server) / {
+in_check && check_values && !check_ready && $0 ~ /^[[:space:]]+config_get (dns_type|dns_server|bootstrap_dns_server) / {
     next
 }
 

@@ -25,7 +25,7 @@
     "openwrt/podkop-dns-apply": "74d4826bfaa92916e730eb5f691fce1f4331209490ed00b5b91d276b782cfc08",
     "openwrt/podkop-dns-benchmark": "21ab783493a1de821ae5fc5bd4132075cb069076949bae22b693b666d1ca2348",
     "openwrt/podkop-dns-failover": "bf188aa3f71ac1b40bf8714a397809417f6cff98043c5284617f1c08dbfefd8e",
-    "openwrt/podkop-dns-failover-upgrade.sh": "eba79e97ac99e33b5875a2727385db649994b9e0188499cb0e00cd28d22d6b59",
+    "openwrt/podkop-dns-failover-upgrade.sh": "6f993cd779533868e8bc94e782ffa3ef3f75333656cd1e22b0427ae35ff6cc7f",
     "openwrt/podkop-dns-failover.init": "e893c5490e53ecd9aac5da36f568b2d86f4d980df2cff98055d4605eb885b475",
     "openwrt/podkop-dns-optimizer": "6077d23d2354fcd69ad81acfa8fc26691ae19846bbadaad66088f6a4ca720985",
     "openwrt/podkop-memdoc-guard": "f96702e3b552e8a72450c14a8e9d31657fb7c6bbc9c265c35f78a11cf29e2b49",
