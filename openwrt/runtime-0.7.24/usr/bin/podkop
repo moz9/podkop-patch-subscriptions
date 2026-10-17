@@ -3629,7 +3629,12 @@ subscription_services_store() {
         # Preserve expired raw identity for admitted boot snapshots; read strips stale proof.
         | (($old.services // {}) | with_entries(.value += {
             checkedAt:(.value.checkedAt // $old.checkedAt),expiresAt:(.value.expiresAt // $old.expiresAt)})) as $retained
-        | ($services | with_entries(.value += {checkedAt:$now,expiresAt:($now+86400)})) as $checked
+        | ($services | with_entries(.key as $key | .value += {
+            checkedAt:$now,expiresAt:($now+(if .value.category=="captcha" then 900 elif .value.state=="pass" then 86400 else 300 end)),
+            retryAfter:($now+(if .value.category=="captcha" then 300 else 30 end)),
+            lastSuccess:(if $retained[$key].state=="pass" then
+                ($retained[$key] | {checkedAt,expiresAt,reason,region})
+                else $retained[$key].lastSuccess // null end)})) as $checked
         | {context:$context,results:(($previous|map(select(.id!=$id))) + [{id:$id,checkedAt:$now,expiresAt:($now+86400),services:($retained+$checked)}] | .[-2048:])}
     ' > "$path.tmp.$$" || return 1
     if [ ! -s "$path.tmp.$$" ] || [ "$(wc -c < "$path.tmp.$$")" -gt 2097152 ]; then rm -f "$path.tmp.$$"; return 1; fi
@@ -3842,21 +3847,39 @@ subscription_exit_country_probe() {
 }
 
 subscription_services_google_probe() {
-    local section="$1" id="$2" proxy="$3" work="$4" name rc=0 code body
+    local section="$1" id="$2" proxy="$3" work="$4" name rc=0 code body control=unknown attempt=0 control_rc control_code
     name="$(jq -er --arg id "$id" '[.[] | select(.id==$id)] | select(length==1) | .[0] | (.name // .tag // "") | select(type=="string")' "$(get_subscription_items_cache_path "$section")")" || return 1
     # One verified, bounded HTTPS observation feeds two independent policies.
     # Prefetching prevents another service failure from suppressing Google proof.
+    while :; do
+    rc=0
+    if command -v subscription_probe_resources >/dev/null 2>&1; then subscription_probe_resources services 1 1 || return 1; fi
     curl -sS -L --proto '=https' --proto-redir '=https' --max-redirs 3 --proxy "$proxy" --noproxy '' \
         -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36' -H 'Accept-Language: en-US,en;q=0.9' \
-        --connect-timeout 2 -m 4 --retry 0 --max-filesize 1048576 -o "$work/google.body" -w '%{http_code}' https://gemini.google.com/ > "$work/google.code" 2>"$work/google.error" &
+        --connect-timeout 3 -m 6 --retry 0 --max-filesize 1048576 -o "$work/google.body" -w '%{http_code}' https://gemini.google.com/ > "$work/google.code" 2>"$work/google.error" &
     curl_pids=$!; wait "$curl_pids" || rc=$?; curl_pids=''
+    [ "$rc" -ne 0 ] && [ "$attempt" = 0 ] || break
+    control_rc=0
+    curl -sS --proto '=https' --proxy "$proxy" --noproxy '' --connect-timeout 2 -m 4 --retry 0 \
+        --max-filesize 4096 -o /dev/null -w '%{http_code}' https://www.gstatic.com/generate_204 > "$work/control.code" 2>"$work/control.error" &
+    curl_pids=$!; wait "$curl_pids" || control_rc=$?; curl_pids=''
+    control_code="$(cat "$work/control.code")"
+    control=fail
+    [ "$control_rc:$control_code" = '0:204' ] && control=pass
+    [ "$control" = pass ] || break
+    # One delayed retry only for a transport failure with a working control.
+    # HTTP/CAPTCHA answers never cause a retry storm.
+    attempt=1
+    sleep 1
+    done
     code="$(cat "$work/google.code")"; body="$(head -c 1048576 "$work/google.body" 2>/dev/null)"
     SUBSCRIPTION_GOOGLE_COUNTRY_RESULT="$(subscription_services_google_country_classify "$name" "$rc" "$code" "$body")" || return 1
-    SUBSCRIPTION_GOOGLE_GEMINI_RESULT="$(subscription_services_classify gemini "$rc" "$code" "$body")" || return 1
+    SUBSCRIPTION_GOOGLE_GEMINI_RESULT="$(subscription_services_classify gemini "$rc" "$code" "$body" "$control")" || return 1
 }
 
 subscription_services_classify() {
     local service="$1" rc="$2" code="$3" body="$4" state=unknown network=pass reason=confirmation_required region='' tokens policy
+    local control="${5:-unknown}" category=unknown
     case "$service" in gemini|chatgpt) ;; *) return 1;; esac
     case "$code" in 2??) ;; 401|403|404|429) state=unknown; reason=challenge_required;; *) network=fail; state=fail; reason=http_failed;; esac
     if [ "$rc" -ne 0 ]; then network=fail; state=fail; reason=network_failed; fi
@@ -3896,14 +3919,26 @@ subscription_services_classify() {
             state=fail; network=fail; reason=region_denied
         fi
     fi
-    jq -cn --arg state "$state" --arg network "$network" --arg reason "$reason" --arg code "$code" --arg region "$region" \
-        '{state:$state,network:$network,reason:$reason,httpCode:($code|tonumber? // 0),manual:false,region:(if $region=="" then null else $region end)}'
+    if [ "$service" = gemini ]; then
+        if [ "$rc" -eq 0 ] && { [ "$code" = 429 ] || printf '%s' "$body" | grep -Eiq 'unusual traffic|recaptcha|captcha|cf-chl-'; }; then
+            state=unknown; network=pass; reason=captcha_required; category=captcha
+        elif [ "$rc" -ne 0 ]; then
+            if [ "$control" = pass ]; then category=service_error; reason=gemini_connection_failed; network=pass
+            elif [ "$control" = fail ]; then category=node_error; reason=node_connection_failed
+            else category=network_unknown; fi
+        elif [ "$state" = pass ]; then category=preliminary
+        elif [ "$reason" = region_denied ]; then category=region_denied
+        elif [ "$code" != 200 ]; then category=service_error; reason=gemini_http_failed
+        fi
+    fi
+    jq -cn --arg state "$state" --arg network "$network" --arg reason "$reason" --arg code "$code" --arg region "$region" --arg category "$category" --arg control "$control" \
+        '{state:$state,network:$network,reason:$reason,category:$category,control:$control,httpCode:($code|tonumber? // 0),manual:false,region:(if $region=="" then null else $region end)}'
 }
 
 subscription_services_probe() {
     local section="$1" id="$2" services="$3" proxy="$4" work="$5" service url rc code value results='{}' failed=0 google_results=0
     printf '%s' "$services" | jq -r '.[]' > "$work/services.list" || return 1
-    if printf '%s' "$services" | jq -e 'index("google_country")!=null' >/dev/null; then
+    if printf '%s' "$services" | jq -e 'index("google_country")!=null or index("gemini")!=null' >/dev/null; then
         subscription_services_google_probe "$section" "$id" "$proxy" "$work" || return 1
         google_results=1
     fi
@@ -3953,7 +3988,16 @@ subscription_services_probe() {
 }
 
 subscription_services_check() {
+    local cached now
+    validate_subscription_section_name "$1" && validate_subscription_urltest_section "$1" && validate_subscription_link_id "$2" || { subscription_services_error invalid_section_or_id; return 1; }
     subscription_services_validate "${3:-}" && [ "$3" != '[]' ] || { subscription_services_error invalid_services; return 1; }
+    now="$(date +%s)"
+    cached="$(subscription_services_read "$1" | jq -c --arg id "$2" --argjson required "$3" --argjson now "$now" '
+        .[] | select(.id==$id) | . as $row | select(all($required[]; $row.services[.].retryAfter>$now))')" || return 1
+    if [ -n "$cached" ]; then
+        printf '%s' "$cached" | jq -c '.+{success:true,cached:true}'
+        return 0
+    fi
     subscription_isolated_test "$1" "$2" services "$3"
 }
 
@@ -3963,25 +4007,28 @@ subscription_services_confirm() (
     trap 'exit 130' INT TERM HUP
     validate_subscription_section_name "$section" && validate_subscription_urltest_section "$section" || { subscription_services_error invalid_section; exit 1; }
     validate_subscription_link_id "$id" || { subscription_services_error invalid_link_id; exit 1; }
-    case "$service:$enabled" in gemini:true|chatgpt:true|gemini:false|chatgpt:false) ;; *) subscription_services_error invalid_confirmation; exit 1;; esac
+    case "$service:$enabled" in gemini:true|chatgpt:true|gemini:false|chatgpt:false|gemini:captcha) ;; *) subscription_services_error invalid_confirmation; exit 1;; esac
     subscription_runtime_busy && { subscription_services_error service_busy; exit 1; }
     subscription_action_lock_acquire service_confirmation || { subscription_services_error service_busy; exit 1; }; locked=1
     jq -e --arg id "$id" 'any(.[]; .id==$id and .supported)' "$(get_subscription_items_cache_path "$section")" >/dev/null 2>&1 || { subscription_services_error subscription_link_not_available; exit 1; }
     results="$(subscription_services_read "$section")" || exit 1
     row="$(printf '%s' "$results" | jq -c --arg id "$id" '.[] | select(.id==$id)')"
     printf '%s' "$row" | jq -e --arg service "$service" '.services[$service].network=="pass"' >/dev/null 2>&1 || { subscription_services_error recent_network_check_required; exit 1; }
+    if [ "$enabled" = captcha ]; then
+        printf '%s' "$row" | jq -e '.services.gemini | .state=="unknown" and .category=="captcha" and .reason=="captcha_required"' >/dev/null || { subscription_services_error captcha_evidence_required; exit 1; }
+    fi
     if [ "$enabled" = true ] && ! printf '%s' "$row" | jq -e --arg service "$service" '.services[$service].state=="unknown"' >/dev/null; then
         subscription_services_error confirmation_requires_unknown_state
         exit 1
     fi
     # Confirmation cannot extend the underlying network observation's expiry.
     path="$(subscription_services_cache_path "$section")"
-    jq --arg id "$id" --arg service "$service" --argjson enabled "$enabled" '
-        .results |= map(if .id==$id then .services[$service] |= (.state=(if $enabled then "pass" else "fail" end) | .manual=true | .reason="user_confirmed") else . end)
+    jq --arg id "$id" --arg service "$service" --arg enabled "$enabled" '
+        .results |= map(if .id==$id then .services[$service] |= (.state=(if $enabled!="false" then "pass" else "fail" end) | .manual=($enabled!="captcha") | .reason=(if $enabled=="captcha" then "captcha_allowed" else "user_confirmed" end)) else . end)
     ' "$path" > "$path.tmp.$$" && chmod 600 "$path.tmp.$$" || { rm -f "$path.tmp.$$"; exit 1; }
     subscription_services_mark_pending "$section" || { rm -f "$path.tmp.$$"; subscription_services_error pending_write_failed; exit 1; }
     mv "$path.tmp.$$" "$path" || exit 1
-    jq -cn --arg id "$id" --arg service "$service" --argjson enabled "$enabled" '{success:true,id:$id,service:$service,confirmed:$enabled}'
+    jq -cn --arg id "$id" --arg service "$service" --arg enabled "$enabled" '{success:true,id:$id,service:$service,confirmed:($enabled=="true"),captchaAllowed:($enabled=="captcha")}'
 )
 
 # Fail before stopping an existing daemon. Expiry does not trigger a background apply.

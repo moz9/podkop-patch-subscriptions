@@ -1,0 +1,11 @@
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync('openwrt/main.js', 'utf8');
+new Function(source);
+const start = source.indexOf('function getSubscriptionServiceStateLabel(');
+const end = source.indexOf('function canConfirmSubscriptionService(', start);
+const label = new Function('isSubscriptionServiceEvidenceFresh', source.slice(start,end)+';return getSubscriptionServiceStateLabel;')(()=>true);
+assert.match(label({state:'unknown',category:'captcha',network:'pass'}), /CAPTCHA/);
+assert.match(label({state:'pass',reason:'captcha_allowed',category:'captcha',manual:false}), /не подтвержд/);
+assert.match(label({state:'unknown',category:'node_error'}), /узла/);
+console.log('Gemini UI labels: passed');

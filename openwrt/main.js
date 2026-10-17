@@ -785,7 +785,7 @@ var PodkopShellMethods = {
   getSubscriptionSources: async (section) => callBaseMethod("get_subscription_sources", [section]),
   getSubscriptionServices: async (section) => callBaseMethod("get_subscription_services", [section]),
   checkSubscriptionServices: async (section, id, services) => callBaseMethod("subscription_services_check", [section, id, JSON.stringify(services)], "/usr/bin/podkop", 9e4),
-  confirmSubscriptionService: async (section, id, service, confirmed) => callBaseMethod("subscription_services_confirm", [section, id, service, confirmed ? "true" : "false"], "/usr/bin/podkop", 3e4),
+  confirmSubscriptionService: async (section, id, service, confirmed) => callBaseMethod("subscription_services_confirm", [section, id, service, confirmed === 'captcha' ? 'captcha' : confirmed ? "true" : "false"], "/usr/bin/podkop", 3e4),
   getSubscriptionOperationStatus: async () => callBaseMethod("get_subscription_operation_status", []),
   pingSubscription: async (section, id) => callBaseMethod("subscription_ping", [section, id], "/usr/bin/podkop", 3e4),
   getSubscriptionItemsCached: async (section) => callBaseMethod(
@@ -5984,6 +5984,11 @@ function getSubscriptionServiceSummary(section, services, pendingChanges) {
 function getSubscriptionServiceStateLabel(result) {
   if (!result) return 'Не проверен — исключён';
   if (!isSubscriptionServiceEvidenceFresh(result)) return 'Проверка устарела или дата некорректна — исключён';
+  if (result.reason === 'captcha_allowed') return 'CAPTCHA: допущен вами; чат не подтверждён';
+  if (result.manual && result.state === 'pass') return 'Чат подтверждён вами';
+  if (result.category === 'captcha') return 'CAPTCHA / ограничение запросов — доступность чата неизвестна';
+  if (result.category === 'node_error') return 'Ошибка соединения узла — контрольный HTTPS тоже не ответил';
+  if (result.category === 'service_error') return result.control === 'pass' ? 'Gemini не ответил; контрольный HTTPS работает' : 'Ошибка доступа Gemini — не подтверждение блокировки региона';
   if (String(result.reason || '').startsWith('google_country_')) {
     const declared=/^[A-Z]{2}$/.test(result.declaredCountry || '') ? result.declaredCountry : '?';
     const observed=/^[A-Z]{2}$/.test(result.googleCountry || '') ? result.googleCountry : '?';
@@ -6064,7 +6069,7 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
     E('details', {}, [E('summary', {}, 'Подробнее'),
       E('p', {}, 'Все выбранные проверки обязательны. Совпадение страны не подтверждает доступность Gemini. Gemini проверяет регион; HTTP 200 не доказывает работу чата. Страна по Google и страна по IP проверяются отдельно. Без свежего успешного результата узел исключён из нового применения. Проверки не переключают рабочий прокси; старый набор может продолжать работать.'),
       ...routingHint ? [E('p', {},routingHint)]:[],
-      E('p', {}, 'Кеш: 24 часа. До '+targets.length*requestsPerNode+' сетевых запросов; до '+targets.length*requestsPerNode*4+' с плюс запуск процессов (не гарантированный срок). Свежие результаты повторяются только через «Перепроверить всё». Для конфигов подписок; отдельные proxy-ссылки не проверяются.')
+      E('p', {}, 'Успешные проверки хранятся до 24 часов, ошибки — 5 минут, CAPTCHA — 15 минут. После CAPTCHA повтор не раньше чем через 5 минут. Узлы проверяются по очереди; только при сетевой ошибке возможны контрольный HTTPS и один повтор. При нехватке памяти проверка остановится. Проверка реального чата остаётся ручной.')
     ]),
     E('details', {}, [E('summary', {}, 'Результаты проверок по конфигам'),
       ...!selected.length ? [E('small', {}, 'Выберите проверку для просмотра результатов.')]:[],
@@ -6073,6 +6078,8 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
           const result=item.services?.[service];
           const reasons={region_precheck_passed:'Предварительная региональная проверка пройдена',anonymous_models_available:'Анонимный список моделей доступен',challenge_required:'Требуется CAPTCHA или другая проверка',region_denied:'Регион отклонён сервисом',region_unknown:'Результат региона не определён',region_marker_missing:'Маркер региона отсутствует',region_marker_ambiguous:'Маркер региона неоднозначен',region_missing:'Регион отсутствует в ответе',region_ambiguous:'Регион неоднозначен'};
           return E('div', {style:'margin-left:12px'}, [E('span', {title:reasons[result?.reason]||result?.reason||''}, `${labels[service]||service}: ${getSubscriptionServiceStateLabel(result)}`),
+            ...service === 'gemini' && result?.category === 'captcha' && result?.state === 'unknown' && isSubscriptionServiceEvidenceFresh(result) ? [E('button',{type:'button',class:'cbi-button',disabled:busy?'disabled':void 0,
+              click:()=>handleConfirmSubscriptionService(section.code,item.id,service,'captcha')},'Допустить этот узел с CAPTCHA…')] : [],
             ...service === 'google_country' && result ? [E('small',{style:'display:block;margin-left:12px'},
               `Регион в ответе Gemini: ${/^[A-Z]{3}$/.test(result.region || '') ? result.region : 'не определён'}`)] : [],
             ...service === 'exit_country' ? (result?.observations || []).map(observation=>E('small',{style:'display:block;margin-left:12px'},
@@ -6719,25 +6726,26 @@ async function handleCheckSubscriptionServices(sectionCode, services, force = fa
     setActionState({action:'services',actionStatus:'error',actionTarget:{sectionCode,itemId:currentItem?.id},actionError:detail.code,actionMessage:detail.message});
   }
 }
-function handleConfirmSubscriptionService(sectionCode, itemId, service) {
+function handleConfirmSubscriptionService(sectionCode, itemId, service, mode = 'chat') {
   const widget=store.get().subscriptionItemsWidget;
   const section=widget.data.find(section=>section.code===sectionCode);
   const item=section?.items.find(item=>item.id===itemId);
   if (!canConfirmSubscriptionService(service,item?.services?.[service]) || widget.loading || widget.applying || isActionRunning() || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown) return;
-  ui.showModal('Подтверждение реального чата', [
-    E('p',{},`Подтверждайте только если вы самостоятельно открыли ${service==='gemini'?'Gemini':'ChatGPT'} именно через узел «${item.name||item.id}» и получили ответ на сообщение. Открытие сайта или страницы входа недостаточно. Проверка здесь не переключает прокси. Данные входа не сохраняются.`),
+  if (mode === 'captcha' && (service !== 'gemini' || item.services.gemini.category !== 'captcha')) return;
+  ui.showModal(mode === 'captcha' ? 'Допустить узел с CAPTCHA?' : 'Подтверждение реального чата', [
+    E('p',{},mode === 'captcha' ? `Узел «${item.name||item.id}» отвечает, но Google требует CAPTCHA или ограничил запросы. Работа чата не подтверждена. Допуск действует только до истечения текущего результата (не более 15 минут); после новой проверки может потребоваться повторное решение. Рабочий набор изменится только после «Применить».` : `Подтверждайте только если вы самостоятельно открыли ${service==='gemini'?'Gemini':'ChatGPT'} именно через узел «${item.name||item.id}» и получили ответ на сообщение. Открытие сайта или страницы входа недостаточно. Проверка здесь не переключает прокси. Данные входа не сохраняются.`),
     E('div',{class:'right'},[
       E('button',{type:'button',class:'cbi-button',click:()=>ui.hideModal()},'Отмена'),
       E('button',{type:'button',class:'cbi-button cbi-button-apply',click:async()=>{
         ui.hideModal();
-        setActionState({action:'services',actionStatus:'running',actionTarget:{sectionCode},actionMessage:'Сохраняем ваше подтверждение реального чата.'});
+        setActionState({action:'services',actionStatus:'running',actionTarget:{sectionCode},actionMessage:'Сохраняем ваше решение для этого узла.'});
         try {
-          const response=await PodkopShellMethods.confirmSubscriptionService(sectionCode,itemId,service,true);
+          const response=await PodkopShellMethods.confirmSubscriptionService(sectionCode,itemId,service,mode === 'captcha' ? 'captcha' : true);
           if (!response.success || response.data?.success!==true) throw new Error(response.data?.error||response.error||'service_confirm_failed');
           await refreshSubscriptionServiceEvidence(sectionCode);
           setActionState({action:'services',actionStatus:'idle',actionMessage:'Подтверждение сохранено. При включённом фильтре нажмите «Применить», чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.'});
         } catch(error) {setActionState({action:'services',actionStatus:'error',actionError:error?.message,actionMessage:getSubscriptionActionErrorMessage(error,'Подтверждение не сохранено. Повторите проверку сети.')});}
-      }},'Да, получен ответ в реальном чате')
+      }},mode === 'captcha' ? 'Допустить, понимая риск' : 'Да, получен ответ в реальном чате')
     ])
   ]);
 }
