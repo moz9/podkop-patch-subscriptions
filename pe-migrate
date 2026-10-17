@@ -48,7 +48,7 @@ main() {
     trap 'finish $?' EXIT
     trap 'exit 130' INT TERM HUP
     printf 'Staging: %s\n' "$work"
-    payload_commit=a933903239f6651a04063f8d8132457c150a39fb
+    payload_commit=2b0d1b1c9adf757cee06bc210d708cb8762b94d3
     fetch "https://codeload.github.com/moz9/podkop-patch-subscriptions/tar.gz/$payload_commit" "$work/source.tgz"
     mkdir "$work/source"
     tar -tzf "$work/source.tgz" > "$work/archive.list"
@@ -58,7 +58,7 @@ main() {
     tar -xzf "$work/source.tgz" -C "$work/source"
     source="$work/source/podkop-patch-subscriptions-$payload_commit"
     manifest="$source/openwrt/update-manifest.json"
-    verify 853e24896dfd0163b8e466450d29a66f63bf7bf1af5e8ba8e134467e36100548 "$manifest"
+    verify 39a21d43e45a8283bb0b0102edbf94f41d4f7cf5257ecc2eb88d8ab17643be35 "$manifest"
     jq -r '.sha256 | to_entries[] | "\(.value)  \(.key)"' "$manifest" > "$work/hashes"
     (cd "$source" && sha256sum -c "$work/hashes") || fail 'payload hash mismatch'
     fetch https://github.com/FiyeroT/podkop-engine/releases/download/v1.14.2-r14/podkop-engine_1.14.2-r14_openwrt_aarch64_cortex-a53.apk "$work/engine.apk"
@@ -122,7 +122,7 @@ main() {
     id sing-box >/dev/null
     tar -xf "$work/config.tar" -C /
     PODKOP_PATCH_VERSION="$payload_commit" PODKOP_PATCH_RAW_BASE="file://$source/openwrt" \
-      PODKOP_PATCH_MANIFEST_SHA256=853e24896dfd0163b8e466450d29a66f63bf7bf1af5e8ba8e134467e36100548 \
+      PODKOP_PATCH_MANIFEST_SHA256=39a21d43e45a8283bb0b0102edbf94f41d4f7cf5257ecc2eb88d8ab17643be35 \
       PODKOP_PATCH_UPDATE_PODKOP=0 PODKOP_PATCH_FORCE_PODKOP_UPDATE=0 \
       PODKOP_PATCH_BACKUP_ROOT="$checkpoint/adapter" PODKOP_PATCH_DEFER_SERVICE_START=1 \
       sh "$source/openwrt/pe-install.sh"

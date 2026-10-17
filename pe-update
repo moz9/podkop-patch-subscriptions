@@ -1,0 +1,154 @@
+#!/bin/sh
+# Existing candidate-only, configuration-preserving hotfix. No service/package actions.
+# Immutable payload identity, independent of the branch serving this entrypoint.
+PE_PAYLOAD_COMMIT=2b0d1b1c9adf757cee06bc210d708cb8762b94d3
+PE_SNAPSHOT_SHA256=19999ca5534bd4e9b93fbc3587ac9318a7825929aff3a023ee055a0ec5d83c70
+PE_PROBE_SHA256=606dd34fbf2cba315507cf81a274e05841e253e482d326585485e68972eebbf4
+PE_BENCHMARK_SHA256=032a114ee1475bb29f4138f1b9c9500224b3e136cc4efb6b0a4fbae446d5be54
+PE_UI_SHA256=12c0280099aa28620d33ce4eddd8b00967705fc14f4624dd4b4421feeb3d2520
+
+pe_fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+pe_identity() {
+    [ "$2:$3" = '0.7.24:1.14.2-pdk-r14' ] || return 1
+    [ "$(grep -Fxc '# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261017-pe-fastfix-v1-candidate' "$1")" = 1 ]
+}
+pe_replace_block() {
+    # Reject ambiguous structure before emitting anything. Preserve all other lines.
+    awk -v marker="$3" '
+      FNR==NR {replacement=replacement $0 "\n"; if($0=="# "marker" begin"){rb++;rs=FNR} if($0=="# "marker" end"){re++;rt=FNR} next}
+      {lines[++n]=$0; if($0=="# "marker" begin"){b++;start=n} if($0=="# "marker" end"){e++;stop=n}}
+      END {if(rb!=1||re!=1||rs>=rt||b!=1||e!=1||start>=stop)exit 1;
+        for(i=1;i<=n;i++){if(i==start)printf "%s",replacement; if(i<start||i>stop)print lines[i]}}
+    ' "$2" "$1"
+}
+pe_hex() { [ "${#1}" = "$2" ] && case "$1" in *[!a-f0-9]*) return 1;; esac; }
+pe_fetch() {
+    curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 10 --max-time 120 \
+        "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PE_PAYLOAD_COMMIT/openwrt/$1" -o "$pe_work/$1" || return 1
+    printf '%s  %s\n' "$2" "$pe_work/$1" | sha256sum -c -
+}
+pe_configs() {
+    for pe_path in /etc/config /etc/podkop /etc/sing-box; do
+        [ -d "$pe_path" ] || continue
+        if find "$pe_path" -type l | grep -q .; then return 1; fi
+        find "$pe_path" -type f -exec sha256sum '{}' ';' || return 1
+        find "$pe_path" -type d -print || return 1
+    done
+}
+pe_checks_idle() {
+    # Be conservative with missing/ambiguous owners: never delete another worker's lock.
+    for pe_lock in /tmp/podkop-dns-benchmark/lock /tmp/podkop-dns-optimizer/lock /tmp/podkop-dns-failover/switch.lock; do
+        [ ! -e "$pe_lock" ] || return 1
+    done
+    ! ps w | grep -E '[/]usr/bin/podkop (subscription_(services_check|ping|speedtest)|start|restart|reload)|podkop-dns-benchmark worker|podkop-update-manager worker' | grep -v grep >/dev/null
+}
+pe_unchanged() {
+    while IFS='|' read -r pe_n pe_target; do
+        cmp -s "$pe_work/new.$pe_n" "$pe_target" || return 1
+    done < "$pe_work/targets"
+}
+pe_finish() {
+    pe_rc="$1"
+    trap - EXIT INT TERM HUP
+    set +e
+    if [ "${pe_mutated:-0}" = 1 ]; then
+        pe_recovery=0
+        while IFS='|' read -r pe_n pe_target; do
+            cp -p "$pe_backup/$pe_n" "$pe_target.pe-update-recovery.$$" &&
+                mv -f "$pe_target.pe-update-recovery.$$" "$pe_target" || pe_recovery=1
+        done < "$pe_work/targets"
+        if [ "$pe_recovery" = 0 ]; then printf 'Hotfix rolled back; backup: %s\n' "$pe_backup" >&2
+        else printf 'RECOVERY INCOMPLETE; preserve %s and inspect targets.\n' "$pe_backup" >&2; fi
+    fi
+    if [ -n "${pe_work:-}" ] && [ -f "$pe_work/targets" ]; then
+        while IFS='|' read -r pe_n pe_target; do rm -f "$pe_target.pe-update-stage.$$"; done < "$pe_work/targets"
+    fi
+    [ "${pe_owned:-0}" != 1 ] || podkop_mutation_lock_release
+    exit "$pe_rc"
+}
+pe_main() {
+    set -e
+    export LC_ALL=C
+    case "${1:-}" in ''|--check) ;; *) pe_fail 'usage: pe-update [--check]';; esac
+    [ "$(id -u)" = 0 ] || pe_fail 'root required'
+    for pe_tool in curl jq sha256sum awk grep cmp mktemp ash; do command -v "$pe_tool" >/dev/null || pe_fail "missing $pe_tool"; done
+    pe_hex "$PE_PAYLOAD_COMMIT" 40 || pe_fail 'unpublished payload commit pin'
+    for pe_hash in "$PE_SNAPSHOT_SHA256" "$PE_PROBE_SHA256" "$PE_BENCHMARK_SHA256" "$PE_UI_SHA256"; do
+        pe_hex "$pe_hash" 64 || pe_fail 'unpublished payload hash pin'
+    done
+    [ -f /usr/bin/podkop ] && [ ! -L /usr/bin/podkop ] || pe_fail 'unsupported runtime path'
+    # Library gates are supported by this exact candidate; sourcing dispatch is forbidden.
+    grep -Fq 'PODKOP_LIBRARY_ONLY' /usr/bin/podkop || pe_fail 'runtime has no library gate'
+    PODKOP_LIBRARY_ONLY=1
+    export PODKOP_LIBRARY_ONLY
+    . /usr/bin/podkop
+    pe_identity /usr/bin/podkop "$PODKOP_VERSION" "$(sing-box version | awk 'NR==1 {print $3}')" || pe_fail 'unsupported existing PE runtime'
+    PODKOP_DNS_OPTIMIZER_LIBRARY_ONLY=1
+    export PODKOP_DNS_OPTIMIZER_LIBRARY_ONLY
+    . /usr/bin/podkop-dns-optimizer
+    [ "$PODKOP_MUTATION_LOCK_DIR" = /tmp/podkop-subscription-action.lock.d ] &&
+        [ "$PODKOP_MUTATION_LEGACY_LOCK_FILE" = /tmp/podkop-subscription-action.lock ] || pe_fail 'unexpected mutation lock paths'
+    [ "$(subscription_action_lock_dir)" = "$PODKOP_MUTATION_LOCK_DIR" ] &&
+        [ "$(subscription_action_lock_file)" = "$PODKOP_MUTATION_LEGACY_LOCK_FILE" ] || pe_fail 'action lock mismatch'
+    pe_owned=0; pe_mutated=0
+    trap 'pe_finish $?' EXIT
+    trap 'exit 130' INT TERM HUP
+    # Action and mutation libraries share this same directory and legacy bridge.
+    podkop_mutation_lock_acquire pe_hotfix_update || pe_fail 'Podkop operation already running'
+    pe_owned=1
+    pe_checks_idle || pe_fail 'checks or runtime operation running; wait for completion'
+    [ "$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)" -ge 65536 ] || pe_fail '64 MiB available RAM required'
+    umask 077
+    pe_work=$(mktemp -d /tmp/podkop-pe-update.XXXXXX)
+    printf 'Staging: %s\n' "$pe_work"
+    pe_configs > "$pe_work/config.unsorted" || pe_fail 'cannot fingerprint configuration'
+    sort "$pe_work/config.unsorted" > "$pe_work/config.before"
+    pe_fetch podkop-service-snapshot.sh "$PE_SNAPSHOT_SHA256" || pe_fail 'snapshot payload verification failed'
+    pe_fetch podkop-subscription-probe.sh "$PE_PROBE_SHA256" || pe_fail 'probe payload verification failed'
+    pe_fetch podkop-dns-benchmark "$PE_BENCHMARK_SHA256" || pe_fail 'benchmark payload verification failed'
+    pe_fetch dns_benchmark.js "$PE_UI_SHA256" || pe_fail 'UI payload verification failed'
+    printf '%s\n' '1|/usr/bin/podkop' '2|/usr/bin/podkop-dns-benchmark' \
+        '3|/www/luci-static/resources/view/podkop/dns_benchmark.js' \
+        '4|/www/luci-static/resources/view/podkop_patch_20261017_pe_fastfix_v1_candidate/dns_benchmark.js' > "$pe_work/targets"
+    while IFS='|' read -r pe_n pe_target; do
+        [ -f "$pe_target" ] && [ ! -L "$pe_target" ] || pe_fail "missing/linked target: $pe_target"
+        cp -p "$pe_target" "$pe_work/old.$pe_n"
+    done < "$pe_work/targets"
+    pe_replace_block "$pe_work/old.1" "$pe_work/podkop-service-snapshot.sh" subscription_service_snapshot_v1 > "$pe_work/runtime.step" || pe_fail 'snapshot markers ambiguous'
+    pe_replace_block "$pe_work/runtime.step" "$pe_work/podkop-subscription-probe.sh" subscription_isolated_probe_v1 > "$pe_work/new.1" || pe_fail 'probe markers ambiguous'
+    cp "$pe_work/podkop-dns-benchmark" "$pe_work/new.2"
+    cp "$pe_work/dns_benchmark.js" "$pe_work/new.3"
+    cp "$pe_work/dns_benchmark.js" "$pe_work/new.4"
+    ash -n "$pe_work/new.1" && ash -n "$pe_work/new.2" || pe_fail 'staged shell syntax rejected'
+    pe_checks_idle || pe_fail 'runtime operation appeared during staging'
+    pe_configs > "$pe_work/config.unsorted" && sort "$pe_work/config.unsorted" > "$pe_work/config.now"
+    cmp -s "$pe_work/config.before" "$pe_work/config.now" || pe_fail 'configuration changed during staging'
+    while IFS='|' read -r pe_n pe_target; do
+        cmp -s "$pe_work/old.$pe_n" "$pe_target" || pe_fail 'target changed during staging'
+    done < "$pe_work/targets"
+    if [ "${1:-}" = --check ]; then printf 'CHECK PASSED; no target/config/service changes.\n'; return 0; fi
+    if pe_unchanged; then printf 'ALREADY CURRENT; no backup or target writes.\n'; return 0; fi
+    pe_need=$((8192 + $(du -k "$pe_work" | tail -1 | awk '{print $1}')))
+    [ "$(df -Pk /root | awk 'END {print $4}')" -ge "$pe_need" ] || pe_fail 'insufficient flash for backup/staging'
+    pe_backup=$(mktemp -d /root/podkop-pe-update.XXXXXX)
+    cp "$pe_work/targets" "$pe_work/config.before" "$pe_backup/"
+    while IFS='|' read -r pe_n pe_target; do
+        cp -p "$pe_work/old.$pe_n" "$pe_backup/$pe_n"
+        cmp -s "$pe_target" "$pe_backup/$pe_n" || pe_fail 'backup verification failed'
+        cp -p "$pe_target" "$pe_target.pe-update-stage.$$"
+        # Keep target owner/mode while replacing contents, then rename on its own filesystem.
+        cp "$pe_work/new.$pe_n" "$pe_target.pe-update-stage.$$"
+        cmp -s "$pe_work/new.$pe_n" "$pe_target.pe-update-stage.$$" || pe_fail 'stage verification failed'
+    done < "$pe_work/targets"
+    pe_mutated=1
+    while IFS='|' read -r pe_n pe_target; do
+        mv -f "$pe_target.pe-update-stage.$$" "$pe_target"
+        cmp -s "$pe_work/new.$pe_n" "$pe_target" || pe_fail 'installed bytes mismatch'
+    done < "$pe_work/targets"
+    pe_configs > "$pe_work/config.unsorted" && sort "$pe_work/config.unsorted" > "$pe_work/config.after"
+    cmp -s "$pe_work/config.before" "$pe_work/config.after" || pe_fail 'configuration changed during update'
+    pe_mutated=0
+    printf 'HOTFIX INSTALLED. Configuration unchanged; no services restarted. Backup: %s\n' "$pe_backup"
+}
+[ "${PE_UPDATE_LIBRARY_ONLY:-0}" != 1 ] || return 0
+pe_main "$@"
