@@ -3523,14 +3523,13 @@ subscription_required_services_json() {
 }
 
 subscription_services_context() {
-    local udp='' dns settings
+    local udp=''
     config_get udp "$1" enable_udp_over_tcp
-    # DNS/profile changes invalidate observations, but changing the working selector does not.
-    dns="$(jq -ceS '.dns | select(type=="object" and (.servers|type=="array"))' /etc/sing-box/config.json)" || return 1
-    settings="$(uci -q show podkop.settings)" || return 1
-    # Bind desired DNS settings too, so edits before a runtime rebuild cannot reuse old checks.
-    settings="$(printf '%s\n' "$settings" | sed '/^podkop.settings.shutdown_correctly=/d; /^podkop.settings.subscription_isolated_section=/d' | LC_ALL=C sort)"
-    { printf '%s\n' "$dns" "$settings"; printf '%s\n' "service-web-v2:$udp"; } | sha256sum | awk '{print $1}'
+    # These are time-bounded observations of individual proxy nodes, not a DNS
+    # health certificate. IDs bind the node; expiry/rechecks bind freshness.
+    # Neither saved DNS choices nor active DNS changes erase those observations.
+    # Keep the probe transport and classifier version in the shared context.
+    printf '%s\n' "service-web-v3:$udp" | sha256sum | awk '{print $1}'
 }
 
 subscription_services_cache_path() {
