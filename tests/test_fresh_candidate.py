@@ -85,6 +85,44 @@ class FreshCandidateTests(unittest.TestCase):
         self.assertNotEqual(r.returncode, 0)
         self.assertNotIn('MUTATED', r.stdout)
 
+    def test_measured_flash_budget_fits_48088(self):
+        # Representative valid bounds: payload allowance exceeds measured tree,
+        # backup meets the helper minimum. This is NOT the target device plan.
+        r = self.run_function('n=$(candidate_space_required 30000 4096 512 1024 2048); '
+                              'printf "required=%s\\n" "$n"; candidate_space_check 48088 "$n"')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn('required=45872', r.stdout)
+
+    def test_same_flash_rejects_large_dependency_growth(self):
+        r = self.run_function('n=$(candidate_space_required 45000 4096 512 1024 2048); '
+                              'candidate_space_check 48088 "$n"; printf MUTATED')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn('MUTATED', r.stdout)
+
+    def test_verbose_apk_growth_rounded_up(self):
+        r = self.run_function('printf "After this operation, 22.3 MiB of additional disk space will be used.\\n" '
+                              '> "$CASE_TMP/plan"; candidate_plan_kib "$CASE_TMP/plan" growth')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), '23860')
+
+    def test_unknown_apk_growth_format_blocks_mutation(self):
+        r = self.run_function('printf "unknown solver summary\\n" > "$CASE_TMP/plan"; '
+                              'candidate_plan_kib "$CASE_TMP/plan" growth; printf MUTATED')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn('MUTATED', r.stdout)
+
+    def test_absent_download_summary_with_missing_dependency_rejected(self):
+        r = self.run_function('printf "solver summary\\n" > "$CASE_TMP/plan"; apk() { return 1; }; '
+                              'candidate_download_kib "$CASE_TMP/plan" jq; printf MUTATED')
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn('MUTATED', r.stdout)
+
+    def test_absent_download_allowed_only_for_installed_prerequisites(self):
+        r = self.run_function('printf "solver summary\\n" > "$CASE_TMP/plan"; apk() { return 0; }; '
+                              'candidate_download_kib "$CASE_TMP/plan" jq curl')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.stdout.strip(), '0')
+
 
 if __name__ == '__main__':
     unittest.main()
