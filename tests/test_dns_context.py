@@ -10,6 +10,20 @@ PAIR_FUNCTION = SOURCE.split('db_pair_test() {', 1)[1].split('\n}\n', 1)[0]
 
 
 class ContextTest(unittest.TestCase):
+    def test_engine_identity_does_not_start_engine_or_require_probe_memory(self):
+        body = SOURCE.split('db_engine_identity() (', 1)[1].split('\n)\n', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            engine = pathlib.Path(directory) / 'engine'
+            engine.write_text('#!/bin/sh\nexit 99\n')
+            engine.chmod(0o755)
+            script = 'DB_BIN="$1"; db_resource_admit() { return 1; }; db_engine_identity() (' + body + '\n)\ndb_engine_identity'
+            first = subprocess.run(['sh', '-c', script, 'test', str(engine)], capture_output=True, text=True)
+            self.assertEqual(first.returncode, 0, first.stderr)
+            engine.write_text('#!/bin/sh\nexit 98\n')
+            second = subprocess.run(['sh', '-c', script, 'test', str(engine)], capture_output=True, text=True)
+            self.assertEqual(second.returncode, 0)
+            self.assertNotEqual(first.stdout, second.stdout)
+
     def check_pair_context(self, busy_at=0, changed=False):
         with tempfile.TemporaryDirectory() as directory:
             script = r'''

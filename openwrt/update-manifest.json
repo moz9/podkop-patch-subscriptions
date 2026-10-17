@@ -23,7 +23,7 @@
     "openwrt/pe-install.sh": "9ac1fe848b8b0384e93dd4a246f6e16d8c4f72d243a5da724b2b1375b534a183",
     "openwrt/podkop-actions-ui-fix.sh": "2bc17d2a3cbc365d21d080612e4d5463ffee12c8b818fa2f6c839ee0645d605f",
     "openwrt/podkop-dns-apply": "74d4826bfaa92916e730eb5f691fce1f4331209490ed00b5b91d276b782cfc08",
-    "openwrt/podkop-dns-benchmark": "032a114ee1475bb29f4138f1b9c9500224b3e136cc4efb6b0a4fbae446d5be54",
+    "openwrt/podkop-dns-benchmark": "9116a194e30a9e87a26237f231f22677fe441f6765ad785ac43ff8de5d5205d3",
     "openwrt/podkop-dns-failover": "bf188aa3f71ac1b40bf8714a397809417f6cff98043c5284617f1c08dbfefd8e",
     "openwrt/podkop-dns-failover-upgrade.sh": "6f993cd779533868e8bc94e782ffa3ef3f75333656cd1e22b0427ae35ff6cc7f",
     "openwrt/podkop-dns-failover.init": "e893c5490e53ecd9aac5da36f568b2d86f4d980df2cff98055d4605eb885b475",

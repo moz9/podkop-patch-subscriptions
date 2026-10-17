@@ -124,7 +124,7 @@ EOF
 db_prepare() { mkdir -p "$DB_DIR" "$DB_PERSIST"; chmod 700 "$DB_DIR" "$DB_PERSIST"; }
 db_reply() { jq -cn --arg error "${1:-}" '{success:($error==""),error:(if $error=="" then null else $error end)}'; }
 db_engine_identity() (
-    local engine binary_hash version_hash version_file until
+    local engine binary_hash
     engine="$(command -v "$DB_BIN" 2>/dev/null)" || return 1
     [ -f "$engine" ] && [ -r "$engine" ] && [ -x "$engine" ] || return 1
     binary_hash="$(sha256sum < "$engine")" || return 1
@@ -135,24 +135,10 @@ db_engine_identity() (
         printf 'endpoint-ordering-engine-sha256=%s\n' "$binary_hash"
         return 0
     fi
-    db_resource_admit || return 1
-    version_file="$(mktemp "$DB_DIR/engine-version.XXXXXX")" || return 1
-    # Hash the entire output file, including trailing newlines and build tags.
-    # Never reuse a cached identity: replacement at the same path invalidates
-    # already measured primary/reserve results. Keep Go private and bounded.
-    until=$(( $(date +%s)+5 ))
-    if [ "$db_probe_deadline" -eq 0 ] || [ "$until" -lt "$db_probe_deadline" ]; then db_probe_deadline="$until"; fi
-    if ! (db_private_oom_priority || exit 125; unset SING_BOX_DNS_FALLBACK SING_BOX_RULESET_RECOVERED_HOOK; db_bounded_command nice -n 19 "$engine" version) > "$version_file" 2>/dev/null ||
-       [ ! -s "$version_file" ] || [ "$(wc -c < "$version_file")" -gt 65536 ] ||
-       ! LC_ALL=C grep -q '[^[:space:]]' "$version_file"; then
-        rm -f "$version_file"; return 1
-    fi
-    version_hash="$(sha256sum < "$version_file")" || { rm -f "$version_file"; return 1; }
-    rm -f "$version_file"
-    version_hash="${version_hash%% *}"
-    case "$version_hash" in ''|*[!a-f0-9]*) return 1;; esac
-    [ "${#version_hash}" = 64 ] || return 1
-    printf 'engine-sha256=%s\nengine-version-sha256=%s\n' "$binary_hash" "$version_hash"
+    # Binary bytes already include the version and build identity. Hash afresh
+    # without launching Go or applying the private-probe memory admission gate.
+    # Actual probes retain their independent memory/runtime safety checks.
+    printf 'engine-sha256=%s\n' "$binary_hash"
 )
 db_fingerprint() {
     local path exported choices runtime hashes
