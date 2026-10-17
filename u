@@ -52,16 +52,16 @@ main() {
         ;;
       migrate)
         printf 'Selected: stock Podkop 0.7.24 -> unofficial PE, preserving configuration.\n'
-        download_run 41899b222fdeb47c7bbc6b6753ad96776a94e1a6 pe-migrate 1bebf87d70833ecd8d797f160854e0bcafea3d9912baafe530cb20fc3f6785b2
+        download_run 85996f6ac4b5ca3766a32bc3fe78914806daaa17 pe-migrate 42bd0dbb51603e3f22e4b10e761ca342c22d552ea04d1a2db4204ffe69c797b4
         ;;
       fresh)
         printf 'Selected: supported fresh PE candidate; platform preflight follows.\n'
-        download_run 41899b222fdeb47c7bbc6b6753ad96776a94e1a6 i 7ebd1f9427bb2204829b4d86d1f3873060940524ffd572acc5bba227fb6e0672
+        download_run 85996f6ac4b5ca3766a32bc3fe78914806daaa17 i dc95545d1ce22a7542ed48972d2551061032a93001c1fa4f1169131bcbe241bd
         ;;
       pe)
         if grep -Fxq '# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261017-pe-fastfix-v1-candidate' /usr/bin/podkop &&
            sing-box version | grep -Fxq 'sing-box version 1.14.2-pdk-r14'; then
-            download_run 41899b222fdeb47c7bbc6b6753ad96776a94e1a6 pe-update c88e44c1d5a16c4505337af41d1a25f2596f9b4a2ef99b74adfba65928a2fe51
+            download_run 85996f6ac4b5ca3766a32bc3fe78914806daaa17 pe-update 8a0f4ded4448fb2a4e53f11aea31aa1c40b82df467ebf2d24a81290ecbe60ac8
         else
             die 'existing PE differs from the verified candidate; automatic replacement is not yet supported'
         fi
