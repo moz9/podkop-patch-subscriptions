@@ -157,7 +157,7 @@ candidate_main() {
     sha256sum -c "$work/before.sha256" || candidate_fail 'checkpoint integrity failed'
     apk list --installed --manifest > "$work/packages.before"
     printf 'Do not restore package DB alone. Use exported firmware checkpoint/local recovery for full rollback.\n' > "$work/RECOVERY.txt"
-    commit=06f9b14f90f998f60039bfc3f80a71e895a8ae41
+    commit=ec1544cc61468bc9d2abbfe16fc92b90b3f54f64
     [ "${#commit}" = 40 ] || candidate_fail 'cannot pin commit'
     case "$commit" in *[!a-f0-9]*) candidate_fail 'invalid commit' ;; esac
     base=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$commit
