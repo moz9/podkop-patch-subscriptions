@@ -1,0 +1,680 @@
+{
+  "version": 1,
+  "servers": [
+    {
+      "value": "1.0.0.1",
+      "label": "1.0.0.1 (Cloudflare DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "1.0.0.1",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "cloudflare-dns.com"
+        },
+        "dot": {
+          "host": "1.0.0.1",
+          "port": 853,
+          "server_name": "cloudflare-dns.com"
+        },
+        "h3": {
+          "host": "1.0.0.1",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "cloudflare-dns.com"
+        }
+      },
+      "id": "cloudflare_2",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "1.1.1.1",
+      "label": "1.1.1.1 (Cloudflare DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "1.1.1.1",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "cloudflare-dns.com"
+        },
+        "dot": {
+          "host": "1.1.1.1",
+          "port": 853,
+          "server_name": "cloudflare-dns.com"
+        },
+        "h3": {
+          "host": "1.1.1.1",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "cloudflare-dns.com"
+        }
+      },
+      "id": "cloudflare_1",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "223.5.5.5",
+      "label": "223.5.5.5 (AliDNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "223.5.5.5",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns.alidns.com"
+        },
+        "dot": {
+          "host": "223.5.5.5",
+          "port": 853,
+          "server_name": "dns.alidns.com"
+        }
+      },
+      "id": "223_5_5_5",
+      "profile": "catalog"
+    },
+    {
+      "value": "223.6.6.6",
+      "label": "223.6.6.6 (AliDNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "223.6.6.6",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns.alidns.com"
+        },
+        "dot": {
+          "host": "223.6.6.6",
+          "port": 853,
+          "server_name": "dns.alidns.com"
+        }
+      },
+      "id": "223_6_6_6",
+      "profile": "catalog"
+    },
+    {
+      "value": "193.233.112.67",
+      "label": "193.233.112.67 (GeoHide Primary)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "193_233_112_67",
+      "profile": "catalog"
+    },
+    {
+      "value": "193.233.112.68",
+      "label": "193.233.112.68 (GeoHide Secondary)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "193_233_112_68",
+      "profile": "catalog"
+    },
+    {
+      "value": "95.182.120.241",
+      "label": "95.182.120.241 (GeoHide Third)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "95_182_120_241",
+      "profile": "catalog"
+    },
+    {
+      "value": "45.90.28.0",
+      "label": "45.90.28.0 (NextDNS Primary)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "45_90_28_0",
+      "profile": "catalog"
+    },
+    {
+      "value": "45.90.30.0",
+      "label": "45.90.30.0 (NextDNS Secondary)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "45_90_30_0",
+      "profile": "catalog"
+    },
+    {
+      "value": "76.76.2.0",
+      "label": "76.76.2.0 (ControlD DNS)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "controld_unfiltered",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "76.76.10.0",
+      "label": "76.76.10.0 (ControlD DNS)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "76_76_10_0",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "77.88.8.1",
+      "label": "77.88.8.1 (Yandex DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "77.88.8.1",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "common.dot.dns.yandex.net"
+        },
+        "dot": {
+          "host": "77.88.8.1",
+          "port": 853,
+          "server_name": "common.dot.dns.yandex.net"
+        }
+      },
+      "id": "yandex_2",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "77.88.8.8",
+      "label": "77.88.8.8 (Yandex DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "77.88.8.8",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "common.dot.dns.yandex.net"
+        },
+        "dot": {
+          "host": "77.88.8.8",
+          "port": 853,
+          "server_name": "common.dot.dns.yandex.net"
+        }
+      },
+      "id": "yandex_1",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "8.8.4.4",
+      "label": "8.8.4.4 (Google DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "8.8.4.4",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns.google"
+        },
+        "dot": {
+          "host": "8.8.4.4",
+          "port": 853,
+          "server_name": "dns.google"
+        },
+        "h3": {
+          "host": "8.8.4.4",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns.google"
+        }
+      },
+      "id": "google_2",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "8.8.8.8",
+      "label": "8.8.8.8 (Google DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "8.8.8.8",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns.google"
+        },
+        "dot": {
+          "host": "8.8.8.8",
+          "port": 853,
+          "server_name": "dns.google"
+        },
+        "h3": {
+          "host": "8.8.8.8",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns.google"
+        }
+      },
+      "id": "google_1",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "80.253.249.40",
+      "label": "80.253.249.40 (dns.malw.link DNS)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "80_253_249_40",
+      "profile": "catalog"
+    },
+    {
+      "value": "95.216.204.218",
+      "label": "95.216.204.218 (dns.malw.link DNS)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "95_216_204_218",
+      "profile": "catalog"
+    },
+    {
+      "value": "9.9.9.9",
+      "label": "9.9.9.9 (Quad9 DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "9.9.9.9",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns.quad9.net"
+        },
+        "dot": {
+          "host": "9.9.9.9",
+          "port": 853,
+          "server_name": "dns.quad9.net"
+        },
+        "doq": {
+          "host": "9.9.9.9",
+          "port": 853,
+          "server_name": "dns.quad9.net"
+        },
+        "h3": {
+          "host": "9.9.9.9",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns.quad9.net"
+        }
+      },
+      "id": "quad9_1",
+      "profile": "security"
+    },
+    {
+      "value": "149.112.112.112",
+      "label": "149.112.112.112 (Quad9 DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "149.112.112.112",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns.quad9.net"
+        },
+        "dot": {
+          "host": "149.112.112.112",
+          "port": 853,
+          "server_name": "dns.quad9.net"
+        },
+        "doq": {
+          "host": "149.112.112.112",
+          "port": 853,
+          "server_name": "dns.quad9.net"
+        },
+        "h3": {
+          "host": "149.112.112.112",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns.quad9.net"
+        }
+      },
+      "id": "149_112_112_112",
+      "profile": "security"
+    },
+    {
+      "value": "9.9.9.11",
+      "label": "9.9.9.11 (Quad9 ECS DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "9.9.9.11",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns11.quad9.net"
+        },
+        "dot": {
+          "host": "9.9.9.11",
+          "port": 853,
+          "server_name": "dns11.quad9.net"
+        },
+        "doq": {
+          "host": "9.9.9.11",
+          "port": 853,
+          "server_name": "dns11.quad9.net"
+        },
+        "h3": {
+          "host": "9.9.9.11",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns11.quad9.net"
+        }
+      },
+      "id": "quad9_ecs",
+      "profile": "security"
+    },
+    {
+      "value": "149.112.112.11",
+      "label": "149.112.112.11 (Quad9 ECS DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "149.112.112.11",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns11.quad9.net"
+        },
+        "dot": {
+          "host": "149.112.112.11",
+          "port": 853,
+          "server_name": "dns11.quad9.net"
+        },
+        "doq": {
+          "host": "149.112.112.11",
+          "port": 853,
+          "server_name": "dns11.quad9.net"
+        },
+        "h3": {
+          "host": "149.112.112.11",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns11.quad9.net"
+        }
+      },
+      "id": "149_112_112_11",
+      "profile": "security"
+    },
+    {
+      "value": "9.9.9.10",
+      "label": "9.9.9.10 (Quad9 Unsecured DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "9.9.9.10",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns10.quad9.net"
+        },
+        "dot": {
+          "host": "9.9.9.10",
+          "port": 853,
+          "server_name": "dns10.quad9.net"
+        },
+        "doq": {
+          "host": "9.9.9.10",
+          "port": 853,
+          "server_name": "dns10.quad9.net"
+        },
+        "h3": {
+          "host": "9.9.9.10",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns10.quad9.net"
+        }
+      },
+      "id": "9_9_9_10",
+      "profile": "catalog"
+    },
+    {
+      "value": "149.112.112.10",
+      "label": "149.112.112.10 (Quad9 Unsecured DNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "149.112.112.10",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns10.quad9.net"
+        },
+        "dot": {
+          "host": "149.112.112.10",
+          "port": 853,
+          "server_name": "dns10.quad9.net"
+        },
+        "doq": {
+          "host": "149.112.112.10",
+          "port": 853,
+          "server_name": "dns10.quad9.net"
+        },
+        "h3": {
+          "host": "149.112.112.10",
+          "port": 443,
+          "path": "/dns-query",
+          "server_name": "dns10.quad9.net"
+        }
+      },
+      "id": "149_112_112_10",
+      "profile": "catalog"
+    },
+    {
+      "value": "208.67.222.222",
+      "label": "208.67.222.222 (OpenDNS)",
+      "protocols": [
+        "udp",
+        "tcp",
+        "doh",
+        "dot"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "208.67.222.222",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "208.67.222.222",
+          "port": 853
+        }
+      },
+      "id": "208_67_222_222",
+      "profile": "catalog"
+    },
+    {
+      "value": "94.140.14.140",
+      "label": "AdGuard Unfiltered",
+      "id": "adguard_unfiltered",
+      "profile": "unfiltered",
+      "protocols": [
+        "udp",
+        "tcp"
+      ]
+    }
+  ],
+  "recovery": {
+    "udp": [
+      "1.1.1.1",
+      "1.0.0.1",
+      "193.233.112.67",
+      "193.233.112.68",
+      "95.182.120.241",
+      "77.88.8.8",
+      "77.88.8.1",
+      "8.8.8.8",
+      "8.8.4.4",
+      "9.9.9.9",
+      "149.112.112.112",
+      "9.9.9.11",
+      "149.112.112.11",
+      "9.9.9.10",
+      "149.112.112.10",
+      "208.67.222.222",
+      "45.90.28.0",
+      "45.90.30.0"
+    ],
+    "tcp": [
+      "1.1.1.1",
+      "1.0.0.1",
+      "193.233.112.67",
+      "193.233.112.68",
+      "95.182.120.241",
+      "77.88.8.8",
+      "77.88.8.1",
+      "8.8.8.8",
+      "8.8.4.4",
+      "9.9.9.9",
+      "149.112.112.112",
+      "9.9.9.11",
+      "149.112.112.11",
+      "9.9.9.10",
+      "149.112.112.10",
+      "208.67.222.222",
+      "45.90.28.0",
+      "45.90.30.0"
+    ],
+    "doh": [
+      "1.1.1.1",
+      "1.0.0.1",
+      "223.5.5.5",
+      "223.6.6.6",
+      "77.88.8.8",
+      "77.88.8.1",
+      "8.8.8.8",
+      "8.8.4.4",
+      "9.9.9.9",
+      "149.112.112.112",
+      "9.9.9.11",
+      "149.112.112.11",
+      "9.9.9.10",
+      "149.112.112.10",
+      "208.67.222.222"
+    ],
+    "dot": [
+      "1.1.1.1",
+      "1.0.0.1",
+      "223.5.5.5",
+      "223.6.6.6",
+      "77.88.8.8",
+      "77.88.8.1",
+      "8.8.8.8",
+      "8.8.4.4",
+      "9.9.9.9",
+      "149.112.112.112",
+      "9.9.9.11",
+      "149.112.112.11",
+      "9.9.9.10",
+      "149.112.112.10",
+      "208.67.222.222"
+    ],
+    "doq": [
+      "9.9.9.9",
+      "149.112.112.112",
+      "9.9.9.11",
+      "149.112.112.11",
+      "9.9.9.10",
+      "149.112.112.10"
+    ],
+    "h3": [
+      "1.1.1.1",
+      "1.0.0.1",
+      "8.8.8.8",
+      "8.8.4.4",
+      "9.9.9.9",
+      "149.112.112.112",
+      "9.9.9.11",
+      "149.112.112.11",
+      "9.9.9.10",
+      "149.112.112.10"
+    ]
+  }
+}

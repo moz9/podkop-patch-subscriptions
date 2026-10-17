@@ -1,0 +1,762 @@
+#!/bin/sh
+# Explicit PE-only DNS transaction. Never regenerates subscription membership.
+dns_apply_reply() {
+    jq -cn --arg error "${1:-}" --argjson restored "${2:-false}" --argjson changed "${DA_CHANGED:-false}" \
+      '{success:($error==""),error:(if $error=="" then null else $error end),restored:$restored,changed:$changed}'
+}
+dns_apply_hash() {
+    if [ "${DA_SAVED:-0}" = 1 ] && [ "$1" = "${DA_CONFIG:-}" ]; then
+        command -v podkop_section_runtime_hash >/dev/null 2>&1 && podkop_section_runtime_hash "$1"
+    else subscription_services_snapshot_hash "$1"; fi
+}
+
+# Read committed values without loading /tmp/.uci (including LuCI drafts).
+dns_apply_saved_get() {
+    uci -q get "/proc/self/fd/3.settings.$1" 3< "${PODKOP_DNS_APPLY_UCI_FILE:-/etc/config/podkop}"
+}
+dns_apply_saved_requested() {
+    [ "$(dns_apply_saved_get dns_type)" = "$DA_TYPE" ] &&
+    [ "$(dns_apply_saved_get dns_server)" = "$DA_SERVER" ] &&
+    [ "$(dns_apply_saved_get bootstrap_dns_type || printf udp)" = "$DA_BOOT_TYPE" ] &&
+    [ "$(dns_apply_saved_get bootstrap_dns_server)" = "$DA_BOOT_SERVER" ] &&
+    [ "$(dns_apply_saved_get dns_failover_active_slot || printf primary)" = primary ]
+}
+dns_apply_pending_hash() {
+    local file="${PODKOP_DNS_APPLY_SUBSCRIPTION_PENDING:-/tmp/podkop-subscription-reload.pending}"
+    [ ! -L "$file" ] || return 1
+    if [ -e "$file" ]; then dns_apply_hash "$file"; else printf 'absent\n'; fi
+}
+dns_apply_pending_unchanged() {
+    [ "${DA_SAVED:-0}" != 1 ] || {
+        uci -q changes podkop > "$DA_WORK/uci-pending.current" &&
+        cmp -s "$DA_WORK/uci-pending" "$DA_WORK/uci-pending.current" &&
+        [ "$(dns_apply_pending_hash)" = "$(cat "$DA_WORK/subscription-pending.sha")" ] &&
+        [ "$(sha256sum "$DA_UCI" | awk '{print $1}')" = "$(cat "$DA_WORK/committed-uci.sha")" ]
+    }
+}
+
+# An absolute filename is intentional: UCI loads it with has_delta=false.
+# Merely using -c/-P would still search /tmp/.uci and could include drafts.
+# CLI tuple parsing also splits dots inside parent directories. The proc FD
+# alias has no dots and opens exactly this read-only file, with no delta load.
+dns_reserve_export() { uci -q export /proc/self/fd/3 3< "$1"; }
+dns_reserve_fields() {
+    local rows
+    rows="$(awk '
+      function unquote(s) { gsub(/["\047]/,"",s); return s }
+      $1=="config" { inside=(unquote($3)=="settings"); if (inside) count++ }
+      inside && $1=="option" {
+        key=unquote($2)
+        if (key=="secondary_dns_enabled" || key=="secondary_dns_type" || key=="secondary_dns_server" ||
+            key=="secondary_bootstrap_dns_type" || key=="secondary_bootstrap_dns_server" ||
+            key=="dns_failover_enabled" || key=="dns_failover_active_slot") {
+          line=$0; sub(/^[ \t]*option[ \t]+[^ \t]+[ \t]+/,"",line)
+          print key "|" unquote(line)
+        }
+      }
+      END { if (count!=1) exit 1 }
+    ' "$1")" || return 1
+    printf '%s\n' "$rows" | jq -Rn '
+      [inputs|split("|")|{key:.[0],value:.[1]}]|from_entries|
+      {enabled:(.secondary_dns_enabled=="1"),dnsType:(.secondary_dns_type//""),dnsServer:(.secondary_dns_server//""),
+       bootstrapDnsType:(.secondary_bootstrap_dns_type//"udp"),bootstrapDnsServer:(.secondary_bootstrap_dns_server//""),
+       autoFailoverEnabled:(.dns_failover_enabled=="1"),activeSlot:(.dns_failover_active_slot//"primary")}'
+}
+dns_reserve_strip() {
+    awk '
+      function clean(s) { gsub(/["\047]/,"",s); return s }
+      $1=="config" { inside=(clean($3)=="settings") }
+      inside && ($1=="option" || $1=="list") && clean($2) ~ /^secondary_(dns_enabled|dns_type|dns_server|bootstrap_dns_type|bootstrap_dns_server)$/ { next }
+      { print }
+    ' "$1"
+}
+dns_reserve_patch() {
+    awk -v p="$2" -v s="$3" -v bp="$4" -v b="$5" '
+      function clean(s) { gsub(/["\047]/,"",s); return s }
+      function append() {
+        printf "\toption secondary_dns_enabled \0471\047\n"
+        printf "\toption secondary_dns_type \047%s\047\n",p
+        printf "\toption secondary_dns_server \047%s\047\n",s
+        printf "\toption secondary_bootstrap_dns_type \047%s\047\n",bp
+        printf "\toption secondary_bootstrap_dns_server \047%s\047\n",b
+      }
+      $1=="config" { if (inside) append(); inside=(clean($3)=="settings"); if (inside) count++ }
+      inside && ($1=="option" || $1=="list") && clean($2) ~ /^secondary_(dns_enabled|dns_type|dns_server|bootstrap_dns_type|bootstrap_dns_server)$/ { next }
+      { print }
+      END { if (inside) append(); if (count!=1) exit 1 }
+    ' "$1" > "$6"
+}
+dns_reserve_pending_safe() {
+    # Unrelated drafts are permitted and never committed. Deleting/retyping
+    # settings or an overlapping reserve draft would undo/override this save.
+    # Primary DNS/active-slot/failover drafts are context conflicts too: the
+    # recommendation must be independent of the saved active primary, not a
+    # not-yet-applied resolver selected in another open editor.
+    ! printf '%s\n' "$1" | grep -Eq '^[+@^~|!-]*podkop\.settings(=|$|\.(secondary_(dns_enabled|dns_type|dns_server|bootstrap_dns_type|bootstrap_dns_server)|dns_type|dns_server|bootstrap_dns_type|bootstrap_dns_server|dns_failover_enabled|dns_failover_active_slot)(=|[+-]?=|$))'
+}
+dns_reserve_save() {
+    local file="${PODKOP_DNS_APPLY_UCI_FILE:-/etc/config/podkop}" base="${DB_PERSIST:-/etc/podkop/dns-benchmark}/reserve-save"
+    local work before after pending current free_kb needed_kb candidate readback
+    DNS_RESERVE_ERROR=reserve_commit_failed
+    [ -s "$file" ] && [ ! -L "$file" ] && [ ! -L "$base" ] || { DNS_RESERVE_ERROR=unsafe_reserve_config; return 1; }
+    pending="$(uci -q changes podkop)" || { DNS_RESERVE_ERROR=reserve_pending_unavailable; return 1; }
+    dns_reserve_pending_safe "$pending" || { DNS_RESERVE_ERROR=reserve_pending_conflict; return 1; }
+    mkdir -p "$base" && chmod 700 "$base" || return 1
+    needed_kb="$(du -k "$file" | awk '{print $1}')"; free_kb="$(df -Pk "$base" | awk 'NR==2{print $4}')"
+    case "$needed_kb:$free_kb" in *[!0-9:]*|:*) DNS_RESERVE_ERROR=insufficient_backup_space; return 1;; esac
+    # Before/after, two exports, two constrained comparisons, parser input and
+    # the atomic candidate can coexist. Keep additional filesystem headroom.
+    [ -n "$free_kb" ] && [ "$free_kb" -ge $((needed_kb*8+128)) ] || { DNS_RESERVE_ERROR=insufficient_backup_space; return 1; }
+    work="$(mktemp -d "$base/transaction.XXXXXX")" || return 1
+    cp -p "$file" "$work/before" && dns_reserve_export "$file" > "$work/before.export" || return 1
+    before="$(sha256sum "$work/before" | awk '{print $1}')"
+    readback="$(dns_reserve_fields "$work/before.export")" || return 1
+    [ "$(printf '%s' "$readback" | jq -r '.activeSlot')" = primary ] || { DNS_RESERVE_ERROR=reserve_is_active; return 1; }
+    dns_reserve_patch "$work/before" "$1" "$2" "$3" "$4" "$work/after" || { DNS_RESERVE_ERROR=unsupported_reserve_config; return 1; }
+    # Validate parsing and independently constrain every other saved option,
+    # including other sections and lists. Original unrelated bytes survive.
+    cp "$work/after" "$work/podkop" && dns_reserve_export "$work/podkop" > "$work/after.export" || return 1
+    dns_reserve_strip "$work/before.export" > "$work/unrelated.before"
+    dns_reserve_strip "$work/after.export" > "$work/unrelated.after"
+    cmp -s "$work/unrelated.before" "$work/unrelated.after" || { DNS_RESERVE_ERROR=reserve_delta_invalid; return 1; }
+    readback="$(dns_reserve_fields "$work/after.export")" || return 1
+    printf '%s' "$readback" | jq -e --arg p "$1" --arg s "$2" --arg bp "$3" --arg b "$4" '.enabled==true and .dnsType==$p and .dnsServer==$s and .bootstrapDnsType==$bp and .bootstrapDnsServer==$b' >/dev/null || { DNS_RESERVE_ERROR=reserve_readback_failed; return 1; }
+    candidate="$(mktemp "${file%/*}/.podkop-reserve.XXXXXX")" || return 1
+    if ! cp -p "$file" "$candidate" || ! cat "$work/after" > "$candidate"; then rm -f "$candidate"; return 1; fi
+    after="$(sha256sum "$candidate" | awk '{print $1}')"
+    printf '%s\n' "$before" > "$work/before.sha"; printf '%s\n' "$after" > "$work/after.sha"
+    # Fingerprinting may inspect controllers and take time. Do it first, then
+    # perform the pending/config CAS guards immediately before the rename.
+    if ! db_reserve_commit_context; then rm -f "$candidate"; DNS_RESERVE_ERROR=configuration_changed; return 1; fi
+    current="$(uci -q changes podkop)" || { rm -f "$candidate"; DNS_RESERVE_ERROR=reserve_pending_unavailable; return 1; }
+    if [ "$pending" != "$current" ] || [ "$before" != "$(sha256sum "$file" | awk '{print $1}')" ]; then
+        rm -f "$candidate"; DNS_RESERVE_ERROR=configuration_changed; return 1
+    fi
+    mv "$candidate" "$file" || { rm -f "$candidate"; return 1; }
+    if [ "$(sha256sum "$file" | awk '{print $1}')" != "$after" ]; then
+        # A concurrent external writer owns any unexpected contents. Never
+        # roll it back blindly; the root-only before image remains available.
+        DNS_RESERVE_ERROR=reserve_readback_failed; return 1
+    fi
+    printf '%s\n' "${work##*/}" > "$base/latest.tmp.$$" && mv "$base/latest.tmp.$$" "$base/latest" || true
+    DNS_RESERVE_ERROR=''
+}
+# Repair old saved graphs as well as freshly generated ones. In sing-box 1.14,
+# a complex rule-set cannot OR its domains with the outer service-domain group.
+dns_apply_normalize_fakeip_rules() {
+    jq '
+      .dns.rules |= [ .[] |
+        if .action=="route" and .server=="fakeip-server" and
+           has("domain") and has("rule_set") and
+           (.domain | if type=="array" then . else [.] end |
+             length>0 and all(.=="fakeip.podkop.fyi" or .=="ip.podkop.fyi"))
+        then del(.domain),
+          (del(.rule_set) | if has("__service_tag")
+            then .__service_tag="fakeip-service-dns-rule-tag" else . end)
+        else . end ]
+    ' "$@"
+}
+
+dns_apply_patch_json() {
+    dns_apply_normalize_fakeip_rules "$1" > "$3.normalized" || return 1
+    jq --slurpfile pair "$2" '
+      if ([.dns.servers[]?|select(.tag=="dns-server")]|length)!=1 or
+         ([.dns.servers[]?|select(.tag=="bootstrap-dns-server")]|length)!=1
+      then error("unsupported DNS tags") else
+      .dns.servers |= map(. as $old | [$pair[0][]|select(.tag==$old.tag)][0] as $new |
+        if $new==null then . else
+        del(.type,.server,.server_port,.path,.tls,.domain_resolver)+$new end) end
+    ' "$3.normalized" > "$3" || return 1
+    # Independently constrain the delta; tags, detours and other fields survive.
+    jq -ceS '(.dns.servers[]|select(.tag=="dns-server" or .tag=="bootstrap-dns-server")) |= del(.type,.server,.server_port,.path,.tls,.domain_resolver)' "$3.normalized" > "$3.old" &&
+    jq -ceS '(.dns.servers[]|select(.tag=="dns-server" or .tag=="bootstrap-dns-server")) |= del(.type,.server,.server_port,.path,.tls,.domain_resolver)' "$3" > "$3.new" &&
+    cmp -s "$3.old" "$3.new"
+}
+dns_apply_load() {
+    PODKOP_LIBRARY_ONLY=1
+    PODKOP_DNS_OPTIMIZER_LIBRARY_ONLY=1
+    . "${PODKOP_DNS_APPLY_CORE:-/usr/bin/podkop}" || return 1
+    . "${PODKOP_DNS_APPLY_OPTIMIZER:-/usr/bin/podkop-dns-optimizer}" || return 1
+    if ! command -v podkop_section_context_hash >/dev/null 2>&1; then
+        [ -r "${PODKOP_DNS_APPLY_SECTION_HOOKS:-/usr/lib/podkop/section-hooks.sh}" ] || return 1
+        . "${PODKOP_DNS_APPLY_SECTION_HOOKS:-/usr/lib/podkop/section-hooks.sh}" || return 1
+    fi
+}
+dns_apply_pair() {
+    local main boot
+    main="$(dns_catalog_endpoint "$1" "$2" main)" && boot="$(dns_catalog_endpoint "$3" "$4" bootstrap)" || return 1
+    printf '%s' "$boot" | jq -er '.host' | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' || return 1
+    jq -cn --arg p "$1" --arg bp "$3" --argjson main "$main" --argjson boot "$boot" '
+      def ascii_host:
+        if type!="string" then false else length>0 and
+          (explode|all(.==45 or .==46 or (.>=48 and .<=57) or (.>=65 and .<=90) or (.>=97 and .<=122))) end;
+      def server($p;$e;$tag):
+        if ($e.host|ascii_host|not) or
+           ($e.port|type)!="number" or $e.port<1 or $e.port>65535 or ($e.port|floor)!=$e.port
+        then error("invalid endpoint") else
+        {tag:$tag,type:({udp:"udp",tcp:"tcp",doh:"https",dot:"tls"}[$p]),server:$e.host,server_port:$e.port} +
+        (if $p=="doh" then {path:($e.path//"/dns-query")} else {} end) +
+        (if $e.server_name then {tls:{enabled:true,server_name:$e.server_name}} else {} end) end;
+      if (["udp","tcp","doh","dot"]|index($p))==null or (["udp","tcp","doh","dot"]|index($bp))==null
+      then error("invalid protocol") else
+      [server($p;$main;"dns-server")+{domain_resolver:"bootstrap-dns-server"},server($bp;$boot;"bootstrap-dns-server")] end' > "$DA_WORK/pair.json"
+}
+dns_apply_add_file() {
+    local path="$1" kind="$2" number
+    [ -s "$path" ] && [ ! -L "$path" ] || return 1
+    case "$path" in *'|'*|*'
+'*) return 1;; esac
+    number="$(wc -l < "$DA_WORK/files")"; number=$((number+1))
+    printf '%s|%s|%s\n' "$number" "$kind" "$path" >> "$DA_WORK/files"
+    cp -p "$path" "$DA_WORK/before.$number" || return 1
+    dns_apply_hash "$path" > "$DA_WORK/before.$number.sha" || return 1
+    if [ "$kind" = json ]; then
+        dns_apply_patch_json "$path" "$DA_WORK/pair.json" "$DA_WORK/after.$number" || return 1
+        sing-box check -c "$DA_WORK/after.$number" >/dev/null 2>&1 || return 1
+    else cp -p "$path" "$DA_WORK/after.$number" || return 1; fi
+}
+dns_apply_single_mode() {
+    [ ! -L "$DA_ROOT/runtime-mode" ] &&
+    [ "$(cat "$DA_ROOT/runtime-mode" 2>/dev/null)" = single ] &&
+    jq -e '.version==3 and .mode=="single" and (.sections|type=="array") and
+      all(.sections[];.section|if type!="string" then false else length>0 and
+        (explode|all(.==95 or (.>=48 and .<=57) or (.>=65 and .<=90) or (.>=97 and .<=122))) end) and
+      ([.sections[].section]|length==(unique|length))' "$DA_ROOT/metadata.json" >/dev/null
+}
+dns_apply_runtime_reload() {
+    "${PODKOP_DNS_APPLY_MAIN_INIT:-/etc/init.d/sing-box}" reload || return 1
+    dns_apply_single_mode && return 0
+    "${PODKOP_SECTION_INIT:-/etc/init.d/podkop-section-worker}" reload
+}
+dns_apply_runtime_ready() {
+    "${PODKOP_DNS_APPLY_MAIN_INIT:-/etc/init.d/sing-box}" status >/dev/null 2>&1 || return 1
+    if dns_apply_single_mode; then
+        # The manager proves the main PID, its listeners/API and absence of
+        # worker processes. A stopped worker service is expected in single.
+        PODKOP_SECTION_ROOT="$DA_ROOT" PODKOP_SECTION_FRONTEND_CONFIG="$DA_CONFIG" \
+            "${PODKOP_SECTION_MANAGER:-/usr/bin/podkop-section-runtime}" wait-ready >/dev/null 2>&1
+    else
+        "${PODKOP_SECTION_INIT:-/etc/init.d/podkop-section-worker}" status >/dev/null 2>&1
+    fi
+}
+# A scoped section apply authenticates one deployed graph without asserting that
+# every saved subscription control was applied. Carry that limited policy basis
+# through DNS-only successors, never a generic stale-policy exemption.
+dns_apply_scoped_policy_origin() {
+    jq -ce '
+      .policy as $policy |
+      (if .continuity.mode=="section-only" then
+         {kind:"section-only",section:.continuity.section,policy:$policy}
+       elif .continuity.kind=="dns-only" and .continuity.freshServiceEvidence==false
+         and .continuity.policyBasis.kind=="section-only"
+         and .continuity.policyBasis.policy==$policy then .continuity.policyBasis
+       else empty end) |
+      select(.section|type=="string" and length>0 and
+        all(explode[]; .==95 or (.>=48 and .<=57) or (.>=65 and .<=90) or (.>=97 and .<=122)))' "$1"
+}
+
+dns_apply_scoped_required_section() {
+    local section="$1" required
+    validate_subscription_urltest_section "$section" || return 0
+    required="$(subscription_required_services_json "$section")" || { DA_SCOPED_REQUIRED_FAILED=1; return 0; }
+    [ "$required" != '[]' ] || return 0
+    printf '%s' "$required" | jq -ce --arg section "$section" '
+      select(type=="array" and length>0 and length==(unique|length) and
+        all(.[]; .=="gemini" or .=="chatgpt" or .=="exit_country" or .=="google_country")) |
+      {section:$section,requiredServices:sort}' >> "$DA_SCOPED_REQUIRED_FILE" || DA_SCOPED_REQUIRED_FAILED=1
+}
+
+dns_apply_scoped_policy_validate() (
+    local manifest="$1" root origin context changes names
+    [ "${DA_SAVED:-0}" != 1 ] || exit 1
+    origin="$(dns_apply_scoped_policy_origin "$manifest")" || exit 1
+    names="$(podkop_section_names)" || exit 1
+    printf '%s' "$names" | jq -e --arg section "$(printf '%s' "$origin" | jq -r .section)" 'index($section)!=null' >/dev/null || exit 1
+    root="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
+    [ ! -L "$root" ] && [ -s "$root/context.sha256" ] && [ ! -L "$root/context.sha256" ] || exit 1
+    context="$(cat "$root/context.sha256")" || exit 1
+    case "$context" in v2:*) [ "${#context}" = 67 ] || exit 1;; *) exit 1;; esac
+    [ "$context" = "$(podkop_section_context_hash)" ] || exit 1
+    changes="$(uci -q changes podkop)" || exit 1
+    [ -z "$changes" ] || exit 1
+    DA_SCOPED_REQUIRED_FILE="$(mktemp "$DA_WORK/scoped-required.XXXXXX")" || exit 1
+    trap 'rm -f "$DA_SCOPED_REQUIRED_FILE"' EXIT INT TERM HUP
+    DA_SCOPED_REQUIRED_FAILED=0
+    config_foreach dns_apply_scoped_required_section section
+    [ "$DA_SCOPED_REQUIRED_FAILED" = 0 ] || exit 1
+    jq -e --slurpfile current "$DA_SCOPED_REQUIRED_FILE" '
+      all(.sections[]; .requiredServices|type=="array" and length>0 and length==(unique|length)) and
+      ([.sections[]|{section,requiredServices:(.requiredServices|sort)}]|sort_by(.section))
+        == ($current|sort_by(.section))' "$manifest" >/dev/null
+)
+
+
+dns_apply_continuity_validate() {
+    # DNS continuation retains one exact admitted runtime, not today's pending
+    # catalog selection. No supported/filter/TTL gate and no evidence writes.
+    local dir manifest config_path config_sha policy_sha generation section context ids row evidence expected path name hash local_names
+    dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
+    [ -s "$manifest" ] && [ ! -L "$manifest" ] && [ ! -L "$dir" ] || return 1
+    jq -e --argjson single "$(dns_apply_single_mode && printf true || printf false)" '
+      def hex($n): if type!="string" then false else length==$n and
+        (explode|all((.>=48 and .<=57) or (.>=97 and .<=102))) end;
+      def section_name: if type!="string" then false else length>0 and
+        (explode|all(.==95 or (.>=48 and .<=57) or (.>=65 and .<=90) or (.>=97 and .<=122))) end;
+      .version==1 and (.config|hex(64)) and (.policy|hex(64)) and
+      (.sections|type=="array" and (length>0 or $single)) and (.rules|type=="array") and
+      ([.sections[].section]|length==(unique|length)) and
+      all(.sections[]; (.section|section_name) and (.context|hex(64)) and (.service|hex(64)) and
+        (.admittedIds|type=="array" and length>0 and length==(unique|length) and all(.[];hex(32))) and
+        (.admittedLinks|type=="array") and
+        ([.admittedLinks[].id]|sort)==(.admittedIds|sort) and all(.admittedLinks[];.sha|hex(64))) and
+      ([.rules[].name]|length==(unique|length)) and all(.rules[];.sha|hex(64))
+    ' "$manifest" >/dev/null || return 1
+    if [ "${DA_SAVED:-0}" = 1 ]; then config_path="$DA_CONFIG"
+    else config_get config_path settings config_path; fi
+    config_sha="$(dns_apply_hash "$config_path")" || return 1
+    jq -e --arg config "$config_sha" '.config==$config' "$manifest" >/dev/null || return 1
+    if [ "${DA_SAVED:-0}" != 1 ]; then
+        policy_sha="$(subscription_services_snapshot_policy_hash)" || return 1
+        if ! jq -e --arg policy "$policy_sha" '.policy==$policy' "$manifest" >/dev/null; then
+            dns_apply_scoped_policy_validate "$manifest" || return 1
+        fi
+    fi
+    jq -r '.sections[].section' "$manifest" > "$DA_WORK/continuity-sections" || return 1
+    while IFS= read -r section; do
+        # A saved-DNS successor preserves the immutable admitted graph and
+        # manifest, not mutable re-tests performed since that admission.
+        [ "${DA_SAVED:-0}" != 1 ] || continue
+        if [ "${DA_SAVED:-0}" != 1 ]; then
+            context="$(subscription_services_context "$section")" || return 1
+            jq -e --arg section "$section" --arg context "$context" '.sections[]|select(.section==$section)|.context==$context' "$manifest" >/dev/null || return 1
+        fi
+        ids="$(jq -c --arg section "$section" '.sections[]|select(.section==$section)|.admittedIds' "$manifest")" || return 1
+        evidence="$(subscription_services_cache_path "$section")"
+        [ -s "$evidence" ] && [ ! -L "$evidence" ] || return 1
+        row="$(jq -cS --argjson ids "$ids" '[.results[]?|select(.id as $id|$ids|index($id)!=null)]|sort_by(.id)' "$evidence")" || return 1
+        [ "$(printf '%s' "$row" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || return 1
+        hash="$(printf '%s\n' "$row" | sha256sum | awk '{print $1}')"
+        expected="$(jq -r --arg section "$section" '.sections[]|select(.section==$section)|.service' "$manifest")" || return 1
+        [ "$hash" = "$expected" ] || return 1
+    done < "$DA_WORK/continuity-sections"
+    generation="$(jq -r '.generation' "$manifest")" || return 1
+    case "$generation" in generation.*) case "${generation#generation.}" in ''|*[!A-Za-z0-9]*) return 1;; esac;; *) return 1;; esac
+    [ -d "$dir/$generation" ] && [ ! -L "$dir/$generation" ] && [ ! -L "$TMP_RULESET_FOLDER" ] || return 1
+    jq -r '[.route.rule_set[]?|select(.type=="local")|.path]|unique[]' "$config_path" > "$DA_WORK/continuity-paths" || return 1
+    : > "$DA_WORK/continuity-names"
+    while IFS= read -r path; do
+        name="${path#"$TMP_RULESET_FOLDER/"}"
+        case "$name" in ''|.|..|*[!A-Za-z0-9_.-]*) return 1;; esac
+        case "$name" in *.json|*.srs) :;; *) return 1;; esac
+        [ "$path" = "$TMP_RULESET_FOLDER/$name" ] || return 1
+        expected="$(jq -er --arg name "$name" '.rules[]|select(.name==$name)|.sha' "$manifest")" || return 1
+        [ "$(dns_apply_hash "$path")" = "$expected" ] &&
+        [ "$(dns_apply_hash "$dir/$generation/$name")" = "$expected" ] || return 1
+        jq -cn --arg name "$name" '$name' >> "$DA_WORK/continuity-names" || return 1
+    done < "$DA_WORK/continuity-paths"
+    local_names="$(jq -cs 'sort' "$DA_WORK/continuity-names")" || return 1
+    [ "$local_names" = "$(jq -c '.rules|map(.name)|sort' "$manifest")" ] || return 1
+    sing-box check -c "$config_path" >/dev/null 2>&1
+}
+dns_apply_collect() {
+    local section
+    DA_ROOT="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
+    if [ "${DA_SAVED:-0}" = 1 ]; then DA_CONFIG="$(dns_apply_saved_get config_path)" || return 1
+    else DA_CONFIG="$(uci -q get podkop.settings.config_path)" || return 1; fi
+    DA_SNAPSHOT="$(subscription_services_snapshot_dir)/snapshot.json"
+    DA_UCI="${PODKOP_DNS_APPLY_UCI_FILE:-/etc/config/podkop}"
+    [ ! -L "$DA_ROOT" ] && [ ! -L "$DA_ROOT/workers" ] || return 1
+    if [ "${DA_SAVED:-0}" = 1 ]; then
+        dns_apply_saved_requested || return 1
+        uci -q changes podkop > "$DA_WORK/uci-pending" && dns_apply_pending_hash > "$DA_WORK/subscription-pending.sha" || return 1
+        sha256sum "$DA_UCI" | awk '{print $1}' > "$DA_WORK/committed-uci.sha" || return 1
+        printf '1\n' > "$DA_WORK/saved-mode"
+    else
+        [ -z "$(uci -q changes podkop)" ] || return 1
+        [ "$(cat "$DA_ROOT/context.sha256")" = "$(podkop_section_context_hash)" ] || return 1
+    fi
+    if jq -e '.version==3' "$DA_ROOT/metadata.json" >/dev/null; then
+        dns_apply_single_mode || return 1
+    else
+    jq -e '.version==2 and (.sections|type=="array" and length>0) and
+      all(.sections[];.section|if type!="string" then false else length>0 and
+        (explode|all(.==95 or (.>=48 and .<=57) or (.>=65 and .<=90) or (.>=97 and .<=122))) end) and
+      ([.sections[].section]|length== (unique|length))' "$DA_ROOT/metadata.json" >/dev/null || return 1
+    fi
+    if [ "${DA_SAVED:-0}" = 1 ]; then
+        # The compound graph hash covers the deployed frontend path, logical
+        # graph, metadata and every worker. Cover its frontend alias as well.
+        jq -ceS . "$DA_CONFIG" > "$DA_WORK/frontend.expected" &&
+        jq -ceS . "$DA_ROOT/frontend.json" > "$DA_WORK/frontend.actual" &&
+        cmp -s "$DA_WORK/frontend.expected" "$DA_WORK/frontend.actual" || return 1
+    fi
+    : > "$DA_WORK/files"
+    dns_apply_add_file "$DA_CONFIG" json && dns_apply_add_file "$DA_ROOT/logical.json" json &&
+    dns_apply_add_file "$DA_ROOT/frontend.json" json || return 1
+    if dns_apply_single_mode; then
+        # Single mode has no worker graph; dormant split files are rollback
+        # assets, not deployed inputs. Require both aliases to match main.
+        jq -ceS . "$DA_CONFIG" > "$DA_WORK/single.expected" &&
+        jq -ceS . "$DA_ROOT/logical.json" > "$DA_WORK/single.logical" &&
+        jq -ceS . "$DA_ROOT/frontend.json" > "$DA_WORK/single.frontend" &&
+        cmp -s "$DA_WORK/single.expected" "$DA_WORK/single.logical" &&
+        cmp -s "$DA_WORK/single.expected" "$DA_WORK/single.frontend" || return 1
+        : > "$DA_WORK/sections"
+        dns_apply_add_file "$DA_ROOT/runtime-mode" metadata || return 1
+    else
+        jq -r '.sections[].section' "$DA_ROOT/metadata.json" > "$DA_WORK/sections" || return 1
+    fi
+    while IFS= read -r section; do
+        [ ! -L "$DA_ROOT/workers/$section" ] || return 1
+        dns_apply_add_file "$DA_ROOT/workers/$section/worker.json" json || return 1
+    done < "$DA_WORK/sections"
+    dns_apply_continuity_validate || return 1
+    dns_apply_add_file "$DA_SNAPSHOT" snapshot && dns_apply_add_file "$DA_ROOT/context.sha256" context &&
+    dns_apply_add_file "$DA_ROOT/metadata.json" metadata && dns_apply_add_file "$DA_UCI" uci || return 1
+}
+dns_apply_atomic() {
+    local source="$1" target="$2" temp="$2.dns-apply.$$"
+    [ ! -L "$target" ] && [ ! -e "$temp" ] && [ ! -L "$temp" ] || return 1
+    cp -p "$source" "$temp" && chmod 600 "$temp" && mv "$temp" "$target"
+}
+dns_apply_uci_set() {
+    # Saved mode applies the already-saved primary DNS, not any other UCI
+    # policy. In particular it must never commit somebody else's delta journal.
+    [ "${DA_SAVED:-0}" != 1 ] || { dns_apply_saved_requested && dns_apply_pending_unchanged; return $?; }
+    uci set "podkop.settings.dns_type=$DA_TYPE" && uci set "podkop.settings.dns_server=$DA_SERVER" &&
+    uci set "podkop.settings.bootstrap_dns_type=$DA_BOOT_TYPE" && uci set "podkop.settings.bootstrap_dns_server=$DA_BOOT_SERVER" &&
+    uci set podkop.settings.dns_failover_active_slot=primary && uci commit podkop && config_load podkop
+}
+dns_apply_uci_clear_staged() {
+    local key
+    [ "${DA_SAVED:-0}" != 1 ] || return 0
+    for key in dns_type dns_server bootstrap_dns_type bootstrap_dns_server dns_failover_active_slot; do
+        uci -q revert "podkop.settings.$key" >/dev/null 2>&1 || true
+    done
+    [ -z "$(uci -q changes podkop)" ]
+}
+dns_apply_successor() {
+    local config policy rows section context number kind path old basis
+    if [ "${DA_SAVED:-0}" = 1 ]; then
+        config="$(dns_apply_hash "$DA_CONFIG")" || return 1
+        # Only the authenticated graph changes. Keep predecessor policy and
+        # section contexts unchanged: unrelated saved edits remain unapplied.
+        jq --arg config "$config" '
+          {config:.config,policy:.policy,contexts:[.sections[]|{section,context}]} as $origin |
+          .config=$config |
+          .continuity={kind:"dns-only",freshServiceEvidence:false,savedPrimaryOnly:true,predecessor:$origin}
+        ' "$DA_SNAPSHOT" > "$DA_WORK/saved-successor.json" &&
+        dns_apply_atomic "$DA_WORK/saved-successor.json" "$DA_SNAPSHOT" &&
+        dns_apply_continuity_validate && dns_apply_pending_unchanged
+        return $?
+    fi
+    config="$(dns_apply_hash "$DA_CONFIG")" && policy="$(subscription_services_snapshot_policy_hash)" || return 1
+    rows="$DA_WORK/successor-sections"; : > "$rows"
+    jq -r '.sections[].section' "$DA_SNAPSHOT" > "$DA_WORK/admitted-sections" || return 1
+    while IFS= read -r section; do
+        context="$(subscription_services_context "$section")" || return 1
+        jq -cn --arg section "$section" --arg context "$context" '{section:$section,context:$context}' >> "$rows" || return 1
+    done < "$DA_WORK/admitted-sections"
+    while IFS='|' read -r number kind path; do
+        case "$kind" in
+          snapshot)
+            basis="$(dns_apply_scoped_policy_origin "$DA_WORK/before.$number")" || basis=null
+            jq --arg config "$config" --arg policy "$policy" --argjson basis "$basis" --slurpfile rows "$rows" '
+              {config:.config,policy:.policy,contexts:[.sections[]|{section,context}]} as $origin |
+              .config=$config | .policy=(if $basis==null then $policy else .policy end) |
+              .sections |= map(. as $s | .context=([$rows[]|select(.section==$s.section)|.context][0])) |
+              .continuity=({kind:"dns-only",freshServiceEvidence:false,predecessor:$origin}
+                + if $basis==null then {} else {policyBasis:$basis} end)
+            ' "$DA_WORK/before.$number" > "$DA_WORK/after.$number" || return 1
+            dns_apply_atomic "$DA_WORK/after.$number" "$path" || return 1;;
+          context) podkop_section_context_hash > "$DA_WORK/after.$number" &&
+            dns_apply_atomic "$DA_WORK/after.$number" "$path" || return 1;;
+        esac
+    done < "$DA_WORK/files"
+    dns_apply_continuity_validate
+}
+dns_apply_controller() {
+    local controller host port
+    controller="$(jq -er '.experimental.clash_api.external_controller' "$1")" || return 1
+    host="${controller%:*}"; port="${controller##*:}"
+    case "$port" in ''|*[!0-9]*) return 1;; esac
+    [ "$port" -gt 0 ] && [ "$port" -le 65535 ] || return 1
+    case "$host" in 0.0.0.0|localhost) host=127.0.0.1;; 127.0.0.1) :;; *)
+      case "$host" in ''|*[!0-9.]*) return 1;; esac
+      is_ipv4 "$host" && ip -o -4 addr show | awk -v host="$host" '{split($4,a,"/");if(a[1]==host)found=1}END{exit !found}' || return 1;; esac
+    printf '%s:%s\n' "$host" "$port"
+}
+dns_apply_choices() {
+    local mode="$1" runtime="$2" saved="$3" controller headers response tag encoded body wanted
+    if ! jq -e '.outbounds|any(.type=="selector" or .type=="urltest")' "$runtime" >/dev/null; then
+        [ "$mode" != capture ] || printf '{"proxies":{}}\n' > "$saved"; return 0
+    fi
+    controller="$(dns_apply_controller "$runtime")" || return 1
+    headers="$DA_WORK/api-headers"; response="$DA_WORK/api-response"
+    jq -r 'if (.experimental.clash_api.secret//"")=="" then empty else "Authorization: Bearer "+.experimental.clash_api.secret end' "$runtime" > "$headers" || return 1
+    if [ "$mode" = restore ]; then
+        jq -r '.outbounds[]|select(.type=="selector")|.tag' "$runtime" > "$DA_WORK/selector-tags" || return 1
+        while IFS= read -r tag; do
+            wanted="$(jq -er --arg tag "$tag" '.proxies[$tag].now|select(type=="string")' "$saved")" || return 1
+            jq -e --arg tag "$tag" --arg wanted "$wanted" 'any(.outbounds[];.tag==$tag and (.outbounds|index($wanted)!=null))' "$runtime" >/dev/null || return 1
+            encoded="$(jq -nr --arg tag "$tag" '$tag|@uri')" || return 1
+            body="$DA_WORK/selector-body"; jq -cn --arg name "$wanted" '{name:$name}' > "$body" || return 1
+            (unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy NO_PROXY no_proxy;
+              curl -fsS --noproxy '*' --connect-timeout 2 --max-time 5 --max-filesize 524288 --header "@$headers" --header 'Content-Type: application/json' -X PUT --data-binary "@$body" -o "$response" "http://$controller/proxies/$encoded" 2>/dev/null) || return 1
+        done < "$DA_WORK/selector-tags"
+    fi
+    (unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy NO_PROXY no_proxy;
+      curl -fsS --noproxy '*' --connect-timeout 2 --max-time 5 --max-filesize 524288 --header "@$headers" -o "$response" "http://$controller/proxies" 2>/dev/null) || return 1
+    jq -e --slurpfile config "$runtime" '. as $api|all($config[0].outbounds[]|select(.type=="selector" or .type=="urltest");. as $group|($api.proxies[$group.tag].now|type)=="string" and ($api.proxies[$group.tag].all|sort)==($group.outbounds|sort))' "$response" >/dev/null || return 1
+    if [ "$mode" = capture ]; then cp "$response" "$saved"; else
+        jq -e --slurpfile expected "$saved" --slurpfile config "$runtime" '. as $api|all($config[0].outbounds[]|select(.type=="selector");.tag as $tag|$api.proxies[$tag].now==$expected[0].proxies[$tag].now)' "$response" >/dev/null
+    fi
+}
+dns_apply_all_choices() {
+    local mode="$1" number kind path
+    while IFS='|' read -r number kind path; do
+        [ "$kind" = json ] || continue
+        if [ "$number" = 1 ] || [ "${path%/worker.json}" != "$path" ]; then
+            dns_apply_choices "$mode" "$path" "$DA_WORK/choices.$number" || return 1
+        fi
+    done < "$DA_WORK/files"
+}
+dns_apply_config_hash() {
+    jq -ceS . "$1" | sha256sum | awk '{print $1}'
+}
+dns_apply_record_loaded() {
+    local number kind path identity hash
+    : > "$DA_WORK/loaded.new"
+    while IFS='|' read -r number kind path; do
+        [ "$kind" = json ] || continue
+        if [ "$number" = 1 ] || [ "${path%/worker.json}" != "$path" ]; then
+            identity="$(dns_apply_process_identity "$path")" && hash="$(dns_apply_config_hash "$path")" || return 1
+            printf '%s|%s|%s\n' "$path" "$identity" "$hash" >> "$DA_WORK/loaded.new" || return 1
+        fi
+    done < "$DA_WORK/files"
+    mv "$DA_WORK/loaded.new" "$DA_WORK/loaded"
+}
+dns_apply_target_loaded() {
+    local identity hash
+    identity="$(dns_apply_process_identity "$1")" && hash="$(dns_apply_config_hash "$1")" || return 1
+    awk -F'|' -v path="$1" -v identity="$identity" -v hash="$hash" '$1==path && $2==identity && $3==hash{found=1}END{exit !found}' "$DA_WORK/loaded"
+}
+dns_apply_needs_reload() {
+    local number kind path
+    while IFS='|' read -r number kind path; do
+        [ "$kind" = json ] || continue
+        if [ "$number" = 1 ] || [ "${path%/worker.json}" != "$path" ]; then
+            dns_apply_target_loaded "$path" || return 0
+        fi
+    done < "$DA_WORK/files"
+    return 1
+}
+dns_apply_activate() {
+    if dns_apply_needs_reload; then dns_apply_reload;
+    else dns_apply_all_choices verify && dns_apply_live_ready; fi
+}
+dns_apply_idempotent() {
+    local number kind path before after
+    while IFS='|' read -r number kind path; do
+        [ "$kind" = json ] || continue
+        before="$(dns_apply_config_hash "$DA_WORK/before.$number")" && after="$(dns_apply_config_hash "$DA_WORK/after.$number")" || return 1
+        [ "$before" = "$after" ] || return 1
+    done < "$DA_WORK/files"
+    [ "${DA_SAVED:-0}" != 1 ] || { dns_apply_saved_requested; return $?; }
+    [ "$(uci -q get podkop.settings.dns_type)" = "$DA_TYPE" ] &&
+    [ "$(uci -q get podkop.settings.dns_server)" = "$DA_SERVER" ] &&
+    [ "$(uci -q get podkop.settings.bootstrap_dns_server)" = "$DA_BOOT_SERVER" ] &&
+    [ "$(uci -q get podkop.settings.bootstrap_dns_type || printf udp)" = "$DA_BOOT_TYPE" ] &&
+    [ "$(uci -q get podkop.settings.dns_failover_active_slot || printf primary)" = primary ]
+}
+dns_apply_process_identity() {
+    local path="$1" proc actual exe identity='' count=0
+    for proc in /proc/[0-9]*; do
+        [ -r "$proc/cmdline" ] && [ -r "$proc/stat" ] || continue
+        exe="$(readlink "$proc/exe" 2>/dev/null)" || continue
+        case "$exe" in */sing-box) :;; *) continue;; esac
+        actual="$(tr '\000' '\n' < "$proc/cmdline" | awk 'take{print;exit}$0=="-c"{take=1}')"
+        [ "$actual" = "$path" ] || continue
+        identity="${proc##*/}:$(awk '{print $22}' "$proc/stat")"; count=$((count+1))
+    done
+    [ "$count" = 1 ] && printf '%s\n' "$identity"
+}
+dns_apply_reload() {
+    local number kind path identity actual attempts=0 ready allow_same
+    : > "$DA_WORK/processes"
+    while IFS='|' read -r number kind path; do
+        [ "$kind" = json ] || continue
+        if [ "$number" = 1 ] || [ "${path%/worker.json}" != "$path" ]; then
+            # A failed apply reload may have left a daemon absent. Recovery
+            # must still attempt restart, then prove an actual new process.
+            identity="$(dns_apply_process_identity "$path" 2>/dev/null)" || identity=missing
+            allow_same=0; dns_apply_target_loaded "$path" && allow_same=1
+            printf '%s|%s|%s\n' "$path" "$identity" "$allow_same" >> "$DA_WORK/processes"
+        fi
+    done < "$DA_WORK/files"
+    dns_apply_runtime_reload || return 1
+    while [ "$attempts" -lt 15 ]; do
+        sleep 1; attempts=$((attempts+1)); ready=1
+        while IFS='|' read -r path identity allow_same; do
+            actual="$(dns_apply_process_identity "$path")" || { ready=0; break; }
+            [ "$actual" != "$identity" ] || [ "$allow_same" = 1 ] || { ready=0; break; }
+        done < "$DA_WORK/processes"
+        if [ "$ready" = 1 ]; then dns_apply_all_choices restore && dns_apply_live_ready && dns_apply_record_loaded && return 0; fi
+    done
+    return 1
+}
+dns_apply_live_ready() {
+    dns_apply_runtime_ready || return 1
+    local output
+    output="$(dig @127.0.0.42 example.com A +timeout=3 +tries=1 +stats 2>/dev/null)" || return 1
+    printf '%s\n' "$output" | grep -q 'status: NOERROR' || return 1
+    dig @127.0.0.42 fakeip.podkop.fyi A +timeout=3 +tries=1 +short 2>/dev/null | grep -Eq '^198\.(18|19)\.'
+}
+dns_apply_restore() {
+    local number kind path result=0
+    dns_apply_uci_clear_staged || result=1
+    while IFS='|' read -r number kind path; do
+        if [ "${DA_SAVED:-0}" = 1 ]; then
+            case "$kind" in uci|context|metadata) continue;; esac
+        fi
+        dns_apply_atomic "$DA_WORK/before.$number" "$path" || result=1
+    done < "$DA_WORK/files"
+    config_load podkop || result=1
+    [ "$result" = 0 ] && dns_apply_activate && dns_apply_live_ready && dns_apply_continuity_validate && dns_apply_pending_unchanged
+}
+dns_apply_signal() {
+    trap '' INT TERM HUP
+    if [ "$DA_MUTATED" = 1 ]; then
+        if dns_apply_restore; then DA_MUTATED=0; dns_apply_clear_pending; dns_apply_reply interrupted_rolled_back true;
+        else DA_MUTATED=0; dns_apply_record_current || true; dns_apply_reply rollback_failed false; fi
+    else dns_apply_reply interrupted false; fi
+    exit 130
+}
+dns_apply_clear_pending() {
+    local base="${PODKOP_DNS_APPLY_BACKUP_DIR:-/etc/podkop/dns-apply}"
+    [ ! -f "$base/pending" ] || rm -f "$base/pending"
+}
+dns_apply_record_current() {
+    local number kind path
+    : > "$DA_WORK/applied.sha.new" || return 1
+    while IFS='|' read -r number kind path; do sha256sum "$path" >> "$DA_WORK/applied.sha.new" || return 1; done < "$DA_WORK/files"
+    mv "$DA_WORK/applied.sha.new" "$DA_WORK/applied.sha"
+}
+dns_apply_cleanup() {
+    trap '' INT TERM HUP
+    if [ "$DA_MUTATED" = 1 ]; then dns_apply_restore || true; fi
+    if [ "$DA_OWN_LOCK" = 1 ]; then podkop_mutation_lock_release; fi
+    if [ "$DA_TEMP" = 1 ] && [ -n "$DA_WORK" ]; then rm -rf "$DA_WORK"; fi
+}
+dns_apply_run() {
+    local mode="$1" number kind path current backup_base free_kb needed_kb pending_recovery=0
+    shift
+    case "$mode" in prepare-saved) mode=prepare; DA_SAVED=1;; apply-saved) mode=apply; DA_SAVED=1;; esac
+    case "$mode" in prepare|apply) [ "$#" = 4 ] || { dns_apply_reply invalid_arguments; return 1; };;
+      rollback) [ "$#" = 0 ] || return 1;; *) dns_apply_reply invalid_command; return 1;; esac
+    if [ "${PODKOP_DNS_APPLY_LOCK_HELD:-0}" = 1 ]; then
+        [ "$(awk 'NR==1{print $1}' "$PODKOP_MUTATION_LOCK_DIR/owner")" = "$$" ] || { dns_apply_reply lock_owner_mismatch; return 1; }
+    else podkop_mutation_lock_acquire dns_only_apply || { dns_apply_reply busy; return 1; }; DA_OWN_LOCK=1; fi
+    backup_base="${PODKOP_DNS_APPLY_BACKUP_DIR:-/etc/podkop/dns-apply}"
+    if [ "$mode" = apply ] && { [ -e "$backup_base/pending" ] || [ -L "$backup_base/pending" ]; }; then
+        dns_apply_reply pending_recovery_required; return 1
+    fi
+    if [ "$mode" = rollback ]; then
+        [ ! -L "$backup_base" ] || { dns_apply_reply no_backup; return 1; }
+        if [ -s "$backup_base/pending" ]; then current="$(cat "$backup_base/pending")"; pending_recovery=1;
+        elif [ -s "$backup_base/latest" ]; then current="$(cat "$backup_base/latest")";
+        else dns_apply_reply no_backup; return 1; fi
+        case "$current" in transaction.*) case "${current#transaction.}" in ''|*[!A-Za-z0-9]*) return 1;; esac;; *) return 1;; esac
+        DA_WORK="$backup_base/$current"
+        [ ! -f "$DA_WORK/saved-mode" ] || DA_SAVED=1
+        # Normal single rollback needs the same exact path recovery as saved
+        # mode: no preceding collect runs in this fresh rollback process.
+            while IFS='|' read -r number kind path; do
+                case "$kind" in
+                  json) [ "$number" != 1 ] || DA_CONFIG="$path";;
+                  snapshot) DA_SNAPSHOT="$path";;
+                  context) DA_ROOT="${path%/*}";;
+                  uci) DA_UCI="$path";;
+                esac
+            done < "$DA_WORK/files"
+            [ -n "$DA_CONFIG" ] && [ -n "$DA_ROOT" ] && [ -n "$DA_SNAPSHOT" ] || return 1
+        [ ! -L "$DA_WORK" ] && [ -s "$DA_WORK/applied.sha" ] || { dns_apply_reply incomplete_backup; return 1; }
+        [ "$(wc -l < "$DA_WORK/applied.sha")" = "$(wc -l < "$DA_WORK/files")" ] || { dns_apply_reply incomplete_backup; return 1; }
+        sha256sum -c "$DA_WORK/applied.sha" >/dev/null 2>&1 || { dns_apply_reply runtime_changed; return 1; }
+        # Pending failure may have old files on disk but a candidate daemon
+        # still running. Only a fully completed admission proves disk==loaded.
+        if [ "$pending_recovery" = 0 ]; then
+            dns_apply_record_loaded || { dns_apply_reply runtime_unavailable; return 1; }
+        fi
+        printf '%s\n' "$current" > "$backup_base/pending.new.$$" && mv "$backup_base/pending.new.$$" "$backup_base/pending" || return 1
+        DA_MUTATED=1; DA_CHANGED=true
+        if dns_apply_restore; then DA_MUTATED=0; dns_apply_clear_pending; dns_apply_reply '' true; return 0; fi
+        DA_MUTATED=0; dns_apply_record_current || true; dns_apply_reply rollback_failed false; return 1
+    fi
+    DA_TYPE="$1"; DA_SERVER="$2"; DA_BOOT_TYPE="$3"; DA_BOOT_SERVER="$4"
+    # Existing UI callers need no broad save/restart fallback. A requested pair
+    # already present in committed UCI can use exact-runtime continuation when
+    # desired UCI has drifted. Normal new-DNS transactions keep the old gate.
+    if [ "$DA_SAVED" != 1 ] && dns_apply_saved_requested &&
+       { [ -n "$(uci -q changes podkop)" ] ||
+         [ "$(cat "${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}/context.sha256" 2>/dev/null)" != "$(podkop_section_context_hash)" ]; }; then
+        DA_SAVED=1
+    fi
+    DA_WORK="$(mktemp -d "${TMPDIR:-/tmp}/podkop-dns-apply.XXXXXX")" || return 1; DA_TEMP=1
+    dns_apply_pair "$@" && dns_apply_collect && dns_apply_all_choices capture && dns_apply_record_loaded || { dns_apply_reply preparation_failed; return 1; }
+    if [ "$mode" = prepare ]; then dns_apply_reply; return 0; fi
+    if dns_apply_idempotent; then
+        dns_apply_live_ready || { dns_apply_reply runtime_unavailable; return 1; }
+        dns_apply_reply; return 0
+    fi
+    [ ! -L "$backup_base" ] || { dns_apply_reply unsafe_backup; return 1; }
+    mkdir -p "$backup_base" && chmod 700 "$backup_base" || return 1
+    needed_kb="$(du -sk "$DA_WORK" | awk 'NR==1{print $1}')"
+    free_kb="$(df -Pk "$backup_base" | awk 'NR==2{print $4}')"
+    case "$needed_kb:$free_kb" in ''|*[!0-9:]*) dns_apply_reply insufficient_backup_space; return 1;; esac
+    [ -n "$needed_kb" ] && [ -n "$free_kb" ] && [ "$free_kb" -ge $((needed_kb+2048)) ] || { dns_apply_reply insufficient_backup_space; return 1; }
+    current="$(mktemp -d "$backup_base/transaction.XXXXXX")" || return 1
+    cp -p "$DA_WORK"/* "$current/" || return 1
+    rm -rf "$DA_WORK"; DA_WORK="$current"; DA_TEMP=0
+    # CAS every backed-up input immediately before the first mutation.
+    while IFS='|' read -r number kind path; do
+        [ "$(dns_apply_hash "$path")" = "$(cat "$DA_WORK/before.$number.sha")" ] || { dns_apply_reply runtime_changed; return 1; }
+    done < "$DA_WORK/files"
+    dns_apply_pending_unchanged || { dns_apply_reply configuration_changed; return 1; }
+    printf '%s\n' "${current##*/}" > "$backup_base/pending.new.$$" && mv "$backup_base/pending.new.$$" "$backup_base/pending" || return 1
+    DA_MUTATED=1; DA_CHANGED=true
+    if dns_apply_uci_set; then
+        current=0
+        while IFS='|' read -r number kind path; do
+            [ "$kind" != json ] || dns_apply_atomic "$DA_WORK/after.$number" "$path" || { current=1; break; }
+        done < "$DA_WORK/files"
+        if [ "$current" = 0 ] && dns_apply_successor && dns_apply_activate && dns_apply_live_ready && dns_apply_pending_unchanged; then
+            if dns_apply_record_current && printf '%s\n' "${DA_WORK##*/}" > "$backup_base/latest.new.$$" && mv "$backup_base/latest.new.$$" "$backup_base/latest"; then
+                DA_MUTATED=0; dns_apply_clear_pending; dns_apply_reply; return 0
+            fi
+        fi
+    fi
+    if dns_apply_restore; then DA_MUTATED=0; dns_apply_clear_pending; dns_apply_reply apply_failed_rolled_back true;
+    else DA_MUTATED=0; dns_apply_record_current || true; dns_apply_reply rollback_failed false; fi
+    return 1
+}
+dns_apply_worker() {
+    # This worker is launched in its own process. Legacy OpenWrt/Podkop
+    # libraries do not support the benchmark caller's errexit/nounset mode
+    # (e.g. optional IPKG_INSTROOT); transaction functions check failures.
+    # Keep the parent's strict mode intact and relax only this owned worker.
+    set +eu
+    umask 077
+    DA_MUTATED=0; DA_CHANGED=false; DA_OWN_LOCK=0; DA_TEMP=0; DA_WORK=''; DA_SAVED=0
+    trap 'dns_apply_cleanup' EXIT
+    trap 'dns_apply_signal' INT TERM HUP
+    dns_apply_load || { dns_apply_reply library_unavailable; exit 1; }
+    local result=0
+    dns_apply_run "$@" || result=$?
+    exit "$result"
+}
+# Background callers use the brace worker directly: a second subshell creates
+# an intermediary PID which can die on TERM while the real transaction runs.
+dns_apply_main() ( dns_apply_worker "$@"; )
+[ "${PODKOP_DNS_APPLY_LIBRARY_ONLY:-0}" != 1 ] || return 0
+dns_apply_main "$@"

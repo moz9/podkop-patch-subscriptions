@@ -1,0 +1,929 @@
+{
+  "version": 1,
+  "servers": [
+    {
+      "value": "1.1.1.1",
+      "label": "1.1.1.1 (Cloudflare)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "cloudflare",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "223.5.5.5",
+      "label": "223.5.5.5 (AliDNS)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "223_5_5_5",
+      "profile": "catalog"
+    },
+    {
+      "value": "223.6.6.6",
+      "label": "223.6.6.6 (AliDNS)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "223_6_6_6",
+      "profile": "catalog"
+    },
+    {
+      "value": "193.233.112.67",
+      "label": "193.233.112.67 (GeoHide Primary)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "193_233_112_67",
+      "profile": "catalog"
+    },
+    {
+      "value": "193.233.112.68",
+      "label": "193.233.112.68 (GeoHide Secondary)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "193_233_112_68",
+      "profile": "catalog"
+    },
+    {
+      "value": "95.182.120.241",
+      "label": "95.182.120.241 (GeoHide Third)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "95_182_120_241",
+      "profile": "catalog"
+    },
+    {
+      "value": "45.90.28.0",
+      "label": "45.90.28.0 (NextDNS Primary)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "45_90_28_0",
+      "profile": "catalog"
+    },
+    {
+      "value": "45.90.30.0",
+      "label": "45.90.30.0 (NextDNS Secondary)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "45_90_30_0",
+      "profile": "catalog"
+    },
+    {
+      "value": "77.88.8.1",
+      "label": "77.88.8.1 (Yandex)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "77_88_8_1",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "77.88.8.8",
+      "label": "77.88.8.8 (Yandex)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "77_88_8_8",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "8.8.8.8",
+      "label": "8.8.8.8 (Google)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "google",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "80.253.249.40",
+      "label": "80.253.249.40 (dns.malw.link)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "80_253_249_40",
+      "profile": "catalog"
+    },
+    {
+      "value": "95.216.204.218",
+      "label": "95.216.204.218 (dns.malw.link)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "95_216_204_218",
+      "profile": "catalog"
+    },
+    {
+      "value": "9.9.9.9",
+      "label": "9.9.9.9 (Quad9)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "quad9",
+      "profile": "security"
+    },
+    {
+      "value": "149.112.112.112",
+      "label": "149.112.112.112 (Quad9)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "149_112_112_112",
+      "profile": "security"
+    },
+    {
+      "value": "9.9.9.11",
+      "label": "9.9.9.11 (Quad9 ECS)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "quad9_ecs",
+      "profile": "security"
+    },
+    {
+      "value": "149.112.112.11",
+      "label": "149.112.112.11 (Quad9 ECS)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "149_112_112_11",
+      "profile": "security"
+    },
+    {
+      "value": "9.9.9.10",
+      "label": "9.9.9.10 (Quad9 Unsecured)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "9_9_9_10",
+      "profile": "catalog"
+    },
+    {
+      "value": "149.112.112.10",
+      "label": "149.112.112.10 (Quad9 Unsecured)",
+      "protocols": [
+        "udp",
+        "tcp"
+      ],
+      "id": "149_112_112_10",
+      "profile": "catalog"
+    },
+    {
+      "value": "dns.adguard-dns.com",
+      "label": "AdGuard Default",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "dns.adguard-dns.com",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "dns.adguard-dns.com",
+          "port": 853
+        },
+        "doq": {
+          "host": "dns.adguard-dns.com",
+          "port": 853
+        }
+      },
+      "id": "adguard_default",
+      "profile": "security"
+    },
+    {
+      "value": "family.adguard-dns.com",
+      "label": "AdGuard Family",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "family.adguard-dns.com",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "family.adguard-dns.com",
+          "port": 853
+        },
+        "doq": {
+          "host": "family.adguard-dns.com",
+          "port": 853
+        }
+      },
+      "id": "adguard_family",
+      "profile": "family"
+    },
+    {
+      "value": "unfiltered.adguard-dns.com",
+      "label": "AdGuard Unfiltered",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "unfiltered.adguard-dns.com",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "unfiltered.adguard-dns.com",
+          "port": 853
+        },
+        "doq": {
+          "host": "unfiltered.adguard-dns.com",
+          "port": 853
+        }
+      },
+      "id": "adguard_unfiltered",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "dns.alidns.com",
+      "label": "AliDNS",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "aliases": [
+        "223.5.5.5",
+        "223.6.6.6"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "dns.alidns.com",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "dns.alidns.com",
+          "port": 853
+        },
+        "doq": {
+          "host": "dns.alidns.com",
+          "port": 853
+        },
+        "h3": {
+          "host": "dns.alidns.com",
+          "port": 443,
+          "path": "/dns-query"
+        }
+      },
+      "id": "alidns",
+      "profile": "catalog"
+    },
+    {
+      "value": "cloudflare-dns.com",
+      "label": "Cloudflare",
+      "protocols": [
+        "doh",
+        "dot",
+        "h3"
+      ],
+      "aliases": [
+        "1.1.1.1",
+        "1.0.0.1",
+        "one.one.one.one",
+        "1dot1dot1dot1.cloudflare-dns.com"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "cloudflare-dns.com",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "one.one.one.one",
+          "port": 853
+        },
+        "h3": {
+          "host": "cloudflare-dns.com",
+          "port": 443,
+          "path": "/dns-query"
+        }
+      },
+      "id": "cloudflare",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "dns.comss.one",
+      "label": "Comss.one",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "dns.comss.one",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "dns.comss.one",
+          "port": 853
+        },
+        "doq": {
+          "host": "dns.comss.one",
+          "port": 853
+        }
+      },
+      "id": "comss",
+      "profile": "catalog"
+    },
+    {
+      "value": "geohide.ru",
+      "label": "GeoHide",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "aliases": [
+        "dns.geohide.ru"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "geohide.ru",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "geohide.ru",
+          "port": 853
+        },
+        "doq": {
+          "host": "geohide.ru",
+          "port": 853
+        },
+        "h3": {
+          "host": "geohide.ru",
+          "port": 443,
+          "path": "/dns-query"
+        }
+      },
+      "id": "geohide",
+      "profile": "catalog"
+    },
+    {
+      "value": "eu.geohide.ru",
+      "label": "GeoHide Europe",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "eu.geohide.ru",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "eu.geohide.ru",
+          "port": 853
+        },
+        "doq": {
+          "host": "eu.geohide.ru",
+          "port": 853
+        },
+        "h3": {
+          "host": "eu.geohide.ru",
+          "port": 443,
+          "path": "/dns-query"
+        }
+      },
+      "id": "geohide_eu",
+      "profile": "catalog"
+    },
+    {
+      "value": "us.geohide.ru",
+      "label": "GeoHide USA",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "us.geohide.ru",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "us.geohide.ru",
+          "port": 853
+        },
+        "doq": {
+          "host": "us.geohide.ru",
+          "port": 853
+        },
+        "h3": {
+          "host": "us.geohide.ru",
+          "port": 443,
+          "path": "/dns-query"
+        }
+      },
+      "id": "geohide_us",
+      "profile": "catalog"
+    },
+    {
+      "value": "freedns.controld.com/p0",
+      "label": "ControlD Free p0",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "aliases": [
+        "p0.freedns.controld.com"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "freedns.controld.com",
+          "port": 443,
+          "path": "/p0"
+        },
+        "dot": {
+          "host": "p0.freedns.controld.com",
+          "port": 853
+        },
+        "doq": {
+          "host": "p0.freedns.controld.com",
+          "port": 853
+        },
+        "h3": {
+          "host": "freedns.controld.com",
+          "port": 443,
+          "path": "/p0"
+        }
+      },
+      "id": "controld_unfiltered",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "dns.google",
+      "label": "Google",
+      "protocols": [
+        "doh",
+        "dot",
+        "h3"
+      ],
+      "aliases": [
+        "8.8.8.8",
+        "8.8.4.4"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "dns.google",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "dns.google",
+          "port": 853
+        },
+        "h3": {
+          "host": "dns.google",
+          "port": 443,
+          "path": "/dns-query"
+        }
+      },
+      "id": "google",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "dns.malw.link",
+      "label": "dns.malw.link",
+      "protocols": [
+        "doh",
+        "dot"
+      ],
+      "aliases": [
+        "80.253.249.40",
+        "95.216.204.218"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "dns.malw.link",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "dns.malw.link",
+          "port": 853
+        }
+      },
+      "id": "malw",
+      "profile": "catalog"
+    },
+    {
+      "value": "dns.quad9.net",
+      "label": "Quad9",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "aliases": [
+        "9.9.9.9",
+        "149.112.112.112"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "dns.quad9.net",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "dns.quad9.net",
+          "port": 853
+        },
+        "doq": {
+          "host": "dns.quad9.net",
+          "port": 853
+        },
+        "h3": {
+          "host": "dns.quad9.net",
+          "port": 443,
+          "path": "/dns-query"
+        }
+      },
+      "id": "quad9",
+      "profile": "security"
+    },
+    {
+      "value": "dns11.quad9.net",
+      "label": "Quad9 ECS",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "aliases": [
+        "9.9.9.11",
+        "149.112.112.11"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "dns11.quad9.net",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "dns11.quad9.net",
+          "port": 853
+        },
+        "doq": {
+          "host": "dns11.quad9.net",
+          "port": 853
+        },
+        "h3": {
+          "host": "dns11.quad9.net",
+          "port": 443,
+          "path": "/dns-query"
+        }
+      },
+      "id": "quad9_ecs",
+      "profile": "security"
+    },
+    {
+      "value": "dns10.quad9.net",
+      "label": "Quad9 Unsecured",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq",
+        "h3"
+      ],
+      "aliases": [
+        "9.9.9.10",
+        "149.112.112.10"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "dns10.quad9.net",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "dns10.quad9.net",
+          "port": 853
+        },
+        "doq": {
+          "host": "dns10.quad9.net",
+          "port": 853
+        },
+        "h3": {
+          "host": "dns10.quad9.net",
+          "port": 443,
+          "path": "/dns-query"
+        }
+      },
+      "id": "quad9_unsecured",
+      "profile": "catalog"
+    },
+    {
+      "value": "dns.nextdns.io",
+      "label": "NextDNS",
+      "protocols": [
+        "doh",
+        "dot",
+        "doq"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "dns.nextdns.io",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "dns.nextdns.io",
+          "port": 853
+        },
+        "doq": {
+          "host": "dns.nextdns.io",
+          "port": 853
+        }
+      },
+      "id": "nextdns",
+      "profile": "catalog"
+    },
+    {
+      "value": "anycast.uncensoreddns.org",
+      "label": "UncensoredDNS Anycast",
+      "protocols": [
+        "doh",
+        "dot"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "anycast.uncensoreddns.org",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "anycast.uncensoreddns.org",
+          "port": 853
+        }
+      },
+      "id": "uncensored_anycast",
+      "profile": "catalog"
+    },
+    {
+      "value": "unicast.uncensoreddns.org",
+      "label": "UncensoredDNS Unicast",
+      "protocols": [
+        "doh",
+        "dot"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "unicast.uncensoreddns.org",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "unicast.uncensoreddns.org",
+          "port": 853
+        }
+      },
+      "id": "uncensored_unicast",
+      "profile": "catalog"
+    },
+    {
+      "value": "xbox-dns.ru",
+      "label": "Xbox DNS",
+      "protocols": [
+        "doh",
+        "dot"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "xbox-dns.ru",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "xbox-dns.ru",
+          "port": 853
+        }
+      },
+      "id": "xbox_dns",
+      "profile": "catalog"
+    },
+    {
+      "value": "common.dot.dns.yandex.net",
+      "label": "Yandex",
+      "protocols": [
+        "doh",
+        "dot"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "common.dot.dns.yandex.net",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "common.dot.dns.yandex.net",
+          "port": 853
+        }
+      },
+      "id": "yandex",
+      "profile": "unfiltered"
+    },
+    {
+      "value": "94.140.14.140",
+      "label": "AdGuard Unfiltered",
+      "id": "adguard_unfiltered",
+      "profile": "unfiltered",
+      "protocols": [
+        "udp",
+        "tcp"
+      ]
+    },
+    {
+      "value": "76.76.2.0",
+      "label": "Control D Unfiltered",
+      "id": "controld_unfiltered",
+      "profile": "unfiltered",
+      "protocols": [
+        "udp",
+        "tcp"
+      ]
+    },
+    {
+      "value": "dns.mullvad.net",
+      "label": "Mullvad",
+      "id": "mullvad",
+      "profile": "privacy",
+      "protocols": [
+        "doh",
+        "dot"
+      ],
+      "endpoints": {
+        "doh": {
+          "host": "dns.mullvad.net",
+          "port": 443,
+          "path": "/dns-query"
+        },
+        "dot": {
+          "host": "dns.mullvad.net",
+          "port": 853
+        }
+      }
+    }
+  ],
+  "recovery": {
+    "udp": [
+      "1.1.1.1",
+      "223.5.5.5",
+      "223.6.6.6",
+      "193.233.112.67",
+      "193.233.112.68",
+      "95.182.120.241",
+      "77.88.8.1",
+      "77.88.8.8",
+      "8.8.8.8",
+      "80.253.249.40",
+      "95.216.204.218",
+      "9.9.9.9",
+      "149.112.112.112",
+      "9.9.9.11",
+      "149.112.112.11",
+      "9.9.9.10",
+      "149.112.112.10",
+      "45.90.28.0",
+      "45.90.30.0"
+    ],
+    "tcp": [
+      "1.1.1.1",
+      "223.5.5.5",
+      "223.6.6.6",
+      "193.233.112.67",
+      "193.233.112.68",
+      "95.182.120.241",
+      "77.88.8.1",
+      "77.88.8.8",
+      "8.8.8.8",
+      "80.253.249.40",
+      "95.216.204.218",
+      "9.9.9.9",
+      "149.112.112.112",
+      "9.9.9.11",
+      "149.112.112.11",
+      "9.9.9.10",
+      "149.112.112.10",
+      "45.90.28.0",
+      "45.90.30.0"
+    ],
+    "doh": [
+      "dns.adguard-dns.com",
+      "unfiltered.adguard-dns.com",
+      "dns.alidns.com",
+      "cloudflare-dns.com",
+      "dns.comss.one",
+      "geohide.ru",
+      "eu.geohide.ru",
+      "us.geohide.ru",
+      "freedns.controld.com/p0",
+      "dns.google",
+      "dns.malw.link",
+      "dns.quad9.net",
+      "dns11.quad9.net",
+      "dns10.quad9.net",
+      "dns.nextdns.io",
+      "anycast.uncensoreddns.org",
+      "unicast.uncensoreddns.org",
+      "xbox-dns.ru",
+      "common.dot.dns.yandex.net"
+    ],
+    "dot": [
+      "dns.adguard-dns.com",
+      "unfiltered.adguard-dns.com",
+      "dns.alidns.com",
+      "cloudflare-dns.com",
+      "dns.comss.one",
+      "geohide.ru",
+      "eu.geohide.ru",
+      "us.geohide.ru",
+      "freedns.controld.com/p0",
+      "dns.google",
+      "dns.malw.link",
+      "dns.quad9.net",
+      "dns11.quad9.net",
+      "dns10.quad9.net",
+      "dns.nextdns.io",
+      "anycast.uncensoreddns.org",
+      "unicast.uncensoreddns.org",
+      "xbox-dns.ru",
+      "common.dot.dns.yandex.net"
+    ],
+    "doq": [
+      "dns.adguard-dns.com",
+      "unfiltered.adguard-dns.com",
+      "dns.alidns.com",
+      "dns.comss.one",
+      "geohide.ru",
+      "eu.geohide.ru",
+      "us.geohide.ru",
+      "freedns.controld.com/p0",
+      "dns.quad9.net",
+      "dns11.quad9.net",
+      "dns10.quad9.net",
+      "dns.nextdns.io"
+    ],
+    "h3": [
+      "dns.alidns.com",
+      "cloudflare-dns.com",
+      "geohide.ru",
+      "eu.geohide.ru",
+      "us.geohide.ru",
+      "freedns.controld.com/p0",
+      "dns.google",
+      "dns.quad9.net",
+      "dns11.quad9.net",
+      "dns10.quad9.net"
+    ]
+  }
+}

@@ -1,0 +1,65 @@
+#!/bin/sh
+# Exit 0 permits the firmware watchdog's original restart; 1 defers it.
+# Never changes services, configuration, or transaction lock ownership.
+set -u
+root="${PODKOP_MEMDOC_ROOT:-}"
+state="$root/etc/podkop/section-runtime"
+service="${1:-}"
+
+shared_lock_busy() {
+    for lock in "$root/tmp/podkop-subscription-action.lock.d/owner" "$root/tmp/podkop-subscription-action.lock"; do
+        [ -e "$lock" ] || continue
+        pid="$(awk 'NR==1 {print $1; exit}' "$lock" 2>/dev/null)"
+        case "$pid" in ''|*[!0-9]*) return 0;; esac
+        [ "$pid" -gt 1 ] && kill -0 "$pid" 2>/dev/null && return 0
+    done
+    # mkdir precedes owner write in the shared atomic locking protocol.
+    [ ! -d "$root/tmp/podkop-subscription-action.lock.d" ] ||
+        [ -f "$root/tmp/podkop-subscription-action.lock.d/owner" ] || return 0
+    return 1
+}
+
+section_lock_busy() {
+    lock="${PODKOP_MEMDOC_SECTION_LOCK:-}"
+    if [ -z "$lock" ]; then
+        key="$(printf '%s' /etc/podkop/section-runtime | sha256sum | cut -c 1-16)" || return 0
+        lock="$root/var/run/podkop-section-runtime-$key.lock"
+    fi
+    [ -f "$lock" ] || return 1
+    # A persistent stale inode/text is not a transaction. Test the kernel lock
+    # using a read-only descriptor, without unlinking or rewriting the file.
+    command -v flock >/dev/null 2>&1 || return 0
+    (exec 8< "$lock"; flock -n 8) 2>/dev/null && return 1
+    return 0
+}
+
+managed_podkop_running() {
+    [ -x "$root/usr/bin/podkop" ] && [ -x "$root/usr/bin/podkop-section-runtime" ] || return 1
+    mode="$(cat "$state/runtime-mode" 2>/dev/null)" || mode=""
+    case "$mode" in
+        single) ;;
+        ''|split)
+        jq -e '.section | type=="string" and test("^[a-zA-Z0-9_]+$")' "$state/metadata.json" >/dev/null 2>&1 &&
+            jq -e '.port==19160 and .api_port==19163' "$state/metadata.json" >/dev/null 2>&1 || return 1
+        ;;
+        *) return 1;;
+    esac
+    for pid in $(pidof sing-box 2>/dev/null); do
+        case "$pid" in ''|*[!0-9]*) continue;; esac
+        [ -r "$root/proc/$pid/cmdline" ] || continue
+        tr '\000' '\n' < "$root/proc/$pid/cmdline" | awk '
+            NR==1 && $0!="/usr/bin/sing-box" {bad=1;exit}
+            previous=="-c" && $0=="/etc/sing-box/config.json" {found=1}
+            {previous=$0}
+            END {exit (bad || !found)}' && return 0
+    done
+    return 1
+}
+
+shared_lock_busy && exit 1
+section_lock_busy && exit 1
+if [ "$service" = /etc/init.d/sing-box ] && managed_podkop_running; then
+    # procd handles crashes; RAM pressure must not discard a healthy frontend.
+    exit 1
+fi
+exit 0
