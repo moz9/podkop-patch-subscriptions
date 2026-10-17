@@ -21,6 +21,62 @@ dns_apply_saved_requested() {
     [ "$(dns_apply_saved_get bootstrap_dns_server)" = "$DA_BOOT_SERVER" ] &&
     [ "$(dns_apply_saved_get dns_failover_active_slot || printf primary)" = primary ]
 }
+
+# Drift in unrelated desired settings must not prevent an explicit DNS-only
+# edit of an authenticated deployed graph. Never commit an existing journal.
+dns_apply_select_context() {
+    local pending
+    [ "${DA_SAVED:-0}" != 1 ] || return 0
+    pending="$(uci -q changes podkop)" || return 1
+    if [ -n "$pending" ] || ! podkop_section_context_matches; then
+        if dns_apply_saved_requested; then DA_SAVED=1
+        else
+            [ -z "$pending" ] || return 1
+            DA_SAVED=1; DA_EXPLICIT=1
+        fi
+    fi
+}
+
+dns_apply_primary_strip() {
+    awk '
+      function clean(s) { gsub(/["\047]/,"",s); return s }
+      $1=="config" { inside=(clean($3)=="settings") }
+      inside && ($1=="option" || $1=="list") && clean($2) ~ /^(dns_type|dns_server|bootstrap_dns_type|bootstrap_dns_server|dns_failover_active_slot)$/ { next }
+      { print }
+    ' "$1"
+}
+
+dns_apply_patch_primary() {
+    local value
+    for value in "$2" "$3" "$4" "$5"; do
+        printf '%s' "$value" | LC_ALL=C grep -Eq '^[A-Za-z0-9._:/?=&%+~-]+$' || return 1
+        [ "$(printf '%s' "$value" | wc -l)" = 0 ] || return 1
+    done
+    awk -v p="$2" -v s="$3" -v bp="$4" -v b="$5" '
+      function clean(s) { gsub(/["\047]/,"",s); return s }
+      function append() {
+        printf "\toption dns_type \047%s\047\n",p
+        printf "\toption dns_server \047%s\047\n",s
+        printf "\toption bootstrap_dns_type \047%s\047\n",bp
+        printf "\toption bootstrap_dns_server \047%s\047\n",b
+        printf "\toption dns_failover_active_slot \047primary\047\n"
+      }
+      $1=="config" { if (inside) append(); inside=(clean($3)=="settings"); if (inside) count++ }
+      inside && ($1=="option" || $1=="list") && clean($2) ~ /^(dns_type|dns_server|bootstrap_dns_type|bootstrap_dns_server|dns_failover_active_slot)$/ { next }
+      { print }
+      END { if (inside) append(); if (count!=1) exit 1 }
+    ' "$1" > "$6"
+}
+
+dns_apply_prepare_primary() {
+    dns_apply_patch_primary "$DA_UCI" "$DA_TYPE" "$DA_SERVER" "$DA_BOOT_TYPE" "$DA_BOOT_SERVER" "$DA_WORK/primary.new" &&
+    dns_reserve_export "$DA_UCI" > "$DA_WORK/primary.before.export" &&
+    dns_reserve_export "$DA_WORK/primary.new" > "$DA_WORK/primary.after.export" &&
+    dns_apply_primary_strip "$DA_WORK/primary.before.export" > "$DA_WORK/primary.before.other" &&
+    dns_apply_primary_strip "$DA_WORK/primary.after.export" > "$DA_WORK/primary.after.other" &&
+    cmp -s "$DA_WORK/primary.before.other" "$DA_WORK/primary.after.other" &&
+    (PODKOP_DNS_APPLY_UCI_FILE="$DA_WORK/primary.new"; dns_apply_saved_requested)
+}
 dns_apply_pending_hash() {
     local file="${PODKOP_DNS_APPLY_SUBSCRIPTION_PENDING:-/tmp/podkop-subscription-reload.pending}"
     [ ! -L "$file" ] || return 1
@@ -367,10 +423,14 @@ dns_apply_collect() {
     DA_UCI="${PODKOP_DNS_APPLY_UCI_FILE:-/etc/config/podkop}"
     [ ! -L "$DA_ROOT" ] && [ ! -L "$DA_ROOT/workers" ] || return 1
     if [ "${DA_SAVED:-0}" = 1 ]; then
-        dns_apply_saved_requested || return 1
+        [ "${DA_EXPLICIT:-0}" = 1 ] || dns_apply_saved_requested || return 1
         uci -q changes podkop > "$DA_WORK/uci-pending" && dns_apply_pending_hash > "$DA_WORK/subscription-pending.sha" || return 1
         sha256sum "$DA_UCI" | awk '{print $1}' > "$DA_WORK/committed-uci.sha" || return 1
         printf '1\n' > "$DA_WORK/saved-mode"
+        if [ "${DA_EXPLICIT:-0}" = 1 ]; then
+            [ ! -s "$DA_WORK/uci-pending" ] && dns_apply_prepare_primary || return 1
+            printf '1\n' > "$DA_WORK/explicit-dns-mode"
+        fi
     else
         [ -z "$(uci -q changes podkop)" ] || return 1
         [ "$(cat "$DA_ROOT/context.sha256")" = "$(podkop_section_context_hash)" ] || return 1
@@ -420,6 +480,12 @@ dns_apply_atomic() {
     cp -p "$source" "$temp" && chmod 600 "$temp" && mv "$temp" "$target"
 }
 dns_apply_uci_set() {
+    if [ "${DA_EXPLICIT:-0}" = 1 ]; then
+        dns_apply_pending_unchanged && dns_apply_atomic "$DA_WORK/primary.new" "$DA_UCI" || return 1
+        sha256sum "$DA_UCI" | awk '{print $1}' > "$DA_WORK/committed-uci.sha" || return 1
+        dns_apply_saved_requested && config_load podkop && dns_apply_pending_unchanged
+        return $?
+    fi
     # Saved mode applies the already-saved primary DNS, not any other UCI
     # policy. In particular it must never commit somebody else's delta journal.
     [ "${DA_SAVED:-0}" != 1 ] || { dns_apply_saved_requested && dns_apply_pending_unchanged; return $?; }
@@ -441,10 +507,10 @@ dns_apply_successor() {
         config="$(dns_apply_hash "$DA_CONFIG")" || return 1
         # Only the authenticated graph changes. Keep predecessor policy and
         # section contexts unchanged: unrelated saved edits remain unapplied.
-        jq --arg config "$config" '
+        jq --arg config "$config" --argjson explicit "${DA_EXPLICIT:-0}" '
           {config:.config,policy:.policy,contexts:[.sections[]|{section,context}]} as $origin |
           .config=$config |
-          .continuity={kind:"dns-only",freshServiceEvidence:false,savedPrimaryOnly:true,predecessor:$origin}
+          .continuity={kind:"dns-only",freshServiceEvidence:false,savedPrimaryOnly:($explicit!=1),explicitPrimaryOnly:($explicit==1),predecessor:$origin}
         ' "$DA_SNAPSHOT" > "$DA_WORK/saved-successor.json" &&
         dns_apply_atomic "$DA_WORK/saved-successor.json" "$DA_SNAPSHOT" &&
         dns_apply_continuity_validate && dns_apply_pending_unchanged
@@ -617,10 +683,13 @@ dns_apply_restore() {
     dns_apply_uci_clear_staged || result=1
     while IFS='|' read -r number kind path; do
         if [ "${DA_SAVED:-0}" = 1 ]; then
-            case "$kind" in uci|context|metadata) continue;; esac
+            case "$kind" in context|metadata) continue;; uci) [ "${DA_EXPLICIT:-0}" = 1 ] || continue;; esac
         fi
         dns_apply_atomic "$DA_WORK/before.$number" "$path" || result=1
     done < "$DA_WORK/files"
+    if [ "${DA_EXPLICIT:-0}" = 1 ]; then
+        sha256sum "$DA_UCI" | awk '{print $1}' > "$DA_WORK/committed-uci.sha" || result=1
+    fi
     config_load podkop || result=1
     [ "$result" = 0 ] && dns_apply_activate && dns_apply_live_ready && dns_apply_continuity_validate && dns_apply_pending_unchanged
 }
@@ -669,6 +738,7 @@ dns_apply_run() {
         case "$current" in transaction.*) case "${current#transaction.}" in ''|*[!A-Za-z0-9]*) return 1;; esac;; *) return 1;; esac
         DA_WORK="$backup_base/$current"
         [ ! -f "$DA_WORK/saved-mode" ] || DA_SAVED=1
+        [ ! -f "$DA_WORK/explicit-dns-mode" ] || DA_EXPLICIT=1
         # Normal single rollback needs the same exact path recovery as saved
         # mode: no preceding collect runs in this fresh rollback process.
             while IFS='|' read -r number kind path; do
@@ -694,14 +764,7 @@ dns_apply_run() {
         DA_MUTATED=0; dns_apply_record_current || true; dns_apply_reply rollback_failed false; return 1
     fi
     DA_TYPE="$1"; DA_SERVER="$2"; DA_BOOT_TYPE="$3"; DA_BOOT_SERVER="$4"
-    # Existing UI callers need no broad save/restart fallback. A requested pair
-    # already present in committed UCI can use exact-runtime continuation when
-    # desired UCI has drifted. Normal new-DNS transactions keep the old gate.
-    if [ "$DA_SAVED" != 1 ] && dns_apply_saved_requested &&
-       { [ -n "$(uci -q changes podkop)" ] ||
-         [ "$(cat "${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}/context.sha256" 2>/dev/null)" != "$(podkop_section_context_hash)" ]; }; then
-        DA_SAVED=1
-    fi
+    dns_apply_select_context || { dns_apply_reply configuration_changed; return 1; }
     DA_WORK="$(mktemp -d "${TMPDIR:-/tmp}/podkop-dns-apply.XXXXXX")" || return 1; DA_TEMP=1
     dns_apply_pair "$@" && dns_apply_collect && dns_apply_all_choices capture && dns_apply_record_loaded || { dns_apply_reply preparation_failed; return 1; }
     if [ "$mode" = prepare ]; then dns_apply_reply; return 0; fi
@@ -747,7 +810,7 @@ dns_apply_worker() {
     # Keep the parent's strict mode intact and relax only this owned worker.
     set +eu
     umask 077
-    DA_MUTATED=0; DA_CHANGED=false; DA_OWN_LOCK=0; DA_TEMP=0; DA_WORK=''; DA_SAVED=0
+    DA_MUTATED=0; DA_CHANGED=false; DA_OWN_LOCK=0; DA_TEMP=0; DA_WORK=''; DA_SAVED=0; DA_EXPLICIT=0
     trap 'dns_apply_cleanup' EXIT
     trap 'dns_apply_signal' INT TERM HUP
     dns_apply_load || { dns_apply_reply library_unavailable; exit 1; }
