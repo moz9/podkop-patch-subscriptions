@@ -42,9 +42,22 @@ pe_checks_idle() {
     done
     ! ps w | grep -E '[/]usr/bin/podkop (subscription_(services_check|ping|speedtest)|start|restart|reload)|podkop-dns-benchmark worker|podkop-update-manager worker' | grep -v grep >/dev/null
 }
+pe_mode() {
+    case "$1" in 1|2) printf 755;; 3|4) printf 644;; *) return 1;; esac
+}
+pe_permissions() {
+    [ "$(stat -c '%a' "$1")" = "$(pe_mode "$2")" ]
+}
+pe_stage() {
+    # BusyBox cp may replace an existing destination and reset its mode to 0600.
+    # Apply metadata AFTER the content copy, regardless of cp implementation.
+    cp "$1" "$2" && chown "$4" "$2" && chmod "$(pe_mode "$3")" "$2" &&
+        pe_permissions "$2" "$3" && [ "$(stat -c '%u:%g' "$2")" = "$4" ]
+}
 pe_unchanged() {
     while IFS='|' read -r pe_n pe_target; do
         cmp -s "$pe_work/new.$pe_n" "$pe_target" || return 1
+        pe_permissions "$pe_target" "$pe_n" || return 1
     done < "$pe_work/targets"
 }
 pe_finish() {
@@ -71,7 +84,7 @@ pe_main() {
     export LC_ALL=C
     case "${1:-}" in ''|--check) ;; *) pe_fail 'usage: pe-update [--check]';; esac
     [ "$(id -u)" = 0 ] || pe_fail 'root required'
-    for pe_tool in curl jq sha256sum awk grep cmp mktemp ash; do command -v "$pe_tool" >/dev/null || pe_fail "missing $pe_tool"; done
+    for pe_tool in curl jq sha256sum awk grep cmp mktemp ash stat chmod chown; do command -v "$pe_tool" >/dev/null || pe_fail "missing $pe_tool"; done
     pe_hex "$PE_PAYLOAD_COMMIT" 40 || pe_fail 'unpublished payload commit pin'
     for pe_hash in "$PE_SNAPSHOT_SHA256" "$PE_PROBE_SHA256" "$PE_BENCHMARK_SHA256" "$PE_UI_SHA256"; do
         pe_hex "$pe_hash" 64 || pe_fail 'unpublished payload hash pin'
@@ -112,6 +125,7 @@ pe_main() {
         '4|/www/luci-static/resources/view/podkop_patch_20261017_pe_fastfix_v1_candidate/dns_benchmark.js' > "$pe_work/targets"
     while IFS='|' read -r pe_n pe_target; do
         [ -f "$pe_target" ] && [ ! -L "$pe_target" ] || pe_fail "missing/linked target: $pe_target"
+        [ "$(stat -c '%u:%g' "$pe_target")" = 0:0 ] || pe_fail "unsupported target ownership: $pe_target"
         cp -p "$pe_target" "$pe_work/old.$pe_n"
     done < "$pe_work/targets"
     pe_replace_block "$pe_work/old.1" "$pe_work/podkop-service-snapshot.sh" subscription_service_snapshot_v1 > "$pe_work/runtime.step" || pe_fail 'snapshot markers ambiguous'
@@ -135,15 +149,14 @@ pe_main() {
     while IFS='|' read -r pe_n pe_target; do
         cp -p "$pe_work/old.$pe_n" "$pe_backup/$pe_n"
         cmp -s "$pe_target" "$pe_backup/$pe_n" || pe_fail 'backup verification failed'
-        cp -p "$pe_target" "$pe_target.pe-update-stage.$$"
-        # Keep target owner/mode while replacing contents, then rename on its own filesystem.
-        cp "$pe_work/new.$pe_n" "$pe_target.pe-update-stage.$$"
+        pe_stage "$pe_work/new.$pe_n" "$pe_target.pe-update-stage.$$" "$pe_n" 0:0 || pe_fail 'stage permissions rejected'
         cmp -s "$pe_work/new.$pe_n" "$pe_target.pe-update-stage.$$" || pe_fail 'stage verification failed'
     done < "$pe_work/targets"
     pe_mutated=1
     while IFS='|' read -r pe_n pe_target; do
         mv -f "$pe_target.pe-update-stage.$$" "$pe_target"
         cmp -s "$pe_work/new.$pe_n" "$pe_target" || pe_fail 'installed bytes mismatch'
+        pe_permissions "$pe_target" "$pe_n" && [ "$(stat -c '%u:%g' "$pe_target")" = 0:0 ] || pe_fail 'installed permissions mismatch'
     done < "$pe_work/targets"
     pe_configs > "$pe_work/config.unsorted" && sort "$pe_work/config.unsorted" > "$pe_work/config.after"
     cmp -s "$pe_work/config.before" "$pe_work/config.after" || pe_fail 'configuration changed during update'

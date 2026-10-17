@@ -1,4 +1,5 @@
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -78,11 +79,58 @@ pe_finish 9
             root = pathlib.Path(directory)
             target = root / 'target'
             target.write_text('same')
+            target.chmod(0o755)
             (root / 'new.1').write_text('same')
             (root / 'targets').write_text(f'1|{target}\n')
             self.assertEqual(self.run_helper('pe_work="$1"; pe_unchanged', root).returncode, 0)
             target.write_text('different')
             self.assertNotEqual(self.run_helper('pe_work="$1"; pe_unchanged', root).returncode, 0)
+
+    def test_noop_refuses_identical_bytes_with_broken_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            target = root / 'target'
+            target.write_text('same')
+            target.chmod(0o600)
+            (root / 'new.1').write_text('same')
+            (root / 'targets').write_text(f'1|{target}\n')
+            self.assertNotEqual(self.run_helper('pe_work="$1"; pe_unchanged', root).returncode, 0)
+
+    def test_stage_corrects_copy_reset_permissions(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / 'source'
+            stage = root / 'stage'
+            source.write_text('payload')
+            source.chmod(0o600)
+            stage.write_text('old')
+            stage.chmod(0o755)
+            result = self.run_helper('''
+cp() { command cp "$@" && chmod 600 "$2"; }
+pe_stage "$1" "$2" 1 "$(id -u):$(id -g)"
+''', source, stage)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(stage.stat().st_mode & 0o7777, 0o755)
+            self.assertEqual(stage.read_text(), 'payload')
+
+    @unittest.skipUnless(shutil.which('busybox'), 'BusyBox unavailable')
+    def test_busybox_stage_modes_for_executable_and_ui(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            source = root / 'source'
+            stage = root / 'stage'
+            source.write_text('payload')
+            source.chmod(0o600)
+            for index, mode in ((1, 0o755), (2, 0o755), (3, 0o644), (4, 0o644)):
+                stage.write_text('old')
+                stage.chmod(0o755)
+                result = self.run_helper('''
+cp() { busybox cp "$@"; }
+pe_stage "$1" "$2" "$3" "$(id -u):$(id -g)"
+''', source, stage, index)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(stage.stat().st_mode & 0o7777, mode)
+                self.assertEqual(stage.read_text(), 'payload')
 
 
 if __name__ == '__main__':
