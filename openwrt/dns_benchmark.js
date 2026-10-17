@@ -385,8 +385,8 @@ function openBenchmark(map) {
   function selectableCandidate(row,bootstrap) {
     return precheckCandidate(row) || state.report.pairResults.some(pair=>(pair.success || pair===state.report.latestPairFailure) && (bootstrap ? (pair.bootstrapProtocol || "udp")===row.protocol && pair.bootstrapDnsServer===row.server : pair.protocol===row.protocol && pair.id===row.id && pair.dnsServer===row.dnsServer));
   }
-  function mainCandidates() { return (state.report?.availableResults || state.report?.results.filter(row=>selectableCandidate(row,false)) || []).filter(row=>row.primaryEligible!==false); }
-  function bootstrapCandidates() { return state.report?.availableBootstrapResults || state.report?.bootstrapResults.filter(row=>selectableCandidate(row,true)) || []; }
+  function mainCandidates() { return (state.report?.availableResults?.length ? state.report.availableResults : state.report?.results.filter(row=>selectableCandidate(row,false)) || []).filter(row=>row.primaryEligible!==false); }
+  function bootstrapCandidates() { return state.report?.availableBootstrapResults?.length ? state.report.availableBootstrapResults : state.report?.bootstrapResults.filter(row=>selectableCandidate(row,true)) || []; }
   function candidateLabel(row,bootstrap) {
     const prefix=row.automaticEligible===false?(state.report.selectionMode==='all_selected'?'только для сравнения · ':'только вручную · '):'';
     const failure=state.report.latestPairFailure;

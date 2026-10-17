@@ -17,7 +17,7 @@
     "openwrt/diagnostic.js": "25fcfd513a23bd3203a04d64f201e724de01f8584ee6435940e47c358a349ad2",
     "openwrt/dns-bootstrap.json": "c2b478fcf742406bb42699e49b0dead6f91f7a0c51d7e8b2982168028deabdbd",
     "openwrt/dns-main.json": "b7f16eeb7d0519833bf60109dcc829af8478b915a1a480ee9849f9be1beddefb",
-    "openwrt/dns_benchmark.js": "12c0280099aa28620d33ce4eddd8b00967705fc14f4624dd4b4421feeb3d2520",
+    "openwrt/dns_benchmark.js": "6eda2f86c785464e6d26bf7689d8ac269e85ba43acd5ba48937d68e05e97c7da",
     "openwrt/install.sh": "a02518f34644e87df85751845e557090487996b43dd617efa46aea0041fc0fd6",
     "openwrt/main.js": "ac3cd2bf46c563f383fa6a1ceb51aa224ad79c76639591f76e56cd77ea3fc352",
     "openwrt/pe-install.sh": "9ac1fe848b8b0384e93dd4a246f6e16d8c4f72d243a5da724b2b1375b534a183",

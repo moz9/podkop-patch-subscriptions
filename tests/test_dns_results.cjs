@@ -10,3 +10,8 @@ const input = [{averageMs:null},{averageMs:90},{averageMs:0},{averageMs:50},{ave
 assert.deepEqual(sort(input).map(x=>x.averageMs), [0,50,90,null,NaN]);
 assert.equal(input[0].averageMs, null, 'sorting does not mutate report');
 console.log('DNS result layout and latency tests passed');
+const candidatesSource=source.slice(source.indexOf('  function mainCandidates()'),source.indexOf('  function candidateLabel('));
+const state={report:{availableResults:[],availableBootstrapResults:[],results:[{id:'google',primaryEligible:true,precheckUsable:true},{id:'compare',primaryEligible:false,precheckUsable:true}],bootstrapResults:[{server:'77.88.8.1',precheckUsable:true}]}};
+const candidates=new Function('state','selectableCandidate',candidatesSource+';return [mainCandidates(),bootstrapCandidates()];')(state,row=>row.precheckUsable===true);
+assert.equal(candidates[0].length,1,'empty catalog must retain measured primary candidates');
+assert.equal(candidates[1].length,1,'empty catalog must retain measured bootstrap candidates');
