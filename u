@@ -1,0 +1,72 @@
+#!/bin/sh
+# Public compatibility dispatcher. Release pins are updated with tested releases.
+set -eu
+export LC_ALL=C
+die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+select_route() {
+    case "$1:$2" in
+        :none) printf 'fresh\n';;
+        0.7.19:stock|0.7.20:stock|0.7.21:stock|0.7.22:stock) printf 'legacy\n';;
+        0.7.24:stock) printf 'migrate\n';;
+        0.7.24:pe) printf 'pe\n';;
+        *) die 'this Podkop/engine combination has no verified installation route';;
+    esac
+}
+download_run() {
+    url="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$1/$2"
+    expected=$3
+    dir=$(mktemp -d /tmp/podkop-bootstrap.XXXXXX)
+    if command -v curl >/dev/null 2>&1; then
+        curl --proto '=https' --proto-redir '=https' -fSL --connect-timeout 10 --max-time 120 "$url" -o "$dir/install.sh"
+    else
+        wget -T 120 -O "$dir/install.sh" "$url"
+    fi
+    printf '%s  %s\n' "$expected" "$dir/install.sh" | sha256sum -c - || die 'installer checksum mismatch'
+    exec sh "$dir/install.sh"
+}
+main() {
+    [ "$(id -u)" = 0 ] || die 'root required'
+    command -v sha256sum >/dev/null || die 'sha256sum required'
+    current=''; engine=none
+    if [ -e /usr/bin/podkop ]; then
+        current=$(/usr/bin/podkop show_version) || die 'cannot identify Podkop'
+        current=${current#v}
+        engine=stock
+        if command -v apk >/dev/null 2>&1; then
+            packages=$(apk list --installed --manifest) || die 'cannot read package database'
+            if printf '%s\n' "$packages" | awk '$1=="podkop-engine" {found=1} END {exit !found}'; then engine=pe; fi
+        elif command -v opkg >/dev/null 2>&1; then
+            if opkg status podkop-engine 2>/dev/null | grep -q '^Status: .* installed$'; then engine=pe; fi
+        else die 'supported package manager not found'; fi
+    elif [ -e /etc/config/podkop ] || [ -d /etc/podkop ]; then
+        die 'saved Podkop state exists without runtime; recovery required'
+    fi
+    route=$(select_route "$current" "$engine")
+    case "$route" in
+      legacy)
+        # Keep the installed supported base; do not chase unsupported upstream latest.
+        export PODKOP_PATCH_VERSION=f4e5b379a7c46d61ac8f7286beced66c1c7a8601
+        export PODKOP_PATCH_RAW_BASE=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PODKOP_PATCH_VERSION/openwrt
+        export PODKOP_PATCH_UPDATE_PODKOP=0 PODKOP_PATCH_FORCE_PODKOP_UPDATE=0
+        download_run "$PODKOP_PATCH_VERSION" i 944c15a58f12bd51105f9d673f2f35c108d1761a429ffa7222a5aa7c5dd977eb
+        ;;
+      migrate)
+        printf 'Selected: stock Podkop 0.7.24 -> unofficial PE, preserving configuration.\n'
+        download_run 6f58c537d60fe4a0fd37c9419d4c8e7b9fd31d1a pe-migrate b8fa528471d8ecf6b4f7b71fd205c1779da9e0298102d2ca9a54a50ab373f3b9
+        ;;
+      fresh)
+        printf 'Selected: supported fresh PE candidate; platform preflight follows.\n'
+        download_run 8c9ed9abcd9d48e95950edbff9521bc94be13c4d i a02518f34644e87df85751845e557090487996b43dd617efa46aea0041fc0fd6
+        ;;
+      pe)
+        if grep -Fxq '# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261017-pe-fastfix-v1-candidate' /usr/bin/podkop &&
+           sing-box version | grep -Fxq 'sing-box version 1.14.2-pdk-r14'; then
+            printf 'Current PE candidate already installed; no changes.\n'
+        else
+            die 'existing PE differs from the verified candidate; automatic replacement is not yet supported'
+        fi
+        ;;
+    esac
+}
+# DISPATCH_MAIN
+main "$@"

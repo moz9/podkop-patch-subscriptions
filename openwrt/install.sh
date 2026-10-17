@@ -1,6 +1,32 @@
 #!/bin/sh
 set -eu
 
+# Normal public entry: resolve newer/fresh stacks before the Legacy backend.
+# Explicit local/staged backend calls keep their existing contract.
+bootstrap_dispatch() {
+if [ -z "${PODKOP_PATCH_RAW_BASE:-}" ]; then
+    bootstrap_version=''
+    if [ -x /usr/bin/podkop ]; then
+        bootstrap_version=$(/usr/bin/podkop show_version) || exit 1
+        bootstrap_version=${bootstrap_version#v}
+    fi
+    case "$bootstrap_version" in
+      0.7.19|0.7.20|0.7.21|0.7.22) ;;
+      *)
+        bootstrap_dir=$(mktemp -d /tmp/podkop-entry.XXXXXX)
+        bootstrap_url=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/u
+        if command -v curl >/dev/null 2>&1; then
+            curl --proto '=https' --proto-redir '=https' -fSL --connect-timeout 10 --max-time 120 "$bootstrap_url" -o "$bootstrap_dir/u"
+        else
+            wget -T 120 -O "$bootstrap_dir/u" "$bootstrap_url"
+        fi
+        printf '%s  %s\n' 2fd21ca9bbd9d8be930b1526ba1e4b4273e048437eaa31662e930ab84d02dcd6 "$bootstrap_dir/u" | sha256sum -c - || exit 1
+        exec sh "$bootstrap_dir/u"
+        ;;
+    esac
+fi
+}
+
 PATCH_VERSION="${PODKOP_PATCH_VERSION:-main}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 PODKOP_OFFICIAL_INSTALL_URL="${PODKOP_OFFICIAL_INSTALL_URL:-https://raw.githubusercontent.com/itdoginfo/podkop/main/install.sh}"
@@ -1590,6 +1616,7 @@ update_official_podkop_if_requested() {
 }
 
 tmp_dir="$(mktemp -d)"
+bootstrap_dispatch
 backup_dir=""
 persistent_backup_dir=""
 rollback_dir=""

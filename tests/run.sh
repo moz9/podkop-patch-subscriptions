@@ -3,6 +3,8 @@ set -eu
 
 test_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 
+python3 "$test_dir/test_public_dispatch.py"
+
 sh "$test_dir/test_update_manager_mode_env.sh"
 sh "$test_dir/test_patch_update_direction.sh"
 sh "$test_dir/test_update_center_direction_ui.sh"
