@@ -1,0 +1,147 @@
+#!/bin/sh
+# Stock 0.7.24 -> pinned PE, config-preserving APK transaction.
+set -eu
+export LC_ALL=C
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+fetch() { curl --proto '=https' --proto-redir '=https' -fSL --connect-timeout 10 --max-time 120 "$1" -o "$2"; }
+verify() { printf '%s  %s\n' "$1" "$2" | sha256sum -c -; }
+version() { apk list --installed --manifest | awk -v p="$1" '$1==p {n++;v=$2} END {if(n>1)exit 1; print v}'; }
+plan_check() {
+    # Parse transaction ACTIONS, not advisory text such as "consider apk upgrade".
+    awk -v old="$2" -v new="$3" '
+      /^ERROR:/ {bad=1}
+      /^\([0-9]+\/[0-9]+\) / {
+        actions++;
+        if($2=="Purging" && $3==old) removed++;
+        else if($2=="Installing" && $3==new) added++;
+        else bad=1;
+      }
+      END {exit (bad || actions!=2 || removed!=1 || added!=1)}' "$1" ||
+        fail 'APK plan is not the exact engine replacement; no permission for other package changes'
+}
+main() {
+    case "${1:-}" in ''|--check) ;; *) fail 'usage: pe-migrate [--check]';; esac
+    [ "$(id -u)" = 0 ] || fail 'root required'
+    for t in apk jq curl sha256sum tar uci; do command -v "$t" >/dev/null || fail "missing $t"; done
+    . /etc/openwrt_release
+    [ "$DISTRIB_RELEASE:$DISTRIB_ARCH" = '25.12.5:aarch64_cortex-a53' ] || fail 'migration currently validated only for OpenWrt 25.12.5 aarch64_cortex-a53'
+    [ "$(ubus call system board | jq -r .board_name)" = redmi,ax6 ] || fail 'migration currently validated only for Redmi AX6'
+    [ "$(version podkop):$(version luci-app-podkop):$(version sing-box):$(version podkop-engine)" = '0.7.24-r1:0.7.24-r1:1.13.21-r1:' ] || fail 'not the supported stock 0.7.24 stack'
+    ! grep -q PODKOP_SUBSCRIPTIONS_PATCH_VERSION /usr/bin/podkop || fail 'already patched runtime requires a patch update, not stock migration'
+    pending=$(uci changes) || fail 'cannot read UCI'
+    [ -z "$pending" ] || fail 'pending UCI edits retained; finish them before migration'
+    [ -z "$(pidof sing-box || true)" ] || fail 'stop Podkop explicitly before this migration; settings are retained'
+    [ "$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)" -ge 131072 ] || fail '128 MiB available RAM required for staging and recovery'
+    mkdir /tmp/podkop-pe-migration.lock 2>/dev/null || fail 'migration already running; inspect existing lock'
+    umask 077
+    work=$(mktemp -d /tmp/podkop-pe-migrate.XXXXXX)
+    mutated=0
+    trap 'finish $?' EXIT
+    trap 'exit 130' INT TERM HUP
+    printf 'Staging: %s\n' "$work"
+    payload_commit=8c9ed9abcd9d48e95950edbff9521bc94be13c4d
+    fetch "https://codeload.github.com/moz9/podkop-patch-subscriptions/tar.gz/$payload_commit" "$work/source.tgz"
+    mkdir "$work/source"
+    tar -tzf "$work/source.tgz" > "$work/archive.list"
+    while IFS= read -r member; do
+        case "$member" in /*|../*|*/../*|*/..) fail 'unsafe source archive path';; esac
+    done < "$work/archive.list"
+    tar -xzf "$work/source.tgz" -C "$work/source"
+    source="$work/source/podkop-patch-subscriptions-$payload_commit"
+    manifest="$source/openwrt/update-manifest.json"
+    verify fcfe295f47d4ce8289825793a71ef8d230cce36416b787d17357604f919c619f "$manifest"
+    jq -r '.sha256 | to_entries[] | "\(.value)  \(.key)"' "$manifest" > "$work/hashes"
+    (cd "$source" && sha256sum -c "$work/hashes") || fail 'payload hash mismatch'
+    fetch https://github.com/FiyeroT/podkop-engine/releases/download/v1.14.2-r14/podkop-engine_1.14.2-r14_openwrt_aarch64_cortex-a53.apk "$work/engine.apk"
+    verify 8956c62696ee292902960cbdb198339527d5d7946a677cf26616afc8632a1f63 "$work/engine.apk"
+    mkdir "$work/stock"
+    # --recursive is required: apk fetch without it treats the constraint as a name.
+    apk fetch --recursive --output "$work/stock" sing-box=1.13.21-r1
+    stock="$work/stock/sing-box-1.13.21-r1.apk"
+    [ -s "$stock" ] || fail 'old engine recovery package unavailable'
+    sha256sum "$stock" > "$work/stock.sha256"
+    keep="kmod-inet-diag=$(version kmod-inet-diag)"
+    apk -vv --simulate --no-scripts --allow-untrusted add "$work/engine.apk" "$keep" > "$work/plan" 2>&1 || fail 'engine simulation failed'
+    plan_check "$work/plan" sing-box podkop-engine
+    # Protect configuration/drafts byte-for-byte, independently of package conffiles.
+    for p in etc/config/podkop etc/podkop etc/config/sing-box etc/sing-box; do
+        if [ -e "/$p" ]; then printf '%s\n' "$p"; fi
+    done > "$work/config.paths"
+    tar -cf "$work/config.tar" -C / -T "$work/config.paths"
+    tar -tf "$work/config.tar" >/dev/null
+    cp /etc/apk/world "$work/world.before"
+    apk list --installed --manifest > "$work/packages.before"
+    # The adapter has its own snapshot/rollback for patch files. Keep additional
+    # engine-owned init/default files for package rollback without running hooks.
+    tar -cf "$work/engine-init.tar" -C / etc/init.d/sing-box
+    sed -n '/^RUNTIME_FILES="$/,/^"$/p' "$source/openwrt/pe-install.sh" |
+      sed '/="$/d; /^"$/d; /^$/d' > "$work/runtime.paths.all"
+    [ "$(wc -l < "$work/runtime.paths.all")" -ge 20 ] || fail 'runtime snapshot inventory missing'
+    : > "$work/runtime.paths"
+    while IFS= read -r p; do
+        case "$p" in ''|/*|*..*|*[!a-zA-Z0-9_./-]*) fail 'unsafe runtime snapshot path';; esac
+        if [ -e "/$p" ] || [ -L "/$p" ]; then printf '%s\n' "$p" >> "$work/runtime.paths"; fi
+    done < "$work/runtime.paths.all"
+    tar -cf "$work/runtime.tar" -C / -T "$work/runtime.paths"
+    required=$((24576 + $(du -k "$work/config.tar" | awk '{print $1}')))
+    [ "$(df -Pk /root | awk 'END {print $4}')" -ge "$required" ] || fail 'insufficient flash for engine transaction and configuration checkpoint'
+    [ "$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)" -ge 65536 ] || fail 'RAM headroom exhausted during staging'
+    checkpoint=$(mktemp -d /root/podkop-pe-migration.XXXXXX)
+    cp "$work/config.tar" "$work/runtime.tar" "$work/engine-init.tar" "$work/world.before" "$work/packages.before" "$checkpoint/"
+    sha256sum "$checkpoint/config.tar" > "$checkpoint/config.sha256"
+    sha256sum -c "$checkpoint/config.sha256"
+    [ -z "$(uci changes)" ] || fail 'UCI changed during staging'
+    apk list --installed --manifest > "$work/packages.now"
+    cmp -s "$work/packages.before" "$work/packages.now" || fail 'packages changed during staging'
+    tar -cf "$work/config.now.tar" -C / -T "$work/config.paths"
+    cmp -s "$work/config.tar" "$work/config.now.tar" || fail 'configuration changed during staging'
+    if [ "${1:-}" = --check ]; then
+        printf 'CHECK PASSED. No packages or services changed. Staging: %s\n' "$work"
+        return 0
+    fi
+    printf 'Replacing stock sing-box with unofficial PE. Configuration checkpoint: %s\n' "$checkpoint"
+    mutated=1
+    apk --no-network --allow-untrusted --no-scripts add "$work/engine.apk" "$keep"
+    # Suppressed package hooks: never leave delayed defaults to run on reboot.
+    mkdir "$checkpoint/deferred-defaults" "$checkpoint/adapter"
+    if [ -f /etc/uci-defaults/99-podkop-engine ]; then mv /etc/uci-defaults/99-podkop-engine "$checkpoint/deferred-defaults/"; fi
+    if [ -f /etc/init.d/sing-box.apk-new ]; then mv /etc/init.d/sing-box.apk-new /etc/init.d/sing-box; fi
+    /usr/bin/sing-box version | grep -Fx 'sing-box version 1.14.2-pdk-r14'
+    # The stock package already created the service account; reject a missing one.
+    id sing-box >/dev/null
+    tar -xf "$work/config.tar" -C /
+    PODKOP_PATCH_VERSION="$payload_commit" PODKOP_PATCH_RAW_BASE="file://$source/openwrt" \
+      PODKOP_PATCH_MANIFEST_SHA256=fcfe295f47d4ce8289825793a71ef8d230cce36416b787d17357604f919c619f \
+      PODKOP_PATCH_UPDATE_PODKOP=0 PODKOP_PATCH_FORCE_PODKOP_UPDATE=0 \
+      PODKOP_PATCH_BACKUP_ROOT="$checkpoint/adapter" PODKOP_PATCH_DEFER_SERVICE_START=1 \
+      sh "$source/openwrt/pe-install.sh"
+    # Adapter may migrate DNS defaults; user's saved selection takes precedence.
+    tar -xf "$work/config.tar" -C /
+    tar -cf "$work/config.after.tar" -C / -T "$work/config.paths"
+    cmp -s "$work/config.tar" "$work/config.after.tar" || fail 'configuration preservation check failed'
+    cp "$stock" "$checkpoint/stock-sing-box.apk"
+    sha256sum "$checkpoint/stock-sing-box.apk" > "$checkpoint/stock.sha256"
+    sha256sum -c "$checkpoint/stock.sha256"
+    mutated=0
+    printf 'PE INSTALLED / STOPPED. Saved configuration and drafts retained. Checkpoint: %s\n' "$checkpoint"
+}
+finish() {
+    result=$1
+    trap - EXIT INT TERM HUP
+    if [ "${mutated:-0}" = 1 ]; then
+        printf 'Migration failed; attempting stock engine recovery.\n' >&2
+        if sha256sum -c "$work/stock.sha256" &&
+           apk --no-network --allow-untrusted --no-scripts add "$stock" '!podkop-engine' &&
+           tar -xf "$work/runtime.tar" -C / &&
+           tar -xf "$work/engine-init.tar" -C / && tar -xf "$work/config.tar" -C / &&
+           cp "$work/world.before" /etc/apk/world; then
+            printf 'Stock engine/config restored; service remains stopped. Patch adapter logs must also be checked.\n' >&2
+        else
+            printf 'RECOVERY INCOMPLETE. Keep %s and %s; do not reboot.\n' "$work" "${checkpoint:-}" >&2
+        fi
+    fi
+    rmdir /tmp/podkop-pe-migration.lock 2>/dev/null || true
+    exit "$result"
+}
+# MIGRATION_MAIN
+main "$@"
