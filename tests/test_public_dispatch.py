@@ -32,5 +32,10 @@ class Dispatch(unittest.TestCase):
     def test_public_entry_pins_dispatcher(self):
         self.assertIn(hashlib.sha256((ROOT / 'u').read_bytes()).hexdigest(), (ROOT / 'i').read_text())
 
+    def test_existing_pe_delivers_verified_hotfix(self):
+        branch = SOURCE.split('      pe)')[1].split('        ;;')[0]
+        self.assertIn(' pe-update ', branch)
+        self.assertNotIn('already installed; no changes', branch)
+
 if __name__ == '__main__':
     unittest.main()
