@@ -4,6 +4,11 @@
 "require ui";
 "require uci";
 
+function sortDnsResults(rows) {
+  const latency = row => Number.isFinite(row.averageMs) && row.averageMs >= 0 ? row.averageMs : Infinity;
+  return rows.slice().sort((a, b) => latency(a) - latency(b));
+}
+
 // Workflow reference: ZeroBlock 0.8.5-r44 DNS benchmark. This adapter uses
 // Podkop's isolated worker measures servers and route-aware DNS pairs.
 const COMMAND = "/usr/bin/podkop-dns-benchmark";
@@ -301,6 +306,7 @@ function ensureStyle() {
     .pdk-dns-benchmark__scroll {max-width:100%;min-width:0}
     .pdk-dns-benchmark__matrix {margin:12px 0;min-width:0}
     .pdk-dns-benchmark__matrix-scroll {max-height:min(26rem,45vh);overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;margin-top:8px}
+    .pdk-dns-benchmark__results-scroll {max-height:min(24rem,40vh);overflow:auto;overscroll-behavior:contain}
     #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll table {display:table!important;width:100%!important;min-width:0!important;table-layout:fixed}
     #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll thead {display:table-header-group!important}
     #modal_overlay .pdk-dns-benchmark .pdk-dns-benchmark__scroll tbody {display:table-row-group!important}
@@ -344,7 +350,10 @@ function openBenchmark(map) {
   const mainSelect = E("select", {"aria-label": "Основной DNS"});
   const bootstrapSelect = E("select", {"aria-label": "Bootstrap DNS"});
   const pairStatus = E("div", {"aria-live": "polite"});
-  const resultTables = E("div", {class: "pdk-dns-benchmark__tables"});
+  const resultTableContent = E("div", {});
+  const resultTables = E("details", {class: "pdk-dns-benchmark__tables"}, [
+    E("summary", {}, "Результаты DNS — по задержке"), resultTableContent,
+  ]);
   const matrixBody = E("tbody", {});
   const matrixScroll = E("div", {class:"pdk-dns-benchmark__scroll pdk-dns-benchmark__matrix-scroll",role:"region",tabindex:0,"aria-label":"Результаты DNS-пар"}, E("table", {}, [
     E("thead",{},E("tr",{},["Основной DNS","Bootstrap DNS","Базовый DNS","Среднее DNS","Оценка DNS + HTTPS","Через Podkop",""].map(label=>E("th",{},label)))), matrixBody,
@@ -459,9 +468,9 @@ function openBenchmark(map) {
     resultsSnapshot=snapshot;
     const groups=[["Основной DNS",state.report.results,false],["Bootstrap DNS",state.report.bootstrapResults,true]];
     const panels=groups.map(([title,rows,bootstrap]) => E("section",{"aria-label":title},[
-      E("div",{class:"pdk-dns-benchmark__scroll",tabindex:0,"aria-label":title+": результаты"},E("table",{},[
+      E("div",{class:"pdk-dns-benchmark__scroll pdk-dns-benchmark__results-scroll",role:"region",tabindex:0,"aria-label":title+": результаты"},E("table",{},[
         E("thead",{},E("tr",{},["Сервер","Протокол","Ответы","Среднее","Состояние"].map(text=>E("th",{},text)))),
-        E("tbody",{},rows.map(row=>E("tr",{},[
+        E("tbody",{},sortDnsResults(rows).map(row=>E("tr",{},[
           E("td",{"data-label":"Сервер"},[E("strong",{},String(row.provider || "DNS")),E("small",{},String(bootstrap?row.server:row.dnsServer))]),
           E("td",{"data-label":"Протокол"},row.protocol.toUpperCase()),
           E("td",{"data-label":"Ответы"},row.measured===false && row.successCount==null ? "—" : row.successCount+" / "+row.totalQueries),
@@ -480,7 +489,7 @@ function openBenchmark(map) {
       panels.forEach((panel,i)=>{panel.hidden=i!==index;tabs[i].setAttribute("aria-pressed",String(i===index));});
     }
     showTable(state.activeTable);
-    resultTables.replaceChildren(E("div",{class:"pdk-dns-benchmark__tabs","aria-label":"Результаты DNS"},tabs),...panels);
+    resultTableContent.replaceChildren(E("div",{class:"pdk-dns-benchmark__tabs","aria-label":"Результаты DNS"},tabs),...panels);
     const previousMain=mainSelect.value, previousBootstrap=bootstrapSelect.value;
     const mains=mainCandidates();
     const bootstraps=bootstrapCandidates();

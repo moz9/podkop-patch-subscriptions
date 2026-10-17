@@ -1383,7 +1383,8 @@ db_fast_context() {
     [ "$(date +%s)" -lt "$db_deadline" ] || { db_child_error=measurement_timeout; return 1; }
     db_runtime_safe || return 1
     local current
-    current="$(db_fingerprint)" || current=''
+    if [ "${db_native_mode:-0}" = 1 ]; then current="$(db_fingerprint ordering)" || current=''
+    else current="$(db_fingerprint)" || current=''; fi
     [ ! -f "$DB_DIR/cancel" ] || { db_child_error=cancelled; return 1; }
     [ "$(date +%s)" -lt "$db_deadline" ] || { db_child_error=measurement_timeout; return 1; }
     if [ "$1" != "$current" ]; then

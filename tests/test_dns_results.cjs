@@ -1,0 +1,12 @@
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync('openwrt/dns_benchmark.js', 'utf8');
+assert.match(source, /const resultTables = E\("details"/);
+assert.match(source, /pdk-dns-benchmark__results-scroll[^\n]*max-height/);
+const fn = source.match(/function sortDnsResults\(rows\) \{([\s\S]*?)\n\}/);
+assert.ok(fn, 'latency sorter exists');
+const sort = new Function('rows', fn[1]);
+const input = [{averageMs:null},{averageMs:90},{averageMs:0},{averageMs:50},{averageMs:NaN}];
+assert.deepEqual(sort(input).map(x=>x.averageMs), [0,50,90,null,NaN]);
+assert.equal(input[0].averageMs, null, 'sorting does not mutate report');
+console.log('DNS result layout and latency tests passed');
