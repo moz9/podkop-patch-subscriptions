@@ -275,8 +275,13 @@ dns_apply_scoped_policy_validate() (
     root="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
     [ ! -L "$root" ] && [ -s "$root/context.sha256" ] && [ ! -L "$root/context.sha256" ] || exit 1
     context="$(cat "$root/context.sha256")" || exit 1
-    case "$context" in v2:*) [ "${#context}" = 67 ] || exit 1;; *) exit 1;; esac
-    [ "$context" = "$(podkop_section_context_hash)" ] || exit 1
+    if [ -n "${DA_LEGACY_CONTEXT:-}" ]; then
+        case "$context" in ''|*[!a-f0-9]*) exit 1;; esac
+        [ "${#context}" = 64 ] && [ "$context" = "$DA_LEGACY_CONTEXT" ] || exit 1
+    else
+        case "$context" in v2:*) [ "${#context}" = 67 ] || exit 1;; *) exit 1;; esac
+        [ "$context" = "$(podkop_section_context_hash)" ] || exit 1
+    fi
     changes="$(uci -q changes podkop)" || exit 1
     dns_apply_pending_safe "$changes" && dns_apply_uci_pending_clear || exit 1
     DA_SCOPED_REQUIRED_FILE="$(mktemp "$DA_WORK/scoped-required.XXXXXX")" || exit 1
@@ -326,7 +331,7 @@ dns_apply_continuity_validate() {
         # A saved-DNS successor preserves the immutable admitted graph and
         # manifest, not mutable re-tests performed since that admission.
         [ "${DA_SAVED:-0}" != 1 ] || continue
-        if [ "${DA_SAVED:-0}" != 1 ]; then
+        if [ -z "${DA_LEGACY_CONTEXT:-}" ]; then
             context="$(subscription_services_context "$section")" || return 1
             jq -e --arg section "$section" --arg context "$context" '.sections[]|select(.section==$section)|.context==$context' "$manifest" >/dev/null || return 1
         fi
@@ -364,12 +369,28 @@ dns_apply_continuity_validate() {
 }
 dns_apply_context_ready() {
     local saved current
+    DA_LEGACY_CONTEXT=''
     DA_PREPARATION_ERROR=runtime_changed
+    [ -s "$DA_ROOT/context.sha256" ] && [ ! -L "$DA_ROOT/context.sha256" ] || return 1
     saved="$(cat "$DA_ROOT/context.sha256")" && current="$(podkop_section_context_hash)" || return 1
     [ "$saved" != "$current" ] || { DA_PREPARATION_ERROR=''; return 0; }
     case "$saved" in ''|*[!a-f0-9]*) :;; *)
         if [ "${#saved}" = 64 ]; then
-            case "$current" in v2:*) DA_PREPARATION_ERROR=runtime_context_upgrade_required;; esac
+            case "$current" in v2:*)
+                DA_PREPARATION_ERROR=runtime_context_upgrade_required
+                # An old global checkpoint cannot prove that desired settings
+                # are active. Continue ONLY the exact section-admitted graph,
+                # retaining that checkpoint and policy through apply/rollback.
+                # collect still proves every graph alias, evidence and rule.
+                [ -n "${DA_SNAPSHOT:-}" ] && [ -s "$DA_SNAPSHOT" ] && [ ! -L "$DA_SNAPSHOT" ] || return 1
+                DA_LEGACY_CONTEXT="$saved"
+                if dns_apply_scoped_policy_validate "$DA_SNAPSHOT" &&
+                   printf '%s\n' "$saved" > "$DA_WORK/legacy-context"; then
+                    DA_PREPARATION_ERROR=''; return 0
+                fi
+                DA_LEGACY_CONTEXT=''
+                ;;
+            esac
         fi;;
     esac
     return 1
@@ -501,15 +522,16 @@ dns_apply_pending_capture() {
 }
 
 dns_apply_uci_pending_clear() {
-    local pending
+    local pending expected
     [ "${DA_SAVED:-0}" != 1 ] || return 0
     pending="$(uci -q changes podkop)" || return 1
     if [ -f "$DA_WORK/draft-baseline" ]; then
         [ "$pending" = "$(cat "$DA_WORK/draft-baseline")" ] || return 1
     else [ -z "$pending" ] || return 1; fi
     if [ -s "$DA_WORK/uci-written.sha" ]; then
+        expected="${DA_UCI_RESTORED_SHA:-$(cat "$DA_WORK/uci-written.sha")}" || return 1
         [ -s "$DA_UCI" ] && [ ! -L "$DA_UCI" ] &&
-            [ "$(sha256sum "$DA_UCI" | awk '{print $1}')" = "$(cat "$DA_WORK/uci-written.sha")" ] || return 1
+            [ "$(sha256sum "$DA_UCI" | awk '{print $1}')" = "$expected" ] || return 1
     fi
     return 0
 }
@@ -586,6 +608,7 @@ dns_apply_successor() {
     rows="$DA_WORK/successor-sections"; : > "$rows"
     jq -r '.sections[].section' "$DA_SNAPSHOT" > "$DA_WORK/admitted-sections" || return 1
     while IFS= read -r section; do
+        [ -z "${DA_LEGACY_CONTEXT:-}" ] || continue
         context="$(subscription_services_context "$section")" || return 1
         jq -cn --arg section "$section" --arg context "$context" '{section:$section,context:$context}' >> "$rows" || return 1
     done < "$DA_WORK/admitted-sections"
@@ -593,15 +616,17 @@ dns_apply_successor() {
         case "$kind" in
           snapshot)
             basis="$(dns_apply_scoped_policy_origin "$DA_WORK/before.$number")" || basis=null
-            jq --arg config "$config" --arg policy "$policy" --argjson basis "$basis" --slurpfile rows "$rows" '
+            jq --arg config "$config" --arg policy "$policy" --argjson basis "$basis" --arg legacy "${DA_LEGACY_CONTEXT:-}" --slurpfile rows "$rows" '
               {config:.config,policy:.policy,contexts:[.sections[]|{section,context}]} as $origin |
               .config=$config | .policy=(if $basis==null then $policy else .policy end) |
-              .sections |= map(. as $s | .context=([$rows[]|select(.section==$s.section)|.context][0])) |
+              (if $legacy=="" then .sections |= map(. as $s | .context=([$rows[]|select(.section==$s.section)|.context][0])) else . end) |
               .continuity=({kind:"dns-only",freshServiceEvidence:false,predecessor:$origin}
-                + if $basis==null then {} else {policyBasis:$basis} end)
+                + (if $basis==null then {} else {policyBasis:$basis} end)
+                + (if $legacy=="" then {} else {preservedTrafficContext:true} end))
             ' "$DA_WORK/before.$number" > "$DA_WORK/after.$number" || return 1
             dns_apply_atomic "$DA_WORK/after.$number" "$path" || return 1;;
-          context) podkop_section_context_hash > "$DA_WORK/after.$number" &&
+          context) [ -z "${DA_LEGACY_CONTEXT:-}" ] || continue
+            podkop_section_context_hash > "$DA_WORK/after.$number" &&
             dns_apply_atomic "$DA_WORK/after.$number" "$path" || return 1;;
         esac
     done < "$DA_WORK/files"
@@ -753,7 +778,12 @@ dns_apply_restore() {
             case "$kind" in uci|context|metadata) continue;; esac
         fi
         if [ "$kind" = uci ]; then
-            dns_apply_uci_restore "$DA_WORK/before.$number" "$path" || result=1
+            if dns_apply_uci_restore "$DA_WORK/before.$number" "$path"; then
+                # Later readiness checks must bind the verified restored UCI,
+                # not the candidate we just rolled back. Foreign edits still
+                # fail the exact hash check after activation.
+                DA_UCI_RESTORED_SHA="$(sha256sum "$DA_WORK/before.$number" | awk '{print $1}')" || result=1
+            else result=1; fi
         else dns_apply_atomic "$DA_WORK/before.$number" "$path" || result=1; fi
     done < "$DA_WORK/files"
     config_load podkop || result=1
@@ -810,6 +840,7 @@ dns_apply_run() {
         case "$current" in transaction.*) case "${current#transaction.}" in ''|*[!A-Za-z0-9]*) return 1;; esac;; *) return 1;; esac
         DA_WORK="$backup_base/$current"
         [ ! -f "$DA_WORK/saved-mode" ] || DA_SAVED=1
+        [ ! -f "$DA_WORK/legacy-context" ] || DA_LEGACY_CONTEXT="$(cat "$DA_WORK/legacy-context")"
         # Normal single rollback needs the same exact path recovery as saved
         # mode: no preceding collect runs in this fresh rollback process.
             while IFS='|' read -r number kind path; do
@@ -891,7 +922,7 @@ dns_apply_worker() {
     # Keep the parent's strict mode intact and relax only this owned worker.
     set +eu
     umask 077
-    PODKOP_DNS_COMMITTED_FILE=''; DA_SECONDARY_TYPE=''
+    PODKOP_DNS_COMMITTED_FILE=''; DA_SECONDARY_TYPE=''; DA_LEGACY_CONTEXT=''; DA_UCI_RESTORED_SHA=''
     DA_MUTATED=0; DA_CHANGED=false; DA_OWN_LOCK=0; DA_TEMP=0; DA_WORK=''; DA_SAVED=0
     trap 'dns_apply_cleanup' EXIT
     trap 'dns_apply_signal' INT TERM HUP
