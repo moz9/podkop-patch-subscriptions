@@ -550,7 +550,8 @@ ctx.fs.exec=normalExec;
 const cleanSecondary={secondary_dns_enabled:'0',secondary_dns_type:'udp',secondary_dns_server:'old.example',secondary_bootstrap_dns_type:'udp',secondary_bootstrap_dns_server:'8.8.8.8'};
 ctx.uci.state={values:{podkop:{settings:{...cleanSecondary,other_setting:'original'}}},changes:{podkop:{settings:{other_setting:'draft'}}},deletes:{}};
 const reconciledOptions=new Map(Object.entries(cleanSecondary).map(([name,value])=>{
- const item={baseline:value,current:value,default:'',cfgvalue(sid,newValue){if(arguments.length===2)this.baseline=newValue;return this.baseline;},formvalue(){return this.current;},getUIElement(){return {setValue:next=>{item.current=next;}};}};
+ const node={changed:null,getAttribute(){return this.changed;},removeAttribute(){this.changed=null;}};
+ const item={baseline:value,current:value,default:'',sets:0,node,cfgvalue(sid,newValue){if(arguments.length===2)this.baseline=newValue;return this.baseline;},formvalue(){return this.current;},getUIElement(){return {node,isChanged:()=>node.changed==='true',setValue:next=>{item.sets++;item.current=next;node.changed='true';}};}};
  return [name,item];
 }));
 status=nextStatus={...complete,...reserveReport,results:[good]};reservePersisted=null;
@@ -564,6 +565,13 @@ assert.equal(ctx.uci.state.values.podkop.settings.other_setting,'original','unre
 const genericSaveDelta={};
 for(const [name,option] of reconciledOptions)if(option.formvalue('settings')!==option.cfgvalue('settings'))genericSaveDelta[name]=option.formvalue('settings');
 assert.deepEqual(genericSaveDelta,{},'generic later Save emits no stale secondary overwrite');
+assert.ok([...reconciledOptions.values()].every(option=>option.node.changed!== 'true'),'programmatic reserve rebase must not create LuCI browser drafts');
+const setsBefore=[...reconciledOptions.values()].map(option=>option.sets);
+exported.renderOpenButton({root:new Node('root'),lookupOption:name=>[reconciledOptions.get(name)]}).click();await flush();
+assert.deepEqual([...reconciledOptions.values()].map(option=>option.sets),setsBefore,'reading unchanged reserve never calls LuCI setValue');
+reconciledOptions.get('secondary_dns_type').node.changed='true';
+exported.renderOpenButton({root:new Node('root'),lookupOption:name=>[reconciledOptions.get(name)]}).click();await flush();
+assert.equal(reconciledOptions.get('secondary_dns_type').node.changed,'true','pre-existing user change marker is preserved');
 reconciledOptions.get('secondary_dns_server').current='manual-draft.example';
 reconciledOptions.get('secondary_bootstrap_dns_server').current='4.4.4.4';
 ctx.uci.state.changes.podkop.settings.secondary_bootstrap_dns_server='4.4.4.4';
