@@ -25,7 +25,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261012-pe-v17-0724-prepared"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261019-pe-v18-routerdesk"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -63,7 +63,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_PE_PODKOP_FILE="runtime-0.7.24/usr/bin/podkop"
 RUNTIME_PE_PODKOP_JS_FILE="runtime-0.7.24/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261012_pe_v17_0724_prepared"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261019_pe_v18_routerdesk"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -201,14 +201,14 @@ www/luci-static/resources/view/podkop_patch_20261007_pe_v8/diagnostic.js
 www/luci-static/resources/view/podkop_patch_20261007_pe_v8/dns_benchmark.js
 
 usr/lib/lua/luci/i18n/podkop.ru.lmo
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/main.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/podkop.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/section.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/settings.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v18_routerdesk/main.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v18_routerdesk/podkop.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v18_routerdesk/section.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v18_routerdesk/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v18_routerdesk/settings.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v18_routerdesk/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v18_routerdesk/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v18_routerdesk/dns_benchmark.js
 "
 
 PERSISTENT_PATHS="

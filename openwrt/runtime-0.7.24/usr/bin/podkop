@@ -4698,6 +4698,10 @@ subscription_patch_update_status_file() {
 }
 
 subscription_patch_update() {
+    if [ -x /usr/bin/podkop-update-manager ]; then
+        /usr/bin/podkop-update-manager update_start
+        return $?
+    fi
     local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1 patch_update_podkop_update_v1
 
     patch_update_start_stop_daemon_v1=1
@@ -4823,6 +4827,10 @@ EOF
     echo '{"success":true,"started":true}'
 }
 get_subscription_patch_update_status() {
+    if [ -x /usr/bin/podkop-update-manager ]; then
+        /usr/bin/podkop-update-manager status
+        return $?
+    fi
     local status_file
 
     status_file="$(subscription_patch_update_status_file)"
@@ -4831,6 +4839,21 @@ get_subscription_patch_update_status() {
     else
         echo '{"state":"idle","message":"","updatedAt":"","logTail":""}'
     fi
+}
+
+subscription_patch_update_check() {
+    if [ ! -x /usr/bin/podkop-update-manager ]; then
+        echo '{"success":false,"error":"update_manager_missing"}'
+        return 1
+    fi
+    /usr/bin/podkop-update-manager check_start
+}
+
+get_subscription_patch_update_log() {
+    if [ ! -x /usr/bin/podkop-update-manager ]; then
+        return 0
+    fi
+    /usr/bin/podkop-update-manager log
 }
 
 subscription_action_lock_file() {
@@ -5300,15 +5323,39 @@ configure_outbound_handler() {
     esac
 }
 
+load_active_dns_settings() {
+    local failover_enabled active_slot secondary_dns_type secondary_dns_server secondary_bootstrap_dns_server
+    config_get ACTIVE_DNS_TYPE "settings" "dns_type" "doh"
+    config_get ACTIVE_DNS_SERVER "settings" "dns_server" "1.1.1.1"
+    config_get ACTIVE_BOOTSTRAP_DNS_SERVER "settings" "bootstrap_dns_server" "77.88.8.8"
+    config_get_bool failover_enabled "settings" "dns_failover_enabled" "0"
+    config_get active_slot "settings" "dns_failover_active_slot" "primary"
+    ACTIVE_DNS_SLOT="primary"
+    if [ "$failover_enabled" -eq 1 ] && [ "$active_slot" = secondary ]; then
+        config_get secondary_dns_type "settings" "secondary_dns_type"
+        config_get secondary_dns_server "settings" "secondary_dns_server"
+        config_get secondary_bootstrap_dns_server "settings" "secondary_bootstrap_dns_server"
+        if [ -n "$secondary_dns_type" ] && [ -n "$secondary_dns_server" ] && [ -n "$secondary_bootstrap_dns_server" ]; then
+            ACTIVE_DNS_TYPE="$secondary_dns_type"
+            ACTIVE_DNS_SERVER="$secondary_dns_server"
+            ACTIVE_BOOTSTRAP_DNS_SERVER="$secondary_bootstrap_dns_server"
+            ACTIVE_DNS_SLOT="secondary"
+        else
+            log "Secondary DNS pair is incomplete, using the primary pair" "warn"
+        fi
+    fi
+}
+
 sing_box_configure_dns() {
     log "Configure the DNS section of a sing-box JSON configuration"
     config=$(sing_box_cm_configure_dns "$config" "$SB_DNS_SERVER_TAG" "ipv4_only" true)
 
     log "Adding DNS Servers" "debug"
     local dns_type dns_server bootstrap_dns_server dns_domain_resolver dns_server_address
-    config_get dns_type "settings" "dns_type" "doh"
-    config_get dns_server "settings" "dns_server" "1.1.1.1"
-    config_get bootstrap_dns_server "settings" "bootstrap_dns_server" "77.88.8.8"
+    load_active_dns_settings
+    dns_type="$ACTIVE_DNS_TYPE"
+    dns_server="$ACTIVE_DNS_SERVER"
+    bootstrap_dns_server="$ACTIVE_BOOTSTRAP_DNS_SERVER"
     local bootstrap_dns_type
     config_get bootstrap_dns_type "settings" "bootstrap_dns_type" "udp"
     if [ "${ACTIVE_DNS_SLOT:-primary}" = secondary ]; then
@@ -7434,6 +7481,12 @@ subscription_patch_update)
     ;;
 get_subscription_patch_update_status)
     get_subscription_patch_update_status
+    ;;
+subscription_patch_update_check)
+    subscription_patch_update_check
+    ;;
+get_subscription_patch_update_log)
+    get_subscription_patch_update_log
     ;;
 check_proxy)
     check_proxy

@@ -2,6 +2,7 @@
 set -eu
 
 test_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+sh "$test_dir/test_routerdesk_payload.sh"
 sh "$test_dir/test_single_hooks.sh"
 sh "$test_dir/test_diagnostic_policy.sh"
 sh "$test_dir/test_dns_light_policy.sh"
