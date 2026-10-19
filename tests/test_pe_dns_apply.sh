@@ -37,6 +37,19 @@ printf ':\n' > "$tmp/legacy-optimizer.sh"
     dns_apply_main prepare dot cloudflare-dns.com udp 77.88.8.1
 ) > "$tmp/legacy-loader.json" || fail 'strict benchmark options killed legacy library loader'
 jq -e '.success==true' "$tmp/legacy-loader.json" >/dev/null || fail 'legacy loader omitted structured result'
+(
+    DA_ROOT="$tmp/context-guard"; mkdir -p "$DA_ROOT"
+    printf '%064d\n' 0 > "$DA_ROOT/context.sha256"
+    podkop_section_context_hash() { printf 'v2:%064d\n' 1; }
+    ! dns_apply_context_ready || fail 'legacy context admitted without migration'
+    [ "$DA_PREPARATION_ERROR" = runtime_context_upgrade_required ] || fail 'legacy context refusal is not actionable'
+    podkop_section_context_hash > "$DA_ROOT/context.sha256"
+    dns_apply_context_ready || fail 'matching v2 context refused'
+    printf 'v2:%064d\n' 2 > "$DA_ROOT/context.sha256"
+    ! dns_apply_context_ready || fail 'changed v2 context admitted'
+    [ "$DA_PREPARATION_ERROR" = runtime_changed ] || fail 'changed context mislabeled as migration'
+)
+echo 'PASS: old context requires explicit migration; matching context works and changed context remains blocked'
 
 printf '%s\n' '{"dns":{"servers":[{"tag":"bootstrap-dns-server","type":"udp","server":"1.1.1.1"},{"tag":"dns-server","type":"https","server":"old.example","path":"/dns-query","detour":"direct-out"},{"tag":"fakeip","type":"fakeip","inet4_range":"198.18.0.0/15"}],"rules":[{"server":"fakeip"}],"final":"dns-server"},"outbounds":[{"tag":"main-out","type":"selector","outbounds":["main-urltest-out"]},{"tag":"main-urltest-out","type":"urltest","outbounds":["node-a"]},{"tag":"node-a","type":"vless","server":"private.invalid"}],"route":{"default_domain_resolver":"dns-server","rules":[]}}' > "$tmp/source.json"
 printf '%s\n' '[{"tag":"dns-server","type":"tls","server":"9.9.9.9","server_port":853},{"tag":"bootstrap-dns-server","type":"tcp","server":"8.8.8.8","server_port":53}]' > "$tmp/pair.json"

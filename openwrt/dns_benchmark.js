@@ -24,6 +24,7 @@ const ERRORS = {
   independent_reserve_unavailable: "В выбранном каталоге нет независимой резервной пары с другими провайдерами. DNS не изменены.",
   pending_recovery_required: "Предыдущее восстановление DNS не завершено. Новое применение заблокировано, чтобы сохранить резервную копию; сначала выполните откат.",
   preparation_failed: "Не удалось безопасно подготовить DNS-конфигурацию. Применение не начато; проверьте состояние Podkop и резервных данных.",
+  runtime_context_upgrade_required: "Служебная контрольная запись рабочего Podkop старого формата. Требуется отдельная проверка перехода на новый формат; DNS не изменены.",
   runtime_unavailable: "Не удалось подтвердить работу текущих DNS-процессов. Новая DNS-пара не применена.",
   runtime_changed: "Рабочая конфигурация изменилась. Операция остановлена, чтобы не перезаписать новые настройки.",
   incomplete_backup: "Резервная копия DNS неполна. Автоматическое восстановление остановлено; требуется проверка сохранённых данных.",
@@ -615,7 +616,7 @@ function openBenchmark(map) {
           ? `Основная: ${lightSelection.primary.dnsServer} + ${lightSelection.primary.bootstrapDnsServer}. Резервная: ${lightSelection.secondary.dnsServer} + ${lightSelection.secondary.bootstrapDnsServer}. Проверены DNS-ответы, не приложения. Не применено.`
           : status.state==='running'?'Подбираем основную и независимую резервную пары…':'Подбор неполный: '+errorMessage(status.error || 'independent_reserve_unavailable');
       }
-      if (status.action!=='reserve_save' && Array.isArray(status.results) && Array.isArray(status.bootstrapResults)) renderResults(status);
+      if (!["apply","select_apply","rollback","reserve_save"].includes(status.action) && Array.isArray(status.results) && Array.isArray(status.bootstrapResults)) renderResults(status);
       else if(state.running && RECOMMENDATION_ACTIONS.includes(status.action)) renderResults({...status,results:[],bootstrapResults:[],pairResults:[]});
       if(status.action==='recommend_reserve' && status.state==='done' && state.report?.reportId && !reserveLoading && readinessCheckedReport!==state.report.reportId) await readReserve();
       error.textContent="";

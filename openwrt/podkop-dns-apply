@@ -362,6 +362,18 @@ dns_apply_continuity_validate() {
     [ "$local_names" = "$(jq -c '.rules|map(.name)|sort' "$manifest")" ] || return 1
     sing-box check -c "$config_path" >/dev/null 2>&1
 }
+dns_apply_context_ready() {
+    local saved current
+    DA_PREPARATION_ERROR=runtime_changed
+    saved="$(cat "$DA_ROOT/context.sha256")" && current="$(podkop_section_context_hash)" || return 1
+    [ "$saved" != "$current" ] || { DA_PREPARATION_ERROR=''; return 0; }
+    case "$saved" in ''|*[!a-f0-9]*) :;; *)
+        if [ "${#saved}" = 64 ]; then
+            case "$current" in v2:*) DA_PREPARATION_ERROR=runtime_context_upgrade_required;; esac
+        fi;;
+    esac
+    return 1
+}
 dns_apply_collect() {
     local section
     DA_ROOT="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
@@ -377,7 +389,7 @@ dns_apply_collect() {
         printf '1\n' > "$DA_WORK/saved-mode"
     else
         dns_apply_pending_capture || return 1
-        [ "$(cat "$DA_ROOT/context.sha256")" = "$(podkop_section_context_hash)" ] || return 1
+        dns_apply_context_ready || return 1
     fi
     if jq -e '.version==3' "$DA_ROOT/metadata.json" >/dev/null; then
         dns_apply_single_mode || return 1
@@ -773,6 +785,7 @@ dns_apply_cleanup() {
 }
 dns_apply_run() {
     local mode="$1" number kind path current backup_base free_kb needed_kb pending_recovery=0
+    DA_PREPARATION_ERROR=''
     shift
     case "$mode" in prepare-saved) mode=prepare; DA_SAVED=1;; apply-saved) mode=apply; DA_SAVED=1;; esac
     if [ "$mode" = apply_pairs ]; then
@@ -834,7 +847,7 @@ dns_apply_run() {
     if [ -n "${DA_SECONDARY_TYPE:-}" ]; then
         dns_apply_pair "$DA_SECONDARY_TYPE" "$DA_SECONDARY_SERVER" "$DA_SECONDARY_BOOT_TYPE" "$DA_SECONDARY_BOOT_SERVER" || { dns_apply_reply invalid_reserve; return 1; }
     fi
-    dns_apply_pair "$@" && dns_apply_collect && dns_apply_all_choices capture && dns_apply_record_loaded || { dns_apply_reply preparation_failed; return 1; }
+    dns_apply_pair "$@" && dns_apply_collect && dns_apply_all_choices capture && dns_apply_record_loaded || { dns_apply_reply "${DA_PREPARATION_ERROR:-preparation_failed}"; return 1; }
     if [ "$mode" = prepare ]; then dns_apply_reply; return 0; fi
     if dns_apply_idempotent; then
         dns_apply_live_ready || { dns_apply_reply runtime_unavailable; return 1; }

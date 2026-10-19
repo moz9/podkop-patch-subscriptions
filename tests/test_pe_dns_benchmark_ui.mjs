@@ -663,3 +663,17 @@ status=nextStatus={...lightDone,partial:true,selectionComplete:false}; pending=f
 exported.renderOpenButton({root:new Node('root')}).click();await flush();
 assert.equal(button('Применить обе пары').disabled,true,'partial selection cannot enable Apply');
 console.log('PASS: both-pair buttons, DNS-only scope, browser draft guard, persisted-draft handoff and atomic-apply UI lock');
+const mutationStatus={state:'running',action:'apply',results:[],bootstrapResults:[],pairResults:[lightDone.recommendation,lightDone.secondaryRecommendation]};
+status=nextStatus=mutationStatus;reloaded=false;
+exported.renderOpenButton({root:new Node('root')}).click();await flush();
+assert.ok(walk(modal).some(n=>n.textContent==='Применяем DNS и проверяем работу Podkop…'),'apply status does not parse stale lightweight rows as full measurements');
+status=nextStatus={...mutationStatus,state:'error',error:'runtime_context_upgrade_required'};
+await poll();await flush();
+assert.ok(walk(modal).some(n=>n.textContent.includes('старого формата')),'actual admission error is visible instead of stale measurement validation');
+assert.equal(button('Закрыть').disabled,false,'terminal apply refusal releases the UI');
+assert.equal(button('Применить обе пары').disabled,true,'failed apply cannot reuse selection proof');
+status=nextStatus=mutationStatus;
+exported.renderOpenButton({root:new Node('root')}).click();await flush();
+status=nextStatus={...mutationStatus,state:'done'};await poll();await flush();
+assert.equal(reloaded,true,'successful apply still reloads despite retained native DNS rows');
+console.log('PASS: mutation status is independent of retained measurement schemas and shows real admission failure');
