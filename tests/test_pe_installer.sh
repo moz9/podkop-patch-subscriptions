@@ -24,7 +24,7 @@ export PATH
 [ "$PATCH_VERSION" = podkop-pe ] || fail_test 'installer defaults to normal channel'
 [ "$PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS" = 0.7.24 ] || fail_test 'PE channel accepts older runtime'
 grep -q '/commits/podkop-pe' "$repo_root/a" || fail_test 'full stack resolves normal main'
-grep -q '/podkop-pe/openwrt/update-manifest.json' "$repo_root/openwrt/podkop-update-manager" || fail_test 'update center follows normal main'
+grep -q '/podkop-pe-0.7.24/openwrt/update-manifest.json' "$repo_root/openwrt/podkop-update-manager" || fail_test 'update center follows the compatible PE 0.7.24 channel'
 tmp_dir="$test_root/assets"
 mkdir -p "$tmp_dir"
 download() {

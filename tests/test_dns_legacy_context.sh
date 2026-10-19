@@ -65,7 +65,7 @@ for invalid in provenance context graph evidence ram-rule disk-rule required dra
       provenance) jq 'del(.continuity)' "$fixture/original-snapshot" > "$fixture/snapshot/snapshot.json";;
       context) printf 'v2:%064d\n' 8 > "$fixture/root/context.sha256";;
       graph) printf '\n' >> "$fixture/runtime.json";;
-      evidence) printf '{"results":[]}\n' > "$fixture/services";;
+      evidence) jq '.results[].services.gemini.state="fail"' "$fixture/services" > "$fixture/new"; mv "$fixture/new" "$fixture/services";;
       ram-rule) printf 'corrupt\n' > "$fixture/rules/admitted.json";;
       disk-rule) generation="$(jq -r .generation "$fixture/snapshot/snapshot.json")"; printf 'corrupt\n' > "$fixture/snapshot/$generation/admitted.json";;
       required) jq '.sections[0].requiredServices=["chatgpt"]' "$fixture/original-snapshot" > "$fixture/snapshot/snapshot.json";;

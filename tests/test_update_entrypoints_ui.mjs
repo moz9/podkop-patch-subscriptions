@@ -40,5 +40,7 @@ assert.match(source, /kind === "check" \? await PodkopShellMethods.checkSubscrip
 const manager = fs.readFileSync(new URL('../openwrt/podkop-update-manager', import.meta.url), 'utf8');
 const readme = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8');
 const installerUrl = 'https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/i';
-assert.ok(manager.includes(installerUrl) && readme.includes(installerUrl), 'Diagnostics and README must use the same universal installer');
-console.log('PASS: patch update is available through Diagnostics/universal installer only');
+assert.ok(readme.includes(installerUrl), 'README retains the existing generic installation entrypoint');
+assert.ok(manager.includes('https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe-0.7.24/i'), 'PE24 diagnostics must not fetch an older channel installer');
+assert.ok(manager.includes('routerdesk_update_required'), 'File-only PE24 updates must be handed to RouterDesk');
+console.log('PASS: update entrypoints remain separate; PE24 diagnostics uses its compatible channel and RouterDesk handoff');

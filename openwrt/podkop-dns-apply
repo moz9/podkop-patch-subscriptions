@@ -296,10 +296,34 @@ dns_apply_scoped_policy_validate() (
 )
 
 
+dns_apply_legacy_admission_current() {
+    # Historical snapshots authenticate an admitted graph but retain only the
+    # observation digest. A refreshed/evicted cache cannot recreate those rows.
+    # The caller proves the exact graph, aliases, rules and required services;
+    # DNS preserves its membership and historical evidence without re-admission.
+    local section="$1" ids="$2" manifest="$3" cache current='[]' fresh required
+    cache="$(subscription_services_cache_path "$section")" || return 1
+    [ ! -L "$cache" ] || return 1
+    if [ -e "$cache" ]; then
+        [ -f "$cache" ] && [ "$(wc -c < "$cache")" -le 2097152 ] || return 1
+        current="$(jq -ce 'select(type=="object" and (.results|type=="array"))|.results' "$cache")" || return 1
+    fi
+    if command -v subscription_services_read >/dev/null 2>&1; then
+        fresh="$(subscription_services_read "$section")" || return 1
+        current="$(printf '%s\n%s\n' "$current" "$fresh" |
+          jq -ces 'select(length==2 and all(.[];type=="array"))|add|sort_by(.checkedAt//0)|reduce .[] as $r ({}; .[$r.id]=$r)|[.[]]')" || return 1
+    fi
+    required="$(jq -c --arg s "$section" '.sections[]|select(.section==$s)|.requiredServices' "$manifest")" || return 1
+    printf '%s' "$current" | jq -e --argjson ids "$ids" --argjson required "$required" '
+      all(.[]; if (.id as $id|$ids|index($id)!=null) then
+        . as $r | all($required[]; . as $s | $r.services[$s].state!="fail")
+      else true end)' >/dev/null
+}
+
 dns_apply_continuity_validate() {
     # DNS continuation retains one exact admitted runtime, not today's pending
     # catalog selection. No supported/filter/TTL gate and no evidence writes.
-    local dir manifest config_path config_sha policy_sha generation section context ids row evidence expected path name hash local_names
+    local dir manifest config_path config_sha policy_sha generation section context ids row expected path name hash local_names
     dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
     [ -s "$manifest" ] && [ ! -L "$manifest" ] && [ ! -L "$dir" ] || return 1
     jq -e --argjson single "$(dns_apply_single_mode && printf true || printf false)" '
@@ -339,9 +363,8 @@ dns_apply_continuity_validate() {
         if jq -e --arg s "$section" '.sections[]|select(.section==$s)|has("evidence")' "$manifest" >/dev/null; then
             row="$(SNAPSHOT_CAPTURE=0 SNAPSHOT_BASE="$manifest" subscription_services_snapshot_observations "$section" "$ids")" || return 1
         else
-            evidence="$(subscription_services_cache_path "$section")"
-            [ -s "$evidence" ] && [ ! -L "$evidence" ] || return 1
-            row="$(jq -cS --argjson ids "$ids" '[.results[]?|select(.id as $id|$ids|index($id)!=null)]|sort_by(.id)' "$evidence")" || return 1
+            dns_apply_legacy_admission_current "$section" "$ids" "$manifest" || return 1
+            continue
         fi
         [ "$(printf '%s' "$row" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || return 1
         hash="$(printf '%s\n' "$row" | sha256sum | awk '{print $1}')"

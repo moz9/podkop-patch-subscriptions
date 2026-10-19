@@ -6,9 +6,9 @@ STATUS_FILE="$STATE_DIR/status.json"
 DETAILS_FILE="$STATE_DIR/details.json"
 LOG_FILE="$STATE_DIR/update.log"
 LOCK_DIR="$STATE_DIR/lock"
-MANIFEST_URL="${PODKOP_PATCH_MANIFEST_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/openwrt/update-manifest.json}"
+MANIFEST_URL="${PODKOP_PATCH_MANIFEST_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe-0.7.24/openwrt/update-manifest.json}"
 RELEASE_URL="${PODKOP_OFFICIAL_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/tags/0.7.24}"
-INSTALLER_URL="${PODKOP_PATCH_INSTALLER_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/i}"
+INSTALLER_URL="${PODKOP_PATCH_INSTALLER_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe-0.7.24/i}"
 
 mkdir -p "$STATE_DIR"
 
@@ -81,7 +81,7 @@ patch_version_date() {
 }
 
 patch_version_revision() {
-    printf '%s\n' "$1" | sed -n 's/.*-v\([0-9][0-9]*\)$/\1/p'
+    printf '%s\n' "$1" | sed -n 's/.*-v\([0-9][0-9]*\)\(-[A-Za-z0-9_-]*\)\{0,1\}$/\1/p'
 }
 
 patch_update_available() {
@@ -208,6 +208,14 @@ version_supported() {
     jq -e --arg version "$version" '.supportedPodkopVersions | index($version) != null' "$manifest" >/dev/null 2>&1
 }
 
+reset_check_details() {
+    jq -cn --arg currentPodkopVersion "$(normalize_version "$(current_podkop_version)")" \
+      --arg currentPatchVersion "$(current_patch_version)" \
+      '{currentPodkopVersion:$currentPodkopVersion,currentPatchVersion:$currentPatchVersion,
+        latestPodkopVersion:"",latestPatchVersion:"",canUpdate:false,updateMode:"none",
+        podkopUpdateAvailable:false,patchUpdateAvailable:false}' > "$DETAILS_FILE"
+}
+
 perform_check() {
     local publish="${1:-1}"
     local manifest release current_podkop latest_podkop current_patch latest_patch
@@ -217,6 +225,7 @@ perform_check() {
     manifest="$STATE_DIR/manifest.json"
     release="$STATE_DIR/release.json"
     cache_buster="$(date +%s 2>/dev/null || echo 0)"
+    reset_check_details || return 1
     log_line "Checking Podkop and subscription patch updates."
 
     if ! download_file "$MANIFEST_URL?t=$cache_buster" "$manifest" ||
@@ -279,6 +288,15 @@ perform_check() {
         mode="blocked"
         can_update=false
         message="prepared_not_released"
+    fi
+
+    # The file-only channel requires RouterDesk's backup/confirmation protocol.
+    # Never invoke the old installer, and do not label an installed release bad.
+    if [ "$current_podkop" = 0.7.24 ] && [ "$latest_podkop" = 0.7.24 ] &&
+       jq -e '.routerdeskPatch.schemaVersion==1 and .routerdeskPatch.mode=="files-only"' "$manifest" >/dev/null; then
+        can_update=false
+        if [ "$patch_update" = true ]; then mode=blocked; message=routerdesk_update_required
+        else mode=none; message=up_to_date; fi
     fi
 
     jq -cn \
@@ -412,6 +430,13 @@ run_worker() {
 }
 
 show_status() {
+    # RouterDesk replaces files without running this manager. Invalidate the
+    # previous installation's cached verdict before showing its old versions.
+    if [ -s "$STATUS_FILE" ] && ! lock_busy &&
+       { [ "$(jq -r '.currentPatchVersion // ""' "$STATUS_FILE")" != "$(current_patch_version)" ] ||
+         [ "$(jq -r '.currentPodkopVersion // ""' "$STATUS_FILE")" != "$(normalize_version "$(current_podkop_version)")" ]; }; then
+        reset_check_details && write_status idle '' || return 1
+    fi
     if [ -s "$STATUS_FILE" ]; then
         state="$(jq -r '.state // "idle"' "$STATUS_FILE" 2>/dev/null)"
         if { [ "$state" = checking ] || [ "$state" = running ]; } && ! lock_busy; then
