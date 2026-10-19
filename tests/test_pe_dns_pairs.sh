@@ -3,6 +3,9 @@ set -eu
 repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
+printf '#!/bin/sh\n[ "$1" = version ] || exit 1\nprintf "sing-box version fixture\\nTags: with_utls\\n"\n' > "$work/engine"
+chmod 700 "$work/engine"
+export PODKOP_DNS_BENCHMARK_BIN="$work/engine"
 export PODKOP_DNS_BENCHMARK_LIBRARY_ONLY=1 PODKOP_DNS_OPTIMIZER_LIBRARY_ONLY=1
 export PODKOP_DNS_BENCHMARK_OPTIMIZER="$repo/openwrt/podkop-dns-optimizer"
 export PODKOP_DNS_CATALOG_DIR="$repo/openwrt"
@@ -11,6 +14,8 @@ export PODKOP_DNS_OPTIMIZER_STATE_DIR="$work/optimizer-state" PODKOP_DNS_OPTIMIZ
 export PODKOP_MUTATION_LOCK_DIR="$work/mutation" PODKOP_MUTATION_LEGACY_LOCK_FILE="$work/legacy"
 . "$repo/openwrt/podkop-dns-benchmark"
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# Preserve in-shell curl fixtures under the common deadline wrapper.
+timeout() { shift; "$@"; }
 db_prepare
 db_work="$work"; db_worker_pid=0; db_report_id=pairs-report
 jq -n '{log:{level:"info"},experimental:{cache_file:{enabled:true,path:"/tmp/live.db"},clash_api:{external_controller:"127.0.0.1:9090",secret:"private-token"}},dns:{servers:[{tag:"bootstrap",type:"udp",server:"8.8.8.8"},{tag:"dns-server",type:"https",server:"old.example",domain_resolver:"bootstrap"},{tag:"fakeip",type:"fakeip",inet4_range:"198.18.0.0/15"}],final:"dns-server",rules:[{rule_set:["media"],server:"dns-server"},{query_type:["A"],server:"fakeip"}]},inbounds:[{type:"tproxy",tag:"tproxy-in",listen_port:1602},{type:"direct",tag:"dns-in",listen_port:53}],outbounds:[{type:"direct",tag:"direct",domain_resolver:"dns-server"},{type:"selector",tag:"selected",outbounds:["node-a","node-b"],default:"node-a"},{type:"urltest",tag:"auto",outbounds:["node-a","node-b"]},{type:"trojan",tag:"node-a",server:"a.example",password:"secret-a"},{type:"trojan",tag:"node-b",server:"b.example",password:"secret-b"}],route:{default_domain_resolver:"dns-server",final:"selected",rules:[{inbound:["tproxy-in"],action:"sniff"},{inbound:"tproxy-in",rule_set:["media"],outbound:"auto"},{protocol:"dns",action:"hijack-dns"}],rule_set:[{type:"inline",tag:"media",rules:[{domain_suffix:["example.com"]}]}]}}' > "$work/runtime.json"
@@ -18,6 +23,11 @@ jq -n '{proxies:{selected:{now:"node-b"},auto:{now:"node-a"}}}' > "$work/choices
 db_clone_runtime doh cloudflare-dns.com/dns-query 8.8.8.8 "$work/clone.json" udp "$work/runtime.json" "$work/choices.json" || fail 'runtime cloning failed'
 jq -e '.experimental==null and .endpoints==null and (.inbounds|length)==2 and .inbounds[0].listen=="127.0.0.1" and .inbounds[1].type=="mixed" and .inbounds[1].listen_port==19554 and .route.default_mark==2097152 and .route.final=="selected" and .route.rule_set[0].tag=="media" and .route.rules[1].inbound==["http-in"] and .dns.servers[1].tag=="dns-server" and .dns.servers[1].server=="cloudflare-dns.com" and (.dns.servers|all(.type!="fakeip")) and .dns.rules[1].server=="dns-server" and .outbounds[1].default=="node-b" and .outbounds[2].type=="selector" and .outbounds[2].default=="node-a" and .outbounds[4].password=="secret-b"' "$work/clone.json" >/dev/null || fail 'clone lost active routes, DNS references, credentials or selected nodes'
 jq -e '.route.rules[2].inbound=="http-in"' "$work/clone.json" >/dev/null || fail 'string inbound rule was not remapped'
+for fallback in true false; do
+    jq --argjson fallback "$fallback" '.experimental.utls_fallback=$fallback|.experimental.other_production_setting="strip-me"' "$work/runtime.json" > "$work/fallback-runtime.json"
+    db_clone_runtime doh cloudflare-dns.com/dns-query 8.8.8.8 "$work/fallback-clone.json" udp "$work/fallback-runtime.json" "$work/choices.json" || fail 'fallback runtime cloning failed'
+    jq -e --argjson fallback "$fallback" '.experimental=={utls_fallback:$fallback}' "$work/fallback-clone.json" >/dev/null || fail 'clone dropped Engine fallback or retained production experimental state'
+done
 jq() {
     case "$*" in *'test('*) printf 'jq: test is unavailable without ONIGURUMA\n' >&2; return 3;; esac
     command jq "$@"
@@ -42,6 +52,9 @@ printf 'rule-cache-fixture' > "$work/live-cache.db"
 jq --arg cache "$work/live-cache.db" '.experimental.cache_file.path=$cache|.route.rule_set=[{type:"remote",tag:"main-youtube-community-ruleset",url:"https://github.com/itdoginfo/allow-domains/releases/latest/download/youtube.srs",format:"binary"}]|.route.rules[1].rule_set=["main-youtube-community-ruleset"]|.dns.rules[0].rule_set=["main-youtube-community-ruleset"]' "$work/runtime.json" > "$work/cached-runtime.json"
 db_clone_runtime udp 1.1.1.1 8.8.8.8 "$work/cached-clone.json" udp "$work/cached-runtime.json" "$work/choices.json" || fail 'cached rules clone rejected'
 jq -e --arg original "$work/live-cache.db" '.experimental.clash_api==null and .experimental.cache_file.path!=$original and .experimental.cache_file.store_fakeip==false and .experimental.cache_file.store_rdrc==false' "$work/cached-clone.json" >/dev/null || fail 'child reuses production cache or Clash listener'
+jq '.experimental.utls_fallback=true' "$work/cached-runtime.json" > "$work/fallback-cached-runtime.json"
+db_clone_runtime udp 1.1.1.1 8.8.8.8 "$work/fallback-cached-clone.json" udp "$work/fallback-cached-runtime.json" "$work/choices.json" || fail 'cached fallback clone failed'
+jq -e --arg original "$work/live-cache.db" '.experimental.utls_fallback==true and (.experimental|keys)==["cache_file","utls_fallback"] and .experimental.cache_file.path!=$original and .experimental.cache_file.store_fakeip==false and .experimental.cache_file.store_rdrc==false' "$work/fallback-cached-clone.json" >/dev/null || fail 'fallback clone lost flag or violated cache/Clash isolation'
 cmp "$work/live-cache.db" "$(jq -r '.experimental.cache_file.path' "$work/cached-clone.json")" || fail 'current rule-set cache not preserved'
 for mutation in arbitrary_remote local spoofed_tag url_query custom_path unknown_community wrong_format; do
     jq --arg mutation "$mutation" '
@@ -113,17 +126,20 @@ db_state running pairs starting 0 0 1 ''
 db_pairs || fail 'measured matrix failed'
 db_status | jq -e '.state=="done" and .action=="pairs" and .total==2 and (.pairResults|length)==2 and (.pairResults|all(.success and .stats.reliable)) and .pairResults[0].bootstrapProtocol=="udp" and .pairResults[1].bootstrapProtocol=="tcp" and (.results|length)==3 and (.bootstrapResults|length)==2' >/dev/null || fail 'matrix report or measured candidate filtering wrong'
 [ ! -s "$DB_PROOF" ] || fail 'matrix granted apply proof'
-db_child_start() { db_child_error=listener_collision; return 1; }
+db_child_start() { db_child_error=child_dns_unavailable; return 1; }
 db_pairs || fail 'one failed candidate aborted entire matrix'
-db_status | jq -e '.state=="done" and (.pairResults|all(.success==false and .error=="listener_collision" and .stats==null))' >/dev/null || fail 'child failure was not reported per exact tuple'
+db_status | jq -e '.state=="done" and (.pairResults|all(.success==false and .error=="child_dns_unavailable" and .stats==null))' >/dev/null || fail 'child failure was not reported per exact tuple'
+db_child_start() { db_child_error=listener_collision; return 1; }
+if db_pairs; then fail 'infrastructure collision did not stop matrix'; fi
+db_status | jq -e '.state=="error" and .error=="listener_collision" and (.pairResults|length)==1' >/dev/null || fail 'infrastructure failure repeated on entire matrix'
 db_child_start() { [ "${5:-}" = pair ] || fail 'pair measurement started DNS-only child'; return 0; }
 db_results='[]'; db_pair_results='[]'
 if db_pairs; then fail 'matrix guessed unmeasured candidates'; fi
 db_status | jq -e '.error=="measured_candidates_required"' >/dev/null
 db_results="$(jq -cn '[range(0;5)|{protocol:"udp",id:("c"+tostring),dnsServer:"1.1.1.1",reliable:true,primaryEligible:true}]')"
 db_bootstrap_results="$(jq -cn '[range(0;5)|{server:"8.8.8.8",reliable:true}]')"
-if db_pairs; then fail '25 pairs silently truncated'; fi
-db_status | jq -e '.error=="too_many_pairs" and .total==25' >/dev/null
+db_pairs || fail '25-pair matrix rejected'
+db_status | jq -e '.total==25 and (.pairResults|length)==25' >/dev/null
 uci() {
     case "$*" in
         *bootstrap_dns_type*) echo tcp;;

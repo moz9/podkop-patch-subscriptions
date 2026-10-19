@@ -37,7 +37,7 @@ if [ "${1:-all}" != cache ]; then
     assert_classification 0 200 'Gemini is not available in your country' '.state=="unknown"' 'nonHTML denial is not trusted Gemini identity'
     assert_classification 0 200 '<html>Gemini is not available in your country</html>' '.state=="unknown" and .region==null' 'missing country marker cannot establish regional denial'
     assert_classification 0 200 '<html>Gemini ,2,1,200,"SWE" ,2,1,200,"RUS" not available in your country</html>' '.state=="unknown" and .region==null' 'ambiguous country marker cannot establish regional denial'
-    subscription_services_classify chatgpt 28 000 '' | jq -e '.state=="fail" and .network=="fail"' >/dev/null || fail 'ChatGPT semantics changed'
+    subscription_services_classify chatgpt 28 000 '' | jq -e '.state=="unknown" and .network=="fail"' >/dev/null || fail 'ChatGPT timeout must remain unknown'
 fi
 if [ "${1:-all}" = classify ]; then echo 'PASS: Gemini v2 classification'; exit; fi
 PODKOP_SERVICE_CACHE_DIR="$tmp/state"
@@ -49,7 +49,7 @@ fixture_time=100000
 date() { [ "$1" = +%s ] || return 1; printf '%s\n' "$fixture_time"; }
 id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 subscription_services_store main "$id" '{"chatgpt":{"state":"pass","network":"pass","manual":true,"reason":"user_confirmed"}}'
-path="$(subscription_services_cache_path main)"
+path="$(subscription_services_cache_slot "$(subscription_services_context main)" "$id")"
 chatgpt_before="$(jq -c '.results[0].services.chatgpt' "$path")"
 fixture_time=100100
 subscription_services_store main "$id" '{"gemini":{"state":"pass","network":"pass","region":"SWE"}}'
@@ -63,6 +63,7 @@ fixture_time=100200
 fixture_context=context-v3
 subscription_services_read main | jq -e '.==[]' >/dev/null || fail 'old context reused evidence'
 subscription_services_store main "$id" '{"gemini":{"state":"unknown","network":"pass"}}'
+path="$(subscription_services_cache_slot "$(subscription_services_context main)" "$id")"
 jq -e '(.results[0].services|has("chatgpt")|not)' "$path" >/dev/null || fail 'context change merged old proof'
 grep -Fq 'service-web-v2:' "$repo/openwrt/podkop-service-checks.sh" || fail 'old evidence schema context salt remains'
 echo 'PASS: Gemini v2 classification, subset preservation, per-service expiry and schema invalidation'

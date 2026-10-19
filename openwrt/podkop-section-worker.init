@@ -1,0 +1,90 @@
+#!/bin/sh /etc/rc.common
+# Each instance has its own file hash; unchanged workers retain their PID.
+START=98
+STOP=10
+USE_PROCD=1
+
+podkop_worker_single_mode() {
+    local root="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
+    [ "$(cat "$root/runtime-mode" 2>/dev/null)" = single ] ||
+        jq -e '.mode=="single"' "$root/metadata.json" >/dev/null 2>&1
+}
+
+validate_workers() {
+    local root sing_box enabled available count section worker port api entries
+    root="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
+    sing_box="${PODKOP_SECTION_SING_BOX:-/usr/bin/sing-box}"
+    enabled="$(uci -q get podkop.settings.subscription_isolated_section)"
+    WORKER_ENTRIES=""
+    WORKER_ROOT="$root"
+    WORKER_SING_BOX="$sing_box"
+    [ -n "$enabled" ] || return 0
+    jq -e '
+      def name: type=="string" and length>0 and all(explode[]; (.>=48 and .<=57) or (.>=65 and .<=90) or (.>=97 and .<=122) or .==95);
+      .version==2 and (.sections|type=="array") and (.sections|length)>0 and (.sections|length)<=32 and
+      all(.sections[]; (.section|name) and (.port|type=="number") and (.api_port|type=="number") and
+        .port>=1024 and .port<=65535 and .api_port>=1024 and .api_port<=65535 and
+        (.port|floor)==.port and (.api_port|floor)==.api_port) and
+      ([.sections[].section]|unique|length)==(.sections|length) and
+      ([.sections[]|.port,.api_port]|unique|length)==((.sections|length)*2)
+    ' "$root/metadata.json" >/dev/null 2>&1 || return 1
+    available="$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo)"
+    count="$(jq -r '.sections|length' "$root/metadata.json")"
+    case "$available" in ''|*[!0-9]*) return 1;; esac
+    [ "$available" -ge "$((28672 + count * 16384))" ] || return 1
+    entries="$(jq -r '.sections[]|[.section,.port,.api_port]|@tsv' "$root/metadata.json")" || return 1
+    # Validate the complete set before emitting any service instance.
+    while IFS="$(printf '\t')" read -r section port api; do
+        worker="$root/workers/$section/worker.json"
+        [ -f "$worker" ] && [ ! -L "$worker" ] || return 1
+        jq -e --arg s "$section" --argjson p "$port" --argjson a "$api" \
+            '.section==$s and .port==$p and .api_port==$a' \
+            "$root/workers/$section/metadata.json" >/dev/null 2>&1 || return 1
+        jq -e --arg s "$section" --argjson port "$port" --arg api "127.0.0.1:$api" '
+            .inbounds==[{type:"mixed",tag:"section-in",listen:"127.0.0.1",listen_port:$port}] and
+            .experimental.clash_api.external_controller==$api and
+            (.experimental|has("cache_file")|not) and .route.final==($s+"-out") and
+            .route.auto_detect_interface==true and .route.default_mark==2097152 and
+            (.route|has("rule_set")|not) and (.route|has("rules")|not)
+        ' "$worker" >/dev/null 2>&1 || return 1
+        "$sing_box" check -c "$worker" >/dev/null 2>&1 || return 1
+    done <<EOF
+$entries
+EOF
+    WORKER_ENTRIES="$entries"
+}
+
+emit_workers() {
+    local section port api worker
+    while IFS="$(printf '\t')" read -r section port api; do
+        [ -n "$section" ] || continue
+        worker="$WORKER_ROOT/workers/$section/worker.json"
+        procd_open_instance "$section"
+        procd_set_param command "$WORKER_SING_BOX" run -c "$worker"
+        # Leave peer instance definitions unchanged during main-only reloads.
+        [ "$section" != main ] || procd_set_param env GOGC=25
+        procd_set_param file "$worker"
+        procd_set_param respawn 3600 5 5
+        procd_set_param stdout 0
+        procd_set_param stderr 0
+        procd_close_instance
+    done <<EOF
+$WORKER_ENTRIES
+EOF
+}
+
+start_service() {
+    podkop_worker_single_mode && return 0
+    validate_workers || return 1
+    emit_workers
+}
+
+reload_service() {
+    podkop_worker_single_mode && return 0
+    # rc.common already holds its service lock here. Do not call start (nested
+    # lock), and never open/close an empty update when validation rejects input.
+    validate_workers || return 1
+    procd_open_service "podkop-section-worker" "$initscript"
+    emit_workers
+    procd_close_service
+}

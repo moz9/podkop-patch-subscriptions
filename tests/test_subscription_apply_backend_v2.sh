@@ -2,7 +2,7 @@
 set -eu
 
 repo_root="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
-runtime="$repo_root/openwrt/runtime-0.7.23/usr/bin/podkop"
+runtime="${PODKOP_TEST_RUNTIME:-$repo_root/openwrt/runtime-0.7.23/usr/bin/podkop}"
 upgrade="$repo_root/openwrt/podkop-subscription-apply-v2-upgrade.sh"
 
 fail() {
@@ -134,6 +134,7 @@ subscription_action_lock_acquire() {
 }
 subscription_runtime_busy() { return 1; }
 subscription_reload_pending_file() { echo "$tmp/pending"; }
+subscription_pending_clear() { rm -f "$tmp/pending"; }
 subscription_reload_seamless() {
     [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" = 1 ] || return 1
     rm -f "$tmp/pending"
@@ -149,6 +150,18 @@ subscription_apply_v2_reload() {
     [ ! -f "$tmp/reload-count" ] || count="$(cat "$tmp/reload-count")"
     count=$((count + 1))
     printf '%s\n' "$count" > "$tmp/reload-count"
+    if [ -f "$tmp/fail-unproven-once" ]; then
+        rm -f "$tmp/fail-unproven-once"
+        PODKOP_SECTION_ERROR=section_runtime_health_failed
+        PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=2
+        return 1
+    fi
+    if [ -f "$tmp/fail-memory-once" ]; then
+        rm -f "$tmp/fail-memory-once"
+        PODKOP_SECTION_ERROR=section_memory_low
+        PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=1
+        return 1
+    fi
     if [ -f "$tmp/fail-reload-once" ]; then
         rm -f "$tmp/fail-reload-once"
         return 1
@@ -277,11 +290,58 @@ fi
 [ "$(sha256sum "$PODKOP_CONFIG" | awk '{print $1}')" = "$config_hash" ]
 [ "$(cat "$tmp/reload-count")" -eq 3 ]
 [ "$(cat "$tmp/commit-count")" -eq 2 ]
+# A no-change pending apply must preserve the section failure from the function,
+# not lose it in a subshell. It must not report success or touch the draft/UCI.
+subscription_reload_seamless() {
+    PODKOP_SECTION_ERROR=section_memory_unavailable
+    return 1
+}
+: > "$tmp/pending"
+payload='{"sections":[{"section":"main","changes":[{"id":"11111111111111111111111111111111","enabled":false}]}]}'
+if result="$(set_subscription_sections_enabled "$payload")"; then
+    printf '%s\n' 'memory-unavailable no-change apply unexpectedly succeeded' >&2
+    exit 1
+fi
+[ "$(printf '%s' "$result" | jq -r '.error')" = section_memory_unavailable ] || {
+    printf '%s\n' 'no-change apply lost the section memory error' >&2; exit 1;
+}
+
+# A proven preactivation rejection still restores UCI/cache, but never reloads
+# the unchanged worker. An unproven failure keeps the normal rollback reload.
+: > "$tmp/fail-memory-once"
+payload='{"sections":[{"section":"main","changes":[{"id":"11111111111111111111111111111111","enabled":true}]}]}'
+before="$(cat "$tmp/reload-count")"
+if result="$(set_subscription_sections_enabled "$payload")"; then exit 1; fi
+[ "$(printf '%s' "$result" | jq -r '.error')" = section_memory_low ] || {
+    printf '%s\n' 'changed apply lost the section memory error' >&2; exit 1;
+}
+[ "$(printf '%s' "$result" | jq -r '.state')" = rolled_back ]
+[ "$(cat "$tmp/reload-count")" -eq "$((before + 1))" ] || {
+    printf '%s\n' 'preactivation memory rejection reloaded the untouched runtime' >&2; exit 1;
+}
+cmp -s "$tmp/config-before-rollback" "$PODKOP_CONFIG"
+cmp -s "$tmp/cache-before-rollback" "$SUBSCRIPTION_CACHE_DIR/main.links"
+PODKOP_SECTION_ERROR=section_memory_low
+PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=1
+: > "$tmp/fail-reload-once"
+before="$(cat "$tmp/reload-count")"
+if result="$(set_subscription_sections_enabled "$payload")"; then exit 1; fi
+[ "$(printf '%s' "$result" | jq -r '.error')" = reload_failed ]
+[ "$(cat "$tmp/reload-count")" -eq "$((before + 2))" ] || {
+    printf '%s\n' 'stale unchanged flag suppressed the required runtime rollback' >&2; exit 1;
+}
+: > "$tmp/fail-unproven-once"
+before="$(cat "$tmp/reload-count")"
+if result="$(set_subscription_sections_enabled "$payload")"; then exit 1; fi
+[ "$(printf '%s' "$result" | jq -r '.error')" = section_runtime_health_failed ]
+[ "$(cat "$tmp/reload-count")" -eq "$((before + 2))" ] || {
+    printf '%s\n' 'unproven unchanged flag suppressed the required runtime rollback' >&2; exit 1;
+}
 HARNESS_EOF
 chmod +x "$tmp/harness.sh"
 
 if ! sh -x "$tmp/harness.sh" "$tmp" > "$tmp/harness.log" 2>&1; then
-    sed -n '1,260p' "$tmp/harness.log" >&2
+    tail -n 100 "$tmp/harness.log" >&2
     fail 'v2 transaction/rollback harness failed'
 fi
 
@@ -360,11 +420,14 @@ FIXTURE_EOF
         fail "v2 upgrade did not install exactly one atomic lock for Podkop $version"
     sh -n "$fixture" || fail "v2-upgraded Podkop $version fixture has invalid shell syntax"
 
+    # Parallel suites must not contend on the production-style /tmp lock.
+    sed -i "s|/tmp/podkop-subscription-action.lock|$tmp/podkop-subscription-action.lock|g" "$fixture"
+
     if invalid_result="$("$fixture" set_subscription_sections_enabled '{}')"; then
         fail "v2-upgraded Podkop $version fixture accepted an invalid payload"
     fi
     [ "$(printf '%s' "$invalid_result" | jq -r '.phase')" = validation ] ||
-        fail "v2-upgraded Podkop $version fixture did not return structured validation JSON"
+        fail "v2-upgraded Podkop $version fixture did not return structured validation JSON: $invalid_result"
 
     PODKOP_SUBSCRIPTION_APPLY_V2_TARGET="$fixture" \
         PODKOP_SUBSCRIPTION_APPLY_V2_SOURCE="$runtime" \

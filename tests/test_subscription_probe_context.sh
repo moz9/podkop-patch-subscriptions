@@ -9,8 +9,8 @@ printf '%s' "$result" | jq -e --argjson input "$input" '
     and .route.rules[0]=={inbound:["probe-in"],outbound:"candidate-out"}
     and (.route.rules|length)==1 and .route.final=="candidate-out"
     and .route.default_mark==2097152 and .inbounds==[{type:"mixed",tag:"probe-in",listen:"127.0.0.1",listen_port:43123}]
-    and .outbounds[1]==$input.outbounds[1] and .outbounds[2].type=="selector"
-    and .outbounds[2].default=="candidate-out" and (has("experimental")|not)' >/dev/null
+    and .outbounds==$input.outbounds[0:2]
+    and (has("experimental")|not)' >/dev/null
 if subscription_probe_config "$input" missing-out 43123 >/dev/null 2>&1; then
     printf 'FAIL: missing probe outbound accepted\n'; exit 1
 fi

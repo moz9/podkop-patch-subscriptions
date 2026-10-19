@@ -116,14 +116,16 @@ start_main() {
     log "Starting podkop"
 
     if ! subscription_services_preflight; then
-        [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] && subscription_services_snapshot_prepare || return 1
+        [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] && subscription_services_snapshot_continuity_prepare || return 1
         PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=1
-        log "Service evidence expired; starting the exact previously admitted runtime without new candidates" warn
+        log "Reusing exact saved admitted runtime; current desired changes are not applied and evidence is not refreshed" warn
     fi
 
     check_requirements
 
-    migration
+    if [ "$PODKOP_SERVICE_REUSE_ADMITTED_CONFIG" = 0 ]; then
+        migration
+    fi
 
     config_foreach process_validate_service "section"
 
@@ -153,9 +155,9 @@ start_main() {
 
     # sing-box
     if ! (sing_box_init_config); then
-        [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] && subscription_services_snapshot_prepare || return 1
+        [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] && subscription_services_snapshot_continuity_prepare || return 1
         PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=1
-        log "Generation declined; retaining the exact previously admitted runtime" warn
+        log "Generation declined; reusing exact saved runtime without applying current desired changes" warn
     fi
     remove_cron_job
     config_foreach add_cron_job "section"
@@ -1606,6 +1608,13 @@ subscription_sources_prepare() {
     exclude="$(cat "$dir/tags.$section.exclude")" || return 1
     subscription_source_policy "$proposed" "$excluded" "$dir/sources.$section.items" "$mode" "$selected" "$include" "$exclude" "$services" > "$dir/sources.$section.effective" || return 1
     SUBSCRIPTION_SOURCES_REMAINING="$(jq '[.[] | select(.runtimeEnabled)] | length' "$dir/sources.$section.effective")"
+    if [ "$SUBSCRIPTION_SOURCES_REMAINING" -eq 0 ] && [ "$required" != '[]' ]; then
+        SUBSCRIPTION_SOURCES_ERROR=service_no_eligible_nodes
+        if printf '%s' "$services" | jq -e '.results|length==0' >/dev/null; then
+            SUBSCRIPTION_SOURCES_ERROR=service_results_stale_or_missing
+        fi
+        return 1
+    fi
     SUBSCRIPTION_SOURCES_CHANGED="$count"
 }
 
@@ -2211,11 +2220,12 @@ validate_subscription_urltest_section() {
 }
 
 apply_subscription_exclusions_to_cached_links() {
-    local section="$1" work cache all items excluded disabled
+    local section="$1" work cache all items excluded disabled service_policy
     work="$(mktemp -d)" || return 1
     cache="$(get_subscription_cache_path "$section")"
     all="$(get_subscription_all_cache_path "$section")"
     items="$(get_subscription_items_cache_path "$section")"
+    SUBSCRIPTION_CACHE_ERROR=subscription_cache_update_failed
     SUBSCRIPTION_CACHE_CHANGED=0
     if [ ! -s "$all" ] || ! subscription_items_with_sources "$section" "$items" > "$work/items"; then
         rm -rf "$work"; return 1
@@ -2223,7 +2233,18 @@ apply_subscription_exclusions_to_cached_links() {
     collect_subscription_excluded_ids "$section" "$work/excluded"
     excluded="$(jq -Rsc 'split("\n") | map(select(length > 0))' "$work/excluded")"
     disabled="$(subscription_disabled_sources_json "$section")"
-    if ! subscription_filter_source_links "$work/items" "$all" "$work/active" "$disabled" "$excluded" "$section" || [ ! -s "$work/active" ]; then
+    if ! subscription_filter_source_links "$work/items" "$all" "$work/active" "$disabled" "$excluded" "$section"; then
+        rm -rf "$work"; return 1
+    fi
+    if [ ! -s "$work/active" ]; then
+        if command -v subscription_services_policy >/dev/null 2>&1 &&
+           service_policy="$(subscription_services_policy "$section")" &&
+           printf '%s' "$service_policy" | jq -e '.required|length>0' >/dev/null; then
+            SUBSCRIPTION_CACHE_ERROR=service_no_eligible_nodes
+            if printf '%s' "$service_policy" | jq -e '.results|length==0' >/dev/null; then
+                SUBSCRIPTION_CACHE_ERROR=service_results_stale_or_missing
+            fi
+        fi
         rm -rf "$work"; return 1
     fi
     if ! cmp -s "$work/active" "$cache"; then
@@ -2331,8 +2352,10 @@ subscription_apply_v2_restore() {
     esac
 
     config_load "$PODKOP_CONFIG"
-    if ! subscription_apply_v2_reload; then
-        restore_ok=0
+    if [ "${PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED:-0}" != 1 ]; then
+        if ! subscription_apply_v2_reload; then
+            restore_ok=0
+        fi
     fi
 
     [ "$restore_ok" -eq 1 ]
@@ -2406,6 +2429,8 @@ set_subscription_sections_enabled() {
     SUBSCRIPTION_APPLY_V2_COMMITTED=0
     SUBSCRIPTION_APPLY_V2_STAGED=0
     SUBSCRIPTION_APPLY_V2_CHANGED=0
+    PODKOP_SECTION_ERROR=""
+    PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=0
     if [ -z "$SUBSCRIPTION_APPLY_V2_TMP" ] || [ ! -d "$SUBSCRIPTION_APPLY_V2_TMP" ]; then
         subscription_apply_v2_print_result false error prepare temporary_directory_failed false false 0 false
         subscription_apply_v2_cleanup
@@ -2569,8 +2594,8 @@ set_subscription_sections_enabled() {
     SUBSCRIPTION_APPLY_V2_CHANGED="$changed_count"
     if [ "$changed_count" -eq 0 ]; then
         if [ -f "$(subscription_reload_pending_file)" ]; then
-            if ! (PODKOP_SUBSCRIPTION_APPLY_NOW=1 subscription_reload_seamless); then
-                subscription_apply_v2_print_result false error reload reload_failed false false 0 false
+            if ! PODKOP_SUBSCRIPTION_APPLY_NOW=1 subscription_reload_seamless; then
+                subscription_apply_v2_print_result false error reload "${PODKOP_SECTION_ERROR:-reload_failed}" false false 0 false
                 subscription_apply_v2_cleanup
                 return 1
             fi
@@ -2657,7 +2682,7 @@ set_subscription_sections_enabled() {
             return $?
         fi
         if ! apply_subscription_exclusions_to_cached_links "$section"; then
-            subscription_apply_v2_fail cache subscription_cache_update_failed true
+            subscription_apply_v2_fail cache "${SUBSCRIPTION_CACHE_ERROR:-subscription_cache_update_failed}" true
             return $?
         fi
         items_cache_path="$(get_subscription_items_cache_path "$section")"
@@ -2669,7 +2694,7 @@ set_subscription_sections_enabled() {
     done < "$validated_sections_file"
 
     if ! subscription_apply_v2_reload; then
-        subscription_apply_v2_fail reload reload_failed true
+        subscription_apply_v2_fail reload "${PODKOP_SECTION_ERROR:-reload_failed}" true
         return $?
     fi
 
@@ -3037,22 +3062,72 @@ subscription_speedtest_result_success() {
 # subscription_isolated_probe_v1 begin
 # Diagnostics use a private loopback listener and never the working selector.
 # subscription_probe_context_v2
+# subscription_probe_diagnostics_v1
+# subscription_light_probe_v1
+subscription_probe_diagnostic() (
+    # One bounded record per validated section in tmpfs. No configs, links,
+    # response bodies, or arbitrary stderr which may contain secrets.
+    section="$1"; id="$2"; stage="$3"; error="$4"; success="$5"
+    validate_subscription_section_name "$section" && validate_subscription_link_id "$id" || exit 0
+    dir="${PODKOP_PROBE_STATUS_DIR:-/tmp/podkop-service-probe-status}"
+    umask 077
+    mkdir -p "$dir" && chmod 700 "$dir" || exit 0
+    jq -cn --arg section "$section" --arg id "$id" --arg stage "$stage" --arg error "$error" --argjson success "$success" --argjson timestamp "$(date +%s)" \
+        '{success:$success,section:$section,id:$id,stage:$stage,error:$error,timestamp:$timestamp}' > "$dir/$section.json.tmp.$$" || exit 0
+    chmod 600 "$dir/$section.json.tmp.$$" && mv "$dir/$section.json.tmp.$$" "$dir/$section.json" || rm -f "$dir/$section.json.tmp.$$"
+)
+
 subscription_probe_config() {
     # Keep real resolvers and their detours. LAN FakeIP/routing lists do not
     # serve this private HTTP CONNECT listener and must not download per node.
     printf '%s\n' "$1" | jq -ce --arg tag "$2" --argjson port "$3" '
+        def refs:
+            [.. | objects | (.detour? // empty), (.download_detour? // empty), (.outbounds[]?)]
+            | map(select(type=="string" and length>0)) | unique;
+        def closure($nodes; $seen):
+            ([$seen[] as $ref | ($nodes[$ref] // error("missing_probe_dependency")) | refs[]] + $seen | unique) as $next
+            | if $next==$seen then $seen else closure($nodes; $next) end;
         select(any(.outbounds[]; .tag==$tag))
+        | if (.outbounds|map(.tag)|unique|length)!=(.outbounds|length)
+             then error("duplicate_probe_tag") else . end
         | [.dns.servers[]? | select(.type=="fakeip") | .tag] as $fake
         | .dns.rules=((.dns.rules//[]) | map(select(.server as $server | ($fake|index($server))==null)))
         | [.dns.rules[]? | .. | objects | .rule_set? // empty | if type=="array" then .[] else . end] as $dns_sets
         | .inbounds=[{type:"mixed",tag:"probe-in",listen:"127.0.0.1",listen_port:$port}]
         | .route.rules=[{inbound:["probe-in"],outbound:$tag}]
         | .route.rule_set=((.route.rule_set//[]) | map(select(.tag as $set | ($dns_sets|index($set))!=null)))
+        # Only the candidate and real DNS/dial dependencies may start sockets.
+        # An unrelated urltest pool must not load every subscription node.
+        | ((.outbounds//[])+(.endpoints//[]) | map({key:.tag,value:.}) | from_entries) as $nodes
+        | ([$tag] + (.dns|refs) + (.route.rule_set|refs) | unique) as $roots
+        | closure($nodes; $roots) as $reachable
+        | .outbounds|=map(select(.tag as $ref | ($reachable|index($ref))!=null))
+        | if has("endpoints") then .endpoints|=map(select(.tag as $ref | ($reachable|index($ref))!=null)) else . end
         | .route.final=$tag | .route.default_mark=2097152
         | .outbounds|=map(if .type=="urltest" then
             {type:"selector",tag:.tag,outbounds:.outbounds,default:.outbounds[0]}
             else . end)
         | del(.experimental) | .log={level:"warn"}'
+}
+
+subscription_probe_resources() {
+    # 16 MiB for the working services plus 16 MiB for the private check/run.
+    # Refuse unknown RAM; swap is not a safe launch budget on these routers.
+    local mode="$1" requested="${2:-1}" active="${3:-0}" total available
+    SUBSCRIPTION_PROBE_ERROR=''
+    SUBSCRIPTION_PROBE_STREAMS="$requested"
+    SUBSCRIPTION_PROBE_REQUIRED_KB=32768
+    # Once the child is resident, protect the live floor without reserving its
+    # own launch budget twice. Curl streams still need their separate reserve.
+    [ "$active" = 0 ] || SUBSCRIPTION_PROBE_REQUIRED_KB=16384
+    total="$(awk '/^MemTotal:/ {print $2; exit}' "${PODKOP_SUBSCRIPTION_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null)" || total=''
+    available="$(awk '/^MemAvailable:/ {print $2; exit}' "${PODKOP_SUBSCRIPTION_MEMINFO_FILE:-/proc/meminfo}" 2>/dev/null)" || available=''
+    case "$total:$available" in *[!0-9:]*|:*|*:) SUBSCRIPTION_PROBE_ERROR=memory_unavailable; return 1;; esac
+    if [ "$mode" = speed ]; then
+        if [ "$total" -le 262144 ] && [ "$requested" -gt 2 ]; then SUBSCRIPTION_PROBE_STREAMS=2; fi
+        SUBSCRIPTION_PROBE_REQUIRED_KB=$((SUBSCRIPTION_PROBE_REQUIRED_KB + SUBSCRIPTION_PROBE_STREAMS * 2048))
+    fi
+    [ "$available" -ge "$SUBSCRIPTION_PROBE_REQUIRED_KB" ] || { SUBSCRIPTION_PROBE_ERROR=insufficient_memory; return 1; }
 }
 
 subscription_isolated_test() {
@@ -3066,6 +3141,8 @@ subscription_isolated_test() {
     curl_pids=""
     work=""
     locked=0
+    probe_stage=validation
+    SUBSCRIPTION_PROBE_ERROR=''
     cleanup_probe() {
         for child in $curl_pids; do kill "$child" 2>/dev/null || true; done
         if [ -n "$probe_pid" ]; then kill "$probe_pid" 2>/dev/null || true; wait "$probe_pid" 2>/dev/null || true; fi
@@ -3074,15 +3151,35 @@ subscription_isolated_test() {
     }
     trap cleanup_probe EXIT
     trap 'exit 130' INT TERM HUP
-    probe_error() { jq -cn --arg error "$1" '{success:false,error:$error}'; exit 1; }
+    probe_error() {
+        [ "$mode" != services ] || subscription_probe_diagnostic "$section" "$item_id" "$probe_stage" "$1" false
+        jq -cn --arg error "$1" --arg id "$item_id" --arg section "$section" --arg stage "$probe_stage" --argjson timestamp "$(date +%s)" \
+            '{success:false,error:$error,id:$id,section:$section,stage:$stage,timestamp:$timestamp}'
+        exit 1
+    }
     validate_subscription_section_name "$section" && validate_subscription_urltest_section "$section" || probe_error invalid_section
     validate_subscription_link_id "$item_id" || probe_error invalid_link_id
     case "$mode" in ping|speed) ;; services) subscription_services_validate "${4:-}" || probe_error invalid_services;; *) probe_error invalid_probe_mode ;; esac
+    probe_stage=action_lock
     subscription_runtime_busy && probe_error service_busy
     subscription_action_lock_acquire "isolated_$mode" || probe_error service_busy
     locked=1
+    streams=1
+    requested_streams=1
+    if [ "$mode" = speed ]; then
+        bytes="$(get_subscription_benchmark_bytes)"
+        requested_streams="$(get_subscription_benchmark_streams)"
+        timeout="$(get_subscription_benchmark_timeout)"
+        case "$bytes:$requested_streams:$timeout" in *[!0-9:]*|'') probe_error invalid_benchmark_options ;; esac
+        [ "$requested_streams" -ge 1 ] && [ "$requested_streams" -le 8 ] && [ "$timeout" -ge 1 ] && [ "$timeout" -le 60 ] && [ "$bytes" -ge 65536 ] || probe_error invalid_benchmark_options
+    fi
+    probe_stage=memory_admission
+    subscription_probe_resources "$mode" "$requested_streams" || probe_error "$SUBSCRIPTION_PROBE_ERROR"
+    streams="$SUBSCRIPTION_PROBE_STREAMS"
+    probe_stage=temporary_directory
     umask 077
     work="$(mktemp -d /tmp/podkop-subscription-probe.XXXXXX)" || probe_error temporary_directory_failed
+    probe_stage=subscription_identity
     items="$(get_subscription_items_cache_path "$section")"
     jq -e --arg id "$item_id" 'any(.[]; .id == $id and .supported == true)' "$items" >/dev/null 2>&1 || probe_error subscription_link_not_available
     link=""
@@ -3091,8 +3188,10 @@ subscription_isolated_test() {
     done < "$(get_subscription_all_cache_path "$section")"
     [ -n "$link" ] || probe_error subscription_link_not_available
     name="$(jq -r --arg id "$item_id" '.[] | select(.id == $id) | .name' "$items")"
-    config="$(jq -ce 'select(.dns|type=="object")' /etc/sing-box/config.json)" || probe_error dns_config_invalid
+    probe_stage=dns_config
+    config="$(jq -ce 'select(.dns|type=="object")' "$(if command -v podkop_section_logical_path >/dev/null; then podkop_section_logical_path; else echo /etc/sing-box/config.json; fi)")" || probe_error dns_config_invalid
     config_get udp_over_tcp "$section" enable_udp_over_tcp
+    probe_stage=config_parse
     config="$(sing_box_cf_add_proxy_outbound "$config" subscription-probe "$link" "$udp_over_tcp" 2>"$work/parser.log")" || probe_error invalid_config
     tag="$(get_outbound_tag_by_section subscription-probe)"
     port=$((43000 + $$ % 1000))
@@ -3101,8 +3200,17 @@ subscription_isolated_test() {
         port=$((port + 1)); tries=$((tries + 1))
         [ "$tries" -lt 20 ] || probe_error probe_port_busy
     done
+    probe_stage=config_build
     subscription_probe_config "$config" "$tag" "$port" > "$work/config.json" || probe_error invalid_config
+    # The full source/parser strings are no longer needed by the child.
+    config=''
+    probe_stage=memory_admission
+    subscription_probe_resources "$mode" "$streams" || probe_error "$SUBSCRIPTION_PROBE_ERROR"
+    probe_stage=config_check
     sing-box check -c "$work/config.json" >"$work/check.log" 2>&1 || probe_error invalid_config
+    probe_stage=memory_admission
+    subscription_probe_resources "$mode" "$streams" || probe_error "$SUBSCRIPTION_PROBE_ERROR"
+    probe_stage=listener_start
     sing-box run -c "$work/config.json" >"$work/runtime.log" 2>&1 &
     probe_pid=$!
     tries=0
@@ -3112,20 +3220,19 @@ subscription_isolated_test() {
         sleep 1
         tries=$((tries + 1))
     done
+    probe_stage=memory_admission
+    subscription_probe_resources "$mode" "$streams" 1 || probe_error "$SUBSCRIPTION_PROBE_ERROR"
     proxy="http://127.0.0.1:$port"
     if [ "$mode" = services ]; then
-        subscription_services_probe "$section" "$item_id" "$4" "$proxy" "$work" || probe_error service_check_failed
+        probe_stage=service_request
+        subscription_services_probe "$section" "$item_id" "$4" "$proxy" "$work" || probe_error "${SUBSCRIPTION_PROBE_ERROR:-service_check_failed}"
+        subscription_probe_diagnostic "$section" "$item_id" completed '' true
     elif [ "$mode" = ping ]; then
         result="$(curl -sS --proxy "$proxy" --noproxy '' --connect-timeout 7 -m 12 -o /dev/null -w '%{http_code} %{time_total}' https://www.gstatic.com/generate_204 2>"$work/curl.log")"
         rc=$?
         [ "$rc" -eq 0 ] || probe_error "probe_curl_$rc"
         printf '%s\n' "$result" | jq -R --arg id "$item_id" 'split(" ") | {success:(.[0] == "204"),id:$id,latencyMs:((.[1]|tonumber)*1000|round),httpCode:(.[0]|tonumber)}'
     else
-        bytes="$(get_subscription_benchmark_bytes)"
-        streams="$(get_subscription_benchmark_streams)"
-        timeout="$(get_subscription_benchmark_timeout)"
-        case "$bytes:$streams:$timeout" in *[!0-9:]*|'') probe_error invalid_benchmark_options ;; esac
-        [ "$streams" -ge 1 ] && [ "$streams" -le 8 ] && [ "$timeout" -ge 1 ] && [ "$timeout" -le 60 ] && [ "$bytes" -ge 65536 ] || probe_error invalid_benchmark_options
         stream=1
         while [ "$stream" -le "$streams" ]; do
             (curl -sS --proxy "$proxy" --noproxy '' --connect-timeout 7 -m "$timeout" -o /dev/null \
@@ -3136,12 +3243,12 @@ subscription_isolated_test() {
         done
         for child in $curl_pids; do wait "$child" 2>/dev/null || true; done
         curl_pids=""
-        jq -Rsc --arg id "$item_id" --arg name "$name" '
+        jq -Rsc --arg id "$item_id" --arg name "$name" --argjson requestedStreams "$requested_streams" --argjson streams "$streams" '
             split("\n") | map(select(length > 0) | split(" ") | map(tonumber?))
             | map(select(length == 4 and .[0] == 200 and .[1] >= 65536))
-            | if length == 0 then {success:true,results:[{id:$id,name:$name,success:false,error:"download_failed"}]}
+            | if length == 0 then {success:true,results:[{id:$id,name:$name,success:false,error:"download_failed",requestedStreams:$requestedStreams,streams:$streams}]}
               else (map(.[1])|add) as $bytes | (map(.[2]-.[3])|max) as $time
-              | {success:true,results:[{id:$id,name:$name,tag:"isolated",success:($time>0),bytesPerSecond:(if $time>0 then $bytes/$time else 0 end),sizeDownload:$bytes,timeTotal:$time,httpCode:200}]} end
+              | {success:true,results:[{id:$id,name:$name,tag:"isolated",success:($time>0),bytesPerSecond:(if $time>0 then $bytes/$time else 0 end),sizeDownload:$bytes,timeTotal:$time,httpCode:200,requestedStreams:$requestedStreams,streams:$streams}]} end
         ' "$work"/stream.*
     fi
     ) &
@@ -3584,6 +3691,37 @@ subscription_services_snapshot_save() (
     case "$previous" in generation.*) case "${previous#generation.}" in ''|*[!A-Za-z0-9]*) ;; *) [ -L "$dir/$previous" ] || rm -rf "$dir/$previous";; esac;; esac
 )
 
+subscription_services_snapshot_continuity_section() {
+    local section="$1" required
+    validate_subscription_urltest_section "$section" || return 0
+    required="$(subscription_required_services_json "$section")" || { SNAPSHOT_FAILED=1; return 0; }
+    [ "$required" != '[]' ] || return 0
+    jq -cn --arg section "$section" '$section' >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
+}
+
+subscription_services_snapshot_continuity_prepare() (
+    # Continuity only: never read current node/evidence caches, bless new evidence,
+    # regenerate a candidate, or apply desired settings to the saved runtime.
+    local dir manifest config_path config_sha
+    dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
+    [ -s "$manifest" ] && [ ! -L "$dir" ] && [ ! -L "$manifest" ] || exit 1
+    jq -e '.version==1 and (.sections|type=="array" and length>0)
+        and all(.sections[]; (.section|type=="string" and length>0)
+            and (.admittedIds|type=="array" and length>0))
+        and (.sections|map(.section)|length== (unique|length))' "$manifest" >/dev/null || exit 1
+    config_get config_path settings config_path
+    config_sha="$(subscription_services_snapshot_hash "$config_path")" || exit 1
+    jq -e --arg config "$config_sha" '.config==$config' "$manifest" >/dev/null || exit 1
+    SNAPSHOT_SECTIONS="$(mktemp)" || exit 1
+    trap 'rm -f "$SNAPSHOT_SECTIONS"' EXIT INT TERM HUP
+    SNAPSHOT_FAILED=0
+    config_foreach subscription_services_snapshot_continuity_section section
+    [ "$SNAPSHOT_FAILED" = 0 ] || exit 1
+    # A disabled/removed or newly required section cannot silently reuse admission.
+    jq -e --slurpfile current "$SNAPSHOT_SECTIONS" '(.sections|map(.section)|sort)==($current|sort)' "$manifest" >/dev/null || exit 1
+    subscription_services_snapshot_restore_rules
+)
+
 subscription_services_snapshot_prepare() (
     local dir manifest config_path config_sha policy_sha generation path name hash actual
     dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
@@ -3598,26 +3736,53 @@ subscription_services_snapshot_prepare() (
     config_foreach subscription_services_snapshot_section section
     [ "$SNAPSHOT_FAILED" = 0 ] || exit 1
     jq -e --slurpfile current "$SNAPSHOT_SECTIONS" '(.sections|map(del(.admittedIds)))==($current|map(del(.admittedIds)))' "$manifest" >/dev/null || exit 1
+    subscription_services_snapshot_restore_rules
+)
+
+subscription_services_snapshot_restore_rules() (
+    local dir manifest config_path config_sha generation path name hash actual rules_file='' tmp_rule=''
+    dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
+    [ -s "$manifest" ] && [ ! -L "$dir" ] && [ ! -L "$manifest" ] || exit 1
+    config_get config_path settings config_path
+    config_sha="$(subscription_services_snapshot_hash "$config_path")" || exit 1
+    jq -e --arg config "$config_sha" '.version==1 and .config==$config
+        and (.rules|type=="array" and length<=128)
+        and all(.rules[]; (.name|type=="string") and (.sha|type=="string" and length==64))
+        and (.rules|map(.name)|length==(unique|length))' "$manifest" >/dev/null || exit 1
+    # Bind the manifest to every exact local path in the frozen config, not merely
+    # to a subset of copied files or names supplied by the manifest.
+    jq -e --arg folder "$TMP_RULESET_FOLDER/" --slurpfile saved "$manifest" '
+        [.route.rule_set[]? | select(.type=="local") | .path] | unique | sort
+        == ($saved[0].rules | map($folder+.name) | sort)' "$config_path" >/dev/null || exit 1
     generation="$(jq -r '.generation' "$manifest")"
     case "$generation" in generation.*) case "${generation#generation.}" in ''|*[!A-Za-z0-9]*) exit 1;; esac;; *) exit 1;; esac
     [ -d "$dir/$generation" ] && [ ! -L "$dir/$generation" ] && [ ! -L "$TMP_RULESET_FOLDER" ] || exit 1
-    jq -r '.rules[] | [.name,.sha] | @tsv' "$manifest" > "$SNAPSHOT_SECTIONS" || exit 1
+    rules_file="$(mktemp)" || exit 1
+    trap 'rm -f "$rules_file"; [ -z "$tmp_rule" ] || rm -f "$tmp_rule"' EXIT INT TERM HUP
+    jq -r '.rules[] | [.name,.sha] | @tsv' "$manifest" > "$rules_file" || exit 1
     # Validate every source and existing destination before restoring any missing file.
     while IFS="$(printf '\t')" read -r name hash; do
         case "$name" in ''|.|..|*[!A-Za-z0-9_.-]*) exit 1;; esac
+        case "$name" in *.json|*.srs) ;; *) exit 1;; esac
+        [ "${#hash}" = 64 ] || exit 1
+        case "$hash" in *[!a-f0-9]*) exit 1;; esac
         actual="$(subscription_services_snapshot_hash "$dir/$generation/$name")" || exit 1
         [ "$actual" = "$hash" ] || exit 1
         path="$TMP_RULESET_FOLDER/$name"
         if [ -e "$path" ] || [ -L "$path" ]; then
             [ "$(subscription_services_snapshot_hash "$path")" = "$hash" ] || exit 1
         fi
-    done < "$SNAPSHOT_SECTIONS"
+    done < "$rules_file"
     mkdir -p "$TMP_RULESET_FOLDER" || exit 1
     while IFS="$(printf '\t')" read -r name hash; do
         path="$TMP_RULESET_FOLDER/$name"
         [ ! -f "$path" ] || continue
-        cp "$dir/$generation/$name" "$path.snapshot.$$" && chmod 600 "$path.snapshot.$$" && mv "$path.snapshot.$$" "$path" || exit 1
-    done < "$SNAPSHOT_SECTIONS"
+        tmp_rule="$(mktemp "$TMP_RULESET_FOLDER/.snapshot.XXXXXX")" || exit 1
+        cp "$dir/$generation/$name" "$tmp_rule" && chmod 600 "$tmp_rule" || exit 1
+        [ "$(subscription_services_snapshot_hash "$tmp_rule")" = "$hash" ] || exit 1
+        mv "$tmp_rule" "$path" || exit 1
+        tmp_rule=''
+    done < "$rules_file"
     sing-box check -c "$config_path" >/dev/null 2>&1 || exit 1
 )
 # subscription_service_snapshot_v1 end
@@ -4076,7 +4241,7 @@ sing_box_configure_service() {
 
 sing_box_init_config() {
     if [ "${PODKOP_SERVICE_REUSE_ADMITTED_CONFIG:-0}" = 1 ]; then
-        subscription_services_snapshot_prepare || return 1
+        subscription_services_snapshot_continuity_prepare || return 1
         return 0
     fi
     local config='{"log":{},"dns":{},"ntp":{},"certificate":{},"endpoints":[],"inbounds":[],"outbounds":[],"route":{},"services":[],"experimental":{}}'
@@ -6367,6 +6532,10 @@ Available commands:
     global_check            Run global system check
 EOF
 }
+
+# DNS-only transactions reuse the validated runtime helpers without dispatching
+# a start, restart, subscription refresh, or other command.
+[ "${PODKOP_LIBRARY_ONLY:-0}" != 1 ] || return 0
 
 case "$1" in
 start)

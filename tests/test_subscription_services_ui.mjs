@@ -93,7 +93,7 @@ c.PodkopShellMethods={
  checkSubscriptionServices:async(code,id,services)=>{calls.push([code,id,[...services]]);c.handleCancelSubscriptionServices();return {success:true,data:{success:true}};},
  getSubscriptionServices:async()=>({success:true,data:{success:true,requiredServices:[],catalog:[],results:[{id:'a',services:item.services}]}})
 };
-for(const name of ['setActionState','handleCancelSubscriptionServices','handleCheckSubscriptionServices','refreshSubscriptionServiceEvidence']){
+for(const name of ['setActionState','handleCancelSubscriptionServices','handleCheckSubscriptionServices','refreshSubscriptionServiceEvidence','getSubscriptionServiceCheckError']){
  const match=js.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));assert.ok(match,`${name} must exist`);vm.runInContext(match[0],c);
 }
 await c.handleCheckSubscriptionServices('geo',['gemini']);
@@ -126,11 +126,19 @@ assert.equal(state.subscriptionItemsWidget.pendingChanges['geo:a'],false,'forced
 for(const name of ['getToolbarMessage','getToolbarClass','renderToolbar','subscriptionStateLabel']) {
  const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));assert.ok(match);vm.runInContext(match[0],c);
 }
-assert.match(c.getToolbarMessage({runtimeStatus:{pending:true},pendingCount:0}),/Конфиги или результаты проверок обновлены, но ещё не применены/);
-assert.match(c.subscriptionStateLabel({runtimeStatus:{pending:true},pendingCount:0})[2],/результаты проверок/);
+assert.match(c.getToolbarMessage({runtimeStatus:{pending:true},pendingCount:0}),/Применить.*перерыв соединений/);
+assert.match(c.subscriptionStateLabel({runtimeStatus:{pending:true},pendingCount:0})[2],/Применить.*перерыв соединений/);
 c.renderButton=props=>({tag:'button',attrs:{disabled:props.disabled},children:props.text});
 c.renderSubscriptionState=()=>({tag:'status'});
 for(const name of ['renderRotateCcwIcon24','renderSearchIcon24','renderCircleStopIcon24','renderSquareChartGanttIcon24'])c[name]=()=>null;
 const toolbar=c.renderToolbar({pendingCount:0,runtimeStatus:{pending:true,busy:false},actionStatus:'idle'});
 assert.equal(walk(toolbar).find(node=>node?.tag==='button'&&node.children==='Apply').attrs.disabled,false,'backend pending proof enables apply without a UCI draft');
 console.log('PASS: persisted service proof can enable Apply with no UI draft through backend pending status');
+calls.length=0;
+state.subscriptionItemsWidget={data:[{...pool,items:[{id:'a',supported:true},{id:'b',supported:true}]}],pendingChanges:{},actionStatus:'idle'};
+c.PodkopShellMethods.checkSubscriptionServices=async(code,id)=>{calls.push(id);if(id==='a')throw new Error('request_timeout');return {success:true,data:{success:true}};};
+await c.handleCheckSubscriptionServices('geo',['gemini'],true);
+assert.deepEqual(calls,['a','b'],'one failed node must not prevent later nodes from being checked');
+assert.match(state.subscriptionItemsWidget.actionMessage,/Ошибок: 1/,'batch retains a visible truthful error count');
+assert.match(c.getSubscriptionActionErrorMessage(new Error('service_results_stale_or_missing'),'generic'),/устарели|не найдены/,'missing proof must explain required recheck');
+assert.match(c.getSubscriptionActionErrorMessage(new Error('service_no_eligible_nodes'),'generic'),/ни одного|нет.*узл/i,'empty admission must not be reported as reload failure');

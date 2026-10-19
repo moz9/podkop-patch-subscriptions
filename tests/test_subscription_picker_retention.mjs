@@ -1,0 +1,21 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const js=fs.readFileSync(new URL('../openwrt/main.js',import.meta.url),'utf8');
+const match=js.match(/function retainSubscriptionTagPickers\([\s\S]*?\n}/);
+assert.ok(match,'country controls need in-place retention across draft/progress updates');
+const c=vm.createContext({});vm.runInContext(match[0],c);
+const make=(checked,disabled)=>{
+ const input={value:'@prefix:US',checked,disabled};const summary={textContent:checked?'US':'Все теги'};
+ const details={querySelector:()=>summary,replaceWith(node){this.replacement=node;}};
+ const choices={dataset:{subscriptionScrollKey:'main:include'},parentElement:details,querySelectorAll:()=>[input]};
+ return {input,summary,details,choices,root:{querySelectorAll:()=>[choices]}};
+};
+const old=make(false,false),next=make(true,true);
+c.retainSubscriptionTagPickers(old.root,next.root);
+assert.equal(next.details.replacement,old.details,'existing country DOM and its focus/scroll must survive');
+assert.equal(old.input.checked,true);assert.equal(old.input.disabled,true);assert.equal(old.summary.textContent,'US');
+const changed=make(true,false);changed.input.value='@prefix:DE';
+c.retainSubscriptionTagPickers(old.root,changed.root);
+assert.equal(changed.details.replacement,undefined,'new choice catalogue must replace stale controls');
+console.log('PASS: country picker DOM retention without stale checked/disabled state');

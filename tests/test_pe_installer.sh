@@ -22,7 +22,7 @@ chmod +x "$test_root/no-regex-bin/jq"
 PATH="$test_root/no-regex-bin:$PATH"
 export PATH
 [ "$PATCH_VERSION" = podkop-pe ] || fail_test 'installer defaults to normal channel'
-[ "$PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS" = 0.7.23 ] || fail_test 'PE channel accepts older runtime'
+[ "$PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS" = 0.7.24 ] || fail_test 'PE channel accepts older runtime'
 grep -q '/commits/podkop-pe' "$repo_root/a" || fail_test 'full stack resolves normal main'
 grep -q '/podkop-pe/openwrt/update-manifest.json' "$repo_root/openwrt/podkop-update-manager" || fail_test 'update center follows normal main'
 tmp_dir="$test_root/assets"
@@ -31,12 +31,12 @@ download() {
     case "$1" in */update-manifest.json) printf '{"schemaVersion":1,"patchVersion":"%s","channel":"podkop-pe","sha256":{}}\n' "${INSTALL_MARKER#PODKOP_SUBSCRIPTIONS_PATCH_VERSION=}" > "$2" ;; *) printf 'payload\n' > "$2" ;; esac
 }
 prefetch_patch_assets
-for asset in podkop.runtime-0.7.23 podkop.js.runtime-0.7.23 helpers.sh sing_box_config_facade.sh sing_box_config_manager.sh podkop-dns-benchmark dns_benchmark.js; do
+for asset in podkop.runtime-0.7.24 podkop.js.runtime-0.7.24 helpers.sh sing_box_config_facade.sh sing_box_config_manager.sh podkop-dns-benchmark dns_benchmark.js; do
     [ -s "$tmp_dir/$asset" ] || fail_test "PE asset missing: $asset"
 done
 command -v verify_patch_download >/dev/null 2>&1 || fail_test 'no release checksum guard'
 PATCH_ASSET_MANIFEST="$tmp_dir/update-manifest.json"
-if (verify_patch_download "$RAW_BASE/runtime-0.7.23/usr/bin/podkop" "$tmp_dir/podkop.runtime-0.7.23") > "$test_root/missing-checksum-error" 2>&1; then fail_test 'missing PE asset checksum accepted'; fi
+if (verify_patch_download "$RAW_BASE/runtime-0.7.24/usr/bin/podkop" "$tmp_dir/podkop.runtime-0.7.24") > "$test_root/missing-checksum-error" 2>&1; then fail_test 'missing PE asset checksum accepted'; fi
 grep -q 'release checksum is missing' "$test_root/missing-checksum-error" || fail_test 'wrong missing checksum refusal'
 PATCH_ASSET_MANIFEST=
 # The real local downloader must enforce the guard, not only its helper.
@@ -87,16 +87,16 @@ if (
 ) > "$test_root/s-invalid-hex-error" 2>&1; then fail_test 'safe updater nonhex checksum accepted'; fi
 grep -q 'release checksum is invalid' "$test_root/s-invalid-hex-error" || fail_test 'safe updater charset guard missing'
 if grep -q 'podkop.runtime-0.7.2[02]' "$repo_root/i"; then fail_test 'installer still uses old retrofit sources'; fi
-pe_engine_version_output() { printf 'sing-box version 1.13.21-pdk-r11\nFeatures: urltest.fallbacks,urltest.download_url,transport.xhttp,tools.decode-link\n'; }
+pe_engine_version_output() { printf 'sing-box version 1.14.2-pdk-r14\nFeatures: urltest.fallbacks,urltest.download_url,transport.xhttp,tools.decode-link,tls.utls-fallback\n'; }
 pe_engine_usable || fail_test 'r11 engine rejected'
-pe_engine_version_output() { printf 'sing-box version 1.13.21-pdk-r10\nFeatures: urltest.fallbacks,urltest.download_url,transport.xhttp,tools.decode-link\n'; }
+pe_engine_version_output() { printf 'sing-box version 1.14.2-pdk-r13\nFeatures: urltest.fallbacks,urltest.download_url,transport.xhttp,tools.decode-link,tls.utls-fallback\n'; }
 if pe_engine_usable; then fail_test 'r10 engine accepted'; fi
-pe_engine_version_output() { printf 'sing-box version 1.13.21-pdk-r11\nFeatures: urltest.fallbacks,transport.xhttp,tools.decode-link\n'; }
+pe_engine_version_output() { printf 'sing-box version 1.14.2-pdk-r14\nFeatures: urltest.fallbacks,transport.xhttp,tools.decode-link,tls.utls-fallback\n'; }
 if pe_engine_usable; then fail_test 'missing download_url accepted'; fi
-pe_engine_version_output() { printf 'sing-box version 1.13.20-pdk-r11\nFeatures: urltest.fallbacks,urltest.download_url,transport.xhttp,tools.decode-link\n'; }
+pe_engine_version_output() { printf 'sing-box version 1.14.1-pdk-r14\nFeatures: urltest.fallbacks,urltest.download_url,transport.xhttp,tools.decode-link,tls.utls-fallback\n'; }
 if pe_engine_usable; then fail_test 'outdated engine accepted'; fi
-pe_engine_version_output() { printf 'sing-box version 1.14.0-pdk-r11\nFeatures: urltest.fallbacks,urltest.download_url,transport.xhttp,tools.decode-link\n'; }
-pe_engine_usable || fail_test 'newer compatible PE engine rejected'
+pe_engine_version_output() { printf 'sing-box version 1.15.0-pdk-r14\nFeatures: urltest.fallbacks,urltest.download_url,transport.xhttp,tools.decode-link,tls.utls-fallback\n'; }
+if pe_engine_usable; then fail_test 'unverified newer PE engine accepted'; fi
 printf "DISTRIB_ARCH='mips_24kc'\n" > "$test_root/release"
 PE_OPENWRT_RELEASE_FILE="$test_root/release"
 if (pe_preflight) > "$test_root/arch-error" 2>&1; then fail_test 'unsupported architecture accepted'; fi
@@ -111,14 +111,14 @@ if (pe_fetch_verified_package https://example.invalid/package "$test_root/downlo
 fi
 grep -q 'pinned package SHA-256 mismatch' "$test_root/package-error" || fail_test 'wrong package checksum refusal'
 pe_fetch_verified_package() { printf '%s\n' "$2" >> "$test_root/fetch-calls"; printf 'package\n' > "$2"; }
-pe_install_pinned_packages
-grep -q '^add --allow-untrusted .*podkop-engine.*podkop-0.7.23-r1.apk.*luci-app-podkop-0.7.23-r1.apk' "$test_root/apk-calls" || fail_test 'fresh install is not a joint dependency transaction'
+if (pe_install_pinned_packages) > "$test_root/prepared-package-error" 2>&1; then fail_test 'prepared adapter changes packages'; fi
+[ ! -e "$test_root/apk-calls" ] || fail_test 'prepared package guard called apk'
 if (
     . "$test_root/library"
     tmp_dir="$test_root/assets"
     persistent_backup_dir=''; backup_dir=''
     restore_on_fail=0; transaction_phase=preflight
-    current_podkop_version() { printf '0.7.23\n'; }
+    current_podkop_version() { printf '0.7.24\n'; }
     podkop_packages_match_runtime() { return 0; }
     podkop_persistent_state_exists() { return 1; }
     pe_engine_version_output() { printf 'sing-box version 1.13.21\nFeatures: ordinary\n'; }
@@ -126,8 +126,8 @@ if (
     pe_install_pinned_packages() { printf 'installed\n' > "$test_root/package-step"; }
     update_official_podkop_if_requested
 ) > "$test_root/engine-error" 2>&1; then fail_test 'unusable installed engine accepted'; fi
-[ -s "$test_root/package-step" ] || fail_test 'engine transaction was not attempted'
-grep -q 'installed engine lacks PE r11 features; runtime was not replaced' "$test_root/engine-error" || fail_test 'wrong engine transaction rejection'
+[ ! -e "$test_root/package-step" ] || fail_test 'engine transaction was attempted'
+grep -q 'separate verified package migration' "$test_root/engine-error" || fail_test 'wrong engine transaction rejection'
 
 run_web_case() {
     web_case="$test_root/web-$1"

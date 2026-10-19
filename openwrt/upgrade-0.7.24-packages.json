@@ -1,0 +1,18 @@
+{
+  "status": "prepared-not-installable",
+  "architecture": "aarch64_cortex-a53",
+  "podkopVersion": "0.7.24",
+  "engineVersion": "1.14.2-pdk-r14",
+  "sources": [
+    "https://github.com/itdoginfo/podkop/releases/tag/0.7.24",
+    "https://github.com/FiyeroT/podkop-engine/releases/tag/v1.14.2-r14"
+  ],
+  "sha256": {
+    "podkop-0.7.24-r1.apk": "a444a784a7dc22b2ba17336b773f75b27861daf3fb358fea21b31935a975318e",
+    "luci-app-podkop-0.7.24-r1.apk": "96d662b2f19e514e3486e9cddf545af1ce104d518884e3c61e8f4030c6f52746",
+    "podkop-v0.7.24-r1-all.ipk": "34e8413ccdc3bc843ed6ee943dbe0a646908494a123b4ee342229ab1c79131b2",
+    "luci-app-podkop-v0.7.24-r1-all.ipk": "25adc2a91169872748ead4b70a27a4cd57de9601d291d97b263071595cbfcc3c",
+    "podkop-engine_1.14.2-r14_openwrt_aarch64_cortex-a53.apk": "8956c62696ee292902960cbdb198339527d5d7946a677cf26616afc8632a1f63",
+    "podkop-engine_1.14.2-r14_openwrt_aarch64_cortex-a53.ipk": "04a97287d556562c28304bc5f246d855a240d1a800e3830f693c363c7b71d643"
+  }
+}

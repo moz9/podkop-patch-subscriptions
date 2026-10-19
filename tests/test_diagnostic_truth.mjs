@@ -29,3 +29,17 @@ for (const runtime of ['0.7.20','0.7.22','0.7.23']) {
   assert.match(shell,/clash_api "\$2" "\$3" "\$4" "\$5"/,'dispatcher must forward the fallback URL');
 }
 console.log('PASS: active route, partial pool, outage, diagnostic fault and untestable state');
+const runner=js.match(/async function runSectionsCheck\(\) \{[\s\S]*?\n}/);
+let final;
+Object.assign(c,{DIAGNOSTICS_CHECKS_MAP:{OUTBOUNDS:{order:1,title:'Outbounds',code:'out'}},
+  _:v=>v,updateCheckStore:v=>{final=v;},
+  getDashboardSections:async()=>({success:true,data:[{displayName:'main',code:'main-out',outbounds:[{type:'VLESS'}]}]}),
+  PodkopShellMethods:{getClashApiProxyLatency:async()=>rpc,getClashApiGroupLatency:async()=>rpc}});
+vm.runInContext(runner[0],c);
+await c.runSectionsCheck();
+assert.equal(final.state,'skipped','unavailable active probes must not produce green success');
+assert.doesNotMatch(final.description,/отвечают/);
+c.getDashboardSections=async()=>({success:true,data:[{displayName:'main · Не импортировано',canTestLatency:false}]});
+await c.runSectionsCheck();
+assert.equal(final.state,'skipped','only informational import rows are not proof of a working route');
+console.log('PASS: diagnostic aggregate never reports skipped probes as success');

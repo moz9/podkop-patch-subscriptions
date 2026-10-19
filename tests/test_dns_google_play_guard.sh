@@ -201,7 +201,8 @@ read_configured_pair() {
 }
 PAIR_FAILED_DOMAIN=play.googleapis.com
 run_dns_query() {
-    [ "$5" != "$PAIR_FAILED_DOMAIN" ] || return 1
+    # Main failure only: bootstrap has independent strict checks.
+    [ "$2" != 1.1.1.1 ] || [ "$5" != "$PAIR_FAILED_DOMAIN" ] || return 1
     printf '%s\n' 5
 }
 

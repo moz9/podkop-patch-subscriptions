@@ -7,7 +7,7 @@ DETAILS_FILE="$STATE_DIR/details.json"
 LOG_FILE="$STATE_DIR/update.log"
 LOCK_DIR="$STATE_DIR/lock"
 MANIFEST_URL="${PODKOP_PATCH_MANIFEST_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/openwrt/update-manifest.json}"
-RELEASE_URL="${PODKOP_OFFICIAL_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/tags/0.7.23}"
+RELEASE_URL="${PODKOP_OFFICIAL_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/tags/0.7.24}"
 INSTALLER_URL="${PODKOP_PATCH_INSTALLER_URL:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/podkop-pe/i}"
 
 mkdir -p "$STATE_DIR"
@@ -220,7 +220,7 @@ perform_check() {
     log_line "Checking Podkop and subscription patch updates."
 
     if ! download_file "$MANIFEST_URL?t=$cache_buster" "$manifest" ||
-        ! jq -e '.schemaVersion == 1 and .channel == "podkop-pe" and (.patchVersion | type == "string" and length > 0) and .supportedPodkopVersions == ["0.7.23"] and (.sha256 | type == "object")' "$manifest" >/dev/null 2>&1; then
+        ! jq -e '.schemaVersion == 1 and .channel == "podkop-pe" and (.patchVersion | type == "string" and length > 0) and .supportedPodkopVersions == ["0.7.24"] and (.sha256 | type == "object")' "$manifest" >/dev/null 2>&1; then
         log_line "Compatibility manifest download or validation failed."
         write_status "error" "manifest_failed"
         return 1
@@ -273,6 +273,12 @@ perform_check() {
     elif [ "$patch_update" = true ]; then
         mode="blocked"
         message="installed_podkop_unsupported"
+    fi
+
+    if [ "$(jq -r '.releaseStatus // "released"' "$manifest")" != released ]; then
+        mode="blocked"
+        can_update=false
+        message="prepared_not_released"
     fi
 
     jq -cn \

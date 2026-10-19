@@ -14,16 +14,16 @@ if ! grep -q 'SET_SUBSCRIPTION_SECTIONS_ENABLED' openwrt/main.js ||
     fail 'LuCI must use one all-sections subscription apply endpoint'
 fi
 
-if sed -n '/async function handleApply()/,/^}/p' openwrt/main.js \
+if sed -n '/async function handleApply(/,/^}/p' openwrt/main.js \
     | grep -q 'for (const \[sectionCode, changes\]'; then
     fail 'LuCI must not apply subscription sections one by one'
 fi
 
-if ! grep -q '^set_subscription_sections_enabled() {' openwrt/runtime-0.7.23/usr/bin/podkop; then
+if ! grep -q '^set_subscription_sections_enabled() {' openwrt/runtime-0.7.24/usr/bin/podkop; then
     fail 'runtime must provide an all-sections subscription apply endpoint'
 fi
 
-if ! grep -q 'run_with_timeout 900 env PODKOP_PATCH_VERSION=' openwrt/runtime-0.7.23/usr/bin/podkop; then
+if ! grep -q 'run_with_timeout 900 env PODKOP_PATCH_VERSION=' openwrt/runtime-0.7.24/usr/bin/podkop; then
     fail 'web patch update timeout must allow the transactional installer to finish or roll back'
 fi
 
@@ -33,7 +33,7 @@ if ! sed -n '/^has_latest_subscription_backend() {/,/^}/p' i |
     fail 'installer must upgrade and verify the safe web patch update timeout on existing routers'
 fi
 
-if ! sed -n '/^set_subscription_sections_enabled() {/,/^}/p' openwrt/runtime-0.7.23/usr/bin/podkop \
+if ! sed -n '/^set_subscription_sections_enabled() {/,/^}/p' openwrt/runtime-0.7.24/usr/bin/podkop \
     | grep -q 'subscription_action_lock_acquire'; then
     fail 'subscription apply must coordinate with other subscription mutations'
 fi
@@ -49,21 +49,21 @@ if ! sed -n '/^has_latest_subscription_backend() {/,/^}/p' i \
     fail 'installer capability and upgrade checks must require the apply v2 dispatcher entry'
 fi
 
-if ! grep -q 'download "$RAW_BASE/$RUNTIME_PE_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.23"' i ||
+if ! grep -q 'download "$RAW_BASE/$RUNTIME_PE_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.24"' i ||
     ! sed -n '/^install_prebuilt_pe_runtime() {/,/^}/p' i |
-        grep -Fq 'cp "$tmp_dir/podkop.runtime-0.7.23" /usr/bin/podkop' ||
-    ! grep -q '^set_subscription_sections_enabled() {' openwrt/runtime-0.7.23/usr/bin/podkop ||
-    ! grep -q '^set_subscription_sections_enabled)' openwrt/runtime-0.7.23/usr/bin/podkop; then
+        grep -Fq 'cp "$tmp_dir/podkop.runtime-0.7.24" /usr/bin/podkop' ||
+    ! grep -q '^set_subscription_sections_enabled() {' openwrt/runtime-0.7.24/usr/bin/podkop ||
+    ! grep -q '^set_subscription_sections_enabled)' openwrt/runtime-0.7.24/usr/bin/podkop; then
     fail 'PE installer must deliver the native apply v2 backend and dispatcher'
 fi
 
-if ! sed -n '/^subscription_action_lock_busy() {/,/^}/p' openwrt/runtime-0.7.23/usr/bin/podkop \
+if ! sed -n '/^subscription_action_lock_busy() {/,/^}/p' openwrt/runtime-0.7.24/usr/bin/podkop \
     | grep -Fq '[ -n "$pid" ] || return 0'; then
     fail 'atomic action lock must treat the owner-file creation window as busy'
 fi
 
-if ! grep -q '^subscription_action_legacy_lock_busy() {' openwrt/runtime-0.7.23/usr/bin/podkop ||
-    ! sed -n '/^subscription_action_lock_acquire() {/,/^}/p' openwrt/runtime-0.7.23/usr/bin/podkop \
+if ! grep -q '^subscription_action_legacy_lock_busy() {' openwrt/runtime-0.7.24/usr/bin/podkop ||
+    ! sed -n '/^subscription_action_lock_acquire() {/,/^}/p' openwrt/runtime-0.7.24/usr/bin/podkop \
         | grep -Fq 'set -C'; then
     fail 'new subscription mutations must bridge the legacy lock during rolling upgrades'
 fi
@@ -72,7 +72,7 @@ if grep -q 'Failed to apply changes. Podkop was not changed.' openwrt/main.js; t
     fail 'UI must not claim no changes after a post-commit failure'
 fi
 
-if ! sed -n '/async function handleApply()/,/^}/p' openwrt/main.js \
+if ! sed -n '/async function handleApply(/,/^}/p' openwrt/main.js \
     | grep -q 'await fetchSubscriptionItems("error")'; then
     fail 'UI must resynchronize subscription state after an apply error'
 fi

@@ -4,6 +4,12 @@ repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 . "$repo/openwrt/podkop-subscription-sources.sh"
+if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+    for pending_function in subscription_pending_sections_json subscription_pending_mark subscription_pending_clear; do
+        sed -n "/^$pending_function() {$/,/^}$/p" "$repo/openwrt/runtime-0.7.24/usr/bin/podkop" >> "$work/pending-functions"
+    done
+    . "$work/pending-functions"
+fi
 fail() { echo "FAIL: $*" >&2; exit 1; }
 if sed -n '/^subscription_source_policy() {/,/^}/p' "$repo/openwrt/podkop-subscription-sources.sh" | grep -Eq '(^|[^[:alnum:]_])(gsub|test|match|sub)\('; then
  fail 'tag policy must not require jq regex builtins (router jq lacks Oniguruma)'
@@ -38,7 +44,11 @@ subscription_source_policy '[]' '[]' "$work/country.items" all '[]' '["*🇫🇮
  | jq -e '.[0].runtimeEnabled and .[1].runtimeEnabled and (.[2].runtimeEnabled|not)' >/dev/null || fail 'detected country group must include new matching nodes'
 subscription_source_policy '[]' '[]' "$work/country.items" selected '["fi","nl"]' '["*🇫🇮*"]' '["*🇳🇱*"]' \
  | jq -e '.[0].runtimeEnabled and (.[1].runtimeEnabled|not) and (.[2].runtimeEnabled|not)' >/dev/null || fail 'country filters must intersect the explicit node selection'
-for version in 0.7.20 0.7.22 0.7.23; do
+canonical_pe_version=0.7.23
+if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+    canonical_pe_version=0.7.24
+fi
+for version in 0.7.20 0.7.22 0.7.23 0.7.24; do
  runtime="$repo/openwrt/runtime-$version/usr/bin/podkop"
  sed -n '/^# subscription_apply_v2 begin$/,/^# subscription_apply_v2 end$/p' "$runtime" > "$work/backend"
  for name in apply_subscription_exclusions_to_cached_links set_subscription_links_enabled normalize_subscription_enabled_value; do
@@ -229,7 +239,7 @@ printf '%s' "$result" | jq -e '.success and .changed==0 and .state=="no_changes"
 [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.links" "$SUBSCRIPTION_CACHE_DIR/main.items" "$cfg")" ] || fail 'same-config activation changed UCI/cache/config'
 echo 'PASS: refreshed service proof marks explicit Apply; unchanged transaction captures snapshot and retains pending on failure'
 # Existing installations need the complete policy, transaction and legacy toggle retrofit.
-for version in 0.7.20 0.7.22 0.7.23; do
+for version in 0.7.20 0.7.22 0.7.23 0.7.24; do
  runtime="$repo/openwrt/runtime-$version/usr/bin/podkop"
  sed '/^# subscription_tag_glob_portable_v1$/d' "$runtime" > "$work/delivery"
  PODKOP_SOURCES_TARGET="$work/delivery" PODKOP_SOURCES_SOURCE="$runtime" sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
@@ -240,7 +250,7 @@ for version in 0.7.20 0.7.22 0.7.23; do
    cmp -s "$work/delivered.function" "$work/canonical.function" || fail "allowlist retrofit has stale $name"
  done
  sed -n '/^# subscription_sources_v1 begin$/,/^# subscription_sources_v1 end$/p' "$work/delivery" > "$work/delivered.sources"
- if [ "$version" != 0.7.23 ]; then
+ if [ "$version" != "$canonical_pe_version" ]; then
    sed -n '/^# subscription_sources_v1 begin$/,/^# subscription_sources_v1 end$/p' "$runtime" > "$work/pe.sources"
    cmp -s "$work/delivered.sources" "$work/pe.sources" || fail 'PE allowlist retrofit has stale source policy'
  else

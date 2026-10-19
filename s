@@ -109,6 +109,14 @@ for rel in \
 	podkop.js \
 	podkop-dns-optimizer \
 	podkop-dns-benchmark \
+	podkop-dns-apply \
+	podkop-diagnostic-policy.sh \
+	podkop-section-runtime \
+	podkop-single-runtime \
+	podkop-memdoc-guard \
+	podkop-memdoc-upgrade.sh \
+	podkop-section-hooks.sh \
+	podkop-section-worker.init \
 	dns_benchmark.js \
 	dns-main.json \
 	dns-bootstrap.json \
@@ -125,11 +133,12 @@ for rel in \
 	podkop-subscription-actions-upgrade.patch \
 	podkop-subscription-legacy-upgrade.patch \
 	podkop-actions-ui-fix.sh \
-	runtime-0.7.23/usr/bin/podkop \
-	runtime-0.7.23/www/luci-static/resources/view/podkop/podkop.js \
-	runtime-0.7.23/usr/lib/podkop/helpers.sh \
-	runtime-0.7.23/usr/lib/podkop/sing_box_config_facade.sh \
-	runtime-0.7.23/usr/lib/podkop/sing_box_config_manager.sh
+	runtime-0.7.24/usr/bin/podkop \
+	runtime-0.7.24/www/luci-static/resources/view/podkop/podkop.js \
+	runtime-0.7.24/usr/lib/podkop/helpers.sh \
+	runtime-0.7.24/usr/lib/podkop/constants.sh \
+	runtime-0.7.24/usr/lib/podkop/sing_box_config_facade.sh \
+	runtime-0.7.24/usr/lib/podkop/sing_box_config_manager.sh
 do
 	fetch_asset "$rel"
 done

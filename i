@@ -4,18 +4,18 @@ set -eu
 PATCH_VERSION="${PODKOP_PATCH_VERSION:-podkop-pe}"
 RAW_BASE="${PODKOP_PATCH_RAW_BASE:-https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PATCH_VERSION/openwrt}"
 PODKOP_OFFICIAL_INSTALL_URL="${PODKOP_OFFICIAL_INSTALL_URL:-https://raw.githubusercontent.com/itdoginfo/podkop/main/install.sh}"
-PODKOP_PATCH_TARGET_PODKOP_VERSION=0.7.23
-PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS=0.7.23
+PODKOP_PATCH_TARGET_PODKOP_VERSION=0.7.24
+PODKOP_PATCH_SUPPORTED_PODKOP_VERSIONS=0.7.24
 PE_OPENWRT_RELEASE_FILE="${PE_OPENWRT_RELEASE_FILE:-/etc/openwrt_release}"
-PE_ENGINE_VERSION=1.13.21
-PE_ENGINE_RELEASE=r11
+PE_ENGINE_VERSION=1.14.2
+PE_ENGINE_RELEASE=r14
 PODKOP_PATCH_LATEST_RELEASE_URL="${PODKOP_PATCH_LATEST_RELEASE_URL:-https://api.github.com/repos/itdoginfo/podkop/releases/latest}"
 PODKOP_PATCH_UPDATE_PODKOP_WAS_SET=0
 [ "${PODKOP_PATCH_UPDATE_PODKOP+x}" = x ] && PODKOP_PATCH_UPDATE_PODKOP_WAS_SET=1
 PODKOP_PATCH_FORCE_PODKOP_UPDATE_WAS_SET=0
 [ "${PODKOP_PATCH_FORCE_PODKOP_UPDATE+x}" = x ] && PODKOP_PATCH_FORCE_PODKOP_UPDATE_WAS_SET=1
 PODKOP_PATCH_UPDATE_PODKOP="${PODKOP_PATCH_UPDATE_PODKOP:-1}"
-PODKOP_PATCH_DEFER_SERVICE_START="${PODKOP_PATCH_DEFER_SERVICE_START:-0}"
+PODKOP_PATCH_DEFER_SERVICE_START="${PODKOP_PATCH_DEFER_SERVICE_START:-1}"
 BACKUPS_KEEP="${PODKOP_PATCH_BACKUPS_KEEP:-2}"
 PATCH_FILE="podkop-subscription-urltest-runtime.patch"
 V0719_PATCH_FILE="podkop-subscription-v0719-runtime.patch"
@@ -25,7 +25,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261010-pe-v13"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261012-pe-v17-0724-prepared"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -39,6 +39,14 @@ DIAGNOSTIC_JS_FILE="diagnostic.js"
 PODKOP_JS_FILE="podkop.js"
 DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
 DNS_BENCHMARK_FILE="podkop-dns-benchmark"
+DNS_APPLY_FILE="podkop-dns-apply"
+DIAGNOSTIC_POLICY_FILE="podkop-diagnostic-policy.sh"
+SECTION_RUNTIME_FILE="podkop-section-runtime"
+SINGLE_RUNTIME_FILE="podkop-single-runtime"
+MEMDOC_GUARD_FILE="podkop-memdoc-guard"
+MEMDOC_UPGRADE_FILE="podkop-memdoc-upgrade.sh"
+SECTION_HOOKS_FILE="podkop-section-hooks.sh"
+SECTION_WORKER_FILE="podkop-section-worker.init"
 DNS_BENCHMARK_JS_FILE="dns_benchmark.js"
 DNS_MAIN_CATALOG_FILE="dns-main.json"
 DNS_BOOTSTRAP_CATALOG_FILE="dns-bootstrap.json"
@@ -53,9 +61,9 @@ UPDATE_MANAGER_FILE="podkop-update-manager"
 UPDATE_MANAGER_VERSION="20260813-update-manager-v3"
 UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
-RUNTIME_PE_PODKOP_FILE="runtime-0.7.23/usr/bin/podkop"
-RUNTIME_PE_PODKOP_JS_FILE="runtime-0.7.23/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261010_pe_v13"
+RUNTIME_PE_PODKOP_FILE="runtime-0.7.24/usr/bin/podkop"
+RUNTIME_PE_PODKOP_JS_FILE="runtime-0.7.24/www/luci-static/resources/view/podkop/podkop.js"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261012_pe_v17_0724_prepared"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -71,8 +79,19 @@ LUCI_UHTTPD_UBUS_MODULE="${PODKOP_PATCH_UHTTPD_UBUS_MODULE:-/usr/lib/uhttpd_ubus
 
 RUNTIME_FILES="
 usr/bin/podkop
+etc/init.d/podkop
 usr/bin/podkop-dns-optimizer
 usr/bin/podkop-dns-benchmark
+usr/bin/podkop-dns-apply
+usr/bin/podkop-diagnostic-policy.sh
+usr/bin/podkop-section-runtime
+usr/bin/podkop-single-runtime
+usr/libexec/podkop-memdoc-guard
+usr/bin/memdoc
+usr/bin/memdoc.podkop-original
+usr/bin/memdoc.podkop-guarded
+usr/lib/podkop/section-hooks.sh
+etc/init.d/podkop-section-worker
 usr/share/podkop/dns-main.json
 usr/share/podkop/dns-bootstrap.json
 usr/bin/podkop-dns-failover
@@ -81,6 +100,7 @@ etc/init.d/podkop-dns-failover
 etc/rc.d/K10podkop-dns-failover
 etc/rc.d/S100podkop-dns-failover
 usr/lib/podkop/helpers.sh
+usr/lib/podkop/constants.sh
 usr/lib/podkop/sing_box_config_facade.sh
 usr/lib/podkop/sing_box_config_manager.sh
 usr/share/rpcd/acl.d/luci-app-podkop.json
@@ -181,14 +201,14 @@ www/luci-static/resources/view/podkop_patch_20261007_pe_v8/diagnostic.js
 www/luci-static/resources/view/podkop_patch_20261007_pe_v8/dns_benchmark.js
 
 usr/lib/lua/luci/i18n/podkop.ru.lmo
-www/luci-static/resources/view/podkop_patch_20261010_pe_v13/main.js
-www/luci-static/resources/view/podkop_patch_20261010_pe_v13/podkop.js
-www/luci-static/resources/view/podkop_patch_20261010_pe_v13/section.js
-www/luci-static/resources/view/podkop_patch_20261010_pe_v13/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261010_pe_v13/settings.js
-www/luci-static/resources/view/podkop_patch_20261010_pe_v13/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261010_pe_v13/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261010_pe_v13/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/main.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/podkop.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/section.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/settings.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/dns_benchmark.js
 "
 
 PERSISTENT_PATHS="
@@ -333,14 +353,94 @@ apply_runtime_patch() {
 	patch -l --batch -d / -p1 < "$patch_file"
 }
 
+install_bounded_dns_diagnostics() {
+    local source="$1" target="$2" candidate
+    [ -s "$source" ] && [ -s "$target" ] && [ ! -L "$target" ] || return 1
+    candidate="$(mktemp "${target%/*}/.podkop-diagnostic.XXXXXX")" || return 1
+    cp -p "$target" "$candidate" || { rm -f "$candidate"; return 1; }
+    if ! awk '
+        FNR==NR {
+            if ($0 ~ /^dns_diagnostic_query\(\) \{$/ || $0 ~ /^check_dns_available\(\) \{$/) { capture=1; source_count++ }
+            if (capture) replacement=replacement $0 "\n"
+            if (capture && $0=="}") capture=0
+            next
+        }
+        /^dns_diagnostic_query\(\) \{$/ { skip=1; next }
+        /^check_dns_available\(\) \{$/ { printf "%s", replacement; target_count++; skip=1; next }
+        skip { if ($0=="}") skip=0; next }
+        { print }
+        END { if (source_count!=2 || target_count!=1) exit 1 }
+    ' "$source" "$target" > "$candidate" || ! sh -n "$candidate"; then
+        rm -f "$candidate"; return 1
+    fi
+    if cmp -s "$candidate" "$target"; then rm -f "$candidate"; return 0; fi
+    mv "$candidate" "$target"
+}
+
 install_prebuilt_pe_runtime() {
 	mkdir -p /usr/bin "$LUCI_VIEW_ROOT/podkop"
-	cp "$tmp_dir/podkop.runtime-0.7.23" /usr/bin/podkop || return 1
-	cp "$tmp_dir/podkop.js.runtime-0.7.23" "$LUCI_VIEW_ROOT/podkop/podkop.js" || return 1
+	cp "$tmp_dir/podkop.runtime-0.7.24" /usr/bin/podkop || return 1
+	cp "$tmp_dir/podkop.js.runtime-0.7.24" "$LUCI_VIEW_ROOT/podkop/podkop.js" || return 1
 	mkdir -p /usr/lib/podkop || return 1
-	for pe_library in helpers.sh sing_box_config_facade.sh sing_box_config_manager.sh; do
+	for pe_library in constants.sh helpers.sh sing_box_config_facade.sh sing_box_config_manager.sh; do
 		cp "$tmp_dir/$pe_library" "/usr/lib/podkop/$pe_library" || return 1
 	done
+	cp "$tmp_dir/$SECTION_RUNTIME_FILE" /usr/bin/podkop-section-runtime || return 1
+	cp "$tmp_dir/$SINGLE_RUNTIME_FILE" /usr/bin/podkop-single-runtime || return 1
+	cp "$tmp_dir/$SECTION_HOOKS_FILE" /usr/lib/podkop/section-hooks.sh || return 1
+	cp "$tmp_dir/$SECTION_WORKER_FILE" /etc/init.d/podkop-section-worker || return 1
+	chmod 755 /usr/bin/podkop-section-runtime /usr/bin/podkop-single-runtime /etc/init.d/podkop-section-worker || return 1
+}
+
+install_section_runtime_assets() {
+	local root="${SECTION_INSTALL_ROOT:-}" asset destination
+	mkdir -p "$root/usr/bin" "$root/etc/init.d" "$root/usr/lib/podkop" || return 1
+	for asset in "$SECTION_RUNTIME_FILE" "$SINGLE_RUNTIME_FILE" "$SECTION_WORKER_FILE" "$SECTION_HOOKS_FILE"; do
+		case "$asset" in
+			"$SECTION_RUNTIME_FILE") destination="$root/usr/bin/podkop-section-runtime" ;;
+			"$SINGLE_RUNTIME_FILE") destination="$root/usr/bin/podkop-single-runtime" ;;
+			"$SECTION_WORKER_FILE") destination="$root/etc/init.d/podkop-section-worker" ;;
+			"$SECTION_HOOKS_FILE") destination="$root/usr/lib/podkop/section-hooks.sh" ;;
+		esac
+		sh -n "$tmp_dir/$asset" || return 1
+		cp "$tmp_dir/$asset" "$destination" && chmod 755 "$destination" || return 1
+	done
+}
+
+install_memdoc_compatibility() {
+	local root="${SECTION_INSTALL_ROOT:-}" init running=0
+	init="$root/etc/init.d/memdoc"
+	mkdir -p "$root/usr/libexec" || return 1
+	sh -n "$tmp_dir/$MEMDOC_GUARD_FILE" || return 1
+	cp "$tmp_dir/$MEMDOC_GUARD_FILE" "$root/usr/libexec/podkop-memdoc-guard" &&
+		chmod 755 "$root/usr/libexec/podkop-memdoc-guard" || return 1
+	[ -f "$root/usr/bin/memdoc" ] || return 0
+	if [ -x "$init" ] && "$init" status 2>/dev/null | grep -q running; then running=1; fi
+	PODKOP_MEMDOC_TARGET="$root/usr/bin/memdoc" sh "$tmp_dir/$MEMDOC_UPGRADE_FILE" || return 1
+	if [ "$running" = 1 ]; then
+		memdoc_restart_on_restore=1
+		"$init" restart >/dev/null 2>&1 || return 1
+	fi
+}
+
+memdoc_compatibility_current() {
+	if [ "${PODKOP_PATCH_SINGLE_MIGRATE:-0}" = 1 ]; then
+		[ "$(cat "${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}/runtime-mode" 2>/dev/null || true)" = single ] || return 1
+	fi
+	[ -x /usr/libexec/podkop-memdoc-guard ] &&
+		cmp -s /usr/libexec/podkop-memdoc-guard "$tmp_dir/$MEMDOC_GUARD_FILE" || return 1
+	[ ! -f /usr/bin/memdoc ] ||
+		{ grep -Fq '# podkop_memdoc_guard begin' /usr/bin/memdoc &&
+		  cmp -s /usr/bin/memdoc /usr/bin/memdoc.podkop-guarded; }
+}
+
+migrate_section_runtime_if_requested() {
+	[ "${PODKOP_PATCH_SINGLE_MIGRATE:-0}" = 1 ] || return 0
+	local root="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}" sections
+	[ -f "$root/metadata.json" ] && [ -f "$root/logical.json" ] || return 1
+	[ "$(cat "$root/runtime-mode" 2>/dev/null || true)" != single ] || return 0
+	sections="$(jq -ce 'if (.sections|type)=="array" then [.sections[].section] else [.section] end' "$root/metadata.json")" || return 1
+	/usr/bin/podkop-section-runtime single-migrate "$root/logical.json" "$sections"
 }
 
 prefetch_patch_assets() {
@@ -360,6 +460,14 @@ prefetch_patch_assets() {
 	download "$RAW_BASE/$PODKOP_JS_FILE" "$tmp_dir/$PODKOP_JS_FILE"
 	download "$RAW_BASE/$DNS_OPTIMIZER_FILE" "$tmp_dir/$DNS_OPTIMIZER_FILE"
 	download "$RAW_BASE/$DNS_BENCHMARK_FILE" "$tmp_dir/$DNS_BENCHMARK_FILE"
+	download "$RAW_BASE/$DNS_APPLY_FILE" "$tmp_dir/$DNS_APPLY_FILE"
+	download "$RAW_BASE/$DIAGNOSTIC_POLICY_FILE" "$tmp_dir/$DIAGNOSTIC_POLICY_FILE"
+	download "$RAW_BASE/$SECTION_RUNTIME_FILE" "$tmp_dir/$SECTION_RUNTIME_FILE"
+	download "$RAW_BASE/$SINGLE_RUNTIME_FILE" "$tmp_dir/$SINGLE_RUNTIME_FILE"
+	download "$RAW_BASE/$MEMDOC_GUARD_FILE" "$tmp_dir/$MEMDOC_GUARD_FILE"
+	download "$RAW_BASE/$MEMDOC_UPGRADE_FILE" "$tmp_dir/$MEMDOC_UPGRADE_FILE"
+	download "$RAW_BASE/$SECTION_HOOKS_FILE" "$tmp_dir/$SECTION_HOOKS_FILE"
+	download "$RAW_BASE/$SECTION_WORKER_FILE" "$tmp_dir/$SECTION_WORKER_FILE"
 	download "$RAW_BASE/$DNS_BENCHMARK_JS_FILE" "$tmp_dir/$DNS_BENCHMARK_JS_FILE"
 	download "$RAW_BASE/$DNS_MAIN_CATALOG_FILE" "$tmp_dir/$DNS_MAIN_CATALOG_FILE"
 	download "$RAW_BASE/$DNS_BOOTSTRAP_CATALOG_FILE" "$tmp_dir/$DNS_BOOTSTRAP_CATALOG_FILE"
@@ -376,10 +484,10 @@ prefetch_patch_assets() {
 	download "$RAW_BASE/$V0719_PATCH_FILE" "$tmp_dir/$V0719_PATCH_FILE"
 	download "$RAW_BASE/$MAINTENANCE_UPGRADE_FILE" "$tmp_dir/$MAINTENANCE_UPGRADE_FILE"
 	download "$RAW_BASE/$UPDATE_CENTER_UPGRADE_FILE" "$tmp_dir/$UPDATE_CENTER_UPGRADE_FILE"
-	download "$RAW_BASE/$RUNTIME_PE_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.23"
-	download "$RAW_BASE/$RUNTIME_PE_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.23"
-	for pe_library in helpers.sh sing_box_config_facade.sh sing_box_config_manager.sh; do
-		download "$RAW_BASE/runtime-0.7.23/usr/lib/podkop/$pe_library" "$tmp_dir/$pe_library"
+	download "$RAW_BASE/$RUNTIME_PE_PODKOP_FILE" "$tmp_dir/podkop.runtime-0.7.24"
+	download "$RAW_BASE/$RUNTIME_PE_PODKOP_JS_FILE" "$tmp_dir/podkop.js.runtime-0.7.24"
+	for pe_library in constants.sh helpers.sh sing_box_config_facade.sh sing_box_config_manager.sh; do
+		download "$RAW_BASE/runtime-0.7.24/usr/lib/podkop/$pe_library" "$tmp_dir/$pe_library"
 	done
 }
 
@@ -723,8 +831,11 @@ restart_podkop_after_restore() {
 }
 
 restore_patch_service_state() {
-	installer_services_deferred && return 0
 	service_restore_ok=1
+	if [ "${memdoc_restart_on_restore:-0}" = 1 ] && [ -x /etc/init.d/memdoc ]; then
+		/etc/init.d/memdoc restart >/dev/null 2>&1 || service_restore_ok=0
+	fi
+	if installer_services_deferred; then [ "$service_restore_ok" -eq 1 ]; return; fi
 	restart_podkop_after_restore || service_restore_ok=0
 
 	case "${dns_failover_service_state:-unknown}" in
@@ -933,6 +1044,7 @@ has_latest_subscription_backend() {
 		grep -q "set_subscription_sections_enabled" /usr/bin/podkop 2>/dev/null &&
 		grep -q '^set_subscription_sections_enabled)' /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_apply_v2" /usr/bin/podkop 2>/dev/null &&
+		sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -Fq 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' &&
 		grep -Fq '# subscription_sources_v1 begin' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_source_actions_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop 2>/dev/null &&
@@ -946,6 +1058,8 @@ has_latest_subscription_backend() {
 		grep -Fqx '# subscription_service_snapshot_v1 end' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_source_ruleset_reuse_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_service_filter_v1' /usr/bin/podkop 2>/dev/null &&
+		grep -Fq '# subscription_safe_restart_v1:' /usr/bin/podkop 2>/dev/null &&
+		grep -Fq '# subscription_safe_init_restart_v1' "$PODKOP_INIT_SCRIPT" 2>/dev/null &&
 		sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'set_subscription_sections_enabled' &&
 		grep -q '^get_subscription_operation_status)' /usr/bin/podkop 2>/dev/null &&
 		grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop 2>/dev/null &&
@@ -1091,6 +1205,12 @@ install_versioned_luci_assets() {
 
 luci_assets_current() {
 	decode_lmo_asset || return 1
+	[ -x /usr/bin/podkop-single-runtime ] &&
+		cmp -s /usr/bin/podkop-single-runtime "$tmp_dir/$SINGLE_RUNTIME_FILE" &&
+		cmp -s /usr/bin/podkop-section-runtime "$tmp_dir/$SECTION_RUNTIME_FILE" &&
+		cmp -s /usr/lib/podkop/section-hooks.sh "$tmp_dir/$SECTION_HOOKS_FILE" &&
+		cmp -s /etc/init.d/podkop-section-worker "$tmp_dir/$SECTION_WORKER_FILE" &&
+		memdoc_compatibility_current || return 1
 
 	base_luci_assets_current &&
 		versioned_luci_assets_current &&
@@ -1099,6 +1219,9 @@ luci_assets_current() {
 		cmp -s /usr/bin/podkop-dns-optimizer "$tmp_dir/$DNS_OPTIMIZER_FILE" &&
 		[ -x /usr/bin/podkop-dns-benchmark ] &&
 		cmp -s /usr/bin/podkop-dns-benchmark "$tmp_dir/$DNS_BENCHMARK_FILE" &&
+		[ -x /usr/bin/podkop-dns-apply ] &&
+		cmp -s /usr/bin/podkop-dns-apply "$tmp_dir/$DNS_APPLY_FILE" &&
+		cmp -s /usr/bin/podkop-diagnostic-policy.sh "$tmp_dir/$DIAGNOSTIC_POLICY_FILE" &&
 		cmp -s /usr/share/podkop/dns-main.json "$tmp_dir/$DNS_MAIN_CATALOG_FILE" &&
 		cmp -s /usr/share/podkop/dns-bootstrap.json "$tmp_dir/$DNS_BOOTSTRAP_CATALOG_FILE" &&
 		[ -x /usr/bin/podkop-dns-failover ] &&
@@ -1106,6 +1229,7 @@ luci_assets_current() {
 		[ -x /etc/init.d/podkop-dns-failover ] &&
 		cmp -s /etc/init.d/podkop-dns-failover "$tmp_dir/$DNS_FAILOVER_INIT_FILE" &&
 		grep -q '^load_active_dns_settings() {' /usr/bin/podkop 2>/dev/null &&
+		grep -q '^dns_diagnostic_query() {' /usr/bin/podkop 2>/dev/null &&
 		[ -x /usr/bin/podkop-update-manager ] &&
 		cmp -s /usr/bin/podkop-update-manager "$tmp_dir/$UPDATE_MANAGER_FILE" &&
 		jq -e '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] == ["exec"]' /usr/share/rpcd/acl.d/luci-app-podkop.json >/dev/null 2>&1 &&
@@ -1559,7 +1683,7 @@ pe_preflight() {
 		fail "PE requires apk or opkg; no changes made"
 	fi
 	pe_current="$(current_podkop_version)"
-	[ -z "$pe_current" ] || [ "$pe_current" = 0.7.23 ] || fail "PE supports installed Podkop 0.7.23 only; migrate explicitly first"
+	[ -z "$pe_current" ] || [ "$pe_current" = 0.7.24 ] || fail "PE supports installed Podkop 0.7.24 only; migrate explicitly first"
 }
 
 pe_engine_version_output() { sing-box version 2>/dev/null; }
@@ -1569,8 +1693,8 @@ pe_engine_usable() {
 	pe_identity="$(printf '%s\n' "$pe_output" | sed -n 's/^sing-box version \([0-9][0-9.]*\)-pdk-r\([0-9][0-9]*\)$/\1 \2/p')"
 	[ -n "$pe_identity" ] || return 1
 	set -- $pe_identity
-	version_ge "$1" "$PE_ENGINE_VERSION" && [ "$2" -ge 11 ] || return 1
-	for pe_feature in urltest.fallbacks urltest.download_url transport.xhttp tools.decode-link; do
+	[ "$1" = "$PE_ENGINE_VERSION" ] && [ "r$2" = "$PE_ENGINE_RELEASE" ] || return 1
+	for pe_feature in urltest.fallbacks urltest.download_url transport.xhttp tools.decode-link tls.utls-fallback; do
 		printf '%s\n' "$pe_output" | sed -n 's/^Features:[[:space:]]*//p' | tr ',' '\n' | grep -Fxq "$pe_feature" || return 1
 	done
 }
@@ -1583,45 +1707,13 @@ pe_fetch_verified_package() {
 }
 
 pe_install_pinned_packages() {
-	pe_engine_root=https://github.com/FiyeroT/podkop-engine/releases/download/v1.13.21-r11
-	pe_podkop_root=https://github.com/itdoginfo/podkop/releases/download/0.7.23
-	if [ "$PE_PACKAGE_MANAGER" = apk ]; then
-		pe_engine_file=podkop-engine_1.13.21-r11_openwrt_aarch64_cortex-a53.apk
-		pe_engine_hash=822fd8b821614bbdb2f42c9e91d0c8d86d7288a46a10a88fa73cddebcf0209a0
-		pe_podkop_file=podkop-0.7.23-r1.apk
-		pe_podkop_hash=784993aa190fb8f70bbd91baabc5e6373175ae5f27ccd31729645e7610b124ff
-		pe_luci_file=luci-app-podkop-0.7.23-r1.apk
-		pe_luci_hash=ff39cf4415c350567b6f369133f41cc07f374af5fa9d3ce7d9a518acc7f807a8
-	else
-		pe_engine_file=podkop-engine_1.13.21-r11_openwrt_aarch64_cortex-a53.ipk
-		pe_engine_hash=b753b3f53167cc23a417d9bc4b0b2242688a820fd6c3aecfd5aa782f605bebe7
-		pe_podkop_file=podkop-v0.7.23-r1-all.ipk
-		pe_podkop_hash=7dc233d3d5fd98245109b7a9539609d7f98f8eea3422c4a867a74f2b0aec55e0
-		pe_luci_file=luci-app-podkop-v0.7.23-r1-all.ipk
-		pe_luci_hash=5f9edd1da5498056ab5d1ddb42d21317d3c412e0d9fe3a93ffaa1b37961037d6
-	fi
-	pe_fetch_verified_package "$pe_engine_root/$pe_engine_file" "$tmp_dir/$pe_engine_file" "$pe_engine_hash"
-	pe_fetch_verified_package "$pe_podkop_root/$pe_podkop_file" "$tmp_dir/$pe_podkop_file" "$pe_podkop_hash"
-	pe_fetch_verified_package "$pe_podkop_root/$pe_luci_file" "$tmp_dir/$pe_luci_file" "$pe_luci_hash"
-	if [ "$PE_PACKAGE_MANAGER" = apk ]; then
-		apk add --allow-untrusted "$tmp_dir/$pe_engine_file" "$tmp_dir/$pe_podkop_file" "$tmp_dir/$pe_luci_file"
-	else
-		opkg install "$tmp_dir/$pe_engine_file" "$tmp_dir/$pe_podkop_file" "$tmp_dir/$pe_luci_file"
-	fi
+	fail "Prepared adapter requires a separate verified package migration; package mutation is disabled"
 }
 
 update_official_podkop_if_requested() {
 	pe_current="$(current_podkop_version)"
-	if [ "$pe_current" = 0.7.23 ] && podkop_packages_match_runtime 0.7.23 && pe_engine_usable; then return 0; fi
-	[ "$PODKOP_PATCH_UPDATE_PODKOP" = 1 ] || fail "PE packages missing; package updates disabled"
-	ensure_no_pending_uci_changes || fail "UCI changed before PE package transaction"
-	if podkop_persistent_state_exists; then backup_persistent_paths; fi
-	transaction_phase=official_update
-	pe_install_pinned_packages || reject_official_podkop_result "PE package transaction failed; package state may be partial; runtime was not replaced"
-	pe_engine_usable || reject_official_podkop_result "installed engine lacks PE r11 features; runtime was not replaced"
-	podkop_runtime_exists && [ "$(current_podkop_version)" = 0.7.23 ] && podkop_packages_match_runtime 0.7.23 ||
-		reject_official_podkop_result "PE transaction did not install matching Podkop 0.7.23 packages"
-	restore_missing_persistent_paths "$persistent_backup_dir" || fail "failed to restore missing Podkop state"
+	if [ "$pe_current" = 0.7.24 ] && podkop_packages_match_runtime 0.7.24 && pe_engine_usable; then return 0; fi
+	fail "Prepared adapter requires a separate verified package migration to Podkop 0.7.24 / Engine 1.14.2-r14; no changes made"
 }
 
 restart_luci_web_service() {
@@ -1822,20 +1914,23 @@ if has_install_marker && has_latest_subscription_backend; then
 	backup_runtime
 	light_reload=1
 else
-	log "Installing PE runtime for Podkop 0.7.23."
+	log "Installing PE runtime for Podkop 0.7.24."
 	backup_runtime
 	if ! install_prebuilt_pe_runtime; then
 		abort_with_restore "PE runtime install failed"
 	fi
 fi
+install_section_runtime_assets || abort_with_restore "section runtime assets install failed"
+install_memdoc_compatibility || abort_with_restore "memdoc compatibility install failed; unsupported watchdog left unchanged"
+migrate_section_runtime_if_requested || abort_with_restore "explicit single-runtime migration failed"
 
 if ! grep -Fqx '# subscription_hwid_placeholder_guard begin' /usr/bin/podkop 2>/dev/null ||
 	! grep -Fqx '# subscription_hwid_placeholder_guard end' /usr/bin/podkop 2>/dev/null ||
 	! grep -q '^get_subscription_request_hwid() {' /usr/bin/podkop 2>/dev/null ||
 	! grep -q '^normalize_subscription_proxy_link() {' /usr/bin/podkop 2>/dev/null; then
 	case "$(current_podkop_version)" in
-	0.7.22) hwid_runtime_source="$tmp_dir/podkop.runtime-0.7.23" ;;
-	*) hwid_runtime_source="$tmp_dir/podkop.runtime-0.7.23" ;;
+	0.7.22) hwid_runtime_source="$tmp_dir/podkop.runtime-0.7.24" ;;
+	*) hwid_runtime_source="$tmp_dir/podkop.runtime-0.7.24" ;;
 	esac
 	cp "$hwid_runtime_source" /usr/bin/podkop ||
 		abort_with_restore "subscription HWID and placeholder guard runtime install failed"
@@ -1871,7 +1966,7 @@ if ! grep -q '^set_subscription_sections_enabled() {' /usr/bin/podkop 2>/dev/nul
 	! grep -q '^set_subscription_sections_enabled)' /usr/bin/podkop 2>/dev/null ||
 	! grep -q 'subscription_apply_v2' /usr/bin/podkop 2>/dev/null; then
 	apply_v2_source="$tmp_dir/podkop.subscription-apply-v2-source"
-	cp "$tmp_dir/podkop.runtime-0.7.23" "$apply_v2_source" || abort_with_restore "failed to prepare subscription apply v2 source"
+	cp "$tmp_dir/podkop.runtime-0.7.24" "$apply_v2_source" || abort_with_restore "failed to prepare subscription apply v2 source"
 	if ! PODKOP_SUBSCRIPTION_APPLY_V2_SOURCE="$apply_v2_source" \
 		sh "$tmp_dir/$APPLY_V2_UPGRADE_FILE"; then
 		abort_with_restore "subscription apply v2 runtime upgrade failed"
@@ -1887,14 +1982,15 @@ if ! grep -Fqx '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/nul
 	! sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'subscription_reload_pending' ||
 	sed -n '/^subscription_update() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q '/usr/bin/podkop reload'; then
 	seamless_source="$tmp_dir/podkop.subscription-seamless-source"
-	cp "$tmp_dir/podkop.runtime-0.7.23" "$seamless_source" || abort_with_restore "failed to prepare seamless subscription source"
+	cp "$tmp_dir/podkop.runtime-0.7.24" "$seamless_source" || abort_with_restore "failed to prepare seamless subscription source"
 	if ! PODKOP_SUBSCRIPTION_SEAMLESS_SOURCE="$seamless_source" \
 		sh "$tmp_dir/$SEAMLESS_RELOAD_UPGRADE_FILE"; then
 		abort_with_restore "seamless subscription reload runtime upgrade failed"
 	fi
 fi
 
-if ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
+if ! sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop | grep -Fq 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' ||
+    ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_selection_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_tag_filters_v1' /usr/bin/podkop ||
@@ -1906,9 +2002,12 @@ if ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_service_snapshot_v1 end' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_source_ruleset_reuse_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_service_filter_v1' /usr/bin/podkop ||
+    ! grep -Fq '# subscription_safe_restart_v1:' /usr/bin/podkop ||
+    ! grep -Fq '# subscription_safe_init_restart_v1' "$PODKOP_INIT_SCRIPT" ||
     ! sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop | grep -q 'set_subscription_sections_enabled' ||
     ! grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop; then
-    PODKOP_SOURCES_SOURCE="$tmp_dir/podkop.runtime-0.7.23" \
+    PODKOP_SOURCES_SOURCE="$tmp_dir/podkop.runtime-0.7.24" \
+        PODKOP_SOURCES_INIT_TARGET="$PODKOP_INIT_SCRIPT" \
         sh "$tmp_dir/$SOURCES_UPGRADE_FILE" || abort_with_restore "subscription source controls upgrade failed"
 fi
 
@@ -2027,6 +2126,14 @@ base_luci_assets_current && versioned_luci_assets_current ||
 	abort_with_restore "versioned Podkop LuCI asset verification failed"
 cp "$tmp_dir/$DNS_OPTIMIZER_FILE" /usr/bin/podkop-dns-optimizer
 cp "$tmp_dir/$DNS_BENCHMARK_FILE" /usr/bin/podkop-dns-benchmark
+cp "$tmp_dir/$DNS_APPLY_FILE" /usr/bin/podkop-dns-apply
+cp "$tmp_dir/$DIAGNOSTIC_POLICY_FILE" /usr/bin/podkop-diagnostic-policy.sh
+chmod 644 /usr/bin/podkop-diagnostic-policy.sh
+ash -n /usr/bin/podkop-diagnostic-policy.sh || abort_with_restore "Diagnostic policy syntax check failed"
+install_bounded_dns_diagnostics "$tmp_dir/podkop.runtime-0.7.24" /usr/bin/podkop ||
+	abort_with_restore "bounded DNS diagnostics upgrade failed"
+chmod 755 /usr/bin/podkop-dns-apply
+ash -n /usr/bin/podkop-dns-apply || abort_with_restore "DNS-only transaction syntax check failed"
 mkdir -p /usr/share/podkop
 for catalog in "$DNS_MAIN_CATALOG_FILE" "$DNS_BOOTSTRAP_CATALOG_FILE"; do
 	jq -e '.version == 1 and (.servers | type == "array" and length > 0)' "$tmp_dir/$catalog" >/dev/null || abort_with_restore "DNS catalog validation failed"

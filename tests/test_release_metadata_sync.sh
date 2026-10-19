@@ -39,10 +39,11 @@ for router_executable in \
     openwrt/podkop-update-manager \
     openwrt/runtime-0.7.20/usr/bin/podkop \
     openwrt/runtime-0.7.22/usr/bin/podkop \
-    openwrt/runtime-0.7.23/usr/bin/podkop \
-    openwrt/runtime-0.7.23/usr/lib/podkop/helpers.sh \
-    openwrt/runtime-0.7.23/usr/lib/podkop/sing_box_config_facade.sh \
-    openwrt/runtime-0.7.23/usr/lib/podkop/sing_box_config_manager.sh
+    openwrt/runtime-0.7.24/usr/bin/podkop \
+    openwrt/runtime-0.7.24/usr/lib/podkop/helpers.sh \
+    openwrt/runtime-0.7.24/usr/lib/podkop/constants.sh \
+    openwrt/runtime-0.7.24/usr/lib/podkop/sing_box_config_facade.sh \
+    openwrt/runtime-0.7.24/usr/lib/podkop/sing_box_config_manager.sh
 do
     assert_lf_only "$router_executable"
 done
@@ -70,9 +71,9 @@ manifest_patch="$(jq -r '.patchVersion' openwrt/update-manifest.json)"
 manifest_published_at="$(jq -r '.publishedAt' openwrt/update-manifest.json)"
 manifest_recommended="$(jq -r '.recommendedPodkopVersion' openwrt/update-manifest.json)"
 manifest_supported="$(jq -r '.supportedPodkopVersions | join(" ")' openwrt/update-manifest.json)"
-expected_patch_version="20261010-pe-v13"
+expected_patch_version="20261012-pe-v17-0724-prepared"
 expected_dns_optimizer_version="20260814-dns-optimizer-v18"
-expected_published_at="2026-10-10T14:55:30+07:00"
+expected_published_at="2026-10-12T12:00:00+07:00"
 expected_google_play_capability="google_play_dns_transport_guard_v1"
 expected_chatgpt_capability="chatgpt_dns_transport_guard_v1"
 

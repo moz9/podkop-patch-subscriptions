@@ -8,6 +8,13 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 . "$repo/openwrt/podkop-subscription-sources.sh"
 . "$repo/openwrt/podkop-service-checks.sh"
 . "$repo/openwrt/podkop-subscription-probe.sh"
+if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+    # Current helpers call the real section-aware pending API outside their block.
+    for pending_function in subscription_pending_sections_json subscription_pending_mark; do
+        sed -n "/^$pending_function() {$/,/^}$/p" "$repo/openwrt/runtime-0.7.24/usr/bin/podkop" >> "$tmp/pending-functions"
+    done
+    . "$tmp/pending-functions"
+fi
 grep -Fq -- '--connect-timeout 2 -m 4' "$repo/openwrt/podkop-service-checks.sh" || fail 'fast network budget missing'
 [ "$(grep -c 'https://chatgpt.com/backend-anon/models' "$repo/openwrt/podkop-service-checks.sh")" -eq 1 ] || fail 'ChatGPT endpoint not single fixed GET'
 PODKOP_SERVICE_CACHE_DIR="$tmp/state"
@@ -44,7 +51,7 @@ subscription_services_validate '["gemini","chatgpt"]' || fail 'catalog accepted 
 result="$(subscription_services_classify gemini 0 200 '<html>Sign in</html>')"
 printf '%s' "$result" | jq -e '.state=="unknown" and .network=="pass"' >/dev/null || fail 'HTTP200 must not prove Gemini Web'
 subscription_services_classify gemini 0 200 '<html>Gemini is not available in your country</html>' | jq -e '.state=="unknown"' >/dev/null || fail 'missing marker reported as regional denial'
-subscription_services_classify chatgpt 28 000 '' | jq -e '.state=="fail" and .network=="fail"' >/dev/null || fail 'timeout not rejected'
+subscription_services_classify chatgpt 28 000 '' | jq -e '.state=="unknown" and .network=="fail"' >/dev/null || fail 'timeout incorrectly classified as definitive failure'
 subscription_services_classify gemini 0 200 '<html>Gemini ,2,1,200,"SWE"</html>' | jq -e '.state=="pass" and .manual==false and .region=="SWE" and .reason=="region_precheck_passed"' >/dev/null || fail 'Gemini country eligibility marker not recognized'
 subscription_services_classify gemini 0 200 'Gemini 45631641,null,true' | jq -e '.state=="unknown"' >/dev/null || fail 'plain text Gemini marker accepted'
 subscription_services_classify gemini 0 200 'arbitrary body 45631641,null,true' | jq -e '.state=="unknown"' >/dev/null || fail 'arbitrary 200 body accepted'
@@ -92,12 +99,12 @@ printf 'previous pending marker\n' > "$tmp/pending"
 subscription_services_store main "$id" '{"gemini":{"state":"unknown","network":"pass","reason":"confirmation_required"}}'
 [ "$(cat "$tmp/pending")" = 'previous pending marker' ] || fail 'service check truncated the existing pending marker'
 rm "$tmp/pending"
-cache_before="$(sha256sum "$(subscription_services_cache_path main)")"
+cache_before="$(sha256sum "$(subscription_services_cache_slot "$(subscription_services_context main)" "$id")")"
 touch() { return 1; }
 subscription_services_store main "$id" '{"gemini":{"state":"fail","network":"fail"}}' && fail 'pending failure accepted updated service cache' || :
-[ "$cache_before" = "$(sha256sum "$(subscription_services_cache_path main)")" ] || fail 'pending failure changed old service evidence'
+[ "$cache_before" = "$(sha256sum "$(subscription_services_cache_slot "$(subscription_services_context main)" "$id")")" ] || fail 'pending failure changed old service evidence'
 subscription_services_confirm main "$id" gemini true > "$tmp/error" && fail 'pending failure accepted confirmation' || :
-[ "$cache_before" = "$(sha256sum "$(subscription_services_cache_path main)")" ] || fail 'pending failure changed confirmation evidence'
+[ "$cache_before" = "$(sha256sum "$(subscription_services_cache_slot "$(subscription_services_context main)" "$id")")" ] || fail 'pending failure changed confirmation evidence'
 unset -f touch
 subscription_services_confirm main "$id" gemini true | jq -e '.success' >/dev/null || fail 'recent valid confirmation rejected'
 [ -f "$tmp/pending" ] || fail 'already-enabled filter confirmation did not mark pending'
@@ -118,7 +125,7 @@ subscription_source_policy '[]' '[]' "$tmp/items" auto '[]' '[]' '[]' "$service_
 subscription_services_context() { printf 'changed-profile\n'; }
 subscription_services_policy main '["gemini"]' | jq -e '.results==[]' >/dev/null || fail 'changed context reused evidence'
 subscription_services_context() { printf 'test-context\n'; }
-path="$(subscription_services_cache_path main)"
+path="$(subscription_services_cache_slot "$(subscription_services_context main)" "$id")"
 jq '.results[].expiresAt=0' "$path" > "$tmp/expired"; mv "$tmp/expired" "$path"
 subscription_services_policy main '["gemini"]' | jq -e '.results==[]' >/dev/null || fail 'expired evidence admitted'
 subscription_services_store main bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb '{"gemini":{"state":"unknown","network":"pass","reason":"confirmation_required"}}'
@@ -127,27 +134,35 @@ subscription_services_confirm main "$id" gemini true > "$tmp/error" && fail 'exp
 jq -e '.error=="recent_network_check_required"' "$tmp/error" >/dev/null
 now="$(date +%s)"
 jq -cn --arg id "$id" --argjson now "$now" '{context:"test-context",results:[null,-1,($now+1)]|map({id:$id,checkedAt:.,expiresAt:($now+3600),services:{gemini:{state:"pass"}}})}' > "$path"
-subscription_services_policy main '["gemini"]' | jq -e '.results==[]' >/dev/null || fail 'malformed or future checkedAt evidence admitted'
+subscription_services_policy main '["gemini"]' | jq -e --arg id "$id" 'all(.results[]; .id!=$id)' >/dev/null || fail 'malformed or future checkedAt evidence admitted'
 jq -cn --arg id "$id" --argjson now "$now" '{context:"test-context",results:[{id:$id,checkedAt:$now,expiresAt:($now+86401),services:{gemini:{state:"pass"}}}]}' > "$path"
-subscription_services_policy main '["gemini"]' | jq -e '.results==[]' >/dev/null || fail 'out-of-bounds TTL evidence admitted'
+subscription_services_policy main '["gemini"]' | jq -e --arg id "$id" 'all(.results[]; .id!=$id)' >/dev/null || fail 'out-of-bounds TTL evidence admitted'
 jq -cn --argjson now "$now" '{context:"test-context",results:[range(0;300)|{id:(("00000000000000000000000000000000"+tostring)[-32:]),checkedAt:$now,expiresAt:($now+86400),services:{}}]}' > "$path"
 subscription_services_store main "$id" '{"gemini":{"state":"fail","network":"fail","reason":"network_failed"}}'
-[ "$(jq '.results|length' "$path")" = 301 ] || fail 'many-config cache churns after 256 rows'
+[ "$(jq '.results|length' "$path")" = 1 ] || fail 'corrupt multi-row slot was retained'
 jq -cn --argjson now "$now" '{context:"test-context",results:[range(0;2049)|{id:(("00000000000000000000000000000000"+tostring)[-32:]),checkedAt:$now,expiresAt:($now+86400),services:{gemini:{state:"pass",network:"pass",reason:"region_precheck_passed",manual:false,httpCode:200},chatgpt:{state:"pass",network:"pass",reason:"anonymous_models_available",manual:false,httpCode:200}}}]}' > "$path"
 subscription_services_store main "$id" '{"gemini":{"state":"pass","network":"pass","reason":"region_precheck_passed"}}' || fail 'large real-shaped cache cannot be updated'
-[ "$(jq '.results|length' "$path")" = 2048 ] || fail 'service cache is not bounded to 2048 rows'
+[ "$(jq '.results|length' "$path")" = 1 ] || fail 'oversized cache slot was retained'
 service_policy="$(subscription_services_policy main '["gemini"]')" || fail 'large evidence policy cannot be produced'
 subscription_source_policy '[]' '[]' "$tmp/items" auto '[]' '[]' '[]' "$service_policy" | jq -e '.[0].runtimeEnabled' >/dev/null || fail 'large evidence pool cannot be applied'
-get_subscription_services main | jq -e '.capacity==2048 and (.results|length)==2048' >/dev/null || fail 'large evidence pool cannot be returned to UI'
+get_subscription_services main | jq -e '.capacity==240 and .cacheBytes==1048576 and (.results|length)<=240' >/dev/null || fail 'large evidence pool cannot be returned to UI'
 subscription_services_context() { printf 'changed-profile\n'; }
 SUBSCRIPTION_APPLY_V2_TMP="$tmp"
 subscription_items_with_sources() { cat "$2"; }
 get_subscription_sources() { printf '[]\n'; }
 printf '[]\n' > "$tmp/tags.main.include"
 printf '[]\n' > "$tmp/tags.main.exclude"
-subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]'
+before_required_items="$(sha256sum "$tmp/items")"
+before_required_pending="$(if [ -f "$tmp/pending" ]; then sha256sum "$tmp/pending"; else echo absent; fi)"
+unset SUBSCRIPTION_SOURCES_CHANGED
+if subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]'; then
+    fail 'missing exact-context service proof allowed activation prepare'
+fi
+[ "$SUBSCRIPTION_SOURCES_ERROR" = service_results_stale_or_missing ] || fail 'missing proof refusal is not explicit'
 [ "$SUBSCRIPTION_SOURCES_REMAINING" = 0 ] || fail 'transaction did not enforce proposed requirements'
-[ "$SUBSCRIPTION_SOURCES_CHANGED" = 1 ] || fail 'requirement changes not counted'
+[ "${SUBSCRIPTION_SOURCES_CHANGED:-0}" = 0 ] || fail 'refused prepare claimed staged changes'
+[ "$before_required_items" = "$(sha256sum "$tmp/items")" ] || fail 'refused prepare changed cached items'
+[ "$before_required_pending" = "$(if [ -f "$tmp/pending" ]; then sha256sum "$tmp/pending"; else echo absent; fi)" ] || fail 'refused prepare changed pending activation'
 collect_urltest_proxy_links() { printf 'manual-link\n' > "$2"; return 0; }
 subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]' && fail 'untested manual mix admitted' || :
 [ "$SUBSCRIPTION_SOURCES_ERROR" = service_manual_links_unsupported ] || fail 'manual mix failure is not explicit'
