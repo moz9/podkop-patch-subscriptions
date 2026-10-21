@@ -19,3 +19,20 @@ DNS rollback restores the exact prior configuration and admission snapshot. Its 
 For historical hash-only snapshots, DNS-only continuation authenticates the exact admitted runtime and preserves the historical service digest; it does not reconstruct old observations from today's mutable cache or certify new service results. Cache refresh, unknown observations and eviction do not revoke that existing admission. Explicit observed denials for admitted IDs and required services still refuse the transaction, as do malformed/unsafe cache files. Snapshots containing frozen evidence still require its exact digest. No proxy is admitted, removed or reselected by this exception, and restart/rebuild gates are unchanged.
 
 LuCI reads the PE 0.7.24 channel, recognizes same-day `-routerdesk` revisions, clears obsolete version/update permissions after failed checks or external installation, and directs newer file-only releases to RouterDesk. A current file-only release is shown as current. The generic installer and package migration remain disabled.
+
+### Stability candidate v24
+
+The manual DNS selector reads the bounded immutable package catalog once when
+the dialog opens. It no longer needs a previous measurement cache. Catalog
+entries remain explicitly unmeasured and cannot grant apply permission; a
+current backend proof is still required. Native two-pair selection does not
+display an empty historical measurement table as its result.
+
+Fresh rollback workers recover the transaction's recorded file paths and bind
+policy checks to its committed UCI file. Unrelated shared drafts are preserved,
+not used as restored-policy evidence. Concurrent committed edits still stop
+rollback before overwriting those edits.
+
+This candidate is published separately from the fleet channels. A successful
+home canary does not establish Legacy or PE 0.7.23 hardware compatibility, a
+logged-in application path from a LAN client, or power-loss recovery.

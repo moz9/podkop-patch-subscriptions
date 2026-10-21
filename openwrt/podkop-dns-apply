@@ -875,6 +875,10 @@ dns_apply_run() {
                 esac
             done < "$DA_WORK/files"
             [ -n "$DA_CONFIG" ] && [ -n "$DA_ROOT" ] && [ -n "$DA_SNAPSHOT" ] || return 1
+        # Fresh rollback workers skip pending_capture. Bind policy/evidence to
+        # the recorded committed file, never to an unrelated shared UCI draft.
+        [ -n "${DA_UCI:-}" ] || return 1
+        PODKOP_DNS_COMMITTED_FILE="$DA_UCI"
         [ ! -L "$DA_WORK" ] && [ -s "$DA_WORK/applied.sha" ] || { dns_apply_reply incomplete_backup; return 1; }
         [ "$(wc -l < "$DA_WORK/applied.sha")" = "$(wc -l < "$DA_WORK/files")" ] || { dns_apply_reply incomplete_backup; return 1; }
         sha256sum -c "$DA_WORK/applied.sha" >/dev/null 2>&1 || { dns_apply_reply runtime_changed; return 1; }

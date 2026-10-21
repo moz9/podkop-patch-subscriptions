@@ -199,6 +199,14 @@ assert_restored() {
 if [ "${DNS_APPLY_TEST_SAVED_ONLY:-0}" != 1 ]; then
 make_fixture unrelated-draft
 podkop_section_names() { echo '["main"]'; }
+eval "$(declare -f subscription_services_snapshot_policy_hash | sed '1s/subscription_services_snapshot_policy_hash/subscription_services_snapshot_policy_hash_without_draft/')"
+subscription_services_snapshot_policy_hash() {
+    # Real UCI export overlays shared deltas unless the helper explicitly reads
+    # the committed file. Exercise that boundary in a fresh rollback worker too.
+    if [ -s "$fixture/draft-only" ] && [ "${PODKOP_DNS_COMMITTED_FILE:-}" != "$PODKOP_DNS_APPLY_UCI_FILE" ]; then
+        printf '%064d\n' 0
+    else subscription_services_snapshot_policy_hash_without_draft; fi
+}
 printf "podkop.main.subscription_selected_link_ids='bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'\n" > "$fixture/draft-only"
 cp "$fixture/draft-only" "$fixture/draft.expected"
 dns_apply_main apply dot 9.9.9.9 tcp 8.8.8.8 > "$fixture/result" || fail 'unrelated draft blocked DNS transaction'

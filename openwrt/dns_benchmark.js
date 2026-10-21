@@ -351,9 +351,22 @@ function normalizeLightSelection(value) {
   return {reportId:value.reportId,primary:pairs[0],secondary:pairs[1]};
 }
 
+function catalogCandidates(report, catalog, bootstrap) {
+  const available=bootstrap?report?.availableBootstrapResults:report?.availableResults;
+  const measured=bootstrap?report?.bootstrapResults:report?.results;
+  const fallback=bootstrap?catalog?.availableBootstrapResults:catalog?.availableResults;
+  const rows=[...(available || measured || []),...(fallback || [])];
+  const seen=new Set();
+  return rows.filter(row=>{
+    const key=(bootstrap?'':row.id+':')+row.protocol+':'+(bootstrap?row.server:row.dnsServer);
+    if(seen.has(key)) return false;
+    seen.add(key);return true;
+  });
+}
+
 function openBenchmark(map) {
   ensureStyle();
-  const state = {open: true, running: false, pending: false, needsReload: false, action: "", report: null, verified: "", timer: null, backup: false, activeTable: 0, mode: "individual"};
+  const state = {open: true, running: false, pending: false, needsReload: false, action: "", report: null, catalog: null, verified: "", timer: null, backup: false, activeTable: 0, mode: "individual"};
   const message = E("div", {"aria-live": "polite"}, "Готов к проверке");
   const error = E("div", {class: "pdk-dns-benchmark__error", role: "alert"});
   const progress = E("progress", {max: 100, value: 0});
@@ -394,15 +407,16 @@ function openBenchmark(map) {
   function selectableCandidate(row,bootstrap) {
     return precheckCandidate(row) || state.report.pairResults.some(pair=>(pair.success || pair===state.report.latestPairFailure) && (bootstrap ? (pair.bootstrapProtocol || "udp")===row.protocol && pair.bootstrapDnsServer===row.server : pair.protocol===row.protocol && pair.id===row.id && pair.dnsServer===row.dnsServer));
   }
-  function mainCandidates() { return (state.report?.availableResults || state.report?.results.filter(row=>selectableCandidate(row,false)) || []).filter(row=>row.primaryEligible!==false); }
-  function bootstrapCandidates() { return state.report?.availableBootstrapResults || state.report?.bootstrapResults.filter(row=>selectableCandidate(row,true)) || []; }
+  function mainCandidates() { return catalogCandidates(state.report,state.catalog,false).filter(row=>row.primaryEligible!==false); }
+  function bootstrapCandidates() { return catalogCandidates(state.report,state.catalog,true); }
   function candidateLabel(row,bootstrap) {
-    const prefix=row.automaticEligible===false?(state.report.selectionMode==='all_selected'?'только для сравнения · ':'только вручную · '):'';
-    const failure=state.report.latestPairFailure;
+    const report=state.report || {results:[],bootstrapResults:[],pairResults:[]};
+    const prefix=row.automaticEligible===false?(report.selectionMode==='all_selected'?'только для сравнения · ':'только вручную · '):'';
+    const failure=report.latestPairFailure;
     if(failure && (bootstrap ? (failure.bootstrapProtocol||'udp')===row.protocol && failure.bootstrapDnsServer===row.server : failure.protocol===row.protocol && failure.id===row.id && failure.dnsServer===row.dnsServer)) return prefix+'последняя проверка пары: ошибка';
-    const passed=state.report.pairResults.filter(p=>p.success && p.httpsTested!==false && (bootstrap ? (p.bootstrapProtocol||'udp')===row.protocol && p.bootstrapDnsServer===row.server : p.protocol===row.protocol && p.id===row.id && p.dnsServer===row.dnsServer));
-    if(passed.length) return prefix+(passed.some(p=>p.measurementProfile!=='minute_sample')?'пара проверена':state.report.measurementProfile==='minute_sample'?'экспресс-проверка пары':'предыдущая экспресс-проверка пары');
-    const measured=(bootstrap?state.report.bootstrapResults:state.report.results).find(r=>bootstrap ? bootstrapValue(r)===bootstrapValue(row) : r.id===row.id && r.protocol===row.protocol && r.dnsServer===row.dnsServer);
+    const passed=report.pairResults.filter(p=>p.success && p.httpsTested!==false && (bootstrap ? (p.bootstrapProtocol||'udp')===row.protocol && p.bootstrapDnsServer===row.server : p.protocol===row.protocol && p.id===row.id && p.dnsServer===row.dnsServer));
+    if(passed.length) return prefix+(passed.some(p=>p.measurementProfile!=='minute_sample')?'пара проверена':report.measurementProfile==='minute_sample'?'экспресс-проверка пары':'предыдущая экспресс-проверка пары');
+    const measured=(bootstrap?report.bootstrapResults:report.results).find(r=>bootstrap ? bootstrapValue(r)===bootstrapValue(row) : r.id===row.id && r.protocol===row.protocol && r.dnsServer===row.dnsServer);
     return prefix+(measured && measured.measured!==false ? (measured.precheckOnly?((measured.quickReliable ?? measured.reliable)?'DNS отвечает; HTTPS не проверен':'ошибки DNS; HTTPS не проверен'):measured.reliable?'DNS проверен':'есть ошибки') : 'не проверен');
   }
   function plannedPairs() { return (state.report?.results.filter(r=>precheckCandidate(r) && r.primaryEligible!==false).length || 0)*(state.report?.bootstrapResults.filter(precheckCandidate).length || 0); }
@@ -477,6 +491,16 @@ function openBenchmark(map) {
   function resetVerification() { state.verified = ""; pairStatus.textContent = "Проверьте выбранную пару перед применением."; actions(); }
   mainSelect.addEventListener("change", resetVerification);
   bootstrapSelect.addEventListener("change", resetVerification);
+  function renderCatalog() {
+    const previousMain=mainSelect.value, previousBootstrap=bootstrapSelect.value;
+    const mains=mainCandidates(), bootstraps=bootstrapCandidates();
+    mainSelect.replaceChildren(...mains.map(row=>E("option",{value:row.id+":"+row.protocol+":"+row.dnsServer},row.protocol.toUpperCase()+" · "+row.dnsServer+" · "+candidateLabel(row,false))));
+    bootstrapSelect.replaceChildren(...bootstraps.map(row=>E("option",{value:bootstrapValue(row)},row.protocol.toUpperCase()+" · "+row.server+" · "+row.provider+" · "+candidateLabel(row,true))));
+    catalogNotice.textContent=`Каталог: DNS — ${mains.length}, bootstrap — ${bootstraps.length}. Непроверенные варианты не считаются рабочими.`;
+    mainSelect.value=mains.some(row=>row.id+":"+row.protocol+":"+row.dnsServer===previousMain)?previousMain:mains.length?mains[0].id+":"+mains[0].protocol+":"+mains[0].dnsServer:"";
+    bootstrapSelect.value=bootstraps.some(row=>bootstrapValue(row)===previousBootstrap)?previousBootstrap:bootstraps.length?bootstrapValue(bootstraps[0]):"";
+    return {previousMain,previousBootstrap,mains,bootstraps};
+  }
   function renderResults(raw) {
     state.report = normalizeReport(raw);
     if(state.report.reserve) state.verified="";
@@ -509,14 +533,7 @@ function openBenchmark(map) {
     }
     showTable(state.activeTable);
     resultTables.replaceChildren(E("div",{class:"pdk-dns-benchmark__tabs","aria-label":"Результаты DNS"},tabs),...panels);
-    const previousMain=mainSelect.value, previousBootstrap=bootstrapSelect.value;
-    const mains=mainCandidates();
-    const bootstraps=bootstrapCandidates();
-    mainSelect.replaceChildren(...mains.map(row=>E("option",{value:row.id+":"+row.protocol+":"+row.dnsServer},row.protocol.toUpperCase()+" · "+row.dnsServer+" · "+candidateLabel(row,false))));
-    bootstrapSelect.replaceChildren(...bootstraps.map(row=>E("option",{value:bootstrapValue(row)},row.protocol.toUpperCase()+" · "+row.server+" · "+row.provider+" · "+candidateLabel(row,true))));
-    catalogNotice.textContent=`Каталог: DNS — ${mains.length}, bootstrap — ${bootstraps.length}. Непроверенные варианты не считаются рабочими.`;
-    mainSelect.value=mains.some(row=>row.id+":"+row.protocol+":"+row.dnsServer===previousMain)?previousMain:mains.length?mains[0].id+":"+mains[0].protocol+":"+mains[0].dnsServer:"";
-    bootstrapSelect.value=bootstraps.some(row=>bootstrapValue(row)===previousBootstrap)?previousBootstrap:bootstraps.length?bootstrapValue(bootstraps[0]):"";
+    const {previousMain,previousBootstrap,mains,bootstraps}=renderCatalog();
     // Reopening a completed manual test must display its tuple, not catalog defaults.
     const tested=raw.action==='pair_test' && raw.state==='done' && raw.pairResult;
     if(!previousMain && !previousBootstrap && tested && mains.some(row=>row.id===tested.id && row.protocol===tested.protocol && row.dnsServer===tested.dnsServer) && bootstraps.some(row=>(row.protocol || 'udp')===(tested.bootstrapProtocol || 'udp') && row.server===tested.bootstrapDnsServer)) {
@@ -609,8 +626,9 @@ function openBenchmark(map) {
       progress.value=Math.min(100,Math.max(0,Number(status.progress)||0));
       count.textContent=(status.total ? `${status.phase==='full_verify'?'Полные проверки':status.state!=='done' && status.phase==='recheck'?'Повторно':(['pairs',...RECOMMENDATION_ACTIONS].includes(status.action)&&status.phase!=='endpoints'||status.phase==='pairs')?'Пары':'Проверено'}: ${status.completed || 0} / ${status.total}` : "")+(status.queryTotal ? ` · Запросы: ${status.queryCompleted || 0} / ${status.queryTotal}` : "");
       if(state.running && typeof status.currentSection==='string' && status.currentSection) count.textContent += ` · Секция: ${status.currentSection} · DNS: ${status.sectionQueryCompleted || 0} / ${status.sectionQueryTotal || 0} · HTTPS: ${status.sectionHttpsCompleted || 0}`;
-      if(status.action!=='select') lightSelection=null;
+      if(status.action!=='select') { lightSelection=null; resultTables.hidden=false; }
       if(status.action==='select') {
+        resultTables.hidden=true; matrixDetails.hidden=true; matrixNotice.textContent="";
         lightSelection=normalizeLightSelection(status);
         recommendationNotice.textContent=lightSelection
           ? `Основная: ${lightSelection.primary.dnsServer} + ${lightSelection.primary.bootstrapDnsServer}. Резервная: ${lightSelection.secondary.dnsServer} + ${lightSelection.secondary.bootstrapDnsServer}. Проверены DNS-ответы, не приложения. Не применено.`
@@ -782,6 +800,12 @@ function openBenchmark(map) {
     ]),pairStatus,bootstrapStatus,reserveStatus,E("div",{class:"pdk-dns-benchmark__footer"},[testLight,testBootstrap,saveReserve,apply,rollback,close]),
   ]);
   actions();ui.showModal("Бенчмарк DNS",[content]);refresh();
+  // Load immutable choices once per dialog, independently of measurement cache.
+  request(["catalog"]).then(value=>{
+    if(!state.open) return;
+    state.catalog=normalizeReport({...value,state:"idle",results:[],bootstrapResults:[],pairResults:[]});
+    renderCatalog();actions();
+  }).catch(()=>{if(state.open && !mainCandidates().length) catalogNotice.textContent="Не удалось прочитать встроенный каталог DNS. Подбор обеих пар остаётся отдельной операцией.";});
   readReserve().catch(failure=>{reserveStatus.textContent='Не удалось прочитать сохранённый резерв: '+(failure.message || ERRORS.request_failed);}).finally(()=>{reserveLoading=false;if(state.open){showReserveStatus();actions();}});
 }
 
@@ -789,4 +813,4 @@ function renderOpenButton(map) {
   return E("button",{type:"button",class:"cbi-button cbi-button-action",click:event=>{event.preventDefault();openBenchmark(map);}},"Открыть бенчмарк DNS");
 }
 
-return baseclass.extend({normalizeLightSelection,renderOpenButton,normalizeReport,pairMatches,pairSummary,errorMessage,precheckStateText});
+return baseclass.extend({normalizeLightSelection,catalogCandidates,renderOpenButton,normalizeReport,pairMatches,pairSummary,errorMessage,precheckStateText});

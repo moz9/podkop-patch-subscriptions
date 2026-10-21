@@ -243,6 +243,32 @@ db_state() {
     if [ "$state" = done ] && [ -f "$DB_DIR/cancel" ]; then rm -f "$DB_STATUS.tmp.$$"; return 1; fi
     mv "$DB_STATUS.tmp.$$" "$DB_STATUS"
 }
+db_catalog() (
+    local dir="${PODKOP_DNS_CATALOG_DIR:-/usr/share/podkop}" file
+    for file in "$dir/dns-main.json" "$dir/dns-bootstrap.json"; do
+        [ -s "$file" ] && [ ! -L "$file" ] && [ "$(wc -c < "$file")" -le 262144 ] || exit 1
+    done
+    # Immutable package data only: no cache, probe, lock, UCI or service action.
+    jq -cen --slurpfile main "$dir/dns-main.json" --slurpfile bootstrap "$dir/dns-bootstrap.json" '
+      def valid: .version==1 and (.servers|type=="array" and length<=128);
+      def rows($catalog;$boot):
+        [$catalog.servers[] as $s | $s.protocols[] as $p |
+         select(["udp","tcp","doh","dot"]|index($p)!=null) |
+         select($boot or
+           (($s.id//""|ascii_downcase|startswith("yandex")|not) and
+            ($s.value|startswith("77.88.8.")|not) and
+            ($s.value|ascii_downcase|contains("yandex")|not))) |
+         {id:($s.id//$s.value),provider:($s.label//$s.id),profile:($s.profile//"unfiltered"),
+          protocol:$p,measured:false,reliable:false,automaticEligible:false,primaryEligible:($boot|not)} +
+         (if $boot then {server:$s.value} else {dnsServer:$s.value} end)] |
+        unique_by([.id,.protocol,(.server//.dnsServer)]);
+      if ($main|length)!=1 or ($bootstrap|length)!=1 or
+         ($main[0]|valid|not) or ($bootstrap[0]|valid|not) then error("invalid catalog") else
+        {success:true,availableResults:rows($main[0];false),availableBootstrapResults:rows($bootstrap[0];true)} |
+        select((.availableResults|length)<=256 and (.availableBootstrapResults|length)<=256)
+      end'
+)
+
 db_status() {
     local pid state report_id snapshot
     db_prepare
@@ -2376,6 +2402,7 @@ db_cancel() {
 
 [ "${PODKOP_DNS_BENCHMARK_LIBRARY_ONLY:-0}" != 1 ] || return 0
 case "${1:-}" in
+    catalog) db_catalog;;
     legacy_status) db_light_legacy_status;;
     legacy_apply_start) shift; db_light_legacy_apply "$@";;
     status) db_status;;
