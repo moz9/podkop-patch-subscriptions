@@ -36,3 +36,19 @@ rollback before overwriting those edits.
 This candidate is published separately from the fleet channels. A successful
 home canary does not establish Legacy or PE 0.7.23 hardware compatibility, a
 logged-in application path from a LAN client, or power-loss recovery.
+
+### Stability candidate v25: manual nodes with subscription service filters
+
+Manual links are separate from subscription source/tag selection. They are not
+exempt from required-service evidence: the existing service-check buttons now
+include them, and their exact URI identity is resolved without adding them to
+the subscription catalog. Required checks must pass before activation. Missing,
+expired, denied or changed-URI evidence still blocks application before stopping
+the working service. No throughput benchmark or automatic background apply is
+introduced.
+
+The frozen admission snapshot includes both subscription and manual IDs, exact
+link hashes and measured evidence. Existing runtime/configuration continuity,
+DNS transactions and rollback therefore retain their checks instead of using a
+blanket manual-link exception. A successful activation is left in place; a
+test-only rollback is not part of this candidate's acceptance procedure.

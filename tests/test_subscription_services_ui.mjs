@@ -78,6 +78,9 @@ const subset={code:'geo',selectionMode:'selected',includeTags:['US*'],sources:[{
  {id:'source-off',name:'US source off',supported:true,enabled:true,sourceIds:['off']}
 ]};
 assert.equal(c.getSubscriptionServiceCheckTargets(subset,['gemini']).map(row=>row.id).join(','),'eligible','do not probe manual-excluded, tag-excluded or source-disabled nodes');
+const mixed={...subset,manualItems:[{id:'kz-manual',name:'KZ-Manual',supported:true,manual:true}]};
+assert.equal(c.getSubscriptionServiceCheckTargets(mixed,['gemini']).map(row=>row.id).join(','),'eligible,kz-manual','explicit manual node is checked independently of subscription US tags and source choices');
+assert.equal(mixed.items.length,4,'manual service checks never insert nodes into subscription selection');
 assert.equal(c.getSubscriptionServiceCheckTargets(subset,['gemini'],true,{'geo:manual-no':true,'geo:source:off':true}).map(row=>row.id).join(','),'eligible,manual-no,source-off','force respects the effective draft subset, ignoring only the service gate');
 assert.deepEqual([...c.getSubscriptionServiceExclusions({services:{gemini:{state:'pass',checkedAt:now+1,expiresAt:now+30}}},['gemini'])],['gemini'],'future timestamps cannot admit a node');
 assert.match(c.getSubscriptionServiceStateLabel({state:'pass',checkedAt:now+1,expiresAt:now+30}),/устарела/i,'malformed timestamp must not be labelled passing');
@@ -105,9 +108,10 @@ console.log('PASS: isolated sequential service checks cancel safely and preserve
 for(const name of ['getErrorText','getSubscriptionActionErrorMessage']) {
  const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));assert.ok(match);vm.runInContext(match[0],c);
 }
-assert.match(c.getSubscriptionActionErrorMessage(new Error('service_manual_links_unsupported'),'generic fallback'),/отдельные proxy-ссылки/i,'manual links must not bypass the service filter silently');
+assert.match(c.getSubscriptionActionErrorMessage(new Error('service_manual_links_unsupported'),'generic fallback'),/backend.*ручных proxy-ссылок/i,'old unsupported backend must remain explicit');
+assert.match(c.getSubscriptionActionErrorMessage(new Error('service_manual_results_stale_or_missing'),'generic fallback'),/обязательные проверки.*Проверить новые\/устаревшие.*не изменён/i,'unmeasured manual nodes must give the recovery action without bypass');
 assert.match(c.getSubscriptionActionErrorMessage(new Error('service_snapshot_storage_unavailable'),'generic fallback'),/безопасную копию.*свободное место или локальные списки.*не применены/i,'snapshot preparation failures must not be misreported as applied changes or certain low space');
-assert.match(JSON.stringify(filter),/Для конфигов подписок; отдельные proxy-ссылки не проверяются/,'selector must state its supported scope');
+assert.match(JSON.stringify(filter),/Ручные proxy-ссылки проверяются отдельно от тегов подписки; обязательные сервисы проверяются для всех узлов/,'selector must distinguish subscription tags from manual service admission');
 console.log('PASS: unsupported manual links receive an explicit service filter error');
 calls.length=0;
 state.subscriptionItemsWidget={data:[{...pool,items:[{...item,supported:true},{...item,id:'b',supported:true}]}],pendingChanges:{'geo:a':false},actionStatus:'idle'};

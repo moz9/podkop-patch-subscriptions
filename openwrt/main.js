@@ -5946,7 +5946,7 @@ function getSubscriptionServiceCheckTargets(section, services, force = false, pe
   if (!services.length) return [];
   const include=getEffectiveSubscriptionTags(pendingChanges,section,'include');
   const exclude=getEffectiveSubscriptionTags(pendingChanges,section,'exclude');
-  return section.items.filter(item=>item.supported && getEffectiveSubscriptionItemEnabled(pendingChanges,section,item) &&
+  const subscriptions=section.items.filter(item=>item.supported && getEffectiveSubscriptionItemEnabled(pendingChanges,section,item) &&
     !isSubscriptionTagFiltered(item,include,exclude) &&
     (!(section.sources || []).length ? !item.subscriptionDisabled : section.sources.some(source=>
       (item.sourceIds?.length ? item.sourceIds.includes(source.id) : (item.sourceIndex || 1) === source.sourceIndex) &&
@@ -5954,6 +5954,9 @@ function getSubscriptionServiceCheckTargets(section, services, force = false, pe
     const result=item.services?.[service];
     return !isSubscriptionServiceEvidenceFresh(result);
   })));
+  const manual=(section.manualItems||[]).filter(item=>item.supported && (force || services.some(service=>!isSubscriptionServiceEvidenceFresh(item.services?.[service]))));
+  const seen=new Set(subscriptions.map(item=>item.id));
+  return [...subscriptions,...manual.filter(item=>!seen.has(item.id) && seen.add(item.id))];
 }
 function getSubscriptionServiceRoutingHint(section, services) {
   if (!services.includes('gemini')) return '';
@@ -6065,7 +6068,7 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
     E('details', {}, [E('summary', {}, 'Подробнее'),
       E('p', {}, 'Все выбранные проверки обязательны. Совпадение страны не подтверждает доступность Gemini. Gemini проверяет регион; HTTP 200 не доказывает работу чата. Страна по Google и страна по IP проверяются отдельно. Без свежего успешного результата узел исключён из нового применения. Проверки не переключают рабочий прокси; старый набор может продолжать работать.'),
       ...routingHint ? [E('p', {},routingHint)]:[],
-      E('p', {}, 'Кеш: 24 часа. До '+targets.length*requestsPerNode+' сетевых запросов; до '+targets.length*requestsPerNode*4+' с плюс запуск процессов (не гарантированный срок). Свежие результаты повторяются только через «Перепроверить всё». Для конфигов подписок; отдельные proxy-ссылки не проверяются.')
+      E('p', {}, 'Кеш: 24 часа. До '+targets.length*requestsPerNode+' сетевых запросов; до '+targets.length*requestsPerNode*4+' с плюс запуск процессов (не гарантированный срок). Свежие результаты повторяются только через «Перепроверить всё». Ручные proxy-ссылки проверяются отдельно от тегов подписки; обязательные сервисы проверяются для всех узлов.')
     ]),
     E('details', {}, [E('summary', {}, 'Результаты проверок по конфигам'),
       ...!selected.length ? [E('small', {}, 'Выберите проверку для просмотра результатов.')]:[],
@@ -6666,7 +6669,8 @@ async function refreshSubscriptionServiceEvidence(sectionCode) {
   const byId = new Map(response.data.results.map(result=>[result.id,normalizeSubscriptionServiceEvidence(result)]));
   store.set({subscriptionItemsWidget:{...widget,data:widget.data.map(section=>section.code!==sectionCode?section:{...section,
     serviceSupport:true,serviceCatalog:response.data.catalog || [],requiredServices:response.data.requiredServices || [],
-    items:section.items.map(item=>({...item,services:byId.get(item.id)||{}}))})}});
+    items:section.items.map(item=>({...item,services:byId.get(item.id)||{}})),
+    ...(response.data.manualCandidates?.length || section.manualItems ? {manualItems:(response.data.manualCandidates||[]).map(item=>({...item,services:byId.get(item.id)||{}}))} : {})})}});
 }
 function getSubscriptionServiceCheckError(error, sectionCode, item, stage) {
   const raw=String(error?.message||'');
@@ -6771,6 +6775,7 @@ async function readSubscriptionSections() {
       communityLists:normalizeSubscriptionTags(section.community_lists),
       requiredServices:serviceData?.requiredServices || normalizeSubscriptionTags(section.subscription_required_services),
       serviceSupport:!!serviceData,serviceCatalog:serviceData?.catalog || [],
+      ...(serviceData?.manualCandidates?.length ? {manualItems:serviceData.manualCandidates.map(item=>({...item,services:serviceResults.get(item.id)||{}}))} : {}),
       items:items.data.map(item=>({...item,services:serviceResults.get(item.id)||{}})), sources:sources.data};
   }));
 }
@@ -7325,7 +7330,8 @@ function getSubscriptionActionErrorMessage(error, fallback) {
   if (/isolated_section_only/.test(detail)) return "Секция ещё не изолирована. Черновики сохранены. Новую структуру секций сначала нужно применить через общие настройки Podkop.";
   if (/uci_pending_changes/.test(detail)) return "Есть несохранённые общие настройки LuCI. Сначала сохраните или отмените их в обычных настройках Podkop; черновики подписок сохранены.";
   if (/service_snapshot_storage_unavailable/.test(detail)) return 'Не удалось подготовить безопасную копию рабочего подключения: проверьте свободное место или локальные списки. Изменения фильтра не применены; ваш выбор сохранён. При нехватке места освободите его и повторите применение.';
-  if (/service_manual_links_unsupported/.test(detail)) return 'Фильтр сервисов нельзя применить: в секции есть отдельные proxy-ссылки, которые пока не проверяются. Перенесите их в отдельную секцию или отключите фильтр сервисов. Настройки не применены; ваш выбор сохранён.';
+  if (/service_manual_results_stale_or_missing/.test(detail)) return 'Ручные proxy-ссылки ещё не прошли обязательные проверки. Нажмите «Проверить новые/устаревшие» в фильтре сервисов. Рабочий набор не изменён; ваш выбор сохранён.';
+  if (/service_manual_links_unsupported/.test(detail)) return 'Установленный backend ещё не поддерживает проверку ручных proxy-ссылок вместе с подпиской. Обновите патч; рабочий набор и ваш выбор сохранены.';
   if (/probe_start_failed/.test(detail)) return "Не удалось запустить временный процесс проверки. Рабочее подключение не изменено.";
   if (/probe_curl_|dns_config_invalid/.test(detail)) return "Проверочное подключение не удалось. Проверьте доступность сервера и настройки DNS.";
   if (/cannot_disable_last_enabled_link/.test(detail)) return "В секции должен остаться хотя бы один включённый конфиг из включённой подписки.";

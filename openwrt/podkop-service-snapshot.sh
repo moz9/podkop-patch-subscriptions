@@ -154,47 +154,70 @@ subscription_services_snapshot_observations() {
     fi
 }
 
-subscription_services_snapshot_section() {
+subscription_services_snapshot_section_value() (
     local section="$1" required cache all items context service_sha link id ids='[]' links='[]' hash policy row evidence
+    local work manual manual_ids='[]' input
     validate_subscription_urltest_section "$section" || return 0
-    required="$(subscription_required_services_json "$section")" || { SNAPSHOT_FAILED=1; return 0; }
+    required="$(subscription_required_services_json "$section")" || return 1
     [ "$required" != '[]' ] || return 0
     cache="$(get_subscription_cache_path "$section")"
     all="$(get_subscription_all_cache_path "$section")"
     items="$(get_subscription_items_cache_path "$section")"
-    [ -s "$cache" ] && [ -s "$all" ] && [ -s "$items" ] || { SNAPSHOT_FAILED=1; return 0; }
-    context="$(subscription_services_context "$section")" || { SNAPSHOT_FAILED=1; return 0; }
-    [ -n "$context" ] || { SNAPSHOT_FAILED=1; return 0; }
-    if [ "$SNAPSHOT_CAPTURE" = 1 ]; then
-        policy="$(subscription_services_policy "$section")" || { SNAPSHOT_FAILED=1; return 0; }
-        while IFS= read -r link || [ -n "$link" ]; do
-            [ -n "$link" ] || continue
-            id="$(get_subscription_link_id "$link")" || { SNAPSHOT_FAILED=1; return 0; }
-            printf '%s' "$policy" | jq -e --arg id "$id" '. as $p | all($p.required[]; . as $service | any($p.results[]; .id==$id and .services[$service].state=="pass"))' >/dev/null || { SNAPSHOT_FAILED=1; return 0; }
-            ids="$(printf '%s' "$ids" | jq -c --arg id "$id" '.+[$id] | unique')" || { SNAPSHOT_FAILED=1; return 0; }
-        done < "$cache"
-        [ "$ids" != '[]' ] || { SNAPSHOT_FAILED=1; return 0; }
-    else
-        ids="$(jq -c --arg section "$section" '.sections[] | select(.section==$section) | .admittedIds' "$SNAPSHOT_BASE")" || { SNAPSHOT_FAILED=1; return 0; }
-        printf '%s' "$ids" | jq -e 'type=="array" and length>0' >/dev/null || { SNAPSHOT_FAILED=1; return 0; }
+    [ -s "$cache" ] && [ -s "$all" ] && [ -s "$items" ] || return 1
+    work="$(mktemp -d)" || return 1
+    trap 'rm -rf "$work"' EXIT INT TERM HUP
+    manual="$work/manual"
+    : > "$manual"
+    if command -v subscription_services_manual_file >/dev/null 2>&1; then
+        subscription_services_manual_file "$section" "$manual" || return 1
     fi
-    # Bind exact admitted links and their evidence, not unrelated newly discovered nodes.
-    jq -e --argjson ids "$ids" '. as $items | all($ids[]; . as $id | any($items[]; .id==$id and .supported==true))' "$items" >/dev/null || { SNAPSHOT_FAILED=1; return 0; }
     while IFS= read -r link || [ -n "$link" ]; do
         [ -n "$link" ] || continue
-        id="$(get_subscription_link_id "$link")" || { SNAPSHOT_FAILED=1; return 0; }
+        id="$(get_subscription_link_id "$link")" || return 1
+        manual_ids="$(printf '%s' "$manual_ids" | jq -c --arg id "$id" '.+[$id]|unique')" || return 1
+    done < "$manual"
+    context="$(subscription_services_context "$section")" || return 1
+    [ -n "$context" ] || return 1
+    if [ "$SNAPSHOT_CAPTURE" = 1 ]; then
+        policy="$(subscription_services_policy "$section")" || return 1
+        for input in "$cache" "$manual"; do
+        while IFS= read -r link || [ -n "$link" ]; do
+            [ -n "$link" ] || continue
+            id="$(get_subscription_link_id "$link")" || return 1
+            printf '%s' "$policy" | jq -e --arg id "$id" '. as $p | all($p.required[]; . as $service | any($p.results[]; .id==$id and .services[$service].state=="pass"))' >/dev/null || return 1
+            ids="$(printf '%s' "$ids" | jq -c --arg id "$id" '.+[$id] | unique')" || return 1
+        done < "$input"
+        done
+        [ "$ids" != '[]' ] || return 1
+    else
+        ids="$(jq -c --arg section "$section" '.sections[] | select(.section==$section) | .admittedIds' "$SNAPSHOT_BASE")" || return 1
+        printf '%s' "$ids" | jq -e 'type=="array" and length>0' >/dev/null || return 1
+    fi
+    # Bind exact admitted links and their evidence, not unrelated newly discovered nodes.
+    jq -e --argjson ids "$ids" --argjson manual "$manual_ids" '. as $items | all($ids[]; . as $id | ($manual|index($id)!=null) or any($items[]; .id==$id and .supported==true))' "$items" >/dev/null || return 1
+    for input in "$all" "$manual"; do
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        id="$(get_subscription_link_id "$link")" || return 1
         printf '%s' "$ids" | jq -e --arg id "$id" 'index($id)!=null' >/dev/null || continue
         hash="$(printf '%s\n' "$link" | sha256sum | awk '{print $1}')"
-        links="$(printf '%s' "$links" | jq -c --arg id "$id" --arg sha "$hash" '.+[{id:$id,sha:$sha}] | unique_by(.id) | sort_by(.id)')" || { SNAPSHOT_FAILED=1; return 0; }
-    done < "$all"
-    [ "$(printf '%s' "$links" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || { SNAPSHOT_FAILED=1; return 0; }
-    row="$(subscription_services_snapshot_observations "$section" "$ids")" || { SNAPSHOT_FAILED=1; return 0; }
-    [ "$(printf '%s' "$row" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || { SNAPSHOT_FAILED=1; return 0; }
+        links="$(printf '%s' "$links" | jq -c --arg id "$id" --arg sha "$hash" '.+[{id:$id,sha:$sha}] | unique_by(.id) | sort_by(.id)')" || return 1
+    done < "$input"
+    done
+    [ "$(printf '%s' "$links" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || return 1
+    row="$(subscription_services_snapshot_observations "$section" "$ids")" || return 1
+    [ "$(printf '%s' "$row" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || return 1
     service_sha="$(printf '%s\n' "$row" | sha256sum | awk '{print $1}')"
     evidence=null
     if [ "$SNAPSHOT_CAPTURE" = 1 ] || jq -e --arg s "$section" '.sections[]|select(.section==$s)|has("evidence")' "$SNAPSHOT_BASE" >/dev/null; then evidence="$row"; fi
     printf '%s\n%s\n' "$links" "${evidence:-null}" | jq -cs --arg section "$section" --arg context "$context" --arg service "$service_sha" --argjson required "$required" \
-        '.[0] as $links | .[1] as $evidence | {section:$section,context:$context,service:$service,requiredServices:$required,admittedIds:($links|map(.id)),admittedLinks:$links} + (if $evidence==null then {} else {evidence:$evidence} end)' >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
+        '.[0] as $links | .[1] as $evidence | {section:$section,context:$context,service:$service,requiredServices:$required,admittedIds:($links|map(.id)),admittedLinks:$links} + (if $evidence==null then {} else {evidence:$evidence} end)'
+)
+
+subscription_services_snapshot_section() {
+    local row
+    row="$(subscription_services_snapshot_section_value "$1")" || { SNAPSHOT_FAILED=1; return 0; }
+    [ -z "$row" ] || printf '%s\n' "$row" >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
 }
 
 subscription_services_snapshot_save() (

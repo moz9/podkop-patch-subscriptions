@@ -449,8 +449,8 @@ subscription_sources_prepare() {
             SUBSCRIPTION_SOURCES_ERROR=service_snapshot_storage_unavailable
             return 1
         fi
-        if [ "$required" != '[]' ] && command -v collect_urltest_proxy_links >/dev/null 2>&1 && collect_urltest_proxy_links "$section" "$dir/services.$section.manual" && [ -s "$dir/services.$section.manual" ]; then
-            SUBSCRIPTION_SOURCES_ERROR=service_manual_links_unsupported
+        if [ "$required" != '[]' ] && ! subscription_services_manual_ready "$section" "$required"; then
+            SUBSCRIPTION_SOURCES_ERROR=service_manual_results_stale_or_missing
             return 1
         fi
         printf '%s\n' "$required" > "$dir/services.$section.required" || return 1

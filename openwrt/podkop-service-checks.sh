@@ -172,13 +172,80 @@ subscription_services_policy() {
     printf '%s\n' "$results" | jq -c --argjson required "$required" '{required:$required,results:.}'
 }
 
+# Manual links are separate from subscription tag/source selection, not from
+# required-service admission. Keep their identity and evidence in the same gate.
+subscription_services_manual_file() {
+    local section="$1" output="$2" rc=0
+    [ ! -L "$output" ] || return 1
+    : > "$output" || return 1
+    if command -v collect_urltest_proxy_links >/dev/null 2>&1; then
+        collect_urltest_proxy_links "$section" "$output" || rc=$?
+    fi
+    [ "$rc" = 0 ] || [ ! -s "$output" ] || return 1
+    [ -f "$output" ] && [ ! -L "$output" ] &&
+        [ "$(wc -c < "$output")" -le 262144 ] && [ "$(wc -l < "$output")" -le 128 ]
+}
+
+subscription_services_manual_link() (
+    local section="$1" id="$2" file link found=''
+    file="$(mktemp)" || exit 1
+    trap 'rm -f "$file"' EXIT INT TERM HUP
+    subscription_services_manual_file "$section" "$file" || exit 1
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        if [ "$(get_subscription_link_id "$link")" = "$id" ]; then
+            [ -z "$found" ] || [ "$found" = "$link" ] || exit 1
+            found="$link"
+        fi
+    done < "$file"
+    [ -n "$found" ] && printf '%s\n' "$found"
+)
+
+subscription_services_candidate_name() {
+    local name link
+    name="$(jq -er --arg id "$2" '[.[]|select(.id==$id)]|select(length==1)|.[0]|(.name//.tag//"")|select(type=="string")' "$(get_subscription_items_cache_path "$1")" 2>/dev/null)" && { printf '%s\n' "$name"; return; }
+    link="$(subscription_services_manual_link "$1" "$2")" || return 1
+    name="$(get_subscription_link_name "$link" || true)"
+    printf '%s\n' "$name"
+}
+
+subscription_services_manual_candidates() (
+    local file link id name
+    file="$(mktemp)" || exit 1
+    trap 'rm -f "$file"' EXIT INT TERM HUP
+    subscription_services_manual_file "$1" "$file" || exit 1
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        id="$(get_subscription_link_id "$link")" || exit 1
+        name="$(get_subscription_link_name "$link" || true)"
+        jq -cn --arg id "$id" --arg name "$name" '{id:$id,name:$name,supported:true,manual:true}' || exit 1
+    done < "$file"
+)
+
+subscription_services_manual_ready() (
+    local file link id policy required="$2"
+    [ "$required" != '[]' ] || exit 0
+    file="$(mktemp)" || exit 1
+    trap 'rm -f "$file"' EXIT INT TERM HUP
+    subscription_services_manual_file "$1" "$file" || exit 1
+    [ -s "$file" ] || exit 0
+    policy="$(subscription_services_policy "$1" "$required")" || exit 1
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        id="$(get_subscription_link_id "$link")" || exit 1
+        printf '%s' "$policy" | jq -e --arg id "$id" '. as $p|all($p.required[]; . as $s|any($p.results[]; .id==$id and .services[$s].state=="pass"))' >/dev/null || exit 1
+    done < "$file"
+)
+
 get_subscription_services() {
-    local section="$1" required results
+    local section="$1" required results manual
     validate_subscription_section_name "$section" && validate_subscription_urltest_section "$section" || { subscription_services_error invalid_section; return 1; }
     required="$(subscription_required_services_json "$section")" || { subscription_services_error invalid_required_services; return 1; }
     results="$(subscription_services_read "$section")" || { subscription_services_error context_unavailable; return 1; }
-    printf '%s\n' "$results" | jq -c --argjson required "$required" --argjson catalog "$(subscription_services_catalog)" \
-        '{success:true,requiredServices:$required,catalog:$catalog,results:.,ttl:86400,capacity:240,cacheBytes:1048576}'
+    manual="$(subscription_services_manual_candidates "$section")" || return 1
+    manual="$(printf '%s\n' "$manual" | jq -sc '.')" || return 1
+    printf '%s\n' "$results" | jq -c --argjson required "$required" --argjson manual "$manual" --argjson catalog "$(subscription_services_catalog)" \
+        '{success:true,requiredServices:$required,catalog:$catalog,manualCandidates:$manual,results:.,ttl:86400,capacity:240,cacheBytes:1048576}'
 }
 
 subscription_services_error() {
@@ -396,7 +463,7 @@ subscription_exit_country_classify() {
 
 subscription_exit_country_probe() {
     local section="$1" id="$2" proxy="$3" work="$4" name declared provider url rc code observation observations='[]'
-    name="$(jq -er --arg id "$id" '.[] | select(.id==$id) | (.name // .tag // "")' "$(get_subscription_items_cache_path "$section")")" || return 1
+    name="$(subscription_services_candidate_name "$section" "$id")" || return 1
     declared="$(subscription_exit_country_declared "$name")" || return 1
     for provider in ipwhois ipinfo; do
         case "$provider" in
@@ -418,7 +485,7 @@ subscription_exit_country_probe() {
 
 subscription_services_google_probe() {
     local section="$1" id="$2" proxy="$3" work="$4" name rc=0 code body control=unknown control_rc=0 control_code
-    name="$(jq -er --arg id "$id" '[.[] | select(.id==$id)] | select(length==1) | .[0] | (.name // .tag // "") | select(type=="string")' "$(get_subscription_items_cache_path "$section")")" || return 1
+    name="$(subscription_services_candidate_name "$section" "$id")" || return 1
     # One verified, bounded HTTPS observation feeds two independent policies.
     # Prefetching prevents another service failure from suppressing Google proof.
     if command -v subscription_probe_resources >/dev/null 2>&1; then subscription_probe_resources services 1 1 || return 1; fi
@@ -583,7 +650,9 @@ subscription_services_confirm() (
     case "$service:$enabled" in gemini:true|chatgpt:true|gemini:false|chatgpt:false) ;; *) subscription_services_error invalid_confirmation; exit 1;; esac
     subscription_runtime_busy && { subscription_services_error service_busy; exit 1; }
     subscription_action_lock_acquire service_confirmation || { subscription_services_error service_busy; exit 1; }; locked=1
-    jq -e --arg id "$id" 'any(.[]; .id==$id and .supported)' "$(get_subscription_items_cache_path "$section")" >/dev/null 2>&1 || { subscription_services_error subscription_link_not_available; exit 1; }
+    if ! jq -e --arg id "$id" 'any(.[]; .id==$id and .supported)' "$(get_subscription_items_cache_path "$section")" >/dev/null 2>&1; then
+        subscription_services_manual_link "$section" "$id" >/dev/null || { subscription_services_error subscription_link_not_available; exit 1; }
+    fi
     results="$(subscription_services_read "$section")" || exit 1
     row="$(printf '%s' "$results" | jq -c --arg id "$id" '.[] | select(.id==$id)')"
     printf '%s' "$row" | jq -e --arg service "$service" '.services[$service].network=="pass"' >/dev/null 2>&1 || { subscription_services_error recent_network_check_required; exit 1; }
@@ -609,7 +678,7 @@ subscription_services_preflight_section() {
     required="$(subscription_required_services_json "$section")" || { SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED=1; return 0; }
     [ "$required" != '[]' ] || return 0
     work="$(mktemp -d)" || { SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED=1; return 0; }
-    if command -v collect_urltest_proxy_links >/dev/null 2>&1 && collect_urltest_proxy_links "$section" "$work/manual" && [ -s "$work/manual" ]; then
+    if ! subscription_services_manual_ready "$section" "$required"; then
         SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED=1
         rm -rf "$work"; return 0
     fi

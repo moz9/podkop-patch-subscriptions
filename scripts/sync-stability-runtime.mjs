@@ -7,7 +7,7 @@ for(const version of fs.readdirSync(path.join(root,'openwrt')).filter(n=>/^runti
  const file=path.join(root,'openwrt',version,'usr/bin/podkop');
  if(!fs.existsSync(file))continue;
  let code=fs.readFileSync(file,'utf8').replaceAll('\r\n','\n');
- for(const [source,marker] of [['podkop-service-snapshot.sh','subscription_service_snapshot_v1'],['podkop-subscription-sources.sh','subscription_sources_v1']]){
+ for(const [source,marker] of [['podkop-service-snapshot.sh','subscription_service_snapshot_v1'],['podkop-subscription-sources.sh','subscription_sources_v1'],['podkop-service-checks.sh','subscription_services_v1'],['podkop-subscription-probe.sh','subscription_isolated_probe_v1']]){
    const block=fs.readFileSync(path.join(root,'openwrt',source),'utf8').replaceAll('\r\n','\n').trimEnd();
    const begin=code.indexOf(`# ${marker} begin`),end=code.indexOf(`# ${marker} end`,begin);
    if(begin<0||end<0)throw Error('missing shared block '+file+' '+marker);

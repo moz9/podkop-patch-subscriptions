@@ -281,9 +281,9 @@ links="$(jq -cn '[range(0;2048) | {id:(("00000000000000000000000000000000"+tostr
 ids="$(printf '%s' "$links" | jq -c 'map(.id)')"
 section=main; context=large-fixture; service_sha=proof-fixture; required='["gemini"]'
 SNAPSHOT_SECTIONS="$tmp/large-row"; SNAPSHOT_FAILED=0
-snapshot_test_emitter="$(awk '/^[ ]*(jq -cn|printf.*jq -c).*--arg section/ {emit=1} emit {print} emit && /SNAPSHOT_SECTIONS/ {exit}' "$repo/openwrt/podkop-service-snapshot.sh")"
+snapshot_test_emitter="$(awk '/^[ ]*(jq -cn|printf.*jq -c).*--arg section/ {emit=1} emit && /^[)}]$/ {exit} emit {print}' "$repo/openwrt/podkop-service-snapshot.sh")"
 [ -n "$snapshot_test_emitter" ] || fail 'snapshot row emitter missing'
-eval "$snapshot_test_emitter"
+eval "$snapshot_test_emitter" > "$SNAPSHOT_SECTIONS"
 [ "$SNAPSHOT_FAILED" = 0 ] || fail 'large admitted snapshot exceeded process argument limits'
 jq -e '.section=="main" and (.admittedLinks|length)==2048 and (.admittedIds|length)==2048 and .admittedIds==(.admittedLinks|map(.id))' "$SNAPSHOT_SECTIONS" >/dev/null || fail 'large admitted snapshot changed identities'
 echo 'PASS: strict admission and frozen-runtime cold-start continuity, regex-free jq, section/config/path/hash/symlink gates, no migration or new evidence'

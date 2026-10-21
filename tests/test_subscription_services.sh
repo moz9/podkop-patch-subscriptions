@@ -164,8 +164,9 @@ fi
 [ "$before_required_items" = "$(sha256sum "$tmp/items")" ] || fail 'refused prepare changed cached items'
 [ "$before_required_pending" = "$(if [ -f "$tmp/pending" ]; then sha256sum "$tmp/pending"; else echo absent; fi)" ] || fail 'refused prepare changed pending activation'
 collect_urltest_proxy_links() { printf 'manual-link\n' > "$2"; return 0; }
+get_subscription_link_id() { printf '%s' "$1" | md5sum | cut -d' ' -f1; }
 subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]' && fail 'untested manual mix admitted' || :
-[ "$SUBSCRIPTION_SOURCES_ERROR" = service_manual_links_unsupported ] || fail 'manual mix failure is not explicit'
+[ "$SUBSCRIPTION_SOURCES_ERROR" = service_manual_results_stale_or_missing ] || fail 'unmeasured manual mix failure is not explicit'
 collect_urltest_proxy_links() { return 1; }
 subscription_services_snapshot_capacity() { return 1; }
 subscription_sources_prepare main '{"changes":[],"requiredServices":["gemini"]}' "$tmp/items" '[]' && fail 'low snapshot space allowed activation prepare' || :
@@ -180,6 +181,7 @@ log() { :; }
 stop_main() { touch "$tmp/stopped"; }
 start_main() { touch "$tmp/started"; }
 eval "$(sed -n '/^reload() {$/,/^}$/p' "$repo/openwrt/runtime-0.7.22/usr/bin/podkop")"
+subscription_services_restart_prepare() { subscription_services_preflight; }
 before="$(sha256sum "$tmp/items" "$tmp/all")"
 reload && fail 'expired required service did not abort reload' || :
 [ ! -e "$tmp/stopped" ] || fail 'empty service pool stopped working runtime'
