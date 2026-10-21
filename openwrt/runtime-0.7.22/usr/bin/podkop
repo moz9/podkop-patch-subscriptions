@@ -2546,7 +2546,7 @@ set_subscription_sections_enabled() {
     SUBSCRIPTION_APPLY_V2_STAGED=0
     SUBSCRIPTION_APPLY_V2_CHANGED=0
     PODKOP_SECTION_ERROR=""
-    PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=0
+    PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=1
     if [ -z "$SUBSCRIPTION_APPLY_V2_TMP" ] || [ ! -d "$SUBSCRIPTION_APPLY_V2_TMP" ]; then
         subscription_apply_v2_print_result false error prepare temporary_directory_failed false false 0 false
         subscription_apply_v2_cleanup
@@ -2809,6 +2809,7 @@ set_subscription_sections_enabled() {
         fi
     done < "$validated_sections_file"
 
+    PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=0
     if ! subscription_apply_v2_reload; then
         subscription_apply_v2_fail reload "${PODKOP_SECTION_ERROR:-reload_failed}" true
         return $?
