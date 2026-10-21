@@ -84,10 +84,32 @@ for (const runtimeStatus of [{busy:true},{unknown:true}]) {
  assert.equal(state.subscriptionItemsWidget.pendingChanges,draft);
 }
 assert.equal(c.subscriptionStateLabel({runtimeStatus:{busy:true}})[1],'Podkop занят');
-assert.equal(c.subscriptionStateLabel({runtimeStatus:{pending:true}})[1],'Нужно применить');
+assert.equal(c.subscriptionStateLabel({runtimeStatus:{pending:true}})[1],'Ваших изменений нет');
+assert.equal(c.subscriptionStateLabel({pendingCount:1,runtimeStatus:{pending:true}})[1],'Ваши изменения: 1','catalog pending must not hide the user draft');
 assert.equal(c.subscriptionStateLabel({})[1],'Готово');
 assert.match(c.getToolbarMessage({runtimeStatus:{busy:true}}),/Podkop занят.*дождитесь/);
-assert.match(c.getToolbarMessage({runtimeStatus:{pending:true}}),/Применить.*перерыв соединений/);
+assert.match(c.getToolbarMessage({runtimeStatus:{pending:true}}),/Нет несохранённых изменений/);
+assert.doesNotMatch(c.getToolbarMessage({runtimeStatus:{pending:true}}),/Нажмите.*Применить/,'catalog alone must not request ordinary Apply');
+assert.match(c.getToolbarMessage({pendingCount:1,runtimeStatus:{pending:true}}),/Unsaved changes.*1/);
+for(const name of ['renderSubscriptionState','renderToolbar']) {
+ const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));
+ assert.ok(match,name);vm.runInContext(match[0],c);
+}
+c.getToolbarClass=()=>'';
+c.renderButton=options=>({tag:'button',attrs:options,children:options.text});
+for(const name of ['renderRotateCcwIcon24','renderSearchIcon24','renderSquareChartGanttIcon24','renderCircleStopIcon24']) c[name]=()=>null;
+const toolbarOptions={loading:false,failed:false,applying:false,status:'idle',actionStatus:'idle',pendingCount:0,runtimeStatus:{busy:false,pending:true,pendingSections:['main']}};
+const toolbar=c.renderToolbar(toolbarOptions);
+const catalogNotice=toolbar.children.find(node=>node?.attrs?.class==='pdk_subscriptions-page__catalog-status');
+assert.ok(catalogNotice,'catalog status must be rendered separately');
+assert.match(catalogNotice.children,/main/);
+assert.match(catalogNotice.children,/не меняет рабочие наборы/);
+const actions=toolbar.children.find(node=>node?.attrs?.class==='pdk_subscriptions-page__toolbar-actions').children;
+assert.equal(actions.find(button=>button.children==='Apply').attrs.disabled,true,'catalog pending alone must not enable ordinary Apply');
+assert.equal(actions.find(button=>button.children==='Reset').attrs.disabled,true,'catalog is not a resettable user draft');
+const dirtyToolbar=c.renderToolbar({...toolbarOptions,pendingCount:1});
+assert.ok(dirtyToolbar.children.find(node=>node?.attrs?.class==='pdk_subscriptions-page__catalog-status'),'catalog notice survives a user draft');
+assert.equal(dirtyToolbar.children.find(node=>node?.attrs?.class==='pdk_subscriptions-page__toolbar-actions').children.find(button=>button.children==='Apply').attrs.disabled,false,'catalog does not block ordinary draft Apply');
 assert.deepEqual({...c.rebaseSubscriptionDraft({'main:a':false,'main:b':false},[{code:'main',items:[{id:'a',enabled:false}]}])},{'main:b':false});
 let finish, calls=0;
 c.PodkopShellMethods.setSubscriptionSectionsEnabled=()=>{calls++;return new Promise(resolve=>finish=resolve)};

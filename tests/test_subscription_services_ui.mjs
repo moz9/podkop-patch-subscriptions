@@ -121,7 +121,7 @@ assert.equal(calls.length,0,'default action must perform zero RPC probes for ful
 c.PodkopShellMethods.getSubscriptionServices=async()=>({success:true,data:{success:true,requiredServices:['gemini'],catalog:[],results:[{id:'a',services:item.services}]}});
 await c.handleCheckSubscriptionServices('geo',['gemini'],true);
 assert.equal(calls.length,2,'force action explicitly probes cached nodes');
-assert.match(state.subscriptionItemsWidget.actionMessage,/Нажмите «Применить».*До применения оно не изменено/,'fresh proof activation must be distinguished from the isolated check');
+assert.match(state.subscriptionItemsWidget.actionMessage,/Примените нужную секцию.*До применения оно не изменено/,'fresh proof activation must use the separate section action');
 assert.match(JSON.stringify(filter),/Перепроверить всё/);
 assert.match(JSON.stringify(filter),/24 часа/);
 assert.match(JSON.stringify(filter),/плюс запуск.*не гарантированный срок/i);
@@ -130,14 +130,15 @@ assert.equal(state.subscriptionItemsWidget.pendingChanges['geo:a'],false,'forced
 for(const name of ['getToolbarMessage','getToolbarClass','renderToolbar','subscriptionStateLabel']) {
  const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));assert.ok(match);vm.runInContext(match[0],c);
 }
-assert.match(c.getToolbarMessage({runtimeStatus:{pending:true},pendingCount:0}),/Применить.*перерыв соединений/);
-assert.match(c.subscriptionStateLabel({runtimeStatus:{pending:true},pendingCount:0})[2],/Применить.*перерыв соединений/);
+assert.match(c.getToolbarMessage({runtimeStatus:{pending:true},pendingCount:0}),/Нет несохранённых изменений/);
+assert.match(c.subscriptionStateLabel({runtimeStatus:{pending:true},pendingCount:0})[2],/показано отдельно/);
 c.renderButton=props=>({tag:'button',attrs:{disabled:props.disabled},children:props.text});
 c.renderSubscriptionState=()=>({tag:'status'});
 for(const name of ['renderRotateCcwIcon24','renderSearchIcon24','renderCircleStopIcon24','renderSquareChartGanttIcon24'])c[name]=()=>null;
 const toolbar=c.renderToolbar({pendingCount:0,runtimeStatus:{pending:true,busy:false},actionStatus:'idle'});
-assert.equal(walk(toolbar).find(node=>node?.tag==='button'&&node.children==='Apply').attrs.disabled,false,'backend pending proof enables apply without a UCI draft');
-console.log('PASS: persisted service proof can enable Apply with no UI draft through backend pending status');
+assert.equal(walk(toolbar).find(node=>node?.tag==='button'&&node.children==='Apply').attrs.disabled,true,'persisted proof is not a user draft for ordinary Apply');
+assert.match(walk(toolbar).find(node=>node?.attrs?.class==='pdk_subscriptions-page__catalog-status').children,/проверки обновлены/,'persisted service proof remains visible independently');
+console.log('PASS: persisted proof has separate status and requires explicit section activation');
 calls.length=0;
 state.subscriptionItemsWidget={data:[{...pool,items:[{id:'a',supported:true},{id:'b',supported:true}]}],pendingChanges:{},actionStatus:'idle'};
 c.PodkopShellMethods.checkSubscriptionServices=async(code,id)=>{calls.push(id);if(id==='a')throw new Error('request_timeout');return {success:true,data:{success:true}};};

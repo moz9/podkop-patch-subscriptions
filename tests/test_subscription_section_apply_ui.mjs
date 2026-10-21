@@ -88,6 +88,14 @@ for (const runtimeStatus of [
 reset({busy:false,pending:true,pendingSections:['Other'],isolatedSections:['Main','Other'],isolatedReady:true});
 state.subscriptionItemsWidget.pendingChanges={};await c.handleApply('Main');
 assert.equal(payload,null,'peer runtime pending must not activate a clean target');
+reset({busy:false,pending:true,pendingSections:['Main'],isolatedSections:['Main','Other'],isolatedReady:true});
+state.subscriptionItemsWidget.pendingChanges={...other};await c.handleApply();
+assert.deepEqual(Object.keys(payload||{}),['Other'],'a peer catalog update must not block or join the only user draft');
+reset({busy:false,pending:true,pendingSections:['Main'],isolatedSections:['Main','Other'],isolatedReady:true});
+state.subscriptionItemsWidget.pendingChanges={};await c.handleApply();
+assert.equal(payload,null,'ordinary Apply cannot apply a catalog without a user draft');
+const catalogButton=button({pendingSections:['Main'],isolatedSections:['Main','Other'],isolatedReady:true},'Main',{});
+assert.match(catalogButton.children,/Применить каталог Main/,'catalog application is an explicit section action');
 const allButtons=['Main','Other'].map(code=>button({pendingSections:[code],isolatedSections:['Main','Other'],isolatedReady:true},code,{}));
 assert.ok(allButtons.every(b=>b && b.attrs.disabled===undefined),'collapsed isolated sections retain their action');
 for(const error of ['section_memory_low','section_memory_unavailable']) {
