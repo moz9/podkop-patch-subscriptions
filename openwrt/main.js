@@ -6039,7 +6039,7 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
     (selected.includes('gemini') && selected.includes('google_country') ? 1 : 0);
   return E('div', {class:'pdk_subscriptions-page__service-filter',style:'margin:8px 0'}, [
     E('div', {style:'display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px'}, [
-    E('span', {}, 'Обязательные сервисы:'),
+    E('span', {}, 'Фильтр по сервисам:'),
     ...Object.entries(labels).map(([id,label]) => E('label', {style:'display:inline-flex;gap:4px;margin-right:12px'}, [
       E('input', {type:'checkbox',value:id,checked:selected.includes(id)?'checked':void 0,disabled:busy?'disabled':void 0,
         change:event=>onToggle(section.code,{id:'services:required',enabled:section.requiredServices||[]},event.target.checked?[...new Set([...selected,id])]:selected.filter(service=>service!==id))}),label
@@ -6051,9 +6051,9 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
     ]),
     E('small', {role:'status',style:'display:block;margin:4px 0'}, selected.length
       ? `Подходят: ${summary.passed} из ${summary.candidates} · Свежие результаты: ${summary.fresh} · Нужна проверка: ${summary.needsCheck} · Отказ: ${summary.failed} · Не определено: ${summary.unknown}`
-      : 'Фильтр выключен · выберите сервис для проверки'),
+      : 'Фильтр по сервисам выключен · не ограничивает новый набор'),
     E('small', {'data-service-next-step':'true', style:'display:block;margin:4px 0'}, !selected.length
-      ? 'Выберите обязательные проверки.'
+      ? 'Учитываются остальные выбранные фильтры. Доступность сервисов не проверяется.'
       : !summary.candidates
       ? 'Нет кандидатов. Проверьте подписки, теги и ручной выбор.'
       : summary.needsCheck
@@ -7382,6 +7382,8 @@ function getSubscriptionActionErrorMessage(error, fallback) {
   if (/link_is_not_supported|invalid_link_id/.test(detail)) return "Список конфигов изменился. Несохранённый выбор оставлен на экране. Сверьте его с текущим списком; при необходимости нажмите «Сбросить» и выберите заново.";
   if (/permission|access denied|session/i.test(detail)) return "Сессия LuCI завершилась или недостаточно прав. Войдите в интерфейс заново.";
   switch (getErrorText(error)) {
+    case "committed_config_mismatch":
+      return "Проверка сохранённых настроек обнаружила расхождение; изменения отменены. Ваш отбор сохранён. Обновите патч перед повторным применением.";
     case "service_busy":
       return "Podkop ещё применяет настройки или выполняет другую операцию. Ваш выбор сохранён. Дождитесь статуса «Готово» или «Нужно применить» и повторите действие.";
     case "selector_not_available":

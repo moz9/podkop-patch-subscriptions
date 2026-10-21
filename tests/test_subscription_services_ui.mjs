@@ -18,6 +18,12 @@ assert.deepEqual(JSON.parse(JSON.stringify(c.normalizeSubscriptionServiceEvidenc
 assert.deepEqual([...c.getEffectiveRequiredServices({},section)],[],'filter defaults off');
 const draft={'geo:services:required':['gemini','chatgpt']};
 assert.deepEqual([...c.getEffectiveRequiredServices(draft,section)],['gemini','chatgpt']);
+const impliedSection={...section,communityLists:['google_ai'],requiredServices:['gemini']};
+assert.deepEqual([...c.getEffectiveRequiredServices({'geo:services:required':[]},impliedSection)],[],'route list cannot override the user disabling Gemini');
+const impliedFilter=c.renderSubscriptionServiceFilter(impliedSection,{'geo:services:required':[]},false,()=>{},{});
+const impliedInputs=impliedFilter.children[0].children.flatMap(node=>Array.isArray(node?.children)?node.children:[]);
+assert.equal(impliedInputs.find(node=>node?.attrs?.value==='gemini')?.attrs.disabled,undefined,'route list cannot lock the user service switch');
+assert.doesNotMatch(JSON.stringify(impliedFilter),/Gemini обязателен/,'do not invent a user requirement');
 assert.deepEqual(JSON.parse(JSON.stringify(c.buildSubscriptionSectionChanges('geo',[{id:'services:required',enabled:['gemini']},{id:'a',enabled:false}]))),{section:'geo',requiredServices:['gemini'],changes:[{id:'a',enabled:false}],sources:[]});
 const item={id:'a',services:{gemini:{state:'pass',expiresAt:now+30,checkedAt:now-60},chatgpt:{state:'unknown',expiresAt:now+30,checkedAt:now-60,network:true}}};
 const targetPool={items:[{...item,supported:true},{id:'b',supported:true,services:{gemini:{state:'fail',expiresAt:now+30,checkedAt:now-60}}},{id:'c',supported:true,services:{gemini:{state:'pass',expiresAt:now-1}}},{id:'d',supported:false}]};
@@ -70,6 +76,7 @@ assert.equal(c.getStatusLabel({item:{supported:true},effectiveEnabled:true,servi
 assert.match(js,/title: getSubscriptionRowStatusTitle/,'row status retains the actual exclusion detail in tooltip');
 assert.deepEqual({...c.rebaseSubscriptionDraft({...draft,'geo:a':false},[{...pool,requiredServices:['gemini','chatgpt']}])},{'geo:a':false},'persisted service draft rebase does not lose node choices');
 assert.deepEqual({...c.rebaseSubscriptionDraft(draft,[{...pool,requiredServices:['chatgpt','gemini']}])},{},'service order has no meaning when rebasing the committed draft');
+assert.deepEqual({...c.rebaseSubscriptionDraft({'geo:services:required':[]},[{...pool,communityLists:['google_ai'],requiredServices:['gemini']}])},{'geo:services:required':[]},'a rejected attempt to disable Gemini must retain the actual user draft');
 const group={id:'s',items:pool.items,enabled:true};
 const subset={code:'geo',selectionMode:'selected',includeTags:['US*'],sources:[{id:'on',enabled:true},{id:'off',enabled:false}],items:[
  {id:'eligible',name:'US unknown',supported:true,enabled:true,sourceIds:['on']},

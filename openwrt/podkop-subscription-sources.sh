@@ -445,6 +445,7 @@ subscription_sources_prepare() {
         old_required="$(subscription_required_services_json "$section")" || return 1
         required="$(printf '%s' "$changes" | jq -c --argjson current "$old_required" '.requiredServices // $current')" || return 1
         subscription_services_validate "$required" || return 1
+        required="$(subscription_required_services_json "$section" "$required")" || return 1
         if [ "$required" != '[]' ] && { ! command -v subscription_services_snapshot_capacity >/dev/null 2>&1 || ! subscription_services_snapshot_capacity; }; then
             SUBSCRIPTION_SOURCES_ERROR=service_snapshot_storage_unavailable
             return 1
