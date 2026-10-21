@@ -4475,6 +4475,18 @@ subscription_services_snapshot_save() (
     case "$previous" in generation.*) case "${previous#generation.}" in ''|*[!A-Za-z0-9]*) ;; *) [ -L "$dir/$previous" ] || rm -rf "$dir/$previous";; esac;; esac
 )
 
+subscription_services_snapshot_section_traffic_context() (
+    local checkpoint desired root
+    command -v podkop_section_context_hash >/dev/null 2>&1 || exit 1
+    root="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
+    [ ! -L "$root" ] && [ ! -L "$root/context.sha256" ] || exit 1
+    checkpoint="$(cat "$root/context.sha256")" && desired="$(podkop_section_context_hash)" || exit 1
+    case "$checkpoint:$desired" in v2:*:v2:*) :;; *) exit 1;; esac
+    [ "${#checkpoint}" = 67 ] && [ "${#desired}" = 67 ] || exit 1
+    case "${checkpoint#v2:}${desired#v2:}" in *[!a-f0-9]*) exit 1;; esac
+    jq -cn --arg checkpoint "$checkpoint" --arg desired "$desired" '{checkpoint:$checkpoint,desired:$desired}'
+)
+
 subscription_services_snapshot_section_stage() (
     # Structural manager isolation is required separately. Never capture peers or
     # claim that pending shared UCI settings were applied by a worker-only apply.
@@ -4491,6 +4503,11 @@ subscription_services_snapshot_section_stage() (
         exit 0
     fi
     [ -s "$manifest" ] || exit 1
+    # Bind saved intent to this isolated transaction without claiming it was
+    # globally applied. DNS-only successors may preserve this exact graph.
+    if command -v podkop_section_context_hash >/dev/null 2>&1; then
+        subscription_services_snapshot_section_traffic_context > "$work/snapshot-traffic-context" || rm -f "$work/snapshot-traffic-context"
+    fi
     config_get config_path settings config_path
     config_sha="$(subscription_services_snapshot_hash "$config_path")" || exit 1
     # A stale compound hash can be reconstructed only when this target is the
@@ -4528,13 +4545,18 @@ subscription_services_snapshot_section_stage() (
 )
 
 subscription_services_snapshot_section_commit() (
-    local target="$1" work="$2" dir config_path config_sha tmpfile name hash
+    local target="$1" work="$2" dir config_path config_sha tmpfile name hash traffic=null
     dir="$(subscription_services_snapshot_dir)"
     if [ -f "$work/snapshot-unfiltered" ]; then
         [ ! -e "$dir/snapshot.json" ] && [ ! -L "$dir/snapshot.json" ] || exit 1
         exit 0
     fi
     cmp -s "$work/snapshot-base.json" "$dir/snapshot.json" || exit 1
+    if [ -e "$work/snapshot-traffic-context" ]; then
+        [ ! -L "$work/snapshot-traffic-context" ] || exit 1
+        traffic="$(subscription_services_snapshot_section_traffic_context)" || exit 1
+        [ "$traffic" = "$(cat "$work/snapshot-traffic-context")" ] || exit 1
+    fi
     subscription_sing_box_reload_ready || exit 1
     config_get config_path settings config_path
     config_sha="$(subscription_services_snapshot_hash "$config_path")" || exit 1
@@ -4544,11 +4566,13 @@ subscription_services_snapshot_section_commit() (
     done < "$work/snapshot-rules"
     tmpfile="$(mktemp "$dir/snapshot.section.XXXXXX")" || exit 1
     trap 'rm -f "$tmpfile"' EXIT INT TERM HUP
-    jq --arg target "$target" --arg config "$config_sha" --slurpfile row "$work/snapshot-target.jsonl" '
+    jq --arg target "$target" --arg config "$config_sha" --argjson traffic "$traffic" --slurpfile row "$work/snapshot-target.jsonl" '
         .config=$config | .sections=((.sections|map(select(.section!=$target)))+$row|sort_by(.section))
-        | .continuity={mode:"section-only",section:$target}' "$work/snapshot-base.json" > "$tmpfile" || exit 1
+        | .continuity=({mode:"section-only",section:$target} +
+          (if $traffic==null then {} else {trafficContext:$traffic} end))' "$work/snapshot-base.json" > "$tmpfile" || exit 1
     chmod 600 "$tmpfile" || exit 1
     cmp -s "$work/snapshot-base.json" "$dir/snapshot.json" || exit 1
+    [ "$traffic" = null ] || [ "$traffic" = "$(subscription_services_snapshot_section_traffic_context)" ] || exit 1
     mv "$tmpfile" "$dir/snapshot.json"
 )
 

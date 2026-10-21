@@ -246,7 +246,8 @@ dns_apply_scoped_policy_origin() {
     jq -ce '
       .policy as $policy |
       (if .continuity.mode=="section-only" then
-         {kind:"section-only",section:.continuity.section,policy:$policy}
+         {kind:"section-only",section:.continuity.section,policy:$policy} +
+           (if .continuity.trafficContext==null then {} else {trafficContext:.continuity.trafficContext} end)
        elif .continuity.kind=="dns-only" and .continuity.freshServiceEvidence==false
          and .continuity.policyBasis.kind=="section-only"
          and .continuity.policyBasis.policy==$policy then .continuity.policyBasis
@@ -276,8 +277,15 @@ dns_apply_scoped_policy_validate() (
     [ ! -L "$root" ] && [ -s "$root/context.sha256" ] && [ ! -L "$root/context.sha256" ] || exit 1
     context="$(cat "$root/context.sha256")" || exit 1
     if [ -n "${DA_LEGACY_CONTEXT:-}" ]; then
-        case "$context" in ''|*[!a-f0-9]*) exit 1;; esac
-        [ "${#context}" = 64 ] && [ "$context" = "$DA_LEGACY_CONTEXT" ] || exit 1
+        [ "$context" = "$DA_LEGACY_CONTEXT" ] || exit 1
+        case "$context" in
+          v2:*)
+            [ "${#context}" = 67 ] || exit 1
+            printf '%s' "$origin" | jq -e --arg checkpoint "$context" --arg desired "$(podkop_section_context_hash)" \
+              '.trafficContext=={checkpoint:$checkpoint,desired:$desired}' >/dev/null || exit 1;;
+          *) case "$context" in ''|*[!a-f0-9]*) exit 1;; esac
+             [ "${#context}" = 64 ] || exit 1;;
+        esac
     else
         case "$context" in v2:*) [ "${#context}" = 67 ] || exit 1;; *) exit 1;; esac
         [ "$context" = "$(podkop_section_context_hash)" ] || exit 1
@@ -397,6 +405,16 @@ dns_apply_context_ready() {
     [ -s "$DA_ROOT/context.sha256" ] && [ ! -L "$DA_ROOT/context.sha256" ] || return 1
     saved="$(cat "$DA_ROOT/context.sha256")" && current="$(podkop_section_context_hash)" || return 1
     [ "$saved" != "$current" ] || { DA_PREPARATION_ERROR=''; return 0; }
+    case "$saved:$current" in v2:*:v2:*)
+        # A real isolated apply records both the old global checkpoint and
+        # exact saved intent. Preserve that distinction; never bless drift.
+        DA_LEGACY_CONTEXT="$saved"
+        if [ -n "${DA_SNAPSHOT:-}" ] && dns_apply_scoped_policy_validate "$DA_SNAPSHOT" &&
+           printf '%s\n' "$saved" > "$DA_WORK/legacy-context"; then
+            DA_PREPARATION_ERROR=''; return 0
+        fi
+        DA_LEGACY_CONTEXT=''; return 1;;
+    esac
     case "$saved" in ''|*[!a-f0-9]*) :;; *)
         if [ "${#saved}" = 64 ]; then
             case "$current" in v2:*)
@@ -639,6 +657,9 @@ dns_apply_successor() {
         case "$kind" in
           snapshot)
             basis="$(dns_apply_scoped_policy_origin "$DA_WORK/before.$number")" || basis=null
+            case "${DA_LEGACY_CONTEXT:-}" in v2:*)
+                basis="$(printf '%s' "$basis" | jq -ce --arg desired "$(podkop_section_context_hash)" '.trafficContext.desired=$desired')" || return 1;;
+            esac
             jq --arg config "$config" --arg policy "$policy" --argjson basis "$basis" --arg legacy "${DA_LEGACY_CONTEXT:-}" --slurpfile rows "$rows" '
               {config:.config,policy:.policy,contexts:[.sections[]|{section,context}]} as $origin |
               .config=$config | .policy=(if $basis==null then $policy else .policy end) |

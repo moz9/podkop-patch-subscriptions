@@ -7012,6 +7012,24 @@ async function handleApply(sectionCode) {
     if (PodkopShellMethods.getSubscriptionOperationStatus) await refreshSubscriptionRuntimeStatus();
   }
 }
+async function refreshSubscriptionSources(target) {
+  if (target?.sourceId) return PodkopShellMethods.updateSubscriptions(target.sectionCode,target.sourceId);
+  const targets=store.get().subscriptionItemsWidget.data.flatMap(section=>(section.sources||[]).map(source=>({sectionCode:section.code,sourceId:source.id})));
+  if (!targets.length) return PodkopShellMethods.updateSubscriptions();
+  let failure;
+  for (let index=0;index<targets.length;index++) {
+    const source=targets[index];
+    setActionState({action:'refresh',actionStatus:'running',actionMessage:`Читаем подписку ${source.sectionCode} (${index+1}/${targets.length}). Рабочий прокси не перезапускается.`});
+    const result=await PodkopShellMethods.updateSubscriptions(source.sectionCode,source.sourceId);
+    // A transport timeout is not proof the mutation ended. Stop dispatching;
+    // the existing status reconciliation keeps retries behind the shared lock.
+    if (!result.success || typeof result.data?.success!=='boolean' || result.data.error==='service_busy') {
+      throw new Error(result.error||result.data?.error||'subscription_update_unconfirmed');
+    }
+    if (!result.data.success) failure ||= result;
+  }
+  return failure||{success:true,data:{success:true}};
+}
 async function handleRefreshSubscriptions(target) {
   if (!canRefreshSubscriptions()) {
     return;
@@ -7035,7 +7053,7 @@ async function handleRefreshSubscriptions(target) {
     actionMessage: "Скачиваем подписки без перезапуска работающего прокси."
   });
   try {
-    const result = await PodkopShellMethods.updateSubscriptions(target?.sectionCode, target?.sourceId);
+    const result = await refreshSubscriptionSources(target);
     if (!result.success || !result.data.success) {
       throw new Error(result.success ? result.data.error || result.data.output : result.error);
     }

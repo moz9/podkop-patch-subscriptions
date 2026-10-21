@@ -36,8 +36,16 @@ SNAPSHOT_CAPTURE=1; SNAPSHOT_FAILED=0; SNAPSHOT_SECTIONS="$tmp/sections"
 subscription_services_snapshot_section main
 [ "$SNAPSHOT_FAILED" = 0 ] || fail 'manual admission cannot be frozen'
 jq -e '.admittedIds==["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"] and (.evidence|map(.id)|sort)==.admittedIds and (.admittedLinks|length)==2' "$tmp/sections" >/dev/null || fail 'manual ID/link/evidence omitted from snapshot'
+jq -s '{sections:.}' "$tmp/sections" > "$tmp/frozen"
+SNAPSHOT_BASE="$tmp/frozen"; SNAPSHOT_CAPTURE=0; SNAPSHOT_SECTIONS="$tmp/reused"
+jq '.[1].services.exit_country.state="unknown"' "$tmp/evidence" > "$tmp/next"; mv "$tmp/next" "$tmp/evidence"
+SNAPSHOT_FAILED=0; subscription_services_snapshot_section main
+[ "$SNAPSHOT_FAILED" = 0 ] || fail 'unknown later observation revoked frozen manual admission'
+jq -e '.evidence[1].services.exit_country.state=="pass"' "$tmp/reused" >/dev/null || fail 'frozen manual proof was replaced with unknown cache data'
 jq '.[1].services.exit_country.state="fail"' "$tmp/evidence" > "$tmp/next"; mv "$tmp/next" "$tmp/evidence"
 ! subscription_services_manual_ready main '["exit_country"]' || fail 'manual explicit denial ignored'
+SNAPSHOT_FAILED=0; subscription_services_snapshot_section main
+[ "$SNAPSHOT_FAILED" = 1 ] || fail 'explicit denial silently reused frozen manual admission'
 fixture_manual_link="${fixture_manual_link}-Changed"
 ! subscription_services_manual_ready main '["exit_country"]' || fail 'new URI reused old manual proof'
 echo 'PASS: manual nodes resolve exactly, require service proof and join frozen admission; missing/denied/changed nodes fail closed'
