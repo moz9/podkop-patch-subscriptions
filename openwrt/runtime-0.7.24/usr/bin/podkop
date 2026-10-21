@@ -2133,7 +2133,7 @@ refresh_subscription_cache() {
     subscription_reconcile_choices "$merged_items_file" "$merged_skipped_links_file" > "$deduped_items_file" || merge_failed=1
     if [ "$merge_failed" -gt 0 ] || ! subscription_filter_source_links "$deduped_items_file" "$deduped_all_links_file" "$deduped_links_file" \
         "$(subscription_disabled_sources_json "$section")" \
-        "$(jq -Rsc 'split("\n") | map(select(length > 0))' "$excluded_ids_file")" "$section" || [ ! -s "$deduped_links_file" ]; then
+        "$(jq -Rsc 'split("\n") | map(select(length > 0))' "$excluded_ids_file")" "$section"; then
         log "No active subscription configs remain; keeping the previous cache" "warn"
         rm -f "$urls_file" "$merged_links_file" "$deduped_links_file" "$merged_all_links_file" \
             "$deduped_all_links_file" "$merged_skipped_links_file" "$deduped_skipped_links_file" \
@@ -2142,7 +2142,14 @@ refresh_subscription_cache() {
     fi
     items_json="$(cat "$deduped_items_file")"
 
-    if [ ! -f "$cache_path" ] || ! cmp -s "$deduped_links_file" "$cache_path"; then
+    # subscription_catalog_refresh_v1: reading a valid catalog is not applying
+    # it. Expired service proofs may leave zero eligible nodes after DNS edits.
+    # Publish their honest preview while retaining the old working links;
+    # explicit Apply still requires fresh proof and nonempty admission.
+    if [ ! -s "$deduped_links_file" ]; then
+        log "Subscription catalog refreshed; no eligible new nodes, retaining previous working links" "info"
+    fi
+    if [ -s "$deduped_links_file" ] && { [ ! -f "$cache_path" ] || ! cmp -s "$deduped_links_file" "$cache_path"; }; then
         tmp_cache="$cache_path.tmp.$$"
         if cp "$deduped_links_file" "$tmp_cache" && mv "$tmp_cache" "$cache_path"; then
             chmod 600 "$cache_path" 2> /dev/null

@@ -5,6 +5,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 . "$repo/openwrt/podkop-subscription-sources.sh"
 source_action_runtime="$repo/openwrt/runtime-0.7.23/usr/bin/podkop"
+[ -f "$source_action_runtime" ] || source_action_runtime="$repo/openwrt/runtime-0.7.20/usr/bin/podkop"
 source_action_functions='refresh_subscription_cache subscription_update_section_handler subscription_update subscription_update_json'
 if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
     source_action_runtime="$repo/openwrt/runtime-0.7.24/usr/bin/podkop"
@@ -40,7 +41,7 @@ download_subscription_to_file() {
     printf '%s\n' "$1" >> "$work/downloads"
     [ "${download_fail:-0}" -eq 0 ] || return 1
     [ "${failed_url:-}" != "$1" ] || return 1
-    printf '%s\n' new shared > "$2"
+    printf '%s\n' "${download_link:-new}" shared > "$2"
 }
 normalize_subscription_file() { [ "${invalid_format:-0}" -eq 0 ] && cp "$1" "$2"; }
 filter_working_subscription_proxy_links() {
@@ -84,6 +85,13 @@ invalid_format=0; failed_url=https://two.example/sub
 subscription_update_json '' | jq -e '.success==true' >/dev/null || { echo 'FAIL: healthy subscription blocked by a failed peer'; exit 1; }
 jq -e --arg other "$other" 'any(.[];.id==$other)' "$work/main.items" >/dev/null
 jq -e --arg two "$two" '.[$two]=="download_failed"' "$work/main.items.refresh-errors" >/dev/null
+failed_url=''; download_link=brandnew
+subscription_services_policy() { printf '{"required":["gemini"],"results":[]}\n'; }
+working_before="$(sha256sum "$work/main.links")"
+subscription_update_json main "$one" | jq -e '.success==true' >/dev/null || { echo 'FAIL: stale service evidence blocks a read-only catalog refresh'; exit 1; }
+[ "$(sha256sum "$work/main.links")" = "$working_before" ] || { echo 'FAIL: unadmitted refreshed catalog replaced the retained working links'; exit 1; }
+brandnew="$(get_subscription_link_id brandnew)"
+jq -e --arg id "$brandnew" 'any(.[];.id==$id) and all(.[];.runtimeEnabled==false)' "$work/main.items" >/dev/null || { echo 'FAIL: refreshed catalog or fail-closed service preview missing'; exit 1; }
 busy=1
 subscription_update_json main "$one" | jq -e '.success==false' >/dev/null
 subscription_update_json '' | jq -e '.success==false and .error=="service_busy" and .retryAfter>0' >/dev/null || { echo 'FAIL: global busy update must not report success'; exit 1; }
