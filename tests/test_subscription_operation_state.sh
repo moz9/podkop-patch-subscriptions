@@ -20,3 +20,14 @@ get_subscription_operation_status | jq -e '.busy' >/dev/null
 worker=''; touch "$work/pending"
 get_subscription_operation_status | jq -e '.busy==false and .pending' >/dev/null
 echo 'PASS: operation status follows live locks/workers and pending activation'
+
+# A retired pool's marker must not keep the current UI in pending state.
+podkop_section_single_mode() { return 0; }
+podkop_section_names() { echo '["main"]'; }
+podkop_section_manager() { echo '{"ready":true,"sections":[{"section":"main","ready":true}]}'; }
+subscription_pending_sections_json() { cat "$work/pending"; }
+printf '["GEOBLOCK"]\n' > "$work/pending"
+get_subscription_operation_status | jq -e '.pending==false and .pendingSections==[]' >/dev/null
+printf '["GEOBLOCK","main"]\n' > "$work/pending"
+get_subscription_operation_status | jq -e '.pending and .pendingSections==["main"]' >/dev/null
+echo 'PASS: pending status ignores retired sections without rewriting the marker'

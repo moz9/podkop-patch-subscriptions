@@ -48,6 +48,13 @@ jq '.endpoints=[{type:"wireguard",tag:"wg"}]' "$work/runtime.json" > "$work/endp
 if db_clone_runtime udp 1.1.1.1 8.8.8.8 "$work/unsupported.json" udp "$work/endpoint.json" "$work/choices.json"; then fail 'kernel-mutating endpoints accepted'; fi
 jq -n '{proxies:{}}' > "$work/no-choices.json"
 if db_clone_runtime udp 1.1.1.1 8.8.8.8 "$work/unsupported.json" udp "$work/runtime.json" "$work/no-choices.json"; then fail 'unknown current selector was guessed'; fi
+# A one-member group has no ambiguous choice, even when an engine version
+# omits its redundant `now` field. Multiple members still require API proof.
+jq '.outbounds |= map(if .tag=="selected" or .tag=="auto" then .outbounds=["node-a"] else . end)' "$work/runtime.json" > "$work/single-member.json"
+db_clone_runtime udp 1.1.1.1 8.8.8.8 "$work/single-member-clone.json" udp "$work/single-member.json" "$work/no-choices.json" || fail 'deterministic single-member selection rejected'
+jq -e 'all(.outbounds[]|select(.type=="selector");.default=="node-a")' "$work/single-member-clone.json" >/dev/null || fail 'single-member clone chose another node'
+jq -n '{proxies:{selected:{now:"foreign-node"},auto:{now:"node-a"}}}' > "$work/foreign-choices.json"
+if db_clone_runtime udp 1.1.1.1 8.8.8.8 "$work/unsupported.json" udp "$work/single-member.json" "$work/foreign-choices.json"; then fail 'foreign reported selection was ignored'; fi
 printf 'rule-cache-fixture' > "$work/live-cache.db"
 jq --arg cache "$work/live-cache.db" '.experimental.cache_file.path=$cache|.route.rule_set=[{type:"remote",tag:"main-youtube-community-ruleset",url:"https://github.com/itdoginfo/allow-domains/releases/latest/download/youtube.srs",format:"binary"}]|.route.rules[1].rule_set=["main-youtube-community-ruleset"]|.dns.rules[0].rule_set=["main-youtube-community-ruleset"]' "$work/runtime.json" > "$work/cached-runtime.json"
 db_clone_runtime udp 1.1.1.1 8.8.8.8 "$work/cached-clone.json" udp "$work/cached-runtime.json" "$work/choices.json" || fail 'cached rules clone rejected'

@@ -2,6 +2,14 @@
 set -eu
 
 test_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+sh "$test_dir/test_config_change_apply_initd.sh"
+sh "$test_dir/test_engine_config_change_trigger.sh"
+sh "$test_dir/test_engine_trigger_full_install.sh"
+sh "$test_dir/test_config_apply_boundary.sh"
+sh "$test_dir/test_init_backup_integrity.sh"
+node "$test_dir/test_subscription_read_unknown.mjs"
+sh "$test_dir/test_dns_single_choice.sh"
+sh "$test_dir/test_routerdesk_payload.sh"
 sh "$test_dir/test_single_hooks.sh"
 sh "$test_dir/test_diagnostic_policy.sh"
 sh "$test_dir/test_dns_light_policy.sh"

@@ -33,7 +33,7 @@ comma_string_to_json_array() { printf '%s' "$1" | jq -Rc 'split(",")'; }
 url_get_host() { printf '%s\n' "$1"; }
 is_ipv4() { return 0; }
 sing_box_cf_add_dns_server() { printf '%s\n' "$1"; }
-sed -n '/^sing_box_configure_dns() {$/,/^}$/p' "$runtime" > "$work/dns"
+sed -n '/^load_active_dns_settings() {$/,/^}$/p; /^sing_box_configure_dns() {$/,/^}$/p' "$runtime" > "$work/dns"
 sed -n '/^sing_box_configure_experimental() {$/,/^}$/p' "$runtime" > "$work/experimental"
 . "$work/dns"
 . "$work/experimental"

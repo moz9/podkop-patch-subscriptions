@@ -11,7 +11,7 @@ for suite in \
     pe_dns_two_stage pe_dns_verified pe_dns_reserve pe_dns_status_race \
     pe_dns_bootstrap_safety pe_dns_failover_safety pe_dns_failover_signals \
     pe_dns_parallel pe_dns_resource_safety pe_dns_oom_priority pe_dns_cancel_identity \
-    pe_dns_apply pe_dns_delivery pe_dns_protocols dns_catalog_delivery dns_diagnostic_bounded \
+    pe_dns_apply dns_legacy_context dns_cache_continuity pe_update_channel dns_scoped_policy pe_dns_delivery pe_dns_protocols dns_catalog_delivery dns_diagnostic_bounded \
     release_metadata_sync subscription_apply_backend_v2 subscription_apply_contract \
     subscription_seamless_refresh subscription_deferred subscription_hwid_placeholder_guard \
     subscription_sources subscription_sources_delivery subscription_isolated_probe subscription_probe_context \

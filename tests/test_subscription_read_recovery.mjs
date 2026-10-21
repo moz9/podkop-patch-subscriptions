@@ -111,6 +111,7 @@ for (const [label, setup, expected] of [
     store: {get: () => ({subscriptionItemsWidget: widget}), set: update => {widget = {...widget, ...update.subscriptionItemsWidget};}},
     canRefreshSubscriptions: () => {calls.guard++; return true;},
     fetchSubscriptionItems: async (...args) => {calls.fetch.push(args);},
+    refreshSubscriptionRuntimeStatus: async () => {},
     setActionState: () => {calls.writes.push('setActionState'); throw new Error('manual read recovery must not start refresh action');},
     PodkopShellMethods: {updateSubscriptions: async () => {calls.writes.push('updateSubscriptions'); throw new Error('manual read recovery must not update subscriptions');}}
   });

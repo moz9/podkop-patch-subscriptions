@@ -52,6 +52,36 @@ subscription_services_restart_prepare() {
     subscription_services_preflight
 }
 
+# config.change is an explicit request to apply committed UCI (also usable by
+# authenticated automation). Ordinary restart/reload never enters this path.
+# Keep the same admission gate as the subscription Apply button; an event is
+# not service evidence. Commits by DNS/failover alone do not emit this event.
+subscription_config_apply() (
+    local stamp policy pending
+    stamp="${PODKOP_CONFIG_APPLY_STAMP:-/tmp/podkop-config-applied.sha256}"
+    if subscription_runtime_busy || ! subscription_action_lock_acquire config_apply; then
+        log 'Configuration apply deferred: another operation is running' warn
+        return 1
+    fi
+    trap 'subscription_action_lock_release' EXIT
+    trap 'exit 1' HUP INT TERM
+    pending="$(uci -q changes podkop)" || return 1
+    [ -z "$pending" ] || { log 'Configuration apply refused: unsaved UCI changes' warn; return 1; }
+    policy="$(subscription_services_snapshot_policy_hash)" || return 1
+    [ ! -L "$stamp" ] && [ ! -L "$stamp.tmp.$$" ] || return 1
+    if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$policy" ]; then return 0; fi
+    # The restart itself validates evidence before its first destructive step.
+    # No subscription download, second engine, or broad UCI revert is involved.
+    if ! PODKOP_SUBSCRIPTION_APPLY_NOW=1 PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 restart; then
+        log 'Configuration apply failed; no successful apply receipt was recorded' err
+        return 1
+    fi
+    # shutdown_correctly is excluded by this policy hash; any other concurrent
+    # change must not receive a receipt for the configuration we just applied.
+    [ "$(subscription_services_snapshot_policy_hash)" = "$policy" ] || return 1
+    (umask 077; printf '%s\n' "$policy" > "$stamp.tmp.$$") && mv "$stamp.tmp.$$" "$stamp"
+)
+
 subscription_services_continuity_context_ready() {
     local expected actual
     if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then

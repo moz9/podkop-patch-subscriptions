@@ -25,7 +25,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261012-pe-v17-0724-prepared"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261021-pe-v23-stability"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -63,7 +63,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_PE_PODKOP_FILE="runtime-0.7.24/usr/bin/podkop"
 RUNTIME_PE_PODKOP_JS_FILE="runtime-0.7.24/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261012_pe_v17_0724_prepared"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261021_pe_v23_stability"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -71,6 +71,7 @@ INSTALLER_ACTION_LOCK_FILE="${PODKOP_PATCH_ACTION_LOCK_FILE:-/tmp/podkop-subscri
 INSTALLER_ACTION_LOCK_DIR="${PODKOP_PATCH_ACTION_LOCK_DIR:-/tmp/podkop-subscription-action.lock.d}"
 BACKUP_ROOT="${PODKOP_PATCH_BACKUP_ROOT:-/root}"
 PODKOP_INIT_SCRIPT="${PODKOP_PATCH_PODKOP_INIT_SCRIPT:-/etc/init.d/podkop}"
+ENGINE_INIT_SCRIPT="${PODKOP_PATCH_ENGINE_INIT_SCRIPT:-/etc/init.d/sing-box}"
 PODKOP_RUNTIME_BIN="${PODKOP_PATCH_PODKOP_RUNTIME_BIN:-/usr/bin/podkop}"
 DNS_FAILOVER_INIT_SCRIPT="${PODKOP_PATCH_DNS_FAILOVER_INIT_SCRIPT:-/etc/init.d/podkop-dns-failover}"
 LUCI_UHTTPD_CONFIG_FILE="${PODKOP_PATCH_UHTTPD_CONFIG_FILE:-/etc/config/uhttpd}"
@@ -80,6 +81,7 @@ LUCI_UHTTPD_UBUS_MODULE="${PODKOP_PATCH_UHTTPD_UBUS_MODULE:-/usr/lib/uhttpd_ubus
 RUNTIME_FILES="
 usr/bin/podkop
 etc/init.d/podkop
+etc/init.d/sing-box
 usr/bin/podkop-dns-optimizer
 usr/bin/podkop-dns-benchmark
 usr/bin/podkop-dns-apply
@@ -113,6 +115,14 @@ www/luci-static/resources/view/podkop/settings.js
 www/luci-static/resources/view/podkop/dashboard.js
 www/luci-static/resources/view/podkop/diagnostic.js
 www/luci-static/resources/view/podkop/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261021_pe_v23_stability/main.js
+www/luci-static/resources/view/podkop_patch_20261021_pe_v23_stability/podkop.js
+www/luci-static/resources/view/podkop_patch_20261021_pe_v23_stability/section.js
+www/luci-static/resources/view/podkop_patch_20261021_pe_v23_stability/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261021_pe_v23_stability/settings.js
+www/luci-static/resources/view/podkop_patch_20261021_pe_v23_stability/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261021_pe_v23_stability/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261021_pe_v23_stability/dns_benchmark.js
 
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/main.js
 www/luci-static/resources/view/podkop_patch_20260813_reliability_responsive_v1/podkop.js
@@ -201,14 +211,14 @@ www/luci-static/resources/view/podkop_patch_20261007_pe_v8/diagnostic.js
 www/luci-static/resources/view/podkop_patch_20261007_pe_v8/dns_benchmark.js
 
 usr/lib/lua/luci/i18n/podkop.ru.lmo
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/main.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/podkop.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/section.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/settings.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261012_pe_v17_0724_prepared/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v22_routerdesk/main.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v22_routerdesk/podkop.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v22_routerdesk/section.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v22_routerdesk/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v22_routerdesk/settings.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v22_routerdesk/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v22_routerdesk/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261019_pe_v22_routerdesk/dns_benchmark.js
 "
 
 PERSISTENT_PATHS="
@@ -1060,6 +1070,10 @@ has_latest_subscription_backend() {
 		grep -Fqx '# subscription_service_filter_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_safe_restart_v1:' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_safe_init_restart_v1' "$PODKOP_INIT_SCRIPT" 2>/dev/null &&
+        grep -Fqx 'subscription_config_apply() (' /usr/bin/podkop 2>/dev/null &&
+        grep -Fqx 'subscription_config_apply)' /usr/bin/podkop 2>/dev/null &&
+        grep -Fq 'exec /usr/bin/podkop subscription_config_apply' "$PODKOP_INIT_SCRIPT" 2>/dev/null &&
+        grep -Fq 'procd_add_config_trigger "config.change" "podkop"' "$ENGINE_INIT_SCRIPT" 2>/dev/null &&
 		sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'set_subscription_sections_enabled' &&
 		grep -q '^get_subscription_operation_status)' /usr/bin/podkop 2>/dev/null &&
 		grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop 2>/dev/null &&
@@ -2004,10 +2018,15 @@ if ! sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop | grep 
     ! grep -Fqx '# subscription_service_filter_v1' /usr/bin/podkop ||
     ! grep -Fq '# subscription_safe_restart_v1:' /usr/bin/podkop ||
     ! grep -Fq '# subscription_safe_init_restart_v1' "$PODKOP_INIT_SCRIPT" ||
+    ! grep -Fqx 'subscription_config_apply() (' /usr/bin/podkop ||
+    ! grep -Fqx 'subscription_config_apply)' /usr/bin/podkop ||
+    ! grep -Fq 'exec /usr/bin/podkop subscription_config_apply' "$PODKOP_INIT_SCRIPT" ||
+    ! grep -Fq 'procd_add_config_trigger "config.change" "podkop"' "$ENGINE_INIT_SCRIPT" ||
     ! sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop | grep -q 'set_subscription_sections_enabled' ||
     ! grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop; then
     PODKOP_SOURCES_SOURCE="$tmp_dir/podkop.runtime-0.7.24" \
         PODKOP_SOURCES_INIT_TARGET="$PODKOP_INIT_SCRIPT" \
+        PODKOP_SOURCES_ENGINE_INIT_TARGET="$ENGINE_INIT_SCRIPT" \
         sh "$tmp_dir/$SOURCES_UPGRADE_FILE" || abort_with_restore "subscription source controls upgrade failed"
 fi
 

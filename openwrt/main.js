@@ -4269,6 +4269,7 @@ function renderSystemInfo({ items, footer }) {
 // src/podkop/tabs/diagnostic/partials/renderUpdateCenter.ts
 function statusText(status) {
   const messages = {
+    routerdesk_update_required: "Доступен новый патч. Установите его через RouterDesk: с резервной копией и проверкой завершения.",
     checking_updates: "\u041F\u0440\u043E\u0432\u0435\u0440\u044F\u0435\u043C \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F \u0438 \u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u043E\u0441\u0442\u044C\u2026",
     updates_available: "\u0414\u043E\u0441\u0442\u0443\u043F\u043D\u044B \u0441\u043E\u0432\u043C\u0435\u0441\u0442\u0438\u043C\u044B\u0435 \u043E\u0431\u043D\u043E\u0432\u043B\u0435\u043D\u0438\u044F.",
     up_to_date: "Podkop \u0438 \u043F\u0430\u0442\u0447 \u0430\u043A\u0442\u0443\u0430\u043B\u044C\u043D\u044B.",
@@ -5584,7 +5585,7 @@ function renderToolbar({
   const blocked = runtimeStatus?.busy || runtimeStatus?.unknown;
   const canRunAction = !loading && !failed && !applying && !actionRunning && !blocked;
   const canRunSubscriptionAction = canRunAction && pendingCount === 0;
-  const canRefresh = !loading && !applying && !actionRunning && !blocked && (failed || applyUnconfirmed || pendingCount === 0);
+  const canRefresh = !loading && !applying && !actionRunning && !runtimeStatus?.busy && (!runtimeStatus?.unknown || failed || applyUnconfirmed) && (failed || applyUnconfirmed || pendingCount === 0);
   const canApply = (pendingCount > 0 || runtimeStatus?.pending) && canRunAction;
   const canReset = pendingCount > 0 && !applying && !actionRunning;
   return E(
@@ -6462,7 +6463,7 @@ function renderSubscriptionSections({
         target:actionTarget,
         modeDisabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying",
         disabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || pendingCount > 0,
-        refreshDisabled:applying || loading || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || (!failed && !applyUnconfirmed && pendingCount > 0),
+        refreshDisabled:applying || loading || runtimeStatus?.busy || (runtimeStatus?.unknown && !failed && !applyUnconfirmed) || actionStatus === "running" || actionStatus === "verifying" || (!failed && !applyUnconfirmed && pendingCount > 0),
         speedRunning:action === "speed" && actionStatus === "running",
         serviceRunning:action === "services" && actionStatus === "running",
         serviceSection:actionTarget?.sectionCode,
@@ -6632,7 +6633,7 @@ function canRunServiceAction() {
 }
 function canRefreshSubscriptions() {
   const widget = store.get().subscriptionItemsWidget;
-  return !widget.loading && !widget.applying && !widget.applyVerification && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && (widget.failed || getPendingCount2(widget.pendingChanges) === 0 || !!widget.applyUnconfirmed);
+  return !widget.loading && !widget.applying && !widget.applyVerification && !widget.runtimeStatus?.busy && (!widget.runtimeStatus?.unknown || widget.failed || !!widget.applyUnconfirmed) && !isActionRunning() && (widget.failed || getPendingCount2(widget.pendingChanges) === 0 || !!widget.applyUnconfirmed);
 }
 function setActionState({
   action,
@@ -7018,6 +7019,7 @@ async function handleRefreshSubscriptions(target) {
       await refreshSubscriptionRuntimeStatus();
       return;
     }
+    await refreshSubscriptionRuntimeStatus();
     await fetchSubscriptionItems("idle");
     return;
   }

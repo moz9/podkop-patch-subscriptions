@@ -186,7 +186,8 @@ get_subscription_operation_status() {
         else single_pending_sections='[]'; fi
         printf '%s' "$single_status" | jq -c --argjson busy "$single_busy" --argjson pending "$single_pending" \
             --argjson names "$single_names" --argjson pendingSections "$single_pending_sections" \
-            '{busy:$busy,pending:$pending,pendingSections:$pendingSections,runtimeMode:"single",isolatedSection:($names[0]//""),isolatedSections:$names,sections:(.sections//[]),isolatedReady:(.ready==true and ($names|length)>0),retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+            '($pendingSections|map(select(. as $s|$names|index($s)))|unique) as $currentPending |
+             {busy:$busy,pending:($currentPending|length>0),pendingSections:$currentPending,runtimeMode:"single",isolatedSection:($names[0]//""),isolatedSections:$names,sections:(.sections//[]),isolatedReady:(.ready==true and ($names|length)>0),retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
         return
     fi
     local busy=false pending=false isolated="" ready=false isolated_sections='[]' section_status='[]' status pending_sections='[]'

@@ -1452,7 +1452,8 @@ get_subscription_operation_status() {
         else single_pending_sections='[]'; fi
         printf '%s' "$single_status" | jq -c --argjson busy "$single_busy" --argjson pending "$single_pending" \
             --argjson names "$single_names" --argjson pendingSections "$single_pending_sections" \
-            '{busy:$busy,pending:$pending,pendingSections:$pendingSections,runtimeMode:"single",isolatedSection:($names[0]//""),isolatedSections:$names,sections:(.sections//[]),isolatedReady:(.ready==true and ($names|length)>0),retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+            '($pendingSections|map(select(. as $s|$names|index($s)))|unique) as $currentPending |
+             {busy:$busy,pending:($currentPending|length>0),pendingSections:$currentPending,runtimeMode:"single",isolatedSection:($names[0]//""),isolatedSections:$names,sections:(.sections//[]),isolatedReady:(.ready==true and ($names|length)>0),retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
         return
     fi
     local busy=false pending=false isolated="" ready=false isolated_sections='[]' section_status='[]' status pending_sections='[]'
@@ -4174,6 +4175,36 @@ subscription_services_restart_prepare() {
     subscription_services_preflight
 }
 
+# config.change is an explicit request to apply committed UCI (also usable by
+# authenticated automation). Ordinary restart/reload never enters this path.
+# Keep the same admission gate as the subscription Apply button; an event is
+# not service evidence. Commits by DNS/failover alone do not emit this event.
+subscription_config_apply() (
+    local stamp policy pending
+    stamp="${PODKOP_CONFIG_APPLY_STAMP:-/tmp/podkop-config-applied.sha256}"
+    if subscription_runtime_busy || ! subscription_action_lock_acquire config_apply; then
+        log 'Configuration apply deferred: another operation is running' warn
+        return 1
+    fi
+    trap 'subscription_action_lock_release' EXIT
+    trap 'exit 1' HUP INT TERM
+    pending="$(uci -q changes podkop)" || return 1
+    [ -z "$pending" ] || { log 'Configuration apply refused: unsaved UCI changes' warn; return 1; }
+    policy="$(subscription_services_snapshot_policy_hash)" || return 1
+    [ ! -L "$stamp" ] && [ ! -L "$stamp.tmp.$$" ] || return 1
+    if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$policy" ]; then return 0; fi
+    # The restart itself validates evidence before its first destructive step.
+    # No subscription download, second engine, or broad UCI revert is involved.
+    if ! PODKOP_SUBSCRIPTION_APPLY_NOW=1 PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 restart; then
+        log 'Configuration apply failed; no successful apply receipt was recorded' err
+        return 1
+    fi
+    # shutdown_correctly is excluded by this policy hash; any other concurrent
+    # change must not receive a receipt for the configuration we just applied.
+    [ "$(subscription_services_snapshot_policy_hash)" = "$policy" ] || return 1
+    (umask 077; printf '%s\n' "$policy" > "$stamp.tmp.$$") && mv "$stamp.tmp.$$" "$stamp"
+)
+
 subscription_services_continuity_context_ready() {
     local expected actual
     if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
@@ -4698,6 +4729,10 @@ subscription_patch_update_status_file() {
 }
 
 subscription_patch_update() {
+    if [ -x /usr/bin/podkop-update-manager ]; then
+        /usr/bin/podkop-update-manager update_start
+        return $?
+    fi
     local status_file runner patch_update_start_stop_daemon_v1 patch_update_noop_v1 patch_update_podkop_update_v1
 
     patch_update_start_stop_daemon_v1=1
@@ -4823,6 +4858,10 @@ EOF
     echo '{"success":true,"started":true}'
 }
 get_subscription_patch_update_status() {
+    if [ -x /usr/bin/podkop-update-manager ]; then
+        /usr/bin/podkop-update-manager status
+        return $?
+    fi
     local status_file
 
     status_file="$(subscription_patch_update_status_file)"
@@ -4831,6 +4870,21 @@ get_subscription_patch_update_status() {
     else
         echo '{"state":"idle","message":"","updatedAt":"","logTail":""}'
     fi
+}
+
+subscription_patch_update_check() {
+    if [ ! -x /usr/bin/podkop-update-manager ]; then
+        echo '{"success":false,"error":"update_manager_missing"}'
+        return 1
+    fi
+    /usr/bin/podkop-update-manager check_start
+}
+
+get_subscription_patch_update_log() {
+    if [ ! -x /usr/bin/podkop-update-manager ]; then
+        return 0
+    fi
+    /usr/bin/podkop-update-manager log
 }
 
 subscription_action_lock_file() {
@@ -5300,15 +5354,39 @@ configure_outbound_handler() {
     esac
 }
 
+load_active_dns_settings() {
+    local failover_enabled active_slot secondary_dns_type secondary_dns_server secondary_bootstrap_dns_server
+    config_get ACTIVE_DNS_TYPE "settings" "dns_type" "doh"
+    config_get ACTIVE_DNS_SERVER "settings" "dns_server" "1.1.1.1"
+    config_get ACTIVE_BOOTSTRAP_DNS_SERVER "settings" "bootstrap_dns_server" "77.88.8.8"
+    config_get_bool failover_enabled "settings" "dns_failover_enabled" "0"
+    config_get active_slot "settings" "dns_failover_active_slot" "primary"
+    ACTIVE_DNS_SLOT="primary"
+    if [ "$failover_enabled" -eq 1 ] && [ "$active_slot" = secondary ]; then
+        config_get secondary_dns_type "settings" "secondary_dns_type"
+        config_get secondary_dns_server "settings" "secondary_dns_server"
+        config_get secondary_bootstrap_dns_server "settings" "secondary_bootstrap_dns_server"
+        if [ -n "$secondary_dns_type" ] && [ -n "$secondary_dns_server" ] && [ -n "$secondary_bootstrap_dns_server" ]; then
+            ACTIVE_DNS_TYPE="$secondary_dns_type"
+            ACTIVE_DNS_SERVER="$secondary_dns_server"
+            ACTIVE_BOOTSTRAP_DNS_SERVER="$secondary_bootstrap_dns_server"
+            ACTIVE_DNS_SLOT="secondary"
+        else
+            log "Secondary DNS pair is incomplete, using the primary pair" "warn"
+        fi
+    fi
+}
+
 sing_box_configure_dns() {
     log "Configure the DNS section of a sing-box JSON configuration"
     config=$(sing_box_cm_configure_dns "$config" "$SB_DNS_SERVER_TAG" "ipv4_only" true)
 
     log "Adding DNS Servers" "debug"
     local dns_type dns_server bootstrap_dns_server dns_domain_resolver dns_server_address
-    config_get dns_type "settings" "dns_type" "doh"
-    config_get dns_server "settings" "dns_server" "1.1.1.1"
-    config_get bootstrap_dns_server "settings" "bootstrap_dns_server" "77.88.8.8"
+    load_active_dns_settings
+    dns_type="$ACTIVE_DNS_TYPE"
+    dns_server="$ACTIVE_DNS_SERVER"
+    bootstrap_dns_server="$ACTIVE_BOOTSTRAP_DNS_SERVER"
     local bootstrap_dns_type
     config_get bootstrap_dns_type "settings" "bootstrap_dns_type" "udp"
     if [ "${ACTIVE_DNS_SLOT:-primary}" = secondary ]; then
@@ -7435,6 +7513,12 @@ subscription_patch_update)
 get_subscription_patch_update_status)
     get_subscription_patch_update_status
     ;;
+subscription_patch_update_check)
+    subscription_patch_update_check
+    ;;
+get_subscription_patch_update_log)
+    get_subscription_patch_update_log
+    ;;
 check_proxy)
     check_proxy
     ;;
@@ -7479,6 +7563,9 @@ get_subscription_services)
     ;;
 get_subscription_sources)
     get_subscription_sources "$2"
+    ;;
+subscription_config_apply)
+    subscription_config_apply
     ;;
 get_subscription_operation_status)
     get_subscription_operation_status

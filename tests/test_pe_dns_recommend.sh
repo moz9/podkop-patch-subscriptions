@@ -294,7 +294,14 @@ db_measure | jq -e '.reliable==false and .error=="dns_query_failed" and .totalQu
     if db_transport_guards; then fail 'two HTTP timeouts accepted'; fi
     [ "$(wc -l < "$work/curl-attempts")" = 2 ] || fail 'two minute timeouts exceeded retry bound'
     jq -e '.curlExit==28 and .elapsedSeconds==0.1' "$DB_DIR/transport-error.json" >/dev/null || fail 'timeout exit code omitted'
-    db_probe_deadline=$(( $(date +%s)+1 ))
+    # This unit boundary has mocked transport. Freeze its clock so scheduler
+    # delay cannot turn the intended one-second budget into zero attempts.
+    date() { if [ "$*" = +%s ]; then echo 1000; else command date "$@"; fi; }
+    db_probe_deadline=1000
+    : > "$work/curl-attempts"
+    if db_transport_guards; then fail 'expired pair budget accepted'; fi
+    [ "$(wc -l < "$work/curl-attempts")" = 0 ] || fail 'transport started after pair deadline'
+    db_probe_deadline=1001
     : > "$work/curl-attempts"
     if db_transport_guards; then fail 'deadline-constrained timeout accepted'; fi
     [ "$(wc -l < "$work/curl-attempts")" = 1 ] || fail 'retry started without sufficient remaining pair budget'

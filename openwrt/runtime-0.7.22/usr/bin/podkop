@@ -111,15 +111,26 @@ has_outbound_section() {
 }
 
 start_main() {
-    local skip_list_update_started=0 PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=0
+    local skip_list_update_started=0 PODKOP_SERVICE_REUSE_ADMITTED_CONFIG="${PODKOP_SERVICE_RESTART_CONTINUITY:-0}"
 
     log "Starting podkop"
 
-    if ! subscription_services_preflight; then
+    # subscription_safe_start_v1: fresh re-tests never authorize new boot pools.
+    if [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] &&
+       { [ -e "$(subscription_services_snapshot_dir)/snapshot.json" ] || [ -L "$(subscription_services_snapshot_dir)/snapshot.json" ]; }; then
+        subscription_services_snapshot_continuity_prepare || return 1
+        PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=1
+    fi
+
+    if [ "$PODKOP_SERVICE_REUSE_ADMITTED_CONFIG" = 1 ]; then
+        subscription_services_snapshot_continuity_prepare || return 1
+    elif ! subscription_services_preflight; then
         [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] && subscription_services_snapshot_continuity_prepare || return 1
         PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=1
         log "Reusing exact saved admitted runtime; current desired changes are not applied and evidence is not refreshed" warn
     fi
+
+    [ "$PODKOP_SERVICE_REUSE_ADMITTED_CONFIG" != 1 ] || subscription_services_continuity_context_ready || return 1
 
     check_requirements
 
@@ -267,14 +278,17 @@ stop() {
 }
 
 reload() {
-    subscription_services_preflight || return 1
+    local PODKOP_SERVICE_RESTART_CONTINUITY=0
+    subscription_services_restart_prepare || return 1
     log "Podkop reload"
     stop_main
     start_main
 }
 
 restart() {
-    subscription_services_preflight || return 1
+    # subscription_safe_restart_v1: validate before destructive rc.common stop.
+    local PODKOP_SERVICE_RESTART_CONTINUITY=0
+    subscription_services_restart_prepare || return 1
     log "Podkop restart"
     stop
     start
@@ -1234,6 +1248,7 @@ append_subscription_skipped_proxy_link() {
 # subscription_tag_filters_v1
 # subscription_tag_glob_portable_v1
 # subscription_service_filter_v1
+# subscription_game_filter_v1
 subscription_tag_values_append() {
     SUBSCRIPTION_TAG_VALUES="$(printf '%s' "$SUBSCRIPTION_TAG_VALUES" | jq -c --arg value "$1" '. + [$value]')"
 }
@@ -1279,7 +1294,7 @@ subscription_tags_verify() {
 subscription_selection_mode() {
     local mode=''
     config_get mode "$1" subscription_selection_mode
-    case "$mode" in selected) printf 'selected\n' ;; *) printf 'all\n' ;; esac
+    case "$mode" in selected|all) printf '%s\n' "$mode" ;; *) printf 'auto\n' ;; esac
 }
 
 subscription_selected_ids_json() {
@@ -1294,16 +1309,21 @@ subscription_selected_ids_json() {
 # Freeze the current effective choices before applying a mode transition and row edits.
 subscription_selection_prepare() {
     local section="$1" changes="$2" items="$3" excluded="$4" dir="$SUBSCRIPTION_APPLY_V2_TMP"
-    local current mode selected id enabled selection_id was_selected count=0
+    local current mode selected id enabled selection_id was_selected count=0 include_tags='[]' exclude_tags='[]'
     current="$(subscription_selection_mode "$section")"
     mode="$(printf '%s' "$changes" | jq -r --arg current "$current" '.selectionMode // $current')"
     selected="$(subscription_selected_ids_json "$section")" || return 1
     if [ "$mode" != "$current" ]; then
         count=1
-        if [ "$mode" = selected ]; then
+        if [ "$mode" = selected ] && { [ "$current" != auto ] || [ "$selected" = '[]' ]; }; then
             subscription_items_with_sources "$section" "$items" > "$dir/selection.$section.items" || return 1
+            if [ "$current" = auto ]; then
+                include_tags="$(subscription_tags_json "$section" subscription_include_tags)" || return 1
+                exclude_tags="$(subscription_tags_json "$section" subscription_exclude_tags)" || return 1
+            fi
             selected="$(subscription_source_policy "$(subscription_disabled_sources_json "$section")" "$excluded" \
-                "$dir/selection.$section.items" all '[]' | jq -c '[.[] | select(.runtimeEnabled) | .selectionId // .id] | unique')" || return 1
+                "$dir/selection.$section.items" "$current" '[]' "$include_tags" "$exclude_tags" \
+                | jq -c '[.[] | select(.runtimeEnabled) | .selectionId // .id] | unique')" || return 1
         fi
     fi
     if [ "$mode" = selected ]; then
@@ -1395,11 +1415,37 @@ subscription_reconcile_choices() {
 }
 
 get_subscription_operation_status() {
-    local busy=false pending=false
+    # single_runtime_status_v1: scoped settings, shared process lifecycle.
+    if command -v podkop_section_single_mode >/dev/null && podkop_section_single_mode; then
+        local single_busy=false single_pending=false single_names single_status single_pending_sections
+        subscription_runtime_busy && single_busy=true
+        [ ! -f "$(subscription_reload_pending_file)" ] || single_pending=true
+        single_names="$(podkop_section_names)" || single_names='[]'
+        single_status="$(podkop_section_manager status 2>/dev/null)" || single_status='{}'
+        if command -v subscription_pending_sections_json >/dev/null; then
+            single_pending_sections="$(subscription_pending_sections_json)" || single_pending_sections='[]'
+        elif [ "$single_pending" = true ]; then single_pending_sections="$single_names"
+        else single_pending_sections='[]'; fi
+        printf '%s' "$single_status" | jq -c --argjson busy "$single_busy" --argjson pending "$single_pending" \
+            --argjson names "$single_names" --argjson pendingSections "$single_pending_sections" \
+            '($pendingSections|map(select(. as $s|$names|index($s)))|unique) as $currentPending |
+             {busy:$busy,pending:($currentPending|length>0),pendingSections:$currentPending,runtimeMode:"single",isolatedSection:($names[0]//""),isolatedSections:$names,sections:(.sections//[]),isolatedReady:(.ready==true and ($names|length)>0),retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+        return
+    fi
+    local busy=false pending=false isolated="" ready=false isolated_sections='[]' section_status='[]' status pending_sections='[]'
     subscription_runtime_busy && busy=true
     [ ! -f "$(subscription_reload_pending_file)" ] || pending=true
-    jq -cn --argjson busy "$busy" --argjson pending "$pending" \
-        '{busy:$busy,pending:$pending,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+    pending_sections="$(subscription_pending_sections_json)" || pending_sections='[]'
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        isolated="$(podkop_section_name)"
+        isolated_sections="$(podkop_section_names)" || isolated_sections='[]'
+        status="$(podkop_section_manager status 2>/dev/null)" || status='{}'
+        section_status="$(printf '%s' "$status" | jq -ce '.sections // []')" || section_status='[]'
+        printf '%s' "$status" | jq -e --argjson registered "$isolated_sections" '.ready==true and ($registered|length>0) and ((.sections|map(.section)|sort)==($registered|sort)) and all(.sections[];.ready==true)' >/dev/null && ready=true
+    fi
+    jq -cn --argjson busy "$busy" --argjson pending "$pending" --arg isolated "$isolated" --argjson ready "$ready" \
+        --argjson isolatedSections "$isolated_sections" --argjson sections "$section_status" --argjson pendingSections "$pending_sections" \
+        '{busy:$busy,pending:$pending,pendingSections:$pendingSections,isolatedSection:$isolated,isolatedSections:$isolatedSections,sections:$sections,isolatedReady:$ready,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
 }
 
 subscription_cached_source_append() {
@@ -1439,7 +1485,7 @@ subscription_cached_source_append() {
 subscription_source_policy() {
     local services="${8:-}"
     [ -n "$services" ] || services='{"required":[],"results":[]}'
-    printf '%s\n' "$services" | jq -c --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
+    printf '%s\n' "$services" | jq -c --argjson country_map "$(if command -v subscription_services_country_map >/dev/null 2>&1; then subscription_services_country_map; else printf '{}\n'; fi)" --argjson now "$(date +%s)" --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
         --argjson include "${6:-[]}" --argjson exclude "${7:-[]}" --slurpfile policy_items "$3" '
         . as $services
         | ($services.results | map({key:.id,value:.services}) | from_entries) as $service_status
@@ -1483,16 +1529,78 @@ subscription_source_policy() {
                              else $token.value == $chars[$pos] end)
                     | .+1] | unique end)
             | index($chars|length) != null;
-        def matches($patterns; $name): any($patterns[]; glob_matches(.; $name));
+        def country_code($text):
+            ($text | explode) as $codes
+            | if ($codes | length) == 2 and all($codes[]; . >= 65 and . <= 90) then $text else null end;
+        def flag_for($code): [$code | explode[] | . + 127397] | implode;
+        def leading_code($code; $name):
+            ($name | startswith($code)) and
+            (($name | length) == 2 or ([" ","\t","\n","\r","\f",".","_",":","/","-"] | index($name[2:3]) != null));
+        def prefix_matches($code; $name):
+            ($name | contains(flag_for($code))) or leading_code($code; $name);
+        def legacy_flag_code($pattern):
+            ($pattern | explode) as $codes
+            | if ($codes | length) == 4 and $codes[0] == 42 and $codes[3] == 42
+                 and all($codes[1:3][]; . >= 127462 and . <= 127487)
+              then [$codes[1:3][] | . - 127397] | implode
+              else null end;
+        def pattern_matches($pattern; $name):
+            (legacy_flag_code($pattern)) as $legacy_code
+            | if $pattern == "@game:only" then ($name | contains("Игровой") | not)
+              elif $pattern == "@game:exclude" then ($name | contains("Игровой"))
+              elif ($pattern | startswith("@prefix:")) and (country_code($pattern[8:]) != null)
+              then prefix_matches($pattern[8:]; $name)
+              elif $legacy_code != null then prefix_matches($legacy_code; $name)
+              else glob_matches($pattern; $name) end;
+        def matches($patterns; $name): any($patterns[]; pattern_matches(.; $name));
+        def google_declared($name):
+            ($name|explode) as $chars
+            | [range(0; (($chars|length)-1)) | . as $i
+                | select(all($chars[$i:$i+2][]; .>=127462 and .<=127487))
+                | [$chars[$i:$i+2][]|.-127397]|implode] as $flags
+            | (if ($chars|length)>=2 and all($chars[0:2][]; .>=65 and .<=90)
+                and (($chars|length)==2 or ([" ","\t","\n","\r","\f",".","_",":","/","-"]|index($name[2:3])!=null))
+                then [$name[0:2]] else [] end) as $leading
+            | ($flags+$leading|unique) as $candidates
+            | if ($candidates|length)==1 and ($country_map[$candidates[0]]!=null)
+              then $candidates[0] else null end;
         map(. as $item
             | .enabled = (.supported == true and (if $mode=="selected" then
                 ($selected | index($item.selectionId // $item.id)) != null
-                else ($excluded | index($item.id)) == null and ($excluded | index($item.selectionId // $item.id)) == null end))
+                elif $mode=="all" then ($excluded | index($item.id)) == null and ($excluded | index($item.selectionId // $item.id)) == null
+                else true end))
             | .sourceEnabled = (if ((.sourceIds // []) | length) > 0 then
                 any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
                 else ($disabled | length) == 0 end)
             | .tagExcluded = ((($include|length)>0 and (matches($include; $item.name // $item.tag // "")|not)) or matches($exclude; $item.name // $item.tag // ""))
-            | .serviceExcluded = (all($services.required[]; . as $service | $service_status[$item.id][$service].state=="pass") | not)
+            | .serviceExcluded = (all($services.required[]; . as $service
+                | $service_status[$item.id][$service] as $proof
+                | $proof.state=="pass" and (if $service=="exit_country" then
+                    $proof.proofVersion==1 and $proof.manual==false
+                    and $proof.declaredName==($item.name // $item.tag // "")
+                    and ($proof.declaredCountry|type=="string" and length==2)
+                    and $proof.network=="pass"
+                    and $proof.declaredCountry==google_declared($item.name // $item.tag // "")
+                    and ($proof.checkedAt|type=="number") and $proof.checkedAt>0 and $proof.checkedAt<=$now
+                    and ($proof.expiresAt|type=="number") and $proof.expiresAt>$now and $proof.expiresAt<=($proof.checkedAt+86400)
+                    and $proof.exitCountry==$proof.declaredCountry
+                    and ($proof.observations|type=="array" and length==2
+                        and (map(.provider)|sort)==["ipinfo","ipwhois"]
+                        and all(.[]; .valid==true and .country==$proof.exitCountry))
+                  elif $service=="google_country" then
+                    $proof.proofVersion==1 and $proof.manual==false
+                    and $proof.network=="pass" and $proof.httpCode==200
+                    and $proof.declaredName==($item.name // $item.tag // "")
+                    and ($proof.declaredCountry|type=="string" and length==2)
+                    and $proof.declaredCountry==google_declared($item.name // $item.tag // "")
+                    and ($proof.googleCountry|type=="string" and length==2)
+                    and ($proof.region|type=="string" and length==3)
+                    and $country_map[$proof.region]==$proof.googleCountry
+                    and $country_map[$proof.googleCountry]==$proof.region
+                    and $proof.googleCountry==$proof.declaredCountry
+                    and ($proof.checkedAt|type=="number") and $proof.checkedAt>0 and $proof.checkedAt<=$now
+                    and ($proof.expiresAt|type=="number") and $proof.expiresAt>$now and $proof.expiresAt<=($proof.checkedAt+86400)
+                  else true end)) | not)
             | .runtimeEnabled = (.enabled and .sourceEnabled and (.tagExcluded|not) and (.serviceExcluded|not))
             | if .supported then .reason = (if .enabled and .tagExcluded then "tag_filtered" elif .enabled then "" elif $mode=="selected" then "user_unselected" else "user_excluded" end) else . end)
     '
@@ -3543,8 +3651,15 @@ subscription_services_snapshot_dir() {
 }
 
 subscription_services_snapshot_hash() {
-    local digest
+    local digest snapshot_config_path
     [ -f "$1" ] && [ ! -L "$1" ] || return 1
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        config_get snapshot_config_path settings config_path
+        if [ "$1" = "$snapshot_config_path" ]; then
+            podkop_section_runtime_hash "$1"
+            return $?
+        fi
+    fi
     digest="$(sha256sum "$1")" || return 1
     digest="${digest%% *}"
     [ "${#digest}" = 64 ] || return 1
@@ -3554,7 +3669,10 @@ subscription_services_snapshot_hash() {
 
 subscription_services_snapshot_policy_hash() {
     local policy
-    policy="$(uci -q export podkop)" || return 1
+    if [ -n "${PODKOP_DNS_COMMITTED_FILE:-}" ]; then
+        policy="$(uci -q export /proc/self/fd/3 3< "$PODKOP_DNS_COMMITTED_FILE")" || return 1
+        policy="$(printf '%s\n' "$policy" | sed 's/^package 3$/package podkop/')"
+    else policy="$(uci -q export podkop)" || return 1; fi
     [ -n "$policy" ] || return 1
     # Only this operational field changes during normal start/stop.
     printf '%s\n' "$policy" | awk '/^config / {settings=($2=="settings")} !(settings && $1=="option" && $2=="shutdown_correctly")' | sha256sum | awk '{print $1}'
@@ -3563,6 +3681,67 @@ subscription_services_snapshot_policy_hash() {
 subscription_services_snapshot_enabled_section() {
     validate_subscription_urltest_section "$1" || return 0
     [ "$(subscription_required_services_json "$1")" = '[]' ] || SNAPSHOT_HAS_REQUIRED=1
+}
+
+subscription_services_restart_prepare() {
+    # Service/config-triggered restarts are not permission to apply new pools.
+    # Explicit apply keeps its fresh-evidence gate and transactional workflow.
+    PODKOP_SERVICE_RESTART_CONTINUITY=0
+    SNAPSHOT_HAS_REQUIRED=0
+    config_foreach subscription_services_snapshot_enabled_section section
+    if [ "$SNAPSHOT_HAS_REQUIRED" = 1 ] && [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ]; then
+        subscription_services_continuity_context_ready || return 1
+        subscription_services_snapshot_continuity_prepare || return 1
+        PODKOP_SERVICE_RESTART_CONTINUITY=1
+        return 0
+    fi
+    subscription_services_preflight
+}
+
+# config.change is an explicit request to apply committed UCI (also usable by
+# authenticated automation). Ordinary restart/reload never enters this path.
+# Keep the same admission gate as the subscription Apply button; an event is
+# not service evidence. Commits by DNS/failover alone do not emit this event.
+subscription_config_apply() (
+    local stamp policy pending
+    stamp="${PODKOP_CONFIG_APPLY_STAMP:-/tmp/podkop-config-applied.sha256}"
+    if subscription_runtime_busy || ! subscription_action_lock_acquire config_apply; then
+        log 'Configuration apply deferred: another operation is running' warn
+        return 1
+    fi
+    trap 'subscription_action_lock_release' EXIT
+    trap 'exit 1' HUP INT TERM
+    pending="$(uci -q changes podkop)" || return 1
+    [ -z "$pending" ] || { log 'Configuration apply refused: unsaved UCI changes' warn; return 1; }
+    policy="$(subscription_services_snapshot_policy_hash)" || return 1
+    [ ! -L "$stamp" ] && [ ! -L "$stamp.tmp.$$" ] || return 1
+    if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$policy" ]; then return 0; fi
+    # The restart itself validates evidence before its first destructive step.
+    # No subscription download, second engine, or broad UCI revert is involved.
+    if ! PODKOP_SUBSCRIPTION_APPLY_NOW=1 PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 restart; then
+        log 'Configuration apply failed; no successful apply receipt was recorded' err
+        return 1
+    fi
+    # shutdown_correctly is excluded by this policy hash; any other concurrent
+    # change must not receive a receipt for the configuration we just applied.
+    [ "$(subscription_services_snapshot_policy_hash)" = "$policy" ] || return 1
+    (umask 077; printf '%s\n' "$policy" > "$stamp.tmp.$$") && mv "$stamp.tmp.$$" "$stamp"
+)
+
+subscription_services_continuity_context_ready() {
+    local expected actual
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        if command -v podkop_section_context_matches >/dev/null && podkop_section_context_matches; then return 0; fi
+        # v2 excludes documented selection/diagnostic drafts, but retains all
+        # traffic-affecting settings. Only exact applied context may restart.
+        expected="$(cat "$(podkop_section_root)/context.sha256" 2>/dev/null)" || return 1
+        case "$expected" in v2:*) [ "${#expected}" = 67 ] || return 1;; *) return 1;; esac
+        actual="$(podkop_section_context_hash)" || return 1
+        [ "$expected" = "$actual" ] || {
+            log 'Saved runtime traffic context differs from desired settings; keeping the running service unchanged' warn
+            return 1
+        }
+    fi
 }
 
 subscription_services_snapshot_capacity() (
@@ -3591,8 +3770,38 @@ subscription_services_snapshot_capacity() (
     [ "$free_kb" -ge $(((total + 1023)/1024 + 1024)) ]
 )
 
+subscription_services_snapshot_observations() {
+    local section="$1" ids="$2" row expected current required
+    if [ "${SNAPSHOT_CAPTURE:-1}" != 1 ] &&
+        jq -e --arg s "$section" '.sections[]|select(.section==$s)|has("evidence")' "$SNAPSHOT_BASE" >/dev/null; then
+        row="$(jq -cS --arg s "$section" '.sections[]|select(.section==$s)|.evidence|sort_by(.id)' "$SNAPSHOT_BASE")" || return 1
+        expected="$(jq -er --arg s "$section" '.sections[]|select(.section==$s)|.service' "$SNAPSHOT_BASE")" || return 1
+        [ "$(printf '%s\n' "$row" | sha256sum | awk '{print $1}')" = "$expected" ] || return 1
+        # Strict reuse still honors a current definitive denial. Expiry,
+        # eviction and unknown observations do not revoke frozen admission.
+        if command -v subscription_services_read >/dev/null 2>&1; then
+            current="$(subscription_services_read "$section")" || return 1
+        elif [ -s "$(subscription_services_cache_path "$section")" ]; then
+            current="$(jq -c '.results//[]' "$(subscription_services_cache_path "$section")")" || return 1
+        else current='[]'; fi
+        required="$(jq -c --arg s "$section" '.sections[]|select(.section==$s)|.requiredServices//[]' "$SNAPSHOT_BASE")" || return 1
+        [ "$required" != '[]' ] || required="$(subscription_required_services_json "$section")" || return 1
+        printf '%s' "$current" | jq -e --argjson ids "$ids" --argjson required "$required" '
+          all(.[]; if (.id as $id|$ids|index($id)!=null) then
+            . as $r | all($required[]; . as $s | $r.services[$s].state!="fail")
+          else true end)' >/dev/null || return 1
+        printf '%s\n' "$row"
+    else
+        if command -v subscription_services_cache_raw >/dev/null 2>&1; then
+            subscription_services_cache_raw "$section"
+        else
+            cat "$(subscription_services_cache_path "$section")"
+        fi | jq -cS --argjson ids "$ids" '[.results[]? | select(.id as $id | $ids|index($id)!=null)] | sort_by(.id)'
+    fi
+}
+
 subscription_services_snapshot_section() {
-    local section="$1" required cache all items context service_sha link id ids='[]' links='[]' hash policy row
+    local section="$1" required cache all items context service_sha link id ids='[]' links='[]' hash policy row evidence
     validate_subscription_urltest_section "$section" || return 0
     required="$(subscription_required_services_json "$section")" || { SNAPSHOT_FAILED=1; return 0; }
     [ "$required" != '[]' ] || return 0
@@ -3625,11 +3834,13 @@ subscription_services_snapshot_section() {
         links="$(printf '%s' "$links" | jq -c --arg id "$id" --arg sha "$hash" '.+[{id:$id,sha:$sha}] | unique_by(.id) | sort_by(.id)')" || { SNAPSHOT_FAILED=1; return 0; }
     done < "$all"
     [ "$(printf '%s' "$links" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || { SNAPSHOT_FAILED=1; return 0; }
-    row="$(jq -cS --argjson ids "$ids" '[.results[]? | select(.id as $id | $ids|index($id)!=null)] | sort_by(.id)' "$(subscription_services_cache_path "$section")")" || { SNAPSHOT_FAILED=1; return 0; }
+    row="$(subscription_services_snapshot_observations "$section" "$ids")" || { SNAPSHOT_FAILED=1; return 0; }
     [ "$(printf '%s' "$row" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || { SNAPSHOT_FAILED=1; return 0; }
     service_sha="$(printf '%s\n' "$row" | sha256sum | awk '{print $1}')"
-    printf '%s' "$links" | jq -c --arg section "$section" --arg context "$context" --arg service "$service_sha" \
-        '{section:$section,context:$context,service:$service,admittedIds:map(.id),admittedLinks:.}' >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
+    evidence=null
+    if [ "$SNAPSHOT_CAPTURE" = 1 ] || jq -e --arg s "$section" '.sections[]|select(.section==$s)|has("evidence")' "$SNAPSHOT_BASE" >/dev/null; then evidence="$row"; fi
+    printf '%s\n%s\n' "$links" "${evidence:-null}" | jq -cs --arg section "$section" --arg context "$context" --arg service "$service_sha" --argjson required "$required" \
+        '.[0] as $links | .[1] as $evidence | {section:$section,context:$context,service:$service,requiredServices:$required,admittedIds:($links|map(.id)),admittedLinks:$links} + (if $evidence==null then {} else {evidence:$evidence} end)' >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
 }
 
 subscription_services_snapshot_save() (
@@ -3691,6 +3902,83 @@ subscription_services_snapshot_save() (
     case "$previous" in generation.*) case "${previous#generation.}" in ''|*[!A-Za-z0-9]*) ;; *) [ -L "$dir/$previous" ] || rm -rf "$dir/$previous";; esac;; esac
 )
 
+subscription_services_snapshot_section_stage() (
+    # Structural manager isolation is required separately. Never capture peers or
+    # claim that pending shared UCI settings were applied by a worker-only apply.
+    local target="$1" work="$2" dir manifest config_path config_sha name hash generation
+    case "$target" in ''|*[!A-Za-z0-9_]*) exit 1;; esac
+    [ -d "$work" ] && [ ! -L "$work" ] || exit 1
+    dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
+    [ ! -L "$manifest" ] && [ ! -L "$dir" ] || exit 1
+    if [ ! -e "$manifest" ]; then
+        SNAPSHOT_HAS_REQUIRED=0
+        config_foreach subscription_services_snapshot_enabled_section section
+        [ "$SNAPSHOT_HAS_REQUIRED" = 0 ] || exit 1
+        : > "$work/snapshot-unfiltered"
+        exit 0
+    fi
+    [ -s "$manifest" ] || exit 1
+    config_get config_path settings config_path
+    config_sha="$(subscription_services_snapshot_hash "$config_path")" || exit 1
+    # A stale compound hash can be reconstructed only when this target is the
+    # sole required-service admission. There are then no unknown peers to bless.
+    SNAPSHOT_SECTIONS="$work/required-sections.jsonl"; : > "$SNAPSHOT_SECTIONS"
+    SNAPSHOT_FAILED=0
+    config_foreach subscription_services_snapshot_continuity_section section
+    [ "$SNAPSHOT_FAILED" = 0 ] || exit 1
+    jq -e --arg sha "$config_sha" --arg target "$target" --slurpfile required "$SNAPSHOT_SECTIONS" '
+        .version==1 and (.config==$sha or (all($required[]; .==$target) and all(.sections[]; .section==$target)))
+        and (.sections|type=="array") and (.rules|type=="array" and length<=128)
+        and (.sections|map(.section)|length==(unique|length))
+        and (.rules|map(.name)|length==(unique|length))' "$manifest" >/dev/null || exit 1
+    jq -e --arg folder "$TMP_RULESET_FOLDER/" --slurpfile saved "$manifest" '
+        [.route.rule_set[]? | select(.type=="local") | .path] | unique | sort
+        == ($saved[0].rules | map($folder+.name) | sort)' "$config_path" >/dev/null || exit 1
+    generation="$(jq -r '.generation' "$manifest")"
+    case "$generation" in generation.*) case "${generation#generation.}" in ''|*[!A-Za-z0-9]*) exit 1;; esac;; *) exit 1;; esac
+    [ ! -L "$dir/$generation" ] && [ ! -L "$TMP_RULESET_FOLDER" ] || exit 1
+    jq -r '.rules[] | [.name,.sha] | @tsv' "$manifest" > "$work/snapshot-rules" || exit 1
+    while IFS="$(printf '\t')" read -r name hash; do
+        case "$name" in ''|.|..|*[!A-Za-z0-9_.-]*) exit 1;; esac
+        [ "$(subscription_services_snapshot_hash "$dir/$generation/$name")" = "$hash" ] &&
+        [ "$(subscription_services_snapshot_hash "$TMP_RULESET_FOLDER/$name")" = "$hash" ] || exit 1
+    done < "$work/snapshot-rules"
+    cp "$manifest" "$work/snapshot-base.json" || exit 1
+    SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED=0
+    subscription_services_preflight_section "$target"
+    [ "$SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED" = 0 ] || exit 1
+    SNAPSHOT_SECTIONS="$work/snapshot-target.jsonl"
+    : > "$SNAPSHOT_SECTIONS"
+    SNAPSHOT_FAILED=0; SNAPSHOT_CAPTURE=1
+    subscription_services_snapshot_section "$target"
+    [ "$SNAPSHOT_FAILED" = 0 ] || exit 1
+)
+
+subscription_services_snapshot_section_commit() (
+    local target="$1" work="$2" dir config_path config_sha tmpfile name hash
+    dir="$(subscription_services_snapshot_dir)"
+    if [ -f "$work/snapshot-unfiltered" ]; then
+        [ ! -e "$dir/snapshot.json" ] && [ ! -L "$dir/snapshot.json" ] || exit 1
+        exit 0
+    fi
+    cmp -s "$work/snapshot-base.json" "$dir/snapshot.json" || exit 1
+    subscription_sing_box_reload_ready || exit 1
+    config_get config_path settings config_path
+    config_sha="$(subscription_services_snapshot_hash "$config_path")" || exit 1
+    sing-box check -c "$config_path" >/dev/null 2>&1 || exit 1
+    while IFS="$(printf '\t')" read -r name hash; do
+        [ "$(subscription_services_snapshot_hash "$TMP_RULESET_FOLDER/$name")" = "$hash" ] || exit 1
+    done < "$work/snapshot-rules"
+    tmpfile="$(mktemp "$dir/snapshot.section.XXXXXX")" || exit 1
+    trap 'rm -f "$tmpfile"' EXIT INT TERM HUP
+    jq --arg target "$target" --arg config "$config_sha" --slurpfile row "$work/snapshot-target.jsonl" '
+        .config=$config | .sections=((.sections|map(select(.section!=$target)))+$row|sort_by(.section))
+        | .continuity={mode:"section-only",section:$target}' "$work/snapshot-base.json" > "$tmpfile" || exit 1
+    chmod 600 "$tmpfile" || exit 1
+    cmp -s "$work/snapshot-base.json" "$dir/snapshot.json" || exit 1
+    mv "$tmpfile" "$dir/snapshot.json"
+)
+
 subscription_services_snapshot_continuity_section() {
     local section="$1" required
     validate_subscription_urltest_section "$section" || return 0
@@ -3705,7 +3993,7 @@ subscription_services_snapshot_continuity_prepare() (
     local dir manifest config_path config_sha
     dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
     [ -s "$manifest" ] && [ ! -L "$dir" ] && [ ! -L "$manifest" ] || exit 1
-    jq -e '.version==1 and (.sections|type=="array" and length>0)
+    jq -e '.version==1 and (.sections|type=="array")
         and all(.sections[]; (.section|type=="string" and length>0)
             and (.admittedIds|type=="array" and length>0))
         and (.sections|map(.section)|length== (unique|length))' "$manifest" >/dev/null || exit 1
@@ -6615,6 +6903,9 @@ get_subscription_services)
     ;;
 get_subscription_sources)
     get_subscription_sources "$2"
+    ;;
+subscription_config_apply)
+    subscription_config_apply
     ;;
 get_subscription_operation_status)
     get_subscription_operation_status

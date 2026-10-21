@@ -196,6 +196,14 @@ start_main || fail 'desired draft blocked unchanged saved-runtime continuity'
 cmp -s "$tmp/config" "$tmp/original-config" || fail 'continuity changed saved runtime graph'
 [ "$before" = "$(sha256sum "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json")" ] || fail 'continuity refreshed evidence'
 unset policy_value
+proof_fresh=1
+PODKOP_SERVICE_RESTART_CONTINUITY=1
+start_main || fail 'guarded restart did not start exact admitted runtime'
+[ ! -e "$tmp/generated" ] || fail 'fresh evidence regenerated graph during ordinary admitted restart'
+[ ! -e "$tmp/migrated" ] || fail 'ordinary admitted restart applied desired migration'
+[ "$before" = "$(sha256sum "$PODKOP_SERVICE_SNAPSHOT_DIR/snapshot.json")" ] || fail 'ordinary admitted restart refreshed admission'
+unset PODKOP_SERVICE_RESTART_CONTINUITY
+proof_fresh=0
 unset benchmark_catalog
 cp "$tmp/original-services" "$tmp/services"
 section_enabled=0
@@ -242,7 +250,9 @@ printf 'different existing rule\n' > "$TMP_RULESET_FOLDER/user-main.json"
 cp "$tmp/original-rule" "$TMP_RULESET_FOLDER/user-main.json"
 proof_fresh=1
 df() { printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nfixture 2000 1900 100 95%% /\n'; }
+PODKOP_SUBSCRIPTION_APPLY_NOW=1
 start_main && fail 'required-filter start reported success without a safe snapshot' || :
+unset PODKOP_SUBSCRIPTION_APPLY_NOW
 unset -f df
 cp "$tmp/original-config" "$tmp/config"
 cp "$tmp/original-config" "$tmp/candidate"

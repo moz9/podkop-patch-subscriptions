@@ -510,7 +510,8 @@ db_clone_runtime_raw() {
       (.dns.final//"dns-server") as $main |
       [(.dns.servers[]|select(.tag!="bootstrap")|.tag)] as $old |
       .outbounds |= map(if .type=="selector" or .type=="urltest" then
-        . as $group | ($choices[0].proxies[.tag].now//"") as $now |
+        . as $group | ($choices[0].proxies[.tag].now//"") as $reported |
+        (if $reported=="" and (.outbounds|length)==1 then .outbounds[0] else $reported end) as $now |
         if ($now!="" and (.outbounds|index($now))!=null) then
           .type="selector" | .default=$now | del(.url,.interval,.tolerance,.idle_timeout)
         else error("active_selection_unavailable") end
