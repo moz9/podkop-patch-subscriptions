@@ -111,19 +111,32 @@ has_outbound_section() {
 }
 
 start_main() {
-    local skip_list_update_started=0 PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=0
+    local skip_list_update_started=0 PODKOP_SERVICE_REUSE_ADMITTED_CONFIG="${PODKOP_SERVICE_RESTART_CONTINUITY:-0}"
 
     log "Starting podkop"
 
-    if ! subscription_services_preflight; then
-        [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] && subscription_services_snapshot_prepare || return 1
+    # subscription_safe_start_v1: fresh re-tests never authorize new boot pools.
+    if [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] &&
+       { [ -e "$(subscription_services_snapshot_dir)/snapshot.json" ] || [ -L "$(subscription_services_snapshot_dir)/snapshot.json" ]; }; then
+        subscription_services_snapshot_continuity_prepare || return 1
         PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=1
-        log "Service evidence expired; starting the exact previously admitted runtime without new candidates" warn
     fi
+
+    if [ "$PODKOP_SERVICE_REUSE_ADMITTED_CONFIG" = 1 ]; then
+        subscription_services_snapshot_continuity_prepare || return 1
+    elif ! subscription_services_preflight; then
+        [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] && subscription_services_snapshot_continuity_prepare || return 1
+        PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=1
+        log "Reusing exact saved admitted runtime; current desired changes are not applied and evidence is not refreshed" warn
+    fi
+
+    [ "$PODKOP_SERVICE_REUSE_ADMITTED_CONFIG" != 1 ] || subscription_services_continuity_context_ready || return 1
 
     check_requirements
 
-    migration
+    if [ "$PODKOP_SERVICE_REUSE_ADMITTED_CONFIG" = 0 ]; then
+        migration
+    fi
 
     config_foreach process_validate_service "section"
 
@@ -153,9 +166,9 @@ start_main() {
 
     # sing-box
     if ! (sing_box_init_config); then
-        [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] && subscription_services_snapshot_prepare || return 1
+        [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] && subscription_services_snapshot_continuity_prepare || return 1
         PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=1
-        log "Generation declined; retaining the exact previously admitted runtime" warn
+        log "Generation declined; reusing exact saved runtime without applying current desired changes" warn
     fi
     remove_cron_job
     config_foreach add_cron_job "section"
@@ -265,14 +278,17 @@ stop() {
 }
 
 reload() {
-    subscription_services_preflight || return 1
+    local PODKOP_SERVICE_RESTART_CONTINUITY=0
+    subscription_services_restart_prepare || return 1
     log "Podkop reload"
     stop_main
     start_main
 }
 
 restart() {
-    subscription_services_preflight || return 1
+    # subscription_safe_restart_v1: validate before destructive rc.common stop.
+    local PODKOP_SERVICE_RESTART_CONTINUITY=0
+    subscription_services_restart_prepare || return 1
     log "Podkop restart"
     stop
     start
@@ -1232,6 +1248,7 @@ append_subscription_skipped_proxy_link() {
 # subscription_tag_filters_v1
 # subscription_tag_glob_portable_v1
 # subscription_service_filter_v1
+# subscription_game_filter_v1
 subscription_tag_values_append() {
     SUBSCRIPTION_TAG_VALUES="$(printf '%s' "$SUBSCRIPTION_TAG_VALUES" | jq -c --arg value "$1" '. + [$value]')"
 }
@@ -1277,7 +1294,7 @@ subscription_tags_verify() {
 subscription_selection_mode() {
     local mode=''
     config_get mode "$1" subscription_selection_mode
-    case "$mode" in selected) printf 'selected\n' ;; *) printf 'all\n' ;; esac
+    case "$mode" in selected|all) printf '%s\n' "$mode" ;; *) printf 'auto\n' ;; esac
 }
 
 subscription_selected_ids_json() {
@@ -1292,16 +1309,21 @@ subscription_selected_ids_json() {
 # Freeze the current effective choices before applying a mode transition and row edits.
 subscription_selection_prepare() {
     local section="$1" changes="$2" items="$3" excluded="$4" dir="$SUBSCRIPTION_APPLY_V2_TMP"
-    local current mode selected id enabled selection_id was_selected count=0
+    local current mode selected id enabled selection_id was_selected count=0 include_tags='[]' exclude_tags='[]'
     current="$(subscription_selection_mode "$section")"
     mode="$(printf '%s' "$changes" | jq -r --arg current "$current" '.selectionMode // $current')"
     selected="$(subscription_selected_ids_json "$section")" || return 1
     if [ "$mode" != "$current" ]; then
         count=1
-        if [ "$mode" = selected ]; then
+        if [ "$mode" = selected ] && { [ "$current" != auto ] || [ "$selected" = '[]' ]; }; then
             subscription_items_with_sources "$section" "$items" > "$dir/selection.$section.items" || return 1
+            if [ "$current" = auto ]; then
+                include_tags="$(subscription_tags_json "$section" subscription_include_tags)" || return 1
+                exclude_tags="$(subscription_tags_json "$section" subscription_exclude_tags)" || return 1
+            fi
             selected="$(subscription_source_policy "$(subscription_disabled_sources_json "$section")" "$excluded" \
-                "$dir/selection.$section.items" all '[]' | jq -c '[.[] | select(.runtimeEnabled) | .selectionId // .id] | unique')" || return 1
+                "$dir/selection.$section.items" "$current" '[]' "$include_tags" "$exclude_tags" \
+                | jq -c '[.[] | select(.runtimeEnabled) | .selectionId // .id] | unique')" || return 1
         fi
     fi
     if [ "$mode" = selected ]; then
@@ -1437,7 +1459,7 @@ subscription_cached_source_append() {
 subscription_source_policy() {
     local services="${8:-}"
     [ -n "$services" ] || services='{"required":[],"results":[]}'
-    printf '%s\n' "$services" | jq -c --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
+    printf '%s\n' "$services" | jq -c --argjson country_map "$(if command -v subscription_services_country_map >/dev/null 2>&1; then subscription_services_country_map; else printf '{}\n'; fi)" --argjson now "$(date +%s)" --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
         --argjson include "${6:-[]}" --argjson exclude "${7:-[]}" --slurpfile policy_items "$3" '
         . as $services
         | ($services.results | map({key:.id,value:.services}) | from_entries) as $service_status
@@ -1481,16 +1503,78 @@ subscription_source_policy() {
                              else $token.value == $chars[$pos] end)
                     | .+1] | unique end)
             | index($chars|length) != null;
-        def matches($patterns; $name): any($patterns[]; glob_matches(.; $name));
+        def country_code($text):
+            ($text | explode) as $codes
+            | if ($codes | length) == 2 and all($codes[]; . >= 65 and . <= 90) then $text else null end;
+        def flag_for($code): [$code | explode[] | . + 127397] | implode;
+        def leading_code($code; $name):
+            ($name | startswith($code)) and
+            (($name | length) == 2 or ([" ","\t","\n","\r","\f",".","_",":","/","-"] | index($name[2:3]) != null));
+        def prefix_matches($code; $name):
+            ($name | contains(flag_for($code))) or leading_code($code; $name);
+        def legacy_flag_code($pattern):
+            ($pattern | explode) as $codes
+            | if ($codes | length) == 4 and $codes[0] == 42 and $codes[3] == 42
+                 and all($codes[1:3][]; . >= 127462 and . <= 127487)
+              then [$codes[1:3][] | . - 127397] | implode
+              else null end;
+        def pattern_matches($pattern; $name):
+            (legacy_flag_code($pattern)) as $legacy_code
+            | if $pattern == "@game:only" then ($name | contains("Игровой") | not)
+              elif $pattern == "@game:exclude" then ($name | contains("Игровой"))
+              elif ($pattern | startswith("@prefix:")) and (country_code($pattern[8:]) != null)
+              then prefix_matches($pattern[8:]; $name)
+              elif $legacy_code != null then prefix_matches($legacy_code; $name)
+              else glob_matches($pattern; $name) end;
+        def matches($patterns; $name): any($patterns[]; pattern_matches(.; $name));
+        def google_declared($name):
+            ($name|explode) as $chars
+            | [range(0; (($chars|length)-1)) | . as $i
+                | select(all($chars[$i:$i+2][]; .>=127462 and .<=127487))
+                | [$chars[$i:$i+2][]|.-127397]|implode] as $flags
+            | (if ($chars|length)>=2 and all($chars[0:2][]; .>=65 and .<=90)
+                and (($chars|length)==2 or ([" ","\t","\n","\r","\f",".","_",":","/","-"]|index($name[2:3])!=null))
+                then [$name[0:2]] else [] end) as $leading
+            | ($flags+$leading|unique) as $candidates
+            | if ($candidates|length)==1 and ($country_map[$candidates[0]]!=null)
+              then $candidates[0] else null end;
         map(. as $item
             | .enabled = (.supported == true and (if $mode=="selected" then
                 ($selected | index($item.selectionId // $item.id)) != null
-                else ($excluded | index($item.id)) == null and ($excluded | index($item.selectionId // $item.id)) == null end))
+                elif $mode=="all" then ($excluded | index($item.id)) == null and ($excluded | index($item.selectionId // $item.id)) == null
+                else true end))
             | .sourceEnabled = (if ((.sourceIds // []) | length) > 0 then
                 any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
                 else ($disabled | length) == 0 end)
             | .tagExcluded = ((($include|length)>0 and (matches($include; $item.name // $item.tag // "")|not)) or matches($exclude; $item.name // $item.tag // ""))
-            | .serviceExcluded = (all($services.required[]; . as $service | $service_status[$item.id][$service].state=="pass") | not)
+            | .serviceExcluded = (all($services.required[]; . as $service
+                | $service_status[$item.id][$service] as $proof
+                | $proof.state=="pass" and (if $service=="exit_country" then
+                    $proof.proofVersion==1 and $proof.manual==false
+                    and $proof.declaredName==($item.name // $item.tag // "")
+                    and ($proof.declaredCountry|type=="string" and length==2)
+                    and $proof.network=="pass"
+                    and $proof.declaredCountry==google_declared($item.name // $item.tag // "")
+                    and ($proof.checkedAt|type=="number") and $proof.checkedAt>0 and $proof.checkedAt<=$now
+                    and ($proof.expiresAt|type=="number") and $proof.expiresAt>$now and $proof.expiresAt<=($proof.checkedAt+86400)
+                    and $proof.exitCountry==$proof.declaredCountry
+                    and ($proof.observations|type=="array" and length==2
+                        and (map(.provider)|sort)==["ipinfo","ipwhois"]
+                        and all(.[]; .valid==true and .country==$proof.exitCountry))
+                  elif $service=="google_country" then
+                    $proof.proofVersion==1 and $proof.manual==false
+                    and $proof.network=="pass" and $proof.httpCode==200
+                    and $proof.declaredName==($item.name // $item.tag // "")
+                    and ($proof.declaredCountry|type=="string" and length==2)
+                    and $proof.declaredCountry==google_declared($item.name // $item.tag // "")
+                    and ($proof.googleCountry|type=="string" and length==2)
+                    and ($proof.region|type=="string" and length==3)
+                    and $country_map[$proof.region]==$proof.googleCountry
+                    and $country_map[$proof.googleCountry]==$proof.region
+                    and $proof.googleCountry==$proof.declaredCountry
+                    and ($proof.checkedAt|type=="number") and $proof.checkedAt>0 and $proof.checkedAt<=$now
+                    and ($proof.expiresAt|type=="number") and $proof.expiresAt>$now and $proof.expiresAt<=($proof.checkedAt+86400)
+                  else true end)) | not)
             | .runtimeEnabled = (.enabled and .sourceEnabled and (.tagExcluded|not) and (.serviceExcluded|not))
             | if .supported then .reason = (if .enabled and .tagExcluded then "tag_filtered" elif .enabled then "" elif $mode=="selected" then "user_unselected" else "user_excluded" end) else . end)
     '
@@ -1581,8 +1665,8 @@ subscription_sources_prepare() {
             SUBSCRIPTION_SOURCES_ERROR=service_snapshot_storage_unavailable
             return 1
         fi
-        if [ "$required" != '[]' ] && command -v collect_urltest_proxy_links >/dev/null 2>&1 && collect_urltest_proxy_links "$section" "$dir/services.$section.manual" && [ -s "$dir/services.$section.manual" ]; then
-            SUBSCRIPTION_SOURCES_ERROR=service_manual_links_unsupported
+        if [ "$required" != '[]' ] && ! subscription_services_manual_ready "$section" "$required"; then
+            SUBSCRIPTION_SOURCES_ERROR=service_manual_results_stale_or_missing
             return 1
         fi
         printf '%s\n' "$required" > "$dir/services.$section.required" || return 1
@@ -3084,13 +3168,18 @@ subscription_isolated_test() {
     umask 077
     work="$(mktemp -d /tmp/podkop-subscription-probe.XXXXXX)" || probe_error temporary_directory_failed
     items="$(get_subscription_items_cache_path "$section")"
-    jq -e --arg id "$item_id" 'any(.[]; .id == $id and .supported == true)' "$items" >/dev/null 2>&1 || probe_error subscription_link_not_available
     link=""
-    while IFS= read -r candidate || [ -n "$candidate" ]; do
+    if jq -e --arg id "$item_id" 'any(.[]; .id == $id and .supported == true)' "$items" >/dev/null 2>&1; then
+      while IFS= read -r candidate || [ -n "$candidate" ]; do
         if [ "$(get_subscription_link_id "$candidate")" = "$item_id" ]; then link="$candidate"; break; fi
-    done < "$(get_subscription_all_cache_path "$section")"
+      done < "$(get_subscription_all_cache_path "$section")"
+    elif [ "$mode" = services ] && command -v subscription_services_manual_link >/dev/null 2>&1; then
+      link="$(subscription_services_manual_link "$section" "$item_id")" || probe_error subscription_link_not_available
+    fi
     [ -n "$link" ] || probe_error subscription_link_not_available
-    name="$(jq -r --arg id "$item_id" '.[] | select(.id == $id) | .name' "$items")"
+    if [ "$mode" = services ]; then name="$(subscription_services_candidate_name "$section" "$item_id")" || probe_error subscription_link_not_available
+    else name="$(jq -r --arg id "$item_id" '.[] | select(.id == $id) | .name' "$items")"; fi
+    probe_stage=dns_config
     config="$(jq -ce 'select(.dns|type=="object")' /etc/sing-box/config.json)" || probe_error dns_config_invalid
     config_get udp_over_tcp "$section" enable_udp_over_tcp
     config="$(sing_box_cf_add_proxy_outbound "$config" subscription-probe "$link" "$udp_over_tcp" 2>"$work/parser.log")" || probe_error invalid_config
@@ -3168,18 +3257,28 @@ subscription_speedtest() {
 # subscription_gemini_region_v2
 # Public website diagnostics only: no API keys, cookies or production selectors.
 subscription_services_catalog() {
-    printf '%s\n' '[{"id":"gemini","label":"Gemini Web","proof":"preliminary_or_manual"},{"id":"chatgpt","label":"ChatGPT Web","proof":"preliminary_or_manual"}]'
+    printf '%s\n' '[{"id":"gemini","label":"Gemini Web","proof":"preliminary_or_manual"},{"id":"chatgpt","label":"ChatGPT Web","proof":"preliminary_or_manual"},{"id":"exit_country","label":"Exit country matches name","proof":"dual_provider_geo"},{"id":"google_country","label":"Google country matches name","proof":"google_region"}]'
 }
 
 subscription_services_validate() {
-    printf '%s' "$1" | jq -e 'type=="array" and length<=2 and all(.[]; .=="gemini" or .=="chatgpt") and length==(unique|length)' >/dev/null 2>&1
+    printf '%s' "$1" | jq -e 'type=="array" and length<=4 and all(.[]; .=="gemini" or .=="chatgpt" or .=="exit_country" or .=="google_country") and length==(unique|length)' >/dev/null 2>&1
 }
 
 subscription_required_services_json() {
-    local values
-    values="$(subscription_tags_json "$1" subscription_required_services)" || return 1
+    local values lists raw
+    if [ -n "${PODKOP_DNS_COMMITTED_FILE:-}" ]; then
+        [ -r "$PODKOP_DNS_COMMITTED_FILE" ] && [ ! -L "$PODKOP_DNS_COMMITTED_FILE" ] || return 1
+        raw="$(uci -q get "/proc/self/fd/3.$1.subscription_required_services" 3< "$PODKOP_DNS_COMMITTED_FILE" 2>/dev/null || true)"
+        values="$(printf '%s\n' "$raw" | jq -Rc 'split(" ")|map(select(length>0))')" || return 1
+        raw="$(uci -q get "/proc/self/fd/3.$1.community_lists" 3< "$PODKOP_DNS_COMMITTED_FILE" 2>/dev/null || true)"
+        lists="$(printf '%s\n' "$raw" | jq -Rc 'split(" ")|map(select(length>0))')" || return 1
+    else
+        values="$(subscription_tags_json "$1" subscription_required_services)" || return 1
+        lists="$(subscription_tags_json "$1" community_lists)" || return 1
+    fi
     subscription_services_validate "$values" || return 1
-    printf '%s\n' "$values"
+    # Exact known lists only; generic lists never imply geo/application tests.
+    printf '%s' "$values" | jq -c --argjson lists "$lists" '. + (if ($lists|index("google_ai"))!=null then ["gemini"] else [] end) | unique'
 }
 
 subscription_services_context() {
@@ -3187,9 +3286,14 @@ subscription_services_context() {
     config_get udp "$1" enable_udp_over_tcp
     # DNS/profile changes invalidate observations, but changing the working selector does not.
     dns="$(jq -ceS '.dns | select(type=="object" and (.servers|type=="array"))' /etc/sing-box/config.json)" || return 1
-    settings="$(uci -q show podkop.settings)" || return 1
+    if [ -n "${PODKOP_DNS_COMMITTED_FILE:-}" ]; then
+        settings="$(uci -q show /proc/self/fd/3.settings 3< "$PODKOP_DNS_COMMITTED_FILE")" || return 1
+        settings="$(printf '%s\n' "$settings" | sed 's|^[^=]*\.settings|podkop.settings|')"
+    else settings="$(uci -q show podkop.settings)" || return 1; fi
     # Bind desired DNS settings too, so edits before a runtime rebuild cannot reuse old checks.
-    settings="$(printf '%s\n' "$settings" | sed '/^podkop.settings.shutdown_correctly=/d' | LC_ALL=C sort)"
+    # Catalog choices affect diagnostics, not the active resolver or proxy.
+    # Keep unknown settings conservative: a new routing option must invalidate.
+    settings="$(printf '%s\n' "$settings" | sed '/^podkop.settings.shutdown_correctly=/d; /^podkop.settings.dns_optimizer_[A-Za-z0-9_]*=/d' | LC_ALL=C sort)"
     { printf '%s\n' "$dns" "$settings"; printf '%s\n' "service-web-v2:$udp"; } | sha256sum | awk '{print $1}'
 }
 
@@ -3197,22 +3301,120 @@ subscription_services_cache_path() {
     printf '%s/%s.json\n' "${PODKOP_SERVICE_CACHE_DIR:-/etc/podkop/subscriptions/service-checks}" "$1"
 }
 
+# Bounded direct-mapped observations: at most 240 x 4 KiB plus one writer.
+# Collisions are cache misses, never admission. Legacy files are read-only
+# migration evidence; no insertion rewrites a section-sized JSON document.
+subscription_services_cache_slot() {
+    local digest prefix
+    digest="$(printf '%s\n%s\n' "$1" "$2" | sha256sum)" || return 1
+    prefix="$(printf '%.2s' "$digest")"
+    printf '%s/observations-v2/%03d.json\n' "${PODKOP_SERVICE_CACHE_DIR:-/etc/podkop/subscriptions/service-checks}" "$((0x$prefix % 240))"
+}
+
+subscription_services_cache_raw() {
+    local section="$1" id="${2:-}" context path slot dir
+    context="$(subscription_services_context "$section")" || return 1
+    path="$(subscription_services_cache_path "$section")"
+    dir="${path%/*}/observations-v2"
+    {
+        # Keep old immutable rows usable until fresh observations replace them.
+        if [ -s "$path" ] && [ ! -L "$path" ] && [ "$(wc -c < "$path")" -le 2097152 ]; then
+            jq -c --arg c "$context" --arg id "$id" 'select(.context==$c)|.results[]?|select($id=="" or .id==$id)' "$path" 2>/dev/null || :
+        fi
+        if [ -n "$id" ]; then
+            slot="$(subscription_services_cache_slot "$context" "$id")" || return 1
+            if [ -f "$slot" ] && [ ! -L "$slot" ] && [ "$(wc -c < "$slot")" -le 4096 ]; then
+                jq -c --arg c "$context" --arg id "$id" 'select(.context==$c and (.results|type=="array" and length==1))|.results[]?|select(.id==$id)' "$slot" 2>/dev/null || :
+            fi
+        elif [ -d "$dir" ] && [ ! -L "$dir" ]; then
+            # Fixed slots bound both the number of inputs and parser memory.
+            set --
+            for slot in "$dir"/[0-9][0-9][0-9].json; do
+                [ -f "$slot" ] && [ ! -L "$slot" ] || continue
+                [ "$(wc -c < "$slot")" -le 4096 ] || continue
+                set -- "$@" "$slot"
+                [ "$#" -lt 240 ] || break
+            done
+            [ "$#" = 0 ] || jq -c --arg c "$context" 'select(.context==$c and (.results|type=="array" and length==1))|.results[]?' "$@" 2>/dev/null || :
+        fi
+    } | jq -sc --arg c "$context" '{context:$c,results:(reduce .[] as $r ({}; .[$r.id]=$r)|[.[]]|sort_by(.checkedAt//0)|.[-240:])}'
+}
+
+subscription_services_cache_lock() {
+    local dir="${PODKOP_SERVICE_CACHE_DIR:-/etc/podkop/subscriptions/service-checks}/observations-v2"
+    umask 077
+    [ ! -L "${dir%/*}" ] && [ ! -L "$dir" ] || return 1
+    mkdir -p "$dir" && chmod 700 "$dir" || return 1
+    # Do not steal an unknown or live owner's lock.
+    if ! mkdir "$dir/write.lock" 2>/dev/null; then
+        local owner
+        owner="$(cat "$dir/write.lock/owner" 2>/dev/null)" || return 1
+        case "$owner" in ''|*[!0-9]*) return 1;; esac
+        [ "$owner" -gt 1 ] && ! kill -0 "$owner" 2>/dev/null || return 1
+        rm -f "$dir/write.lock/row" "$dir/write.lock/owner"
+        rmdir "$dir/write.lock" 2>/dev/null && mkdir "$dir/write.lock" 2>/dev/null || return 1
+    fi
+    printf '%s\n' "$$" > "$dir/write.lock/owner" || return 1
+    SERVICE_CACHE_LOCK="$dir/write.lock"
+    trap 'rm -f "$SERVICE_CACHE_LOCK/row" "$SERVICE_CACHE_LOCK/owner"; rmdir "$SERVICE_CACHE_LOCK" 2>/dev/null || :' EXIT
+    trap 'exit 130' INT TERM HUP
+}
+
+subscription_services_cache_publish() {
+    local section="$1" context="$2" id="$3" slot
+    [ -s "$SERVICE_CACHE_LOCK/row" ] && [ "$(wc -c < "$SERVICE_CACHE_LOCK/row")" -le 4096 ] || return 1
+    jq -e --arg c "$context" --arg id "$id" '.context==$c and (.results|length)==1 and .results[0].id==$id' "$SERVICE_CACHE_LOCK/row" >/dev/null || return 1
+    slot="$(subscription_services_cache_slot "$context" "$id")" || return 1
+    [ ! -L "$slot" ] || return 1
+    chmod 600 "$SERVICE_CACHE_LOCK/row" && subscription_services_mark_pending "$section" &&
+        mv "$SERVICE_CACHE_LOCK/row" "$slot"
+}
+
 subscription_services_read() {
-    local section="$1" context now path
+    local section="$1" context now path raw
     context="$(subscription_services_context "$section")" || return 1
     [ -n "$context" ] || return 1
     now="$(date +%s)"; path="$(subscription_services_cache_path "$section")"
-    if [ -s "$path" ] && [ "$(wc -c < "$path")" -le 2097152 ]; then
-        jq -c --arg context "$context" --argjson now "$now" '
+    if raw="$(subscription_services_cache_raw "$section")"; then
+        printf '%s\n' "$raw" | jq -c --arg context "$context" --argjson now "$now" --argjson country_map "$(subscription_services_country_map)" '
             def fresh:
                 (.checkedAt|type=="number") and .checkedAt>0 and .checkedAt<=$now
                 and (.expiresAt|type=="number") and .expiresAt>$now and .expiresAt<=(.checkedAt+86400);
+            def observation_fresh:
+                fresh and .expiresAt <= (.checkedAt +
+                    (if .state=="pass" or .manual==true then 86400
+                     elif .reason=="challenge_required" or .reason=="captcha_required" or .category=="captcha" then 900
+                     else 300 end));
             if .context==$context then [.results[]? | select(fresh) | . as $row
-                | .services |= (with_entries(.value |= (
+                | .services |= (with_entries(select((.key!="google_country" and .key!="exit_country") or (.value | fresh)))
+                    | with_entries(.value |= (
                     . + {checkedAt:(.checkedAt // $row.checkedAt),expiresAt:(.expiresAt // $row.expiresAt)}))
-                    | with_entries(select(.value | fresh)))
+                    | with_entries(select(.value | observation_fresh))
+                    | with_entries(select(.key!="exit_country" or (.value |
+                        .proofVersion==1 and .manual==false and (.declaredName|type=="string")
+                        and (.state=="pass" or .state=="fail" or .state=="unknown")
+                        and (.observations|type=="array" and length==2
+                            and (map(.provider)|sort)==["ipinfo","ipwhois"])
+                        and (if .state=="pass" then . as $proof
+                            | .network=="pass" and (.declaredCountry|type=="string" and length==2)
+                            and .exitCountry==.declaredCountry
+                            and all(.observations[]; .valid==true and .country==$proof.exitCountry)
+                          else true end))))
+                    | with_entries(select(.key!="google_country" or (.value |
+                        .proofVersion==1 and .manual==false and (.declaredName|type=="string")
+                        and (.state=="pass" or .state=="fail" or .state=="unknown")
+                        and (if .state=="pass" or .state=="fail" then . as $proof
+                            | .network=="pass" and .httpCode==200
+                            and (.declaredCountry|type=="string" and length==2)
+                            and (.googleCountry|type=="string" and length==2)
+                            and (.region|type=="string" and length==3)
+                            and $country_map[$proof.region]==$proof.googleCountry
+                            and $country_map[$proof.googleCountry]==$proof.region
+                            and (if .state=="pass" then .googleCountry==.declaredCountry
+                                 else .googleCountry!=.declaredCountry end)
+                          else true end)))))
                 | select(.services|length>0)] else [] end
-        ' "$path" 2>/dev/null || printf '[]\n'
+        ' 2>/dev/null || printf '[]\n'
     else printf '[]\n'; fi
 }
 
@@ -3225,13 +3427,78 @@ subscription_services_policy() {
     printf '%s\n' "$results" | jq -c --argjson required "$required" '{required:$required,results:.}'
 }
 
+subscription_services_manual_file() {
+    local section="$1" output="$2" rc=0
+    [ ! -L "$output" ] || return 1
+    : > "$output" || return 1
+    if command -v collect_urltest_proxy_links >/dev/null 2>&1; then
+        collect_urltest_proxy_links "$section" "$output" || rc=$?
+    fi
+    [ "$rc" = 0 ] || [ ! -s "$output" ] || return 1
+    [ -f "$output" ] && [ ! -L "$output" ] &&
+        [ "$(wc -c < "$output")" -le 262144 ] && [ "$(wc -l < "$output")" -le 128 ]
+}
+
+subscription_services_manual_link() (
+    local section="$1" id="$2" file link found=''
+    file="$(mktemp)" || exit 1
+    trap 'rm -f "$file"' EXIT INT TERM HUP
+    subscription_services_manual_file "$section" "$file" || exit 1
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        if [ "$(get_subscription_link_id "$link")" = "$id" ]; then
+            [ -z "$found" ] || [ "$found" = "$link" ] || exit 1
+            found="$link"
+        fi
+    done < "$file"
+    [ -n "$found" ] && printf '%s\n' "$found"
+)
+
+subscription_services_candidate_name() {
+    local name link
+    name="$(jq -er --arg id "$2" '[.[]|select(.id==$id)]|select(length==1)|.[0]|(.name//.tag//"")|select(type=="string")' "$(get_subscription_items_cache_path "$1")" 2>/dev/null)" && { printf '%s\n' "$name"; return; }
+    link="$(subscription_services_manual_link "$1" "$2")" || return 1
+    name="$(get_subscription_link_name "$link" || true)"
+    printf '%s\n' "$name"
+}
+
+subscription_services_manual_candidates() (
+    local file link id name
+    file="$(mktemp)" || exit 1
+    trap 'rm -f "$file"' EXIT INT TERM HUP
+    subscription_services_manual_file "$1" "$file" || exit 1
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        id="$(get_subscription_link_id "$link")" || exit 1
+        name="$(get_subscription_link_name "$link" || true)"
+        jq -cn --arg id "$id" --arg name "$name" '{id:$id,name:$name,supported:true,manual:true}' || exit 1
+    done < "$file"
+)
+
+subscription_services_manual_ready() (
+    local file link id policy required="$2"
+    [ "$required" != '[]' ] || exit 0
+    file="$(mktemp)" || exit 1
+    trap 'rm -f "$file"' EXIT INT TERM HUP
+    subscription_services_manual_file "$1" "$file" || exit 1
+    [ -s "$file" ] || exit 0
+    policy="$(subscription_services_policy "$1" "$required")" || exit 1
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        id="$(get_subscription_link_id "$link")" || exit 1
+        printf '%s' "$policy" | jq -e --arg id "$id" '. as $p|all($p.required[]; . as $s|any($p.results[]; .id==$id and .services[$s].state=="pass"))' >/dev/null || exit 1
+    done < "$file"
+)
+
 get_subscription_services() {
-    local section="$1" required results
+    local section="$1" required results manual
     validate_subscription_section_name "$section" && validate_subscription_urltest_section "$section" || { subscription_services_error invalid_section; return 1; }
     required="$(subscription_required_services_json "$section")" || { subscription_services_error invalid_required_services; return 1; }
     results="$(subscription_services_read "$section")" || { subscription_services_error context_unavailable; return 1; }
-    printf '%s\n' "$results" | jq -c --argjson required "$required" --argjson catalog "$(subscription_services_catalog)" \
-        '{success:true,requiredServices:$required,catalog:$catalog,results:.,ttl:86400,capacity:2048}'
+    manual="$(subscription_services_manual_candidates "$section")" || return 1
+    manual="$(printf '%s\n' "$manual" | jq -sc '.')" || return 1
+    printf '%s\n' "$results" | jq -c --argjson required "$required" --argjson manual "$manual" --argjson catalog "$(subscription_services_catalog)" \
+        '{success:true,requiredServices:$required,catalog:$catalog,manualCandidates:$manual,results:.,ttl:86400,capacity:240,cacheBytes:1048576}'
 }
 
 subscription_services_error() {
@@ -3248,34 +3515,26 @@ subscription_services_mark_pending() (
     touch "$pending"
 )
 
-subscription_services_store() {
-    local section="$1" id="$2" services="$3" context now path dir
-    validate_subscription_section_name "$section" && validate_subscription_link_id "$id" || return 1
-    context="$(subscription_services_context "$section")" || return 1
-    [ -n "$context" ] || return 1
-    now="$(date +%s)"; path="$(subscription_services_cache_path "$section")"; dir="${path%/*}"
-    umask 077
-    mkdir -p "$dir" && chmod 700 "$dir" || return 1
-    # Keep bounded expired observations for exact already-admitted boot snapshot identity.
-    # The admission reader still rejects their expiry; this never renews old proof.
-    if [ -s "$path" ] && [ "$(wc -c < "$path")" -le 2097152 ]; then
-        cat "$path"
-    else printf '{}\n'; fi | jq -c --arg context "$context" --arg id "$id" --argjson now "$now" --argjson services "$services" '
-    # At most 2048 observations / 2 MiB per section; only public state and opaque IDs.
-        (if .context==$context then (.results // []) else [] end) as $previous
-        | ($previous | map(select(.id==$id)) | last // {}) as $old
-        # Checking a subset never replaces or renews another service observation.
-        # Preserve expired raw identity for admitted boot snapshots; read strips stale proof.
+subscription_services_store() (
+    section="$1"; id="$2"; services="$3"
+    validate_subscription_section_name "$section" && validate_subscription_link_id "$id" || exit 1
+    context="$(subscription_services_context "$section")" || exit 1
+    [ -n "$context" ] || exit 1
+    now="$(date +%s)"
+    subscription_services_cache_lock || exit 1
+    subscription_services_cache_raw "$section" "$id" | jq -c --arg context "$context" --arg id "$id" --argjson now "$now" --argjson services "$services" '
+        (.results[0] // {}) as $old
         | (($old.services // {}) | with_entries(.value += {
             checkedAt:(.value.checkedAt // $old.checkedAt),expiresAt:(.value.expiresAt // $old.expiresAt)})) as $retained
-        | ($services | with_entries(.value += {checkedAt:$now,expiresAt:($now+86400)})) as $checked
-        | {context:$context,results:(($previous|map(select(.id!=$id))) + [{id:$id,checkedAt:$now,expiresAt:($now+86400),services:($retained+$checked)}] | .[-2048:])}
-    ' > "$path.tmp.$$" || return 1
-    if [ ! -s "$path.tmp.$$" ] || [ "$(wc -c < "$path.tmp.$$")" -gt 2097152 ]; then rm -f "$path.tmp.$$"; return 1; fi
-    # Stage pending first: a failed marker write must not invalidate admitted evidence.
-    if ! chmod 600 "$path.tmp.$$" || ! subscription_services_mark_pending "$section"; then rm -f "$path.tmp.$$"; return 1; fi
-    mv "$path.tmp.$$" "$path"
-}
+        | ($services | with_entries(.value |= (. + {checkedAt:$now,expiresAt:($now+
+            (if .state=="pass" or .manual==true then 86400
+             elif .reason=="challenge_required" or .reason=="captcha_required" or .category=="captcha" then 900
+             else 300 end)),
+            retryAfter:($now+(if .reason=="challenge_required" or .reason=="captcha_required" or .category=="captcha" then 300 else 30 end))}))) as $checked
+        | {context:$context,results:[{id:$id,checkedAt:$now,expiresAt:($now+86400),services:($retained+$checked)}]}
+    ' > "$SERVICE_CACHE_LOCK/row" || exit 1
+    subscription_services_cache_publish "$section" "$context" "$id"
+)
 
 subscription_gemini_region_policy() {
     # Snapshot 2026-10-09: Google Gemini *web* availability, not API/mobile availability.
@@ -3290,11 +3549,228 @@ subscription_gemini_region_policy() {
     esac
 }
 
+subscription_services_country_pairs() {
+    # ISO 3166-1 alpha2:alpha3; not regional pseudo-codes (EU/UK/ZZ/XK).
+    printf '%s\n' 'AD:AND AE:ARE AF:AFG AG:ATG AI:AIA AL:ALB AM:ARM AO:AGO AQ:ATA AR:ARG AS:ASM AT:AUT AU:AUS AW:ABW AX:ALA AZ:AZE BA:BIH BB:BRB BD:BGD BE:BEL BF:BFA BG:BGR BH:BHR BI:BDI BJ:BEN BL:BLM BM:BMU BN:BRN BO:BOL BQ:BES BR:BRA BS:BHS BT:BTN BV:BVT BW:BWA BY:BLR BZ:BLZ CA:CAN CC:CCK CD:COD CF:CAF CG:COG CH:CHE CI:CIV CK:COK CL:CHL CM:CMR CN:CHN CO:COL CR:CRI CU:CUB CV:CPV CW:CUW CX:CXR CY:CYP CZ:CZE DE:DEU DJ:DJI DK:DNK DM:DMA DO:DOM DZ:DZA EC:ECU EE:EST EG:EGY EH:ESH ER:ERI ES:ESP ET:ETH FI:FIN FJ:FJI FK:FLK FM:FSM FO:FRO FR:FRA GA:GAB GB:GBR GD:GRD GE:GEO GF:GUF GG:GGY GH:GHA GI:GIB GL:GRL GM:GMB GN:GIN GP:GLP GQ:GNQ GR:GRC GS:SGS GT:GTM GU:GUM GW:GNB GY:GUY HK:HKG HM:HMD HN:HND HR:HRV HT:HTI HU:HUN ID:IDN IE:IRL IL:ISR IM:IMN IN:IND IO:IOT IQ:IRQ IR:IRN IS:ISL IT:ITA JE:JEY JM:JAM JO:JOR JP:JPN KE:KEN KG:KGZ KH:KHM KI:KIR KM:COM KN:KNA KP:PRK KR:KOR KW:KWT KY:CYM KZ:KAZ LA:LAO LB:LBN LC:LCA LI:LIE LK:LKA LR:LBR LS:LSO LT:LTU LU:LUX LV:LVA LY:LBY MA:MAR MC:MCO MD:MDA ME:MNE MF:MAF MG:MDG MH:MHL MK:MKD ML:MLI MM:MMR MN:MNG MO:MAC MP:MNP MQ:MTQ MR:MRT MS:MSR MT:MLT MU:MUS MV:MDV MW:MWI MX:MEX MY:MYS MZ:MOZ NA:NAM NC:NCL NE:NER NF:NFK NG:NGA NI:NIC NL:NLD NO:NOR NP:NPL NR:NRU NU:NIU NZ:NZL OM:OMN PA:PAN PE:PER PF:PYF PG:PNG PH:PHL PK:PAK PL:POL PM:SPM PN:PCN PR:PRI PS:PSE PT:PRT PW:PLW PY:PRY QA:QAT RE:REU RO:ROU RS:SRB RU:RUS RW:RWA SA:SAU SB:SLB SC:SYC SD:SDN SE:SWE SG:SGP SH:SHN SI:SVN SJ:SJM SK:SVK SL:SLE SM:SMR SN:SEN SO:SOM SR:SUR SS:SSD ST:STP SV:SLV SX:SXM SY:SYR SZ:SWZ TC:TCA TD:TCD TF:ATF TG:TGO TH:THA TJ:TJK TK:TKL TL:TLS TM:TKM TN:TUN TO:TON TR:TUR TT:TTO TV:TUV TW:TWN TZ:TZA UA:UKR UG:UGA UM:UMI US:USA UY:URY UZ:UZB VA:VAT VC:VCT VE:VEN VG:VGB VI:VIR VN:VNM VU:VUT WF:WLF WS:WSM YE:YEM YT:MYT ZA:ZAF ZM:ZMB ZW:ZWE'
+}
+
+subscription_services_country_map() {
+    subscription_services_country_pairs | jq -Rc 'split(" ") | map(split(":"))
+        | reduce .[] as $pair ({}; .[$pair[0]]=$pair[1] | .[$pair[1]]=$pair[0])'
+}
+
+subscription_services_google_region() {
+    local rc="$1" code="$2" body="$3" network=pass reason=region_marker_missing region='' country='' tokens normalized
+    if [ "$rc" -ne 0 ]; then network=fail; reason=network_failed
+    elif [ "$code" != 200 ]; then
+        case "$code" in 401|403|404|429) reason=challenge_required;; *) network=fail; reason=http_failed;; esac
+    elif printf '%s' "$body" | grep -Eiq 'unusual traffic|captcha|cf-chl-|access denied'; then reason=challenge_required
+    elif ! printf '%s' "$body" | grep -Eiq '<html([[:space:]>])|<!doctype[[:space:]]+html([[:space:]>])'; then reason=invalid_response
+    elif ! printf '%s' "$body" | grep -iq 'Gemini'; then reason=invalid_response
+    else
+        # Complete quoted ISO2/ISO3 markers only; unknown tokens contaminate rather
+        # than disappearing beside a valid marker. Equivalent ISO2/ISO3 is one country.
+        tokens="$(printf '%s' "$body" | grep -Eo ',2,1,200,"[A-Z]{2,3}"' | sed 's/^,2,1,200,"//;s/"$//' | LC_ALL=C sort -u)"
+        if [ -n "$tokens" ]; then
+            normalized="$(printf '%s\n' "$tokens" | jq -Rsc --argjson countries "$(subscription_services_country_map)" '
+                split("\n") | map(select(length>0))
+                | map(if $countries[.]==null then null elif length==2 then $countries[.] else . end) | unique')" || return 1
+            if printf '%s' "$normalized" | jq -e 'length==1 and .[0]!=null' >/dev/null; then
+                region="$(printf '%s' "$normalized" | jq -r '.[0]')"
+                country="$(subscription_services_country_map | jq -r --arg region "$region" '.[$region]')"
+                reason=region_observed
+            elif printf '%s' "$normalized" | jq -e 'length>1' >/dev/null; then reason=region_marker_ambiguous
+            else reason=region_unknown; fi
+        fi
+    fi
+    jq -cn --arg network "$network" --arg reason "$reason" --arg code "$code" --arg region "$region" --arg country "$country" '
+        {network:$network,reason:$reason,httpCode:($code|tonumber? // 0),
+         region:(if $region=="" then null else $region end),googleCountry:(if $country=="" then null else $country end)}'
+}
+
+subscription_services_google_country_classify() {
+    local name="$1" rc="$2" code="$3" body="$4" observation declaration
+    observation="$(subscription_services_google_region "$rc" "$code" "$body")" || return 1
+    declaration="$(subscription_exit_country_declaration "$name")" || return 1
+    printf '%s' "$observation" | jq -c --arg name "$name" --argjson declaration "$declaration" '
+        . + {proofVersion:1,manual:false,declaredName:$name,declaredCountry:$declaration.country,
+             observationReason:.reason,
+             state:(if $declaration.country==null or .googleCountry==null then "unknown"
+                    elif $declaration.country==.googleCountry then "pass" else "fail" end),
+             reason:(if $declaration.country==null then
+                        (if $declaration.reason=="exit_country_declared_ambiguous" then "google_country_declared_ambiguous" else "google_country_declared_missing" end)
+                     elif .googleCountry==null then "google_country_unavailable"
+                     elif $declaration.country==.googleCountry then "google_country_match" else "google_country_mismatch" end)}'
+}
+
+subscription_exit_country_codes() {
+    # ISO 3166-1 alpha-2, not regional pseudo-codes (EU/UK/ZZ/XK).
+    printf '%s\n' 'AD AE AF AG AI AL AM AO AQ AR AS AT AU AW AX AZ BA BB BD BE BF BG BH BI BJ BL BM BN BO BQ BR BS BT BV BW BY BZ CA CC CD CF CG CH CI CK CL CM CN CO CR CU CV CW CX CY CZ DE DJ DK DM DO DZ EC EE EG EH ER ES ET FI FJ FK FM FO FR GA GB GD GE GF GG GH GI GL GM GN GP GQ GR GS GT GU GW GY HK HM HN HR HT HU ID IE IL IM IN IO IQ IR IS IT JE JM JO JP KE KG KH KI KM KN KP KR KW KY KZ LA LB LC LI LK LR LS LT LU LV LY MA MC MD ME MF MG MH MK ML MM MN MO MP MQ MR MS MT MU MV MW MX MY MZ NA NC NE NF NG NI NL NO NP NR NU NZ OM PA PE PF PG PH PK PL PM PN PR PS PT PW PY QA RE RO RS RU RW SA SB SC SD SE SG SH SI SJ SK SL SM SN SO SR SS ST SV SX SY SZ TC TD TF TG TH TJ TK TL TM TN TO TR TT TV TW TZ UA UG UM US UY UZ VA VC VE VG VI VN VU WF WS YE YT ZA ZM ZW'
+}
+
+subscription_exit_country_declaration() {
+    jq -cn --arg name "$1" --arg codes "$(subscription_exit_country_codes)" '
+        ($codes|split(" ")) as $iso
+        | ($name|explode) as $chars
+        | [range(0; (($chars|length)-1)) | . as $i
+            | select(all($chars[$i:$i+2][]; .>=127462 and .<=127487))
+            | [$chars[$i:$i+2][]|.-127397]|implode] as $flags
+        | (if ($chars|length)>=2 and all($chars[0:2][]; .>=65 and .<=90)
+            and (($chars|length)==2 or ([" ","\t","\n","\r","\f",".","_",":","/","-"]|index($name[2:3])!=null))
+            then [$name[0:2]] else [] end) as $leading
+        | ($flags+$leading|unique) as $candidates
+        | {country:(if ($candidates|length)==1 and ($iso|index($candidates[0]))!=null then $candidates[0] else null end),
+           reason:(if ($candidates|length)>1 then "exit_country_declared_ambiguous" else "exit_country_declared_missing" end)}
+    '
+}
+
+subscription_exit_country_declared() {
+    subscription_exit_country_declaration "$1" | jq -r '.country // empty'
+}
+
+subscription_exit_country_public_ip() {
+    # Strict syntax, then conservative global-unicast scope. Unfamiliar/special ranges
+    # cannot create a pass. Embedded/mapped IPv4 forms intentionally remain unknown.
+    jq -en --arg ip "$1" '
+        def decimal:
+            length>0 and all(explode[]; .>=48 and .<=57)
+            and (length==1 or (startswith("0")|not));
+        def hexnum:
+            ascii_downcase|explode
+            | if length>0 and length<=4 and all(.[]; (.>=48 and .<=57) or (.>=97 and .<=102))
+              then reduce .[] as $c (0; .*16+(if $c<=57 then $c-48 else $c-87 end)) else null end;
+        if ($ip|contains(":")) then
+            ($ip|ascii_downcase|split("::")) as $halves
+            | (if ($halves|length)==1 then ($ip|split(":"))
+               elif ($halves|length)==2 then
+                   (if $halves[0]=="" then [] else ($halves[0]|split(":")) end) as $left
+                   | (if $halves[1]=="" then [] else ($halves[1]|split(":")) end) as $right
+                   | if ($left|length)+($right|length)<8 then
+                       $left+[range(0;8-($left|length)-($right|length))|"0"]+$right else [] end
+               else [] end) as $parts
+            | ($parts|map(hexnum)) as $groups
+            | ($groups|length)==8 and all($groups[]; .!=null)
+                and $groups[0]>=8192 and $groups[0]<=16383
+                and ($groups[0]!=8193 or ($groups[1]>511 and $groups[1]!=3512))
+                and $groups[0]!=8194 and $groups[0]<16382
+        else
+            ($ip|split(".")) as $parts
+            | if ($parts|length)==4 and all($parts[]; decimal) then
+                ($parts|map(tonumber)) as $octets
+                | all($octets[]; .>=0 and .<=255)
+                  and $octets[0]>0 and $octets[0]<224 and $octets[0]!=10 and $octets[0]!=127
+                  and ($octets[0]!=100 or $octets[1]<64 or $octets[1]>127)
+                  and ($octets[0]!=169 or $octets[1]!=254)
+                  and ($octets[0]!=172 or $octets[1]<16 or $octets[1]>31)
+                  and ($octets[0]!=192 or ($octets[1]!=168
+                    and ($octets[1]!=0 or ($octets[2]!=0 and $octets[2]!=2))
+                    and ($octets[1]!=88 or $octets[2]!=99)))
+                  and ($octets[0]!=198 or (($octets[1]!=18 and $octets[1]!=19)
+                    and ($octets[1]!=51 or $octets[2]!=100)))
+                  and ($octets[0]!=203 or $octets[1]!=0 or $octets[2]!=113)
+              else false end
+        end
+    ' >/dev/null 2>&1
+}
+
+subscription_exit_country_observation() {
+    local provider="$1" rc="$2" code="$3" body="$4" ip='' country='' valid=false reason=invalid_response fields
+    case "$provider" in ipwhois|ipinfo) ;; *) return 1;; esac
+    if [ "$rc" -ne 0 ]; then reason=network_failed
+    elif [ "$code" != 200 ]; then reason=http_failed
+    else
+        fields="$(printf '%s' "$body" | jq -er --arg provider "$provider" '
+            select(type=="object" and (.ip|type=="string") and .bogon!=true
+                and (if $provider=="ipwhois" then .success==true and (.country_code|type=="string") else (.country|type=="string") end))
+            | [.ip,(if $provider=="ipwhois" then .country_code else .country end)]|@tsv' 2>/dev/null)" || fields=''
+        if [ -n "$fields" ]; then
+            ip="${fields%%	*}"; country="${fields#*	}"
+            case "$country" in
+                [A-Z][A-Z])
+                    case " $(subscription_exit_country_codes) " in
+                        *" $country "*)
+                            if subscription_exit_country_public_ip "$ip"; then valid=true; reason=observed; else reason=non_public_ip; fi;;
+                        *) reason=invalid_country;;
+                    esac;;
+                *) reason=invalid_country;;
+            esac
+        fi
+    fi
+    jq -cn --arg provider "$provider" --arg ip "$ip" --arg country "$country" --arg code "$code" --arg reason "$reason" --argjson valid "$valid" \
+        '{provider:$provider,valid:$valid,reason:$reason,ip:(if $ip=="" then null else $ip end),country:(if $country=="" then null else $country end),httpCode:($code|tonumber? // 0)}'
+}
+
+subscription_exit_country_classify() {
+    local declared="$1" name="$2" observations="$3" declaration
+    declaration="$(subscription_exit_country_declaration "$name")" || return 1
+    printf '%s' "$observations" | jq -c --arg declared "$declared" --arg name "$name" --argjson declaration "$declaration" '
+        . as $observations
+        | (length==2 and (map(.provider)|sort)==["ipinfo","ipwhois"] and all(.[]; .valid==true)) as $valid
+        | ($valid and .[0].country==.[1].country) as $agreement
+        | {state:(if $declared=="" or ($agreement|not) then "unknown" elif .[0].country==$declared then "pass" else "fail" end),
+           network:(if $valid then "pass" else "fail" end),
+           reason:(if $declared=="" then $declaration.reason elif ($valid|not) then "exit_country_unavailable"
+             elif ($agreement|not) then "exit_country_sources_disagree" elif .[0].country==$declared then "exit_country_match" else "exit_country_mismatch" end),
+           manual:false,proofVersion:1,declaredName:$name,
+           declaredCountry:(if $declared=="" then null else $declared end),
+           exitCountry:(if $agreement then .[0].country else null end),observations:$observations}
+    '
+}
+
+subscription_exit_country_probe() {
+    local section="$1" id="$2" proxy="$3" work="$4" name declared provider url rc code observation observations='[]'
+    name="$(subscription_services_candidate_name "$section" "$id")" || return 1
+    declared="$(subscription_exit_country_declared "$name")" || return 1
+    for provider in ipwhois ipinfo; do
+        case "$provider" in
+            ipwhois) url='https://ipwho.is/?fields=success,ip,country_code';;
+            ipinfo) url='https://ipinfo.io/json';;
+        esac
+        rc=0
+        # Two independent HTTPS observations through this exact isolated node only.
+        # Track the child in the caller shell, preserving signal cleanup ownership.
+        curl -sS --proto '=https' --proto-redir '=https' --proxy "$proxy" --noproxy '' --connect-timeout 2 -m 4 --retry 0 \
+            --max-filesize 16384 -o "$work/geo.body" -w '%{http_code}' "$url" > "$work/geo.code" 2>"$work/geo.error" &
+        curl_pids=$!; wait "$curl_pids" || rc=$?; curl_pids=''
+        code="$(cat "$work/geo.code")"
+        observation="$(subscription_exit_country_observation "$provider" "$rc" "$code" "$(head -c 16384 "$work/geo.body" 2>/dev/null)")" || return 1
+        observations="$(printf '%s' "$observations" | jq -c --argjson observation "$observation" '.+[$observation]')" || return 1
+    done
+    SUBSCRIPTION_EXIT_COUNTRY_RESULT="$(subscription_exit_country_classify "$declared" "$name" "$observations")"
+}
+
+subscription_services_google_probe() {
+    local section="$1" id="$2" proxy="$3" work="$4" name rc=0 code body control=unknown control_rc=0 control_code
+    name="$(subscription_services_candidate_name "$section" "$id")" || return 1
+    # One verified, bounded HTTPS observation feeds two independent policies.
+    # Prefetching prevents another service failure from suppressing Google proof.
+    if command -v subscription_probe_resources >/dev/null 2>&1; then subscription_probe_resources services 1 1 || return 1; fi
+    curl -sS -L --proto '=https' --proto-redir '=https' --max-redirs 3 --proxy "$proxy" --noproxy '' \
+        -A 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/130.0.0.0 Safari/537.36' -H 'Accept-Language: en-US,en;q=0.9' \
+        --connect-timeout 2 -m 4 --retry 0 --max-filesize 1048576 -o "$work/google.body" -w '%{http_code}' https://gemini.google.com/ > "$work/google.code" 2>"$work/google.error" &
+    curl_pids=$!; wait "$curl_pids" || rc=$?; curl_pids=''
+    if [ "$rc" -ne 0 ]; then
+        # One small control distinguishes a service failure from a node failure.
+        # No retry loop: an unknown result is safer than repeated page downloads.
+        if command -v subscription_probe_resources >/dev/null 2>&1; then subscription_probe_resources services 1 1 || return 1; fi
+        curl -sS --proto '=https' --proxy "$proxy" --noproxy '' --connect-timeout 2 -m 3 --retry 0 \
+            --max-filesize 4096 -o /dev/null -w '%{http_code}' https://www.gstatic.com/generate_204 > "$work/control.code" 2>"$work/control.error" &
+        curl_pids=$!; wait "$curl_pids" || control_rc=$?; curl_pids=''
+        control_code="$(cat "$work/control.code")"
+        control=fail
+        [ "$control_rc:$control_code" != '0:204' ] || control=pass
+    fi
+    code="$(cat "$work/google.code")"; body="$(head -c 1048576 "$work/google.body" 2>/dev/null)"
+    SUBSCRIPTION_GOOGLE_COUNTRY_RESULT="$(subscription_services_google_country_classify "$name" "$rc" "$code" "$body")" || return 1
+    SUBSCRIPTION_GOOGLE_GEMINI_RESULT="$(subscription_services_classify gemini "$rc" "$code" "$body" "$control")" || return 1
+}
+
 subscription_services_classify() {
     local service="$1" rc="$2" code="$3" body="$4" state=unknown network=pass reason=confirmation_required region='' tokens policy
+    local control="${5:-unknown}" category=unknown
     case "$service" in gemini|chatgpt) ;; *) return 1;; esac
-    case "$code" in 2??) ;; 401|403|404|429) state=unknown; reason=challenge_required;; *) network=fail; state=fail; reason=http_failed;; esac
-    if [ "$rc" -ne 0 ]; then network=fail; state=fail; reason=network_failed; fi
+    case "$code" in 2??) ;; 401|403|404|429) state=unknown; reason=challenge_required;; *) network=fail; state=unknown; reason=http_failed;; esac
+    if [ "$rc" -ne 0 ]; then network=fail; state=unknown; reason=network_failed; fi
     if [ "$service" = gemini ]; then
         # A transport/HTTP failure cannot establish geographic eligibility or denial.
         state=unknown
@@ -3331,14 +3807,51 @@ subscription_services_classify() {
             state=fail; network=fail; reason=region_denied
         fi
     fi
-    jq -cn --arg state "$state" --arg network "$network" --arg reason "$reason" --arg code "$code" --arg region "$region" \
-        '{state:$state,network:$network,reason:$reason,httpCode:($code|tonumber? // 0),manual:false,region:(if $region=="" then null else $region end)}'
+    if [ "$service" = gemini ]; then
+        if [ "$rc" -eq 0 ] && { [ "$code" = 429 ] || printf '%s' "$body" | grep -Eiq 'unusual traffic|recaptcha|captcha|cf-chl-'; }; then
+            state=unknown; network=pass; reason=challenge_required; category=captcha
+        elif [ "$rc" -ne 0 ]; then
+            case "$control" in
+                pass) category=service_error; reason=gemini_connection_failed; network=pass;;
+                fail) category=node_error; reason=node_connection_failed;;
+                *) control=unknown; category=network_unknown;;
+            esac
+        elif [ "$state" = pass ]; then category=preliminary
+        elif [ "$reason" = region_denied ]; then category=region_denied
+        elif [ "$code" != 200 ]; then category=service_error
+        fi
+    fi
+    jq -cn --arg state "$state" --arg network "$network" --arg reason "$reason" --arg code "$code" --arg region "$region" --arg curlCode "$rc" --arg category "$category" --arg control "$control" \
+        '{state:$state,network:$network,reason:$reason,category:$category,control:$control,httpCode:($code|tonumber? // 0),curlCode:($curlCode|tonumber? // 0),manual:false,region:(if $region=="" then null else $region end)}'
 }
 
 subscription_services_probe() {
-    local section="$1" id="$2" services="$3" proxy="$4" work="$5" service url rc code value results='{}' failed=0
+    local section="$1" id="$2" services="$3" proxy="$4" work="$5" service url rc code value results='{}' failed=0 google_results=0
     printf '%s' "$services" | jq -r '.[]' > "$work/services.list" || return 1
+    if printf '%s' "$services" | jq -e 'index("google_country")!=null or index("gemini")!=null' >/dev/null; then
+        subscription_services_google_probe "$section" "$id" "$proxy" "$work" || return 1
+        google_results=1
+    fi
     while IFS= read -r service; do
+        if [ "$google_results" = 1 ]; then
+            case "$service" in
+                google_country) value="$SUBSCRIPTION_GOOGLE_COUNTRY_RESULT";;
+                gemini) value="$SUBSCRIPTION_GOOGLE_GEMINI_RESULT"
+                    if printf '%s' "$value" | jq -e '.state=="fail"' >/dev/null; then failed=1; fi;;
+                *) value='';;
+            esac
+            if [ -n "$value" ]; then
+                results="$(printf '%s' "$results" | jq -c --arg service "$service" --argjson value "$value" '.[$service]=$value')" || return 1
+                continue
+            fi
+        fi
+        if [ "$service" = exit_country ]; then
+            # Geography remains independently observable even if a web probe failed.
+            subscription_exit_country_probe "$section" "$id" "$proxy" "$work" || return 1
+            value="$SUBSCRIPTION_EXIT_COUNTRY_RESULT"
+            results="$(printf '%s' "$results" | jq -c --arg service "$service" --argjson value "$value" '.[$service]=$value')" || return 1
+            continue
+        fi
         if [ "$failed" = 1 ]; then
             value='{"state":"unknown","network":"fail","reason":"skipped_after_failure","httpCode":0,"manual":false}'
             results="$(printf '%s' "$results" | jq -c --arg service "$service" --argjson value "$value" '.[$service]=$value')" || return 1
@@ -3365,7 +3878,22 @@ subscription_services_probe() {
 }
 
 subscription_services_check() {
+    local cached now
+    validate_subscription_section_name "$1" && validate_subscription_urltest_section "$1" || { subscription_services_error invalid_section; return 1; }
+    validate_subscription_link_id "$2" || { subscription_services_error invalid_link_id; return 1; }
     subscription_services_validate "${3:-}" && [ "$3" != '[]' ] || { subscription_services_error invalid_services; return 1; }
+    now="$(date +%s)"
+    # Reuse only a complete, fresh, context-bound set. Reading never renews proof.
+    # Older cache entries without a bounded cooldown are checked normally.
+    cached="$(subscription_services_read "$1" | jq -c --arg id "$2" --argjson required "$3" --argjson now "$now" '
+        [.[] | select(.id==$id) | . as $row | select(all($required[];
+            $row.services[.] | (.retryAfter|type=="number") and .retryAfter>$now and
+            .retryAfter<=(.checkedAt+(if .reason=="challenge_required" or .reason=="captcha_required" or .category=="captcha" then 300 else 30 end))))]
+        | if length==1 then .[0] else empty end')" || return 1
+    if [ -n "$cached" ]; then
+        printf '%s' "$cached" | jq -c '.+{success:true,cached:true}'
+        return 0
+    fi
     subscription_isolated_test "$1" "$2" services "$3"
 }
 
@@ -3378,7 +3906,9 @@ subscription_services_confirm() (
     case "$service:$enabled" in gemini:true|chatgpt:true|gemini:false|chatgpt:false) ;; *) subscription_services_error invalid_confirmation; exit 1;; esac
     subscription_runtime_busy && { subscription_services_error service_busy; exit 1; }
     subscription_action_lock_acquire service_confirmation || { subscription_services_error service_busy; exit 1; }; locked=1
-    jq -e --arg id "$id" 'any(.[]; .id==$id and .supported)' "$(get_subscription_items_cache_path "$section")" >/dev/null 2>&1 || { subscription_services_error subscription_link_not_available; exit 1; }
+    if ! jq -e --arg id "$id" 'any(.[]; .id==$id and .supported)' "$(get_subscription_items_cache_path "$section")" >/dev/null 2>&1; then
+        subscription_services_manual_link "$section" "$id" >/dev/null || { subscription_services_error subscription_link_not_available; exit 1; }
+    fi
     results="$(subscription_services_read "$section")" || exit 1
     row="$(printf '%s' "$results" | jq -c --arg id "$id" '.[] | select(.id==$id)')"
     printf '%s' "$row" | jq -e --arg service "$service" '.services[$service].network=="pass"' >/dev/null 2>&1 || { subscription_services_error recent_network_check_required; exit 1; }
@@ -3387,12 +3917,13 @@ subscription_services_confirm() (
         exit 1
     fi
     # Confirmation cannot extend the underlying network observation's expiry.
-    path="$(subscription_services_cache_path "$section")"
-    jq --arg id "$id" --arg service "$service" --argjson enabled "$enabled" '
+    subscription_services_cache_lock || { subscription_services_error service_busy; exit 1; }
+    trap 'rm -f "$SERVICE_CACHE_LOCK/row" "$SERVICE_CACHE_LOCK/owner"; rmdir "$SERVICE_CACHE_LOCK" 2>/dev/null || :; [ "$locked" = 0 ] || subscription_action_lock_release' EXIT
+    context="$(subscription_services_context "$section")" || exit 1
+    subscription_services_cache_raw "$section" "$id" | jq --arg id "$id" --arg service "$service" --argjson enabled "$enabled" '
         .results |= map(if .id==$id then .services[$service] |= (.state=(if $enabled then "pass" else "fail" end) | .manual=true | .reason="user_confirmed") else . end)
-    ' "$path" > "$path.tmp.$$" && chmod 600 "$path.tmp.$$" || { rm -f "$path.tmp.$$"; exit 1; }
-    subscription_services_mark_pending "$section" || { rm -f "$path.tmp.$$"; subscription_services_error pending_write_failed; exit 1; }
-    mv "$path.tmp.$$" "$path" || exit 1
+    ' > "$SERVICE_CACHE_LOCK/row" || exit 1
+    subscription_services_cache_publish "$section" "$context" "$id" || { subscription_services_error pending_write_failed; exit 1; }
     jq -cn --arg id "$id" --arg service "$service" --argjson enabled "$enabled" '{success:true,id:$id,service:$service,confirmed:$enabled}'
 )
 
@@ -3403,7 +3934,7 @@ subscription_services_preflight_section() {
     required="$(subscription_required_services_json "$section")" || { SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED=1; return 0; }
     [ "$required" != '[]' ] || return 0
     work="$(mktemp -d)" || { SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED=1; return 0; }
-    if command -v collect_urltest_proxy_links >/dev/null 2>&1 && collect_urltest_proxy_links "$section" "$work/manual" && [ -s "$work/manual" ]; then
+    if ! subscription_services_manual_ready "$section" "$required"; then
         SUBSCRIPTION_SERVICES_PREFLIGHT_FAILED=1
         rm -rf "$work"; return 0
     fi
@@ -3447,7 +3978,10 @@ subscription_services_snapshot_hash() {
 
 subscription_services_snapshot_policy_hash() {
     local policy
-    policy="$(uci -q export podkop)" || return 1
+    if [ -n "${PODKOP_DNS_COMMITTED_FILE:-}" ]; then
+        policy="$(uci -q export /proc/self/fd/3 3< "$PODKOP_DNS_COMMITTED_FILE")" || return 1
+        policy="$(printf '%s\n' "$policy" | sed 's/^package 3$/package podkop/')"
+    else policy="$(uci -q export podkop)" || return 1; fi
     [ -n "$policy" ] || return 1
     # Only this operational field changes during normal start/stop.
     printf '%s\n' "$policy" | awk '/^config / {settings=($2=="settings")} !(settings && $1=="option" && $2=="shutdown_correctly")' | sha256sum | awk '{print $1}'
@@ -3456,6 +3990,67 @@ subscription_services_snapshot_policy_hash() {
 subscription_services_snapshot_enabled_section() {
     validate_subscription_urltest_section "$1" || return 0
     [ "$(subscription_required_services_json "$1")" = '[]' ] || SNAPSHOT_HAS_REQUIRED=1
+}
+
+subscription_services_restart_prepare() {
+    # Service/config-triggered restarts are not permission to apply new pools.
+    # Explicit apply keeps its fresh-evidence gate and transactional workflow.
+    PODKOP_SERVICE_RESTART_CONTINUITY=0
+    SNAPSHOT_HAS_REQUIRED=0
+    config_foreach subscription_services_snapshot_enabled_section section
+    if [ "$SNAPSHOT_HAS_REQUIRED" = 1 ] && [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ]; then
+        subscription_services_continuity_context_ready || return 1
+        subscription_services_snapshot_continuity_prepare || return 1
+        PODKOP_SERVICE_RESTART_CONTINUITY=1
+        return 0
+    fi
+    subscription_services_preflight
+}
+
+# config.change is an explicit request to apply committed UCI (also usable by
+# authenticated automation). Ordinary restart/reload never enters this path.
+# Keep the same admission gate as the subscription Apply button; an event is
+# not service evidence. Commits by DNS/failover alone do not emit this event.
+subscription_config_apply() (
+    local stamp policy pending
+    stamp="${PODKOP_CONFIG_APPLY_STAMP:-/tmp/podkop-config-applied.sha256}"
+    if subscription_runtime_busy || ! subscription_action_lock_acquire config_apply; then
+        log 'Configuration apply deferred: another operation is running' warn
+        return 1
+    fi
+    trap 'subscription_action_lock_release' EXIT
+    trap 'exit 1' HUP INT TERM
+    pending="$(uci -q changes podkop)" || return 1
+    [ -z "$pending" ] || { log 'Configuration apply refused: unsaved UCI changes' warn; return 1; }
+    policy="$(subscription_services_snapshot_policy_hash)" || return 1
+    [ ! -L "$stamp" ] && [ ! -L "$stamp.tmp.$" ] || return 1
+    if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$policy" ]; then return 0; fi
+    # The restart itself validates evidence before its first destructive step.
+    # No subscription download, second engine, or broad UCI revert is involved.
+    if ! PODKOP_SUBSCRIPTION_APPLY_NOW=1 PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 restart; then
+        log 'Configuration apply failed; no successful apply receipt was recorded' err
+        return 1
+    fi
+    # shutdown_correctly is excluded by this policy hash; any other concurrent
+    # change must not receive a receipt for the configuration we just applied.
+    [ "$(subscription_services_snapshot_policy_hash)" = "$policy" ] || return 1
+    (umask 077; printf '%s\n' "$policy" > "$stamp.tmp.$") && mv "$stamp.tmp.$" "$stamp"
+)
+
+subscription_services_continuity_context_ready() {
+    local expected actual
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        if command -v podkop_section_context_matches >/dev/null && podkop_section_context_matches; then return 0; fi
+        # v2 excludes documented selection/diagnostic drafts, but retains all
+        # traffic-affecting settings. Only exact applied context may restart.
+        expected="$(cat "$(podkop_section_root)/context.sha256" 2>/dev/null)" || return 1
+        case "$expected" in v2:*) [ "${#expected}" = 67 ] || return 1;; *) return 1;; esac
+        actual="$(podkop_section_context_hash)" || return 1
+        [ "$expected" = "$actual" ] || {
+            log 'Saved runtime traffic context differs from desired settings; keeping the running service unchanged' warn
+            return 1
+        }
+    fi
 }
 
 subscription_services_snapshot_capacity() (
@@ -3484,45 +4079,100 @@ subscription_services_snapshot_capacity() (
     [ "$free_kb" -ge $(((total + 1023)/1024 + 1024)) ]
 )
 
-subscription_services_snapshot_section() {
-    local section="$1" required cache all items context service_sha link id ids='[]' links='[]' hash policy row
+subscription_services_snapshot_observations() {
+    local section="$1" ids="$2" row expected current required
+    if [ "${SNAPSHOT_CAPTURE:-1}" != 1 ] &&
+        jq -e --arg s "$section" '.sections[]|select(.section==$s)|has("evidence")' "$SNAPSHOT_BASE" >/dev/null; then
+        row="$(jq -cS --arg s "$section" '.sections[]|select(.section==$s)|.evidence|sort_by(.id)' "$SNAPSHOT_BASE")" || return 1
+        expected="$(jq -er --arg s "$section" '.sections[]|select(.section==$s)|.service' "$SNAPSHOT_BASE")" || return 1
+        [ "$(printf '%s\n' "$row" | sha256sum | awk '{print $1}')" = "$expected" ] || return 1
+        # Strict reuse still honors a current definitive denial. Expiry,
+        # eviction and unknown observations do not revoke frozen admission.
+        if command -v subscription_services_read >/dev/null 2>&1; then
+            current="$(subscription_services_read "$section")" || return 1
+        elif [ -s "$(subscription_services_cache_path "$section")" ]; then
+            current="$(jq -c '.results//[]' "$(subscription_services_cache_path "$section")")" || return 1
+        else current='[]'; fi
+        required="$(jq -c --arg s "$section" '.sections[]|select(.section==$s)|.requiredServices//[]' "$SNAPSHOT_BASE")" || return 1
+        [ "$required" != '[]' ] || required="$(subscription_required_services_json "$section")" || return 1
+        printf '%s' "$current" | jq -e --argjson ids "$ids" --argjson required "$required" '
+          all(.[]; if (.id as $id|$ids|index($id)!=null) then
+            . as $r | all($required[]; . as $s | $r.services[$s].state!="fail")
+          else true end)' >/dev/null || return 1
+        printf '%s\n' "$row"
+    else
+        if command -v subscription_services_cache_raw >/dev/null 2>&1; then
+            subscription_services_cache_raw "$section"
+        else
+            cat "$(subscription_services_cache_path "$section")"
+        fi | jq -cS --argjson ids "$ids" '[.results[]? | select(.id as $id | $ids|index($id)!=null)] | sort_by(.id)'
+    fi
+}
+
+subscription_services_snapshot_section_value() (
+    local section="$1" required cache all items context service_sha link id ids='[]' links='[]' hash policy row evidence
+    local work manual manual_ids='[]' input
     validate_subscription_urltest_section "$section" || return 0
-    required="$(subscription_required_services_json "$section")" || { SNAPSHOT_FAILED=1; return 0; }
+    required="$(subscription_required_services_json "$section")" || return 1
     [ "$required" != '[]' ] || return 0
     cache="$(get_subscription_cache_path "$section")"
     all="$(get_subscription_all_cache_path "$section")"
     items="$(get_subscription_items_cache_path "$section")"
-    [ -s "$cache" ] && [ -s "$all" ] && [ -s "$items" ] || { SNAPSHOT_FAILED=1; return 0; }
-    context="$(subscription_services_context "$section")" || { SNAPSHOT_FAILED=1; return 0; }
-    [ -n "$context" ] || { SNAPSHOT_FAILED=1; return 0; }
-    if [ "$SNAPSHOT_CAPTURE" = 1 ]; then
-        policy="$(subscription_services_policy "$section")" || { SNAPSHOT_FAILED=1; return 0; }
-        while IFS= read -r link || [ -n "$link" ]; do
-            [ -n "$link" ] || continue
-            id="$(get_subscription_link_id "$link")" || { SNAPSHOT_FAILED=1; return 0; }
-            printf '%s' "$policy" | jq -e --arg id "$id" '. as $p | all($p.required[]; . as $service | any($p.results[]; .id==$id and .services[$service].state=="pass"))' >/dev/null || { SNAPSHOT_FAILED=1; return 0; }
-            ids="$(printf '%s' "$ids" | jq -c --arg id "$id" '.+[$id] | unique')" || { SNAPSHOT_FAILED=1; return 0; }
-        done < "$cache"
-        [ "$ids" != '[]' ] || { SNAPSHOT_FAILED=1; return 0; }
-    else
-        ids="$(jq -c --arg section "$section" '.sections[] | select(.section==$section) | .admittedIds' "$SNAPSHOT_BASE")" || { SNAPSHOT_FAILED=1; return 0; }
-        printf '%s' "$ids" | jq -e 'type=="array" and length>0' >/dev/null || { SNAPSHOT_FAILED=1; return 0; }
+    [ -s "$cache" ] && [ -s "$all" ] && [ -s "$items" ] || return 1
+    work="$(mktemp -d)" || return 1
+    trap 'rm -rf "$work"' EXIT INT TERM HUP
+    manual="$work/manual"
+    : > "$manual"
+    if command -v subscription_services_manual_file >/dev/null 2>&1; then
+        subscription_services_manual_file "$section" "$manual" || return 1
     fi
-    # Bind exact admitted links and their evidence, not unrelated newly discovered nodes.
-    jq -e --argjson ids "$ids" '. as $items | all($ids[]; . as $id | any($items[]; .id==$id and .supported==true))' "$items" >/dev/null || { SNAPSHOT_FAILED=1; return 0; }
     while IFS= read -r link || [ -n "$link" ]; do
         [ -n "$link" ] || continue
-        id="$(get_subscription_link_id "$link")" || { SNAPSHOT_FAILED=1; return 0; }
+        id="$(get_subscription_link_id "$link")" || return 1
+        manual_ids="$(printf '%s' "$manual_ids" | jq -c --arg id "$id" '.+[$id]|unique')" || return 1
+    done < "$manual"
+    context="$(subscription_services_context "$section")" || return 1
+    [ -n "$context" ] || return 1
+    if [ "$SNAPSHOT_CAPTURE" = 1 ]; then
+        policy="$(subscription_services_policy "$section")" || return 1
+        for input in "$cache" "$manual"; do
+        while IFS= read -r link || [ -n "$link" ]; do
+            [ -n "$link" ] || continue
+            id="$(get_subscription_link_id "$link")" || return 1
+            printf '%s' "$policy" | jq -e --arg id "$id" '. as $p | all($p.required[]; . as $service | any($p.results[]; .id==$id and .services[$service].state=="pass"))' >/dev/null || return 1
+            ids="$(printf '%s' "$ids" | jq -c --arg id "$id" '.+[$id] | unique')" || return 1
+        done < "$input"
+        done
+        [ "$ids" != '[]' ] || return 1
+    else
+        ids="$(jq -c --arg section "$section" '.sections[] | select(.section==$section) | .admittedIds' "$SNAPSHOT_BASE")" || return 1
+        printf '%s' "$ids" | jq -e 'type=="array" and length>0' >/dev/null || return 1
+    fi
+    # Bind exact admitted links and their evidence, not unrelated newly discovered nodes.
+    jq -e --argjson ids "$ids" --argjson manual "$manual_ids" '. as $items | all($ids[]; . as $id | ($manual|index($id)!=null) or any($items[]; .id==$id and .supported==true))' "$items" >/dev/null || return 1
+    for input in "$all" "$manual"; do
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        id="$(get_subscription_link_id "$link")" || return 1
         printf '%s' "$ids" | jq -e --arg id "$id" 'index($id)!=null' >/dev/null || continue
         hash="$(printf '%s\n' "$link" | sha256sum | awk '{print $1}')"
-        links="$(printf '%s' "$links" | jq -c --arg id "$id" --arg sha "$hash" '.+[{id:$id,sha:$sha}] | unique_by(.id) | sort_by(.id)')" || { SNAPSHOT_FAILED=1; return 0; }
-    done < "$all"
-    [ "$(printf '%s' "$links" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || { SNAPSHOT_FAILED=1; return 0; }
-    row="$(jq -cS --argjson ids "$ids" '[.results[]? | select(.id as $id | $ids|index($id)!=null)] | sort_by(.id)' "$(subscription_services_cache_path "$section")")" || { SNAPSHOT_FAILED=1; return 0; }
-    [ "$(printf '%s' "$row" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || { SNAPSHOT_FAILED=1; return 0; }
+        links="$(printf '%s' "$links" | jq -c --arg id "$id" --arg sha "$hash" '.+[{id:$id,sha:$sha}] | unique_by(.id) | sort_by(.id)')" || return 1
+    done < "$input"
+    done
+    [ "$(printf '%s' "$links" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || return 1
+    row="$(subscription_services_snapshot_observations "$section" "$ids")" || return 1
+    [ "$(printf '%s' "$row" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || return 1
     service_sha="$(printf '%s\n' "$row" | sha256sum | awk '{print $1}')"
-    printf '%s' "$links" | jq -c --arg section "$section" --arg context "$context" --arg service "$service_sha" \
-        '{section:$section,context:$context,service:$service,admittedIds:map(.id),admittedLinks:.}' >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
+    evidence=null
+    if [ "$SNAPSHOT_CAPTURE" = 1 ] || jq -e --arg s "$section" '.sections[]|select(.section==$s)|has("evidence")' "$SNAPSHOT_BASE" >/dev/null; then evidence="$row"; fi
+    printf '%s\n%s\n' "$links" "${evidence:-null}" | jq -cs --arg section "$section" --arg context "$context" --arg service "$service_sha" --argjson required "$required" \
+        '.[0] as $links | .[1] as $evidence | {section:$section,context:$context,service:$service,requiredServices:$required,admittedIds:($links|map(.id)),admittedLinks:$links} + (if $evidence==null then {} else {evidence:$evidence} end)'
+)
+
+subscription_services_snapshot_section() {
+    local row
+    row="$(subscription_services_snapshot_section_value "$1")" || { SNAPSHOT_FAILED=1; return 0; }
+    [ -z "$row" ] || printf '%s\n' "$row" >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
 }
 
 subscription_services_snapshot_save() (
@@ -3584,6 +4234,37 @@ subscription_services_snapshot_save() (
     case "$previous" in generation.*) case "${previous#generation.}" in ''|*[!A-Za-z0-9]*) ;; *) [ -L "$dir/$previous" ] || rm -rf "$dir/$previous";; esac;; esac
 )
 
+subscription_services_snapshot_continuity_section() {
+    local section="$1" required
+    validate_subscription_urltest_section "$section" || return 0
+    required="$(subscription_required_services_json "$section")" || { SNAPSHOT_FAILED=1; return 0; }
+    [ "$required" != '[]' ] || return 0
+    jq -cn --arg section "$section" '$section' >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
+}
+
+subscription_services_snapshot_continuity_prepare() (
+    # Continuity only: never read current node/evidence caches, bless new evidence,
+    # regenerate a candidate, or apply desired settings to the saved runtime.
+    local dir manifest config_path config_sha
+    dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
+    [ -s "$manifest" ] && [ ! -L "$dir" ] && [ ! -L "$manifest" ] || exit 1
+    jq -e '.version==1 and (.sections|type=="array" and length>0)
+        and all(.sections[]; (.section|type=="string" and length>0)
+            and (.admittedIds|type=="array" and length>0))
+        and (.sections|map(.section)|length== (unique|length))' "$manifest" >/dev/null || exit 1
+    config_get config_path settings config_path
+    config_sha="$(subscription_services_snapshot_hash "$config_path")" || exit 1
+    jq -e --arg config "$config_sha" '.config==$config' "$manifest" >/dev/null || exit 1
+    SNAPSHOT_SECTIONS="$(mktemp)" || exit 1
+    trap 'rm -f "$SNAPSHOT_SECTIONS"' EXIT INT TERM HUP
+    SNAPSHOT_FAILED=0
+    config_foreach subscription_services_snapshot_continuity_section section
+    [ "$SNAPSHOT_FAILED" = 0 ] || exit 1
+    # A disabled/removed or newly required section cannot silently reuse admission.
+    jq -e --slurpfile current "$SNAPSHOT_SECTIONS" '(.sections|map(.section)|sort)==($current|sort)' "$manifest" >/dev/null || exit 1
+    subscription_services_snapshot_restore_rules
+)
+
 subscription_services_snapshot_prepare() (
     local dir manifest config_path config_sha policy_sha generation path name hash actual
     dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
@@ -3598,26 +4279,53 @@ subscription_services_snapshot_prepare() (
     config_foreach subscription_services_snapshot_section section
     [ "$SNAPSHOT_FAILED" = 0 ] || exit 1
     jq -e --slurpfile current "$SNAPSHOT_SECTIONS" '(.sections|map(del(.admittedIds)))==($current|map(del(.admittedIds)))' "$manifest" >/dev/null || exit 1
+    subscription_services_snapshot_restore_rules
+)
+
+subscription_services_snapshot_restore_rules() (
+    local dir manifest config_path config_sha generation path name hash actual rules_file='' tmp_rule=''
+    dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
+    [ -s "$manifest" ] && [ ! -L "$dir" ] && [ ! -L "$manifest" ] || exit 1
+    config_get config_path settings config_path
+    config_sha="$(subscription_services_snapshot_hash "$config_path")" || exit 1
+    jq -e --arg config "$config_sha" '.version==1 and .config==$config
+        and (.rules|type=="array" and length<=128)
+        and all(.rules[]; (.name|type=="string") and (.sha|type=="string" and length==64))
+        and (.rules|map(.name)|length==(unique|length))' "$manifest" >/dev/null || exit 1
+    # Bind the manifest to every exact local path in the frozen config, not merely
+    # to a subset of copied files or names supplied by the manifest.
+    jq -e --arg folder "$TMP_RULESET_FOLDER/" --slurpfile saved "$manifest" '
+        [.route.rule_set[]? | select(.type=="local") | .path] | unique | sort
+        == ($saved[0].rules | map($folder+.name) | sort)' "$config_path" >/dev/null || exit 1
     generation="$(jq -r '.generation' "$manifest")"
     case "$generation" in generation.*) case "${generation#generation.}" in ''|*[!A-Za-z0-9]*) exit 1;; esac;; *) exit 1;; esac
     [ -d "$dir/$generation" ] && [ ! -L "$dir/$generation" ] && [ ! -L "$TMP_RULESET_FOLDER" ] || exit 1
-    jq -r '.rules[] | [.name,.sha] | @tsv' "$manifest" > "$SNAPSHOT_SECTIONS" || exit 1
+    rules_file="$(mktemp)" || exit 1
+    trap 'rm -f "$rules_file"; [ -z "$tmp_rule" ] || rm -f "$tmp_rule"' EXIT INT TERM HUP
+    jq -r '.rules[] | [.name,.sha] | @tsv' "$manifest" > "$rules_file" || exit 1
     # Validate every source and existing destination before restoring any missing file.
     while IFS="$(printf '\t')" read -r name hash; do
         case "$name" in ''|.|..|*[!A-Za-z0-9_.-]*) exit 1;; esac
+        case "$name" in *.json|*.srs) ;; *) exit 1;; esac
+        [ "${#hash}" = 64 ] || exit 1
+        case "$hash" in *[!a-f0-9]*) exit 1;; esac
         actual="$(subscription_services_snapshot_hash "$dir/$generation/$name")" || exit 1
         [ "$actual" = "$hash" ] || exit 1
         path="$TMP_RULESET_FOLDER/$name"
         if [ -e "$path" ] || [ -L "$path" ]; then
             [ "$(subscription_services_snapshot_hash "$path")" = "$hash" ] || exit 1
         fi
-    done < "$SNAPSHOT_SECTIONS"
+    done < "$rules_file"
     mkdir -p "$TMP_RULESET_FOLDER" || exit 1
     while IFS="$(printf '\t')" read -r name hash; do
         path="$TMP_RULESET_FOLDER/$name"
         [ ! -f "$path" ] || continue
-        cp "$dir/$generation/$name" "$path.snapshot.$$" && chmod 600 "$path.snapshot.$$" && mv "$path.snapshot.$$" "$path" || exit 1
-    done < "$SNAPSHOT_SECTIONS"
+        tmp_rule="$(mktemp "$TMP_RULESET_FOLDER/.snapshot.XXXXXX")" || exit 1
+        cp "$dir/$generation/$name" "$tmp_rule" && chmod 600 "$tmp_rule" || exit 1
+        [ "$(subscription_services_snapshot_hash "$tmp_rule")" = "$hash" ] || exit 1
+        mv "$tmp_rule" "$path" || exit 1
+        tmp_rule=''
+    done < "$rules_file"
     sing-box check -c "$config_path" >/dev/null 2>&1 || exit 1
 )
 # subscription_service_snapshot_v1 end
@@ -4076,7 +4784,7 @@ sing_box_configure_service() {
 
 sing_box_init_config() {
     if [ "${PODKOP_SERVICE_REUSE_ADMITTED_CONFIG:-0}" = 1 ]; then
-        subscription_services_snapshot_prepare || return 1
+        subscription_services_snapshot_continuity_prepare || return 1
         return 0
     fi
     local config='{"log":{},"dns":{},"ntp":{},"certificate":{},"endpoints":[],"inbounds":[],"outbounds":[],"route":{},"services":[],"experimental":{}}'
@@ -6368,6 +7076,10 @@ Available commands:
 EOF
 }
 
+# DNS-only transactions reuse the validated runtime helpers without dispatching
+# a start, restart, subscription refresh, or other command.
+[ "${PODKOP_LIBRARY_ONLY:-0}" != 1 ] || return 0
+
 case "$1" in
 start)
     start
@@ -6446,6 +7158,9 @@ get_subscription_skipped_links)
     ;;
 get_subscription_items)
     get_subscription_items "$2"
+    ;;
+subscription_config_apply)
+    subscription_config_apply
     ;;
 get_subscription_operation_status)
     get_subscription_operation_status

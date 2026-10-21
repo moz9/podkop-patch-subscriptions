@@ -41,7 +41,10 @@ done
 if sing_box_cf_add_dns_server '{"dns":{"servers":[]}}' doh bootstrap dns.example '' '' >/dev/null 2>&1; then fail 'encrypted bootstrap hostname fell back to system resolver'; fi
 uci() { case "$*" in *bootstrap_dns_type*) echo udp;; *bootstrap_dns_server*) echo 8.8.8.8;; *dns_type*) echo dot;; *dns_server*) echo cloudflare-dns.com;; *) return 1;; esac; }
 resolve_host() { [ "$2" = one.one.one.one ] || return 1; echo 192.0.2.8; }
-run_dns_query() { [ "$1|$2|$3|$4" = 'dot|192.0.2.8|one.one.one.one|/dns-query' ] || return 1; echo 1; }
+run_dns_query() {
+  if [ "$1|$2" = 'udp|8.8.8.8' ]; then echo 1; return; fi
+  [ "$1|$2|$3|$4" = 'dot|192.0.2.8|one.one.one.one|/dns-query' ] || return 1; echo 1;
+}
 probe="$(probe_configured_pair primary)" || fail 'health probe ignored catalog TLS host'
 printf '%s' "$probe" | jq -e '.success' >/dev/null || fail 'catalog TLS health probe failed'
 uci() { case "$*" in *bootstrap_dns_type*) echo udp;; *bootstrap_dns_server*) echo 8.8.8.8;; *dns_type*) echo doq;; *dns_server*) echo dns.quad9.net;; *) return 1;; esac; }
@@ -69,6 +72,11 @@ printf '%s' "$diagnostic" | jq -e '.dns_status==1 and .bootstrap_dns_status==1' 
   . "$repo/openwrt/podkop-dns-optimizer"
   run_with_timeout() { shift; "$@"; }
   dig() {
+    if [ "$1" = @8.8.8.8 ]; then
+      case " $* " in *' -p 53 '*) ;; *) return 1;; esac
+      case " $* " in *' podkop-bootstrap-test.invalid '*) echo ';; status: NXDOMAIN';; *) printf '%s\n' ';; status: NOERROR' 'example.com. 60 IN A 8.8.4.4';; esac
+      echo ';; Query time: 1 msec'; return
+    fi
     case " $* " in *" -p $QUERY_EXPECTED_PORT "*) ;; *) return 1;; esac
     case "$QUERY_PROTOCOL" in
       doh) case " $* " in *' +https=/dns-custom '*) ;; *) return 1;; esac;;

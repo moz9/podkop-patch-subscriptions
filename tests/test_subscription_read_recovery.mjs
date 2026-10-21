@@ -56,7 +56,7 @@ function makeHarness({sections, getItems, getSources} = {}) {
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [{
     code: 'main', displayName: 'main', selectionMode: 'selected',
     includeTags: ['RU *'], excludeTags: ['*slow'],
-    requiredServices: [], serviceSupport: false,
+    requiredServices: [], serviceSupport: false, serviceCatalog: [],
     communityLists: [],
     items: [{id: 'node', enabled: true, services: {}}], sources: [{id: 'source', enabled: true}]
   }], 'fresh selection mode and tags must be read alongside subscription items and sources');
@@ -111,6 +111,7 @@ for (const [label, setup, expected] of [
     store: {get: () => ({subscriptionItemsWidget: widget}), set: update => {widget = {...widget, ...update.subscriptionItemsWidget};}},
     canRefreshSubscriptions: () => {calls.guard++; return true;},
     fetchSubscriptionItems: async (...args) => {calls.fetch.push(args);},
+    refreshSubscriptionRuntimeStatus: async () => {},
     setActionState: () => {calls.writes.push('setActionState'); throw new Error('manual read recovery must not start refresh action');},
     PodkopShellMethods: {updateSubscriptions: async () => {calls.writes.push('updateSubscriptions'); throw new Error('manual read recovery must not update subscriptions');}}
   });

@@ -1615,7 +1615,7 @@ function renderDnsOptimizer() {
         E(
           "div",
           { class: "pdk-dns-optimizer__description" },
-          "Сам проверяет стабильность, отсутствие подмены и выбранные сервисы Podkop, затем предлагает один готовый комплект из основной и резервной DNS-связок.",
+          "Проверка DNS и рекомендация. Применение — отдельной кнопкой.",
         ),
       ]),
       E("div", { class: "pdk-dns-optimizer__actions" }, [
@@ -1633,6 +1633,7 @@ function renderDnsOptimizer() {
         ),
       ]),
     ]),
+    E("a",{href:"https://github.com/moz9/podkop-patch-subscriptions/blob/pe-dns-pairs-20261007/docs/user-guide.md",target:"_blank",rel:"noopener noreferrer"},"Справка"),
     E("div", { class: "pdk-dns-optimizer__status" }, optimizerMessage(status)),
     E("div", { class: "pdk-dns-optimizer__progress" }, [
       E("span", {
@@ -1987,7 +1988,7 @@ function createSettingsContent(section) {
     form.Flag,
     "dns_failover_enabled",
     "Автоматический резервный DNS",
-    "Хранит две полные пары DNS. После двух последовательных отказов активной пары Podkop проверит резервную, переключится на неё и повторно проверит sing-box и FakeIP. Автоматического возврата к основной паре нет, чтобы исключить постоянные переключения.",
+    "После двух отказов — проверка резерва и переключение; возврат вручную.",
   );
   o.default = "0";
   o.rmempty = false;
@@ -2020,7 +2021,7 @@ function createSettingsContent(section) {
     form.Value,
     "secondary_dns_server",
     "Резервный DNS-сервер",
-    "Независимый основной DNS, который будет активирован только после подтверждённого отказа первой пары.",
+    "Выберите DNS другого провайдера.",
   );
   Object.entries(main.DNS_SERVER_OPTIONS).forEach(([key, label]) => {
     o.value(key, _(label));
@@ -2048,7 +2049,7 @@ function createSettingsContent(section) {
     form.Value,
     "secondary_bootstrap_dns_server",
     "Bootstrap резервной пары",
-    "Bootstrap DNS для резервного DoH/DoT. Лучше выбирать другого провайдера, чем у первой пары.",
+    "Для резерва выберите bootstrap другого провайдера.",
   );
   Object.entries(main.BOOTSTRAP_DNS_SERVER_OPTIONS).forEach(([key, label]) => {
     o.value(key, _(label));
@@ -2069,7 +2070,7 @@ function createSettingsContent(section) {
     form.MultiValue,
     "dns_optimizer_protocols",
     "Режимы для проверки",
-    "Протоколы для бенчмарка основного DNS. Основной и bootstrap DNS измеряются отдельно; перед применением проверяется выбранная пара.",
+    "Выберите протоколы теста.",
   );
   o.value("udp", "UDP");
   o.value("doh", "DoH");
@@ -2089,7 +2090,7 @@ function createSettingsContent(section) {
     form.MultiValue,
     "dns_optimizer_candidates",
     "DNS для проверки",
-    "Выберите основной каталог для теста. Меньше кандидатов — быстрее и точнее сравнение. Пользовательские и WAN DNS не становятся автоматической рекомендацией.",
+    "Выберите DNS-кандидатов.",
   );
   NORMAL_DNS_OPTIMIZER_CANDIDATES.forEach(([value, label]) =>
     o.value(value, label),
@@ -2125,7 +2126,7 @@ function createSettingsContent(section) {
     form.MultiValue,
     "dns_optimizer_bootstrap_candidates",
     "Bootstrap DNS для проверки",
-    "Выберите bootstrap-кандидатов. В универсальную пару входят только публичные нефильтрующие адреса.",
+    "Выберите bootstrap-кандидатов.",
   );
   BOOTSTRAP_DNS_OPTIMIZER_CANDIDATES.forEach(([value, label]) =>
     o.value(value, label),
@@ -2137,7 +2138,7 @@ function createSettingsContent(section) {
     form.Flag,
     "dns_optimizer_include_current",
     "Сравнивать текущую пару",
-    "Добавляет текущие основной и bootstrap DNS в таблицу только для сравнения.",
+    "Текущая пара — только для сравнения.",
   );
   o.default = "1";
   o.rmempty = false;
@@ -2146,7 +2147,7 @@ function createSettingsContent(section) {
     form.Flag,
     "dns_optimizer_include_wan",
     "Сравнивать DNS провайдера",
-    "Добавляет полученные от WAN DNS в UDP-тест. Они никогда не выбираются как универсальная рекомендация.",
+    "WAN DNS — только для сравнения.",
   );
   o.default = "0";
   o.rmempty = false;
@@ -2162,7 +2163,7 @@ function createSettingsContent(section) {
       form.DynamicList,
       optionName,
       label,
-      "Адреса сохраняются в настройках и появляются в тесте как варианты только для сравнения и ручной установки.",
+      "Только для сравнения и ручной установки.",
     );
     customOption.depends({
       dns_optimizer_protocols: protocol,

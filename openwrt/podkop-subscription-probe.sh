@@ -48,13 +48,18 @@ subscription_isolated_test() {
     umask 077
     work="$(mktemp -d /tmp/podkop-subscription-probe.XXXXXX)" || probe_error temporary_directory_failed
     items="$(get_subscription_items_cache_path "$section")"
-    jq -e --arg id "$item_id" 'any(.[]; .id == $id and .supported == true)' "$items" >/dev/null 2>&1 || probe_error subscription_link_not_available
     link=""
-    while IFS= read -r candidate || [ -n "$candidate" ]; do
+    if jq -e --arg id "$item_id" 'any(.[]; .id == $id and .supported == true)' "$items" >/dev/null 2>&1; then
+      while IFS= read -r candidate || [ -n "$candidate" ]; do
         if [ "$(get_subscription_link_id "$candidate")" = "$item_id" ]; then link="$candidate"; break; fi
-    done < "$(get_subscription_all_cache_path "$section")"
+      done < "$(get_subscription_all_cache_path "$section")"
+    elif [ "$mode" = services ] && command -v subscription_services_manual_link >/dev/null 2>&1; then
+      link="$(subscription_services_manual_link "$section" "$item_id")" || probe_error subscription_link_not_available
+    fi
     [ -n "$link" ] || probe_error subscription_link_not_available
-    name="$(jq -r --arg id "$item_id" '.[] | select(.id == $id) | .name' "$items")"
+    if [ "$mode" = services ]; then name="$(subscription_services_candidate_name "$section" "$item_id")" || probe_error subscription_link_not_available
+    else name="$(jq -r --arg id "$item_id" '.[] | select(.id == $id) | .name' "$items")"; fi
+    probe_stage=dns_config
     config="$(jq -ce 'select(.dns|type=="object")' /etc/sing-box/config.json)" || probe_error dns_config_invalid
     config_get udp_over_tcp "$section" enable_udp_over_tcp
     config="$(sing_box_cf_add_proxy_outbound "$config" subscription-probe "$link" "$udp_over_tcp" 2>"$work/parser.log")" || probe_error invalid_config

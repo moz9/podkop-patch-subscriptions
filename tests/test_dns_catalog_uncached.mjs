@@ -1,0 +1,16 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+const source=fs.readFileSync(new URL('../openwrt/dns_benchmark.js',import.meta.url),'utf8');
+const api=new Function('baseclass',source)({extend:x=>x});
+const row={id:'example',protocol:'dot',dnsServer:'dns.example',measured:false,reliable:false,automaticEligible:false,primaryEligible:true};
+const catalog={availableResults:[row],availableBootstrapResults:[{protocol:'udp',server:'1.1.1.1',measured:false,reliable:false}]};
+assert.equal(typeof api.catalogCandidates,'function');
+assert.deepEqual(api.catalogCandidates(null,catalog,false),[row]);
+assert.deepEqual(api.catalogCandidates({availableResults:[],results:[]},catalog,false),[row]);
+const measured={...row,measured:true,reliable:true,successCount:2,totalQueries:2,averageMs:10};
+assert.deepEqual(api.catalogCandidates({availableResults:[],results:[measured]},null,false),[]);
+assert.deepEqual(api.catalogCandidates({results:[measured]},catalog,false),[measured]);
+assert.equal(api.catalogCandidates(null,catalog,true).length,1);
+assert.equal(api.normalizeReport({state:'idle',results:[],bootstrapResults:[],...catalog}).recommendation,null);
+assert.match(source,/request\(\["catalog"\]\)/);
+console.log('PASS: uncached catalog enables manual choices without inventing measured results or apply proof');

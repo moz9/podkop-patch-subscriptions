@@ -86,8 +86,8 @@ for (const runtimeStatus of [{busy:true},{unknown:true}]) {
 assert.equal(c.subscriptionStateLabel({runtimeStatus:{busy:true}})[1],'Podkop занят');
 assert.equal(c.subscriptionStateLabel({runtimeStatus:{pending:true}})[1],'Нужно применить');
 assert.equal(c.subscriptionStateLabel({})[1],'Готово');
-assert.match(c.getToolbarMessage({runtimeStatus:{busy:true}}),/Кнопки станут доступны автоматически/);
-assert.match(c.getToolbarMessage({runtimeStatus:{pending:true}}),/ещё не применены/);
+assert.match(c.getToolbarMessage({runtimeStatus:{busy:true}}),/Podkop занят.*дождитесь/);
+assert.match(c.getToolbarMessage({runtimeStatus:{pending:true}}),/Применить.*перерыв соединений/);
 assert.deepEqual({...c.rebaseSubscriptionDraft({'main:a':false,'main:b':false},[{code:'main',items:[{id:'a',enabled:false}]}])},{'main:b':false});
 let finish, calls=0;
 c.PodkopShellMethods.setSubscriptionSectionsEnabled=()=>{calls++;return new Promise(resolve=>finish=resolve)};

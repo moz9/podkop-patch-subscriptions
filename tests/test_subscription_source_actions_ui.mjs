@@ -27,7 +27,7 @@ const c=vm.createContext({_:x=>x,E:(tag,attrs,children)=>({tag,attrs,children}),
   pollSpeedtestStatus:async(section,item)=>({success:true,results:[{id:item.id,success:true}]}),
   fetchSubscriptionItems:async()=>{},speedtestRunToken:0
 });
-for(const name of ['getSourceGroups','getSubscriptionActionSections','getRowId2','retainOtherSubscriptionResults','renderSubscriptionSourceActions','setActionState','handlePingSubscriptions','handleSpeedtestSubscriptions','handleRefreshSubscriptions']) {
+for(const name of ['getSourceGroups','getSubscriptionActionSections','getRowId2','retainOtherSubscriptionResults','renderSubscriptionSourceActions','setActionState','handlePingSubscriptions','handleSpeedtestSubscriptions','refreshSubscriptionSources','handleRefreshSubscriptions']) {
   const match=js.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));
   assert.ok(match,name);
   for(const icon of match[0].match(/render\w+Icon24/g)||[])c[icon]=()=>{};

@@ -109,6 +109,8 @@ for rel in \
 	podkop.js \
 	podkop-dns-optimizer \
 	podkop-dns-benchmark \
+	podkop-diagnostic-policy.sh \
+	podkop-dns-apply \
 	dns_benchmark.js \
 	dns-main.json \
 	dns-bootstrap.json \

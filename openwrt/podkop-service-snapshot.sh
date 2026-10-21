@@ -16,7 +16,10 @@ subscription_services_snapshot_hash() {
 
 subscription_services_snapshot_policy_hash() {
     local policy
-    policy="$(uci -q export podkop)" || return 1
+    if [ -n "${PODKOP_DNS_COMMITTED_FILE:-}" ]; then
+        policy="$(uci -q export /proc/self/fd/3 3< "$PODKOP_DNS_COMMITTED_FILE")" || return 1
+        policy="$(printf '%s\n' "$policy" | sed 's/^package 3$/package podkop/')"
+    else policy="$(uci -q export podkop)" || return 1; fi
     [ -n "$policy" ] || return 1
     # Only this operational field changes during normal start/stop.
     printf '%s\n' "$policy" | awk '/^config / {settings=($2=="settings")} !(settings && $1=="option" && $2=="shutdown_correctly")' | sha256sum | awk '{print $1}'
@@ -25,6 +28,67 @@ subscription_services_snapshot_policy_hash() {
 subscription_services_snapshot_enabled_section() {
     validate_subscription_urltest_section "$1" || return 0
     [ "$(subscription_required_services_json "$1")" = '[]' ] || SNAPSHOT_HAS_REQUIRED=1
+}
+
+subscription_services_restart_prepare() {
+    # Service/config-triggered restarts are not permission to apply new pools.
+    # Explicit apply keeps its fresh-evidence gate and transactional workflow.
+    PODKOP_SERVICE_RESTART_CONTINUITY=0
+    SNAPSHOT_HAS_REQUIRED=0
+    config_foreach subscription_services_snapshot_enabled_section section
+    if [ "$SNAPSHOT_HAS_REQUIRED" = 1 ] && [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ]; then
+        subscription_services_continuity_context_ready || return 1
+        subscription_services_snapshot_continuity_prepare || return 1
+        PODKOP_SERVICE_RESTART_CONTINUITY=1
+        return 0
+    fi
+    subscription_services_preflight
+}
+
+# config.change is an explicit request to apply committed UCI (also usable by
+# authenticated automation). Ordinary restart/reload never enters this path.
+# Keep the same admission gate as the subscription Apply button; an event is
+# not service evidence. Commits by DNS/failover alone do not emit this event.
+subscription_config_apply() (
+    local stamp policy pending
+    stamp="${PODKOP_CONFIG_APPLY_STAMP:-/tmp/podkop-config-applied.sha256}"
+    if subscription_runtime_busy || ! subscription_action_lock_acquire config_apply; then
+        log 'Configuration apply deferred: another operation is running' warn
+        return 1
+    fi
+    trap 'subscription_action_lock_release' EXIT
+    trap 'exit 1' HUP INT TERM
+    pending="$(uci -q changes podkop)" || return 1
+    [ -z "$pending" ] || { log 'Configuration apply refused: unsaved UCI changes' warn; return 1; }
+    policy="$(subscription_services_snapshot_policy_hash)" || return 1
+    [ ! -L "$stamp" ] && [ ! -L "$stamp.tmp.$" ] || return 1
+    if [ -f "$stamp" ] && [ "$(cat "$stamp")" = "$policy" ]; then return 0; fi
+    # The restart itself validates evidence before its first destructive step.
+    # No subscription download, second engine, or broad UCI revert is involved.
+    if ! PODKOP_SUBSCRIPTION_APPLY_NOW=1 PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 restart; then
+        log 'Configuration apply failed; no successful apply receipt was recorded' err
+        return 1
+    fi
+    # shutdown_correctly is excluded by this policy hash; any other concurrent
+    # change must not receive a receipt for the configuration we just applied.
+    [ "$(subscription_services_snapshot_policy_hash)" = "$policy" ] || return 1
+    (umask 077; printf '%s\n' "$policy" > "$stamp.tmp.$") && mv "$stamp.tmp.$" "$stamp"
+)
+
+subscription_services_continuity_context_ready() {
+    local expected actual
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        if command -v podkop_section_context_matches >/dev/null && podkop_section_context_matches; then return 0; fi
+        # v2 excludes documented selection/diagnostic drafts, but retains all
+        # traffic-affecting settings. Only exact applied context may restart.
+        expected="$(cat "$(podkop_section_root)/context.sha256" 2>/dev/null)" || return 1
+        case "$expected" in v2:*) [ "${#expected}" = 67 ] || return 1;; *) return 1;; esac
+        actual="$(podkop_section_context_hash)" || return 1
+        [ "$expected" = "$actual" ] || {
+            log 'Saved runtime traffic context differs from desired settings; keeping the running service unchanged' warn
+            return 1
+        }
+    fi
 }
 
 subscription_services_snapshot_capacity() (
@@ -53,45 +117,100 @@ subscription_services_snapshot_capacity() (
     [ "$free_kb" -ge $(((total + 1023)/1024 + 1024)) ]
 )
 
-subscription_services_snapshot_section() {
-    local section="$1" required cache all items context service_sha link id ids='[]' links='[]' hash policy row
+subscription_services_snapshot_observations() {
+    local section="$1" ids="$2" row expected current required
+    if [ "${SNAPSHOT_CAPTURE:-1}" != 1 ] &&
+        jq -e --arg s "$section" '.sections[]|select(.section==$s)|has("evidence")' "$SNAPSHOT_BASE" >/dev/null; then
+        row="$(jq -cS --arg s "$section" '.sections[]|select(.section==$s)|.evidence|sort_by(.id)' "$SNAPSHOT_BASE")" || return 1
+        expected="$(jq -er --arg s "$section" '.sections[]|select(.section==$s)|.service' "$SNAPSHOT_BASE")" || return 1
+        [ "$(printf '%s\n' "$row" | sha256sum | awk '{print $1}')" = "$expected" ] || return 1
+        # Strict reuse still honors a current definitive denial. Expiry,
+        # eviction and unknown observations do not revoke frozen admission.
+        if command -v subscription_services_read >/dev/null 2>&1; then
+            current="$(subscription_services_read "$section")" || return 1
+        elif [ -s "$(subscription_services_cache_path "$section")" ]; then
+            current="$(jq -c '.results//[]' "$(subscription_services_cache_path "$section")")" || return 1
+        else current='[]'; fi
+        required="$(jq -c --arg s "$section" '.sections[]|select(.section==$s)|.requiredServices//[]' "$SNAPSHOT_BASE")" || return 1
+        [ "$required" != '[]' ] || required="$(subscription_required_services_json "$section")" || return 1
+        printf '%s' "$current" | jq -e --argjson ids "$ids" --argjson required "$required" '
+          all(.[]; if (.id as $id|$ids|index($id)!=null) then
+            . as $r | all($required[]; . as $s | $r.services[$s].state!="fail")
+          else true end)' >/dev/null || return 1
+        printf '%s\n' "$row"
+    else
+        if command -v subscription_services_cache_raw >/dev/null 2>&1; then
+            subscription_services_cache_raw "$section"
+        else
+            cat "$(subscription_services_cache_path "$section")"
+        fi | jq -cS --argjson ids "$ids" '[.results[]? | select(.id as $id | $ids|index($id)!=null)] | sort_by(.id)'
+    fi
+}
+
+subscription_services_snapshot_section_value() (
+    local section="$1" required cache all items context service_sha link id ids='[]' links='[]' hash policy row evidence
+    local work manual manual_ids='[]' input
     validate_subscription_urltest_section "$section" || return 0
-    required="$(subscription_required_services_json "$section")" || { SNAPSHOT_FAILED=1; return 0; }
+    required="$(subscription_required_services_json "$section")" || return 1
     [ "$required" != '[]' ] || return 0
     cache="$(get_subscription_cache_path "$section")"
     all="$(get_subscription_all_cache_path "$section")"
     items="$(get_subscription_items_cache_path "$section")"
-    [ -s "$cache" ] && [ -s "$all" ] && [ -s "$items" ] || { SNAPSHOT_FAILED=1; return 0; }
-    context="$(subscription_services_context "$section")" || { SNAPSHOT_FAILED=1; return 0; }
-    [ -n "$context" ] || { SNAPSHOT_FAILED=1; return 0; }
-    if [ "$SNAPSHOT_CAPTURE" = 1 ]; then
-        policy="$(subscription_services_policy "$section")" || { SNAPSHOT_FAILED=1; return 0; }
-        while IFS= read -r link || [ -n "$link" ]; do
-            [ -n "$link" ] || continue
-            id="$(get_subscription_link_id "$link")" || { SNAPSHOT_FAILED=1; return 0; }
-            printf '%s' "$policy" | jq -e --arg id "$id" '. as $p | all($p.required[]; . as $service | any($p.results[]; .id==$id and .services[$service].state=="pass"))' >/dev/null || { SNAPSHOT_FAILED=1; return 0; }
-            ids="$(printf '%s' "$ids" | jq -c --arg id "$id" '.+[$id] | unique')" || { SNAPSHOT_FAILED=1; return 0; }
-        done < "$cache"
-        [ "$ids" != '[]' ] || { SNAPSHOT_FAILED=1; return 0; }
-    else
-        ids="$(jq -c --arg section "$section" '.sections[] | select(.section==$section) | .admittedIds' "$SNAPSHOT_BASE")" || { SNAPSHOT_FAILED=1; return 0; }
-        printf '%s' "$ids" | jq -e 'type=="array" and length>0' >/dev/null || { SNAPSHOT_FAILED=1; return 0; }
+    [ -s "$cache" ] && [ -s "$all" ] && [ -s "$items" ] || return 1
+    work="$(mktemp -d)" || return 1
+    trap 'rm -rf "$work"' EXIT INT TERM HUP
+    manual="$work/manual"
+    : > "$manual"
+    if command -v subscription_services_manual_file >/dev/null 2>&1; then
+        subscription_services_manual_file "$section" "$manual" || return 1
     fi
-    # Bind exact admitted links and their evidence, not unrelated newly discovered nodes.
-    jq -e --argjson ids "$ids" '. as $items | all($ids[]; . as $id | any($items[]; .id==$id and .supported==true))' "$items" >/dev/null || { SNAPSHOT_FAILED=1; return 0; }
     while IFS= read -r link || [ -n "$link" ]; do
         [ -n "$link" ] || continue
-        id="$(get_subscription_link_id "$link")" || { SNAPSHOT_FAILED=1; return 0; }
+        id="$(get_subscription_link_id "$link")" || return 1
+        manual_ids="$(printf '%s' "$manual_ids" | jq -c --arg id "$id" '.+[$id]|unique')" || return 1
+    done < "$manual"
+    context="$(subscription_services_context "$section")" || return 1
+    [ -n "$context" ] || return 1
+    if [ "$SNAPSHOT_CAPTURE" = 1 ]; then
+        policy="$(subscription_services_policy "$section")" || return 1
+        for input in "$cache" "$manual"; do
+        while IFS= read -r link || [ -n "$link" ]; do
+            [ -n "$link" ] || continue
+            id="$(get_subscription_link_id "$link")" || return 1
+            printf '%s' "$policy" | jq -e --arg id "$id" '. as $p | all($p.required[]; . as $service | any($p.results[]; .id==$id and .services[$service].state=="pass"))' >/dev/null || return 1
+            ids="$(printf '%s' "$ids" | jq -c --arg id "$id" '.+[$id] | unique')" || return 1
+        done < "$input"
+        done
+        [ "$ids" != '[]' ] || return 1
+    else
+        ids="$(jq -c --arg section "$section" '.sections[] | select(.section==$section) | .admittedIds' "$SNAPSHOT_BASE")" || return 1
+        printf '%s' "$ids" | jq -e 'type=="array" and length>0' >/dev/null || return 1
+    fi
+    # Bind exact admitted links and their evidence, not unrelated newly discovered nodes.
+    jq -e --argjson ids "$ids" --argjson manual "$manual_ids" '. as $items | all($ids[]; . as $id | ($manual|index($id)!=null) or any($items[]; .id==$id and .supported==true))' "$items" >/dev/null || return 1
+    for input in "$all" "$manual"; do
+    while IFS= read -r link || [ -n "$link" ]; do
+        [ -n "$link" ] || continue
+        id="$(get_subscription_link_id "$link")" || return 1
         printf '%s' "$ids" | jq -e --arg id "$id" 'index($id)!=null' >/dev/null || continue
         hash="$(printf '%s\n' "$link" | sha256sum | awk '{print $1}')"
-        links="$(printf '%s' "$links" | jq -c --arg id "$id" --arg sha "$hash" '.+[{id:$id,sha:$sha}] | unique_by(.id) | sort_by(.id)')" || { SNAPSHOT_FAILED=1; return 0; }
-    done < "$all"
-    [ "$(printf '%s' "$links" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || { SNAPSHOT_FAILED=1; return 0; }
-    row="$(jq -cS --argjson ids "$ids" '[.results[]? | select(.id as $id | $ids|index($id)!=null)] | sort_by(.id)' "$(subscription_services_cache_path "$section")")" || { SNAPSHOT_FAILED=1; return 0; }
-    [ "$(printf '%s' "$row" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || { SNAPSHOT_FAILED=1; return 0; }
+        links="$(printf '%s' "$links" | jq -c --arg id "$id" --arg sha "$hash" '.+[{id:$id,sha:$sha}] | unique_by(.id) | sort_by(.id)')" || return 1
+    done < "$input"
+    done
+    [ "$(printf '%s' "$links" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || return 1
+    row="$(subscription_services_snapshot_observations "$section" "$ids")" || return 1
+    [ "$(printf '%s' "$row" | jq -c 'map(.id)|sort')" = "$(printf '%s' "$ids" | jq -c 'sort')" ] || return 1
     service_sha="$(printf '%s\n' "$row" | sha256sum | awk '{print $1}')"
-    printf '%s' "$links" | jq -c --arg section "$section" --arg context "$context" --arg service "$service_sha" \
-        '{section:$section,context:$context,service:$service,admittedIds:map(.id),admittedLinks:.}' >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
+    evidence=null
+    if [ "$SNAPSHOT_CAPTURE" = 1 ] || jq -e --arg s "$section" '.sections[]|select(.section==$s)|has("evidence")' "$SNAPSHOT_BASE" >/dev/null; then evidence="$row"; fi
+    printf '%s\n%s\n' "$links" "${evidence:-null}" | jq -cs --arg section "$section" --arg context "$context" --arg service "$service_sha" --argjson required "$required" \
+        '.[0] as $links | .[1] as $evidence | {section:$section,context:$context,service:$service,requiredServices:$required,admittedIds:($links|map(.id)),admittedLinks:$links} + (if $evidence==null then {} else {evidence:$evidence} end)'
+)
+
+subscription_services_snapshot_section() {
+    local row
+    row="$(subscription_services_snapshot_section_value "$1")" || { SNAPSHOT_FAILED=1; return 0; }
+    [ -z "$row" ] || printf '%s\n' "$row" >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
 }
 
 subscription_services_snapshot_save() (
@@ -153,6 +272,37 @@ subscription_services_snapshot_save() (
     case "$previous" in generation.*) case "${previous#generation.}" in ''|*[!A-Za-z0-9]*) ;; *) [ -L "$dir/$previous" ] || rm -rf "$dir/$previous";; esac;; esac
 )
 
+subscription_services_snapshot_continuity_section() {
+    local section="$1" required
+    validate_subscription_urltest_section "$section" || return 0
+    required="$(subscription_required_services_json "$section")" || { SNAPSHOT_FAILED=1; return 0; }
+    [ "$required" != '[]' ] || return 0
+    jq -cn --arg section "$section" '$section' >> "$SNAPSHOT_SECTIONS" || SNAPSHOT_FAILED=1
+}
+
+subscription_services_snapshot_continuity_prepare() (
+    # Continuity only: never read current node/evidence caches, bless new evidence,
+    # regenerate a candidate, or apply desired settings to the saved runtime.
+    local dir manifest config_path config_sha
+    dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
+    [ -s "$manifest" ] && [ ! -L "$dir" ] && [ ! -L "$manifest" ] || exit 1
+    jq -e '.version==1 and (.sections|type=="array" and length>0)
+        and all(.sections[]; (.section|type=="string" and length>0)
+            and (.admittedIds|type=="array" and length>0))
+        and (.sections|map(.section)|length== (unique|length))' "$manifest" >/dev/null || exit 1
+    config_get config_path settings config_path
+    config_sha="$(subscription_services_snapshot_hash "$config_path")" || exit 1
+    jq -e --arg config "$config_sha" '.config==$config' "$manifest" >/dev/null || exit 1
+    SNAPSHOT_SECTIONS="$(mktemp)" || exit 1
+    trap 'rm -f "$SNAPSHOT_SECTIONS"' EXIT INT TERM HUP
+    SNAPSHOT_FAILED=0
+    config_foreach subscription_services_snapshot_continuity_section section
+    [ "$SNAPSHOT_FAILED" = 0 ] || exit 1
+    # A disabled/removed or newly required section cannot silently reuse admission.
+    jq -e --slurpfile current "$SNAPSHOT_SECTIONS" '(.sections|map(.section)|sort)==($current|sort)' "$manifest" >/dev/null || exit 1
+    subscription_services_snapshot_restore_rules
+)
+
 subscription_services_snapshot_prepare() (
     local dir manifest config_path config_sha policy_sha generation path name hash actual
     dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
@@ -167,26 +317,53 @@ subscription_services_snapshot_prepare() (
     config_foreach subscription_services_snapshot_section section
     [ "$SNAPSHOT_FAILED" = 0 ] || exit 1
     jq -e --slurpfile current "$SNAPSHOT_SECTIONS" '(.sections|map(del(.admittedIds)))==($current|map(del(.admittedIds)))' "$manifest" >/dev/null || exit 1
+    subscription_services_snapshot_restore_rules
+)
+
+subscription_services_snapshot_restore_rules() (
+    local dir manifest config_path config_sha generation path name hash actual rules_file='' tmp_rule=''
+    dir="$(subscription_services_snapshot_dir)"; manifest="$dir/snapshot.json"
+    [ -s "$manifest" ] && [ ! -L "$dir" ] && [ ! -L "$manifest" ] || exit 1
+    config_get config_path settings config_path
+    config_sha="$(subscription_services_snapshot_hash "$config_path")" || exit 1
+    jq -e --arg config "$config_sha" '.version==1 and .config==$config
+        and (.rules|type=="array" and length<=128)
+        and all(.rules[]; (.name|type=="string") and (.sha|type=="string" and length==64))
+        and (.rules|map(.name)|length==(unique|length))' "$manifest" >/dev/null || exit 1
+    # Bind the manifest to every exact local path in the frozen config, not merely
+    # to a subset of copied files or names supplied by the manifest.
+    jq -e --arg folder "$TMP_RULESET_FOLDER/" --slurpfile saved "$manifest" '
+        [.route.rule_set[]? | select(.type=="local") | .path] | unique | sort
+        == ($saved[0].rules | map($folder+.name) | sort)' "$config_path" >/dev/null || exit 1
     generation="$(jq -r '.generation' "$manifest")"
     case "$generation" in generation.*) case "${generation#generation.}" in ''|*[!A-Za-z0-9]*) exit 1;; esac;; *) exit 1;; esac
     [ -d "$dir/$generation" ] && [ ! -L "$dir/$generation" ] && [ ! -L "$TMP_RULESET_FOLDER" ] || exit 1
-    jq -r '.rules[] | [.name,.sha] | @tsv' "$manifest" > "$SNAPSHOT_SECTIONS" || exit 1
+    rules_file="$(mktemp)" || exit 1
+    trap 'rm -f "$rules_file"; [ -z "$tmp_rule" ] || rm -f "$tmp_rule"' EXIT INT TERM HUP
+    jq -r '.rules[] | [.name,.sha] | @tsv' "$manifest" > "$rules_file" || exit 1
     # Validate every source and existing destination before restoring any missing file.
     while IFS="$(printf '\t')" read -r name hash; do
         case "$name" in ''|.|..|*[!A-Za-z0-9_.-]*) exit 1;; esac
+        case "$name" in *.json|*.srs) ;; *) exit 1;; esac
+        [ "${#hash}" = 64 ] || exit 1
+        case "$hash" in *[!a-f0-9]*) exit 1;; esac
         actual="$(subscription_services_snapshot_hash "$dir/$generation/$name")" || exit 1
         [ "$actual" = "$hash" ] || exit 1
         path="$TMP_RULESET_FOLDER/$name"
         if [ -e "$path" ] || [ -L "$path" ]; then
             [ "$(subscription_services_snapshot_hash "$path")" = "$hash" ] || exit 1
         fi
-    done < "$SNAPSHOT_SECTIONS"
+    done < "$rules_file"
     mkdir -p "$TMP_RULESET_FOLDER" || exit 1
     while IFS="$(printf '\t')" read -r name hash; do
         path="$TMP_RULESET_FOLDER/$name"
         [ ! -f "$path" ] || continue
-        cp "$dir/$generation/$name" "$path.snapshot.$$" && chmod 600 "$path.snapshot.$$" && mv "$path.snapshot.$$" "$path" || exit 1
-    done < "$SNAPSHOT_SECTIONS"
+        tmp_rule="$(mktemp "$TMP_RULESET_FOLDER/.snapshot.XXXXXX")" || exit 1
+        cp "$dir/$generation/$name" "$tmp_rule" && chmod 600 "$tmp_rule" || exit 1
+        [ "$(subscription_services_snapshot_hash "$tmp_rule")" = "$hash" ] || exit 1
+        mv "$tmp_rule" "$path" || exit 1
+        tmp_rule=''
+    done < "$rules_file"
     sing-box check -c "$config_path" >/dev/null 2>&1 || exit 1
 )
 # subscription_service_snapshot_v1 end

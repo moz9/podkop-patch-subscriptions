@@ -6,40 +6,44 @@ export PODKOP_DNS_BENCHMARK_LIBRARY_ONLY=1 PODKOP_DNS_OPTIMIZER_LIBRARY_ONLY=1
 export PODKOP_DNS_BENCHMARK_OPTIMIZER="$repo/openwrt/podkop-dns-optimizer"
 export PODKOP_DNS_BENCHMARK_STATE_DIR="$work/state" PODKOP_DNS_BENCHMARK_PERSIST_DIR="$work/persist"
 export PODKOP_DNS_OPTIMIZER_STATE_DIR="$work/optimizer-state" PODKOP_DNS_OPTIMIZER_PERSIST_DIR="$work/optimizer-persist"
+export PODKOP_DNS_APPLY_BACKUP_DIR="$work/dns-apply"
 export PODKOP_MUTATION_LOCK_DIR="$work/mutation" PODKOP_MUTATION_LEGACY_LOCK_FILE="$work/legacy"
 . "$repo/openwrt/podkop-dns-benchmark"
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# External command fixtures are shell functions; keep them inside this shell.
+# Real timeout behavior is exercised by test_pe_dns_resource_safety.sh.
+timeout() { shift; "$@"; }
+anime_probes="$(write_community_service_probes anime)"
+printf '%s\n' "$anime_probes" | grep -Fx 'community|anime|shikimori.io' >/dev/null || fail 'anime probe must use the current Shikimori domain'
+if printf '%s\n' "$anime_probes" | grep -F 'shikimori.one' >/dev/null; then fail 'retired Shikimori domain is still required by DNS checks'; fi
+ai_probes="$(write_community_service_probes google_ai)"
+if printf '%s\n' "$ai_probes" | grep -E 'gemini\.|generativelanguage\.' >/dev/null; then fail 'DNS benchmark must not gate DNS on AI service availability'; fi
+printf '%s\n' "$ai_probes" | grep -Fx 'community|google_ai|www.google.com' >/dev/null || fail 'Google AI section needs a neutral connectivity sample'
 if [ "${1:-}" = __signal ]; then
     signal="$3"; rollback_failure="$4"; phase="$5"
     mkdir -p "$work"
-    jq -n '{dns_type:"udp",dns_server:"9.9.9.9",bootstrap_dns_server:"8.8.4.4",bootstrap_dns_type:"udp",dns_failover_enabled:"1",dns_failover_active_slot:"secondary",secondary_dns_type:"dot",secondary_dns_server:"dns.quad9.net",secondary_bootstrap_dns_server:"8.8.8.8",secondary_bootstrap_dns_type:"tcp"}' > "$work/uci.json"
-    cp "$work/uci.json" "$work/original.json"
-    uci() {
-        local action argument key value file
-        [ "${1:-}" != -q ] || shift
-        action="$1"; argument="${2:-}"
-        case "$action" in
-            export) jq -cS . "$work/uci.json";;
-            changes) [ ! -s "$work/staged.json" ] || echo staged;;
-            get) file="$work/uci.json"; [ ! -s "$work/staged.json" ] || file="$work/staged.json"; jq -er --arg key "${argument##*.}" '.[$key]//empty' "$file";;
-            set|delete)
-                [ -s "$work/staged.json" ] || cp "$work/uci.json" "$work/staged.json"
-                key="${argument%%=*}"; key="${key##*.}"; value="${argument#*=}"
-                if [ "$action" = set ]; then jq --arg key "$key" --arg value "$value" '.[$key]=$value' "$work/staged.json" > "$work/change.json"; else jq --arg key "$key" 'del(.[$key])' "$work/staged.json" > "$work/change.json"; fi
-                mv "$work/change.json" "$work/staged.json"
-                if [ "$phase" = after_set ] && [ ! -f "$work/signalled" ]; then : > "$work/signalled"; kill -"$signal" "$$"; fi;;
-            commit)
-                if [ -f "$work/signalled" ]; then [ -d "$PODKOP_MUTATION_LOCK_DIR" ] && [ -d "$DB_LOCK" ] || fail 'recovery released locks before restoring previous DNS'; fi
-                if [ -f "$work/signalled" ] && [ "$rollback_failure" = yes ]; then return 1; fi
-                cp "$work/staged.json" "$work/uci.json"; rm -f "$work/staged.json"
-                if [ ! -f "$work/signalled" ]; then : > "$work/signalled"; kill -"$signal" "$$"; fi;;
-            *) return 1;;
-        esac
-    }
+    echo original > "$work/original.json"; cp "$work/original.json" "$work/uci.json"
+    uci() { case "$*" in *export*) echo 'config settings';; *changes*) :;; *) return 1;; esac; }
     db_busy() { return 1; }; db_reload_busy() { return 1; }
-    restart_podkop() { [ -d "$PODKOP_MUTATION_LOCK_DIR" ] && [ -d "$DB_LOCK" ] || fail 'recovery restarted without mutation lock'; : > "$work/restarted"; if [ "$phase" = repeated_signal ]; then kill -"$signal" "$$"; fi; }
-    validate_podkop_dns() { cmp "$work/original.json" "$work/uci.json"; }
-    validate_google_play_transport() { :; }; validate_chatgpt_transport() { :; }
+    db_load_apply_helper() { :; }
+    dns_apply_worker() {
+        trap '' INT HUP
+        trap '
+          trap "" INT TERM HUP
+          [ -d "$PODKOP_MUTATION_LOCK_DIR" ] && [ -d "$DB_LOCK" ] || exit 99
+          if [ "$phase" = repeated_signal ]; then kill -TERM "$$"; fi
+          if [ "$rollback_failure" = yes ]; then
+            echo "{\"success\":false,\"error\":\"rollback_failed\",\"restored\":false}"
+          else
+            cp "$work/original.json" "$work/uci.json"
+            echo "{\"success\":false,\"error\":\"interrupted_rolled_back\",\"restored\":true}"
+          fi
+          exit 130
+        ' TERM
+        echo candidate > "$work/uci.json"
+        kill -"$signal" "$$"
+        while :; do sleep 0.05; done
+    }
     db_prepare; db_report_id=signal-proof
     db_pair_json="$(db_pair_object udp cloudflare 1.1.1.1 8.8.8.8 true)"
     db_state done pair_test verified 100 1 1 ''; cp "$DB_STATUS" "$DB_REPORT"; db_write_proof "$db_pair_json"
@@ -52,6 +56,13 @@ db_busy() { return 1; }
 db_reload_busy() { return 1; }
 db_prepare
 db_status | jq -e '.state=="idle" and .results==[]' >/dev/null
+mkdir -p "$PODKOP_DNS_APPLY_BACKUP_DIR"
+printf '%s\n' transaction.test > "$PODKOP_DNS_APPLY_BACKUP_DIR/pending"
+db_status | jq -e '.backupAvailable==true' >/dev/null || fail 'pending DNS recovery is hidden by status'
+mv "$PODKOP_DNS_APPLY_BACKUP_DIR/pending" "$PODKOP_DNS_APPLY_BACKUP_DIR/latest"
+db_status | jq -e '.backupAvailable==true' >/dev/null || fail 'latest DNS transaction is hidden by status'
+rm "$PODKOP_DNS_APPLY_BACKUP_DIR/latest"
+db_status | jq -e '.backupAvailable==false' >/dev/null || fail 'missing DNS transaction reported available'
 db_validate_pair udp cloudflare 1.1.1.1 8.8.8.8 || fail 'valid pair rejected'
 if db_validate_pair udp yandex 77.88.8.8 1.1.1.1; then fail 'Yandex primary accepted'; fi
 if db_validate_pair doh bad 'host;touch /tmp/no' 1.1.1.1; then fail 'unsafe endpoint accepted'; fi
@@ -68,8 +79,13 @@ if db_proof_valid udp cloudflare 1.1.1.1 8.8.8.8 tcp; then fail 'different boots
 uci() { case "$*" in *export*) echo 'changed config';; *changes*) :;; *) return 1;; esac; }
 if db_proof_valid udp cloudflare 1.1.1.1 8.8.8.8; then fail 'stale config proof allowed'; fi
 uci() { case "$*" in *export*) echo 'config settings';; *changes*) :;; *) return 1;; esac; }
+cp "$DB_PROOF" "$work/proof.saved"
+for age in 301 3600 86400 604800; do
+    jq --argjson time "$(( $(date +%s)-age ))" '.testedAt=$time' "$work/proof.saved" > "$DB_PROOF"
+    db_proof_valid udp cloudflare 1.1.1.1 8.8.8.8 || fail "unchanged verified pair rejected after waiting $age seconds"
+done
 jq '.testedAt=0' "$DB_PROOF" > "$work/expired"; mv "$work/expired" "$DB_PROOF"
-if db_proof_valid udp cloudflare 1.1.1.1 8.8.8.8; then fail 'expired proof allowed'; fi
+if db_proof_valid udp cloudflare 1.1.1.1 8.8.8.8; then fail 'missing verification timestamp allowed'; fi
 db_make_config doh cloudflare-dns.com/dns-query 8.8.8.8 "$work/child.json"
 jq -e '.dns.servers[0].type=="udp" and .dns.servers[1].type=="https" and .dns.servers[1].domain_resolver=="bootstrap" and .inbounds[0].listen=="127.0.0.1" and .route.rules[0].action=="hijack-dns"' "$work/child.json" >/dev/null
 jq -e '.route.default_mark==2097152' "$work/child.json" >/dev/null || fail 'isolated DNS child lacks the native Podkop WAN bypass mark'
@@ -144,6 +160,7 @@ db_child_start() {
     printf '%s|%s|%s\n' "$1" "$2" "$3" >> "$work/starts"
     [ "$2" != 1.1.1.1 ]
 }
+db_native_start() { db_child_start "$@"; }
 db_query() {
     case "$1" in
         *.invalid) echo NXDOMAIN;;
@@ -154,7 +171,7 @@ db_query() {
 db_results='[]'; db_bootstrap_results='[]'; db_deadline=$(( $(date +%s)+600 ))
 db_benchmark
 [ "$(head -n1 "$work/starts" | cut -d '|' -f1)" = udp ] || fail 'main measured before bootstrap'
-db_status | jq -e '.state=="done" and (.results|all(.protocol=="dot")) and (.bootstrapResults|any(.provider=="Yandex" and .reliable)) and (.results|all(.reliable|not))' >/dev/null
+db_status | jq -e '.state=="done" and (.results|all(.protocol=="dot" and .precheckOnly==true and .fullCompatibilityVerified==false and .probeScope=="direct_native_dns_ordering_only")) and (.bootstrapResults|any(.provider=="Yandex" and .reliable))' >/dev/null
 grep -q '^dot|8.8.8.8|8.8.8.8$' "$work/starts" || fail 'working configured bootstrap not used for main measurements'
 if [ -s "$DB_PROOF" ]; then fail 'benchmark automatically granted apply proof'; fi
 db_report_id=report-apply
@@ -170,20 +187,28 @@ uci() {
         *) return 1;;
     esac
 }
-save_previous_dns() { :; }
-restart_podkop() { echo restart >> "$work/restarts"; }
-validate_podkop_dns() { return 0; }
-validate_google_play_transport() { return 0; }
-validate_chatgpt_transport() { return 0; }
+db_load_apply_helper() { :; }
+(
+    dns_apply_worker() { exit 1; }
+    if db_dns_transaction prepare; then fail 'empty failed helper accepted'; fi
+    [ "$db_transaction_error" = dns_apply_result_unknown ] || fail 'empty helper result lost error code'
+    dns_apply_worker() { echo '{"success":true}'; exit 1; }
+    if db_dns_transaction prepare; then fail 'failed helper success-looking output accepted'; fi
+) || fail 'helper failure reporting regression'
+dns_apply_worker() {
+    [ "$PODKOP_DNS_APPLY_LOCK_HELD" = 1 ] && [ -d "$PODKOP_MUTATION_LOCK_DIR" ] || return 1
+    printf '%s\n' "$*" >> "$work/apply-calls"
+    echo '{"success":true,"restored":false}'
+}
+restart_podkop() { fail 'DNS-only apply invoked broad Podkop restart'; }
 db_apply udp cloudflare 1.1.1.1 8.8.8.8
 podkop_mutation_lock_release
 db_status | jq -e '.state=="done" and .action=="apply"' >/dev/null
-[ "$(wc -l < "$work/uci-writes")" = 5 ] || fail 'apply did not write exactly the requested pair, bootstrap protocol and slot'
-[ "$(wc -l < "$work/restarts")" = 1 ] || fail 'explicit apply did not restart once'
+[ "$(cat "$work/apply-calls")" = 'apply udp 1.1.1.1 udp 8.8.8.8' ] || fail 'wrong DNS-only transaction arguments'
+[ ! -e "$work/uci-writes" ] || fail 'dispatcher changed UCI outside transaction helper'
 if db_apply udp cloudflare 1.1.1.1 8.8.8.8; then fail 'consumed proof allowed second apply'; fi
 podkop_mutation_lock_release
-[ "$(wc -l < "$work/uci-writes")" = 5 ] || fail 'unverified apply wrote config'
-[ "$(wc -l < "$work/restarts")" = 1 ] || fail 'unverified apply restarted Podkop'
+[ "$(wc -l < "$work/apply-calls")" = 1 ] || fail 'unverified apply reached helper'
 for signal in TERM INT HUP; do
     case_work="$work/signal-$signal"
     if sh "$0" __signal "$case_work" "$signal" no after_commit; then fail 'interrupted apply returned success'; else case_rc=$?; fi
@@ -200,12 +225,6 @@ cmp "$case_work/original.json" "$case_work/uci.json" || fail 'second catchable s
 case_work="$work/signal-failed-rollback"
 if sh "$0" __signal "$case_work" TERM yes after_commit; then fail 'failed interrupted rollback returned success'; else case_rc=$?; fi
 [ "$case_rc" = 130 ] || fail 'failed interrupted rollback exit differs'
-jq -e '.state=="error" and .error=="rollback_failed" and .backupAvailable' "$case_work/state/status.json" >/dev/null || fail 'failed interrupted rollback was hidden'
-[ -s "$case_work/optimizer-persist/previous-dns.json" ] || fail 'failed rollback discarded recovery backup'
+jq -e '.state=="error" and .error=="rollback_failed"' "$case_work/state/status.json" >/dev/null || fail 'failed interrupted rollback was hidden'
 [ ! -d "$case_work/mutation" ] && [ ! -d "$case_work/state/lock" ] || fail 'failed interrupted rollback retained locks'
-case_work="$work/signal-before-commit"
-if sh "$0" __signal "$case_work" TERM no after_set; then fail 'interrupted staged apply returned success'; else case_rc=$?; fi
-[ "$case_rc" = 130 ] || fail 'interrupted staged apply exit differs'
-cmp "$case_work/original.json" "$case_work/uci.json" || fail 'interrupted staged UCI edits were not restored'
-[ ! -s "$case_work/staged.json" ] || fail 'interrupted staged UCI edits leaked into next transaction'
 echo 'PASS: PE DNS pair proof, isolation config, truthful failure, cancel and lock guards'

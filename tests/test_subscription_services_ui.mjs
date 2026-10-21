@@ -78,6 +78,9 @@ const subset={code:'geo',selectionMode:'selected',includeTags:['US*'],sources:[{
  {id:'source-off',name:'US source off',supported:true,enabled:true,sourceIds:['off']}
 ]};
 assert.equal(c.getSubscriptionServiceCheckTargets(subset,['gemini']).map(row=>row.id).join(','),'eligible','do not probe manual-excluded, tag-excluded or source-disabled nodes');
+const mixed={...subset,manualItems:[{id:'kz-manual',name:'KZ-Manual',supported:true,manual:true}]};
+assert.equal(c.getSubscriptionServiceCheckTargets(mixed,['gemini']).map(row=>row.id).join(','),'eligible,kz-manual','explicit manual node is checked independently of subscription US tags and source choices');
+assert.equal(mixed.items.length,4,'manual service checks never insert nodes into subscription selection');
 assert.equal(c.getSubscriptionServiceCheckTargets(subset,['gemini'],true,{'geo:manual-no':true,'geo:source:off':true}).map(row=>row.id).join(','),'eligible,manual-no,source-off','force respects the effective draft subset, ignoring only the service gate');
 assert.deepEqual([...c.getSubscriptionServiceExclusions({services:{gemini:{state:'pass',checkedAt:now+1,expiresAt:now+30}}},['gemini'])],['gemini'],'future timestamps cannot admit a node');
 assert.match(c.getSubscriptionServiceStateLabel({state:'pass',checkedAt:now+1,expiresAt:now+30}),/устарела/i,'malformed timestamp must not be labelled passing');
@@ -93,7 +96,7 @@ c.PodkopShellMethods={
  checkSubscriptionServices:async(code,id,services)=>{calls.push([code,id,[...services]]);c.handleCancelSubscriptionServices();return {success:true,data:{success:true}};},
  getSubscriptionServices:async()=>({success:true,data:{success:true,requiredServices:[],catalog:[],results:[{id:'a',services:item.services}]}})
 };
-for(const name of ['setActionState','handleCancelSubscriptionServices','handleCheckSubscriptionServices','refreshSubscriptionServiceEvidence']){
+for(const name of ['setActionState','handleCancelSubscriptionServices','handleCheckSubscriptionServices','refreshSubscriptionServiceEvidence','getSubscriptionServiceCheckError']){
  const match=js.match(new RegExp(`(?:async )?function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));assert.ok(match,`${name} must exist`);vm.runInContext(match[0],c);
 }
 await c.handleCheckSubscriptionServices('geo',['gemini']);
@@ -105,9 +108,10 @@ console.log('PASS: isolated sequential service checks cancel safely and preserve
 for(const name of ['getErrorText','getSubscriptionActionErrorMessage']) {
  const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));assert.ok(match);vm.runInContext(match[0],c);
 }
-assert.match(c.getSubscriptionActionErrorMessage(new Error('service_manual_links_unsupported'),'generic fallback'),/отдельные proxy-ссылки/i,'manual links must not bypass the service filter silently');
+assert.match(c.getSubscriptionActionErrorMessage(new Error('service_manual_links_unsupported'),'generic fallback'),/backend.*ручных proxy-ссылок/i,'old unsupported backend must remain explicit');
+assert.match(c.getSubscriptionActionErrorMessage(new Error('service_manual_results_stale_or_missing'),'generic fallback'),/обязательные проверки.*Проверить новые\/устаревшие.*не изменён/i,'unmeasured manual nodes must give the recovery action without bypass');
 assert.match(c.getSubscriptionActionErrorMessage(new Error('service_snapshot_storage_unavailable'),'generic fallback'),/безопасную копию.*свободное место или локальные списки.*не применены/i,'snapshot preparation failures must not be misreported as applied changes or certain low space');
-assert.match(JSON.stringify(filter),/Для конфигов подписок; отдельные proxy-ссылки не проверяются/,'selector must state its supported scope');
+assert.match(JSON.stringify(filter),/Ручные proxy-ссылки проверяются отдельно от тегов подписки; обязательные сервисы проверяются для всех узлов/,'selector must distinguish subscription tags from manual service admission');
 console.log('PASS: unsupported manual links receive an explicit service filter error');
 calls.length=0;
 state.subscriptionItemsWidget={data:[{...pool,items:[{...item,supported:true},{...item,id:'b',supported:true}]}],pendingChanges:{'geo:a':false},actionStatus:'idle'};
@@ -126,11 +130,19 @@ assert.equal(state.subscriptionItemsWidget.pendingChanges['geo:a'],false,'forced
 for(const name of ['getToolbarMessage','getToolbarClass','renderToolbar','subscriptionStateLabel']) {
  const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));assert.ok(match);vm.runInContext(match[0],c);
 }
-assert.match(c.getToolbarMessage({runtimeStatus:{pending:true},pendingCount:0}),/Конфиги или результаты проверок обновлены, но ещё не применены/);
-assert.match(c.subscriptionStateLabel({runtimeStatus:{pending:true},pendingCount:0})[2],/результаты проверок/);
+assert.match(c.getToolbarMessage({runtimeStatus:{pending:true},pendingCount:0}),/Применить.*перерыв соединений/);
+assert.match(c.subscriptionStateLabel({runtimeStatus:{pending:true},pendingCount:0})[2],/Применить.*перерыв соединений/);
 c.renderButton=props=>({tag:'button',attrs:{disabled:props.disabled},children:props.text});
 c.renderSubscriptionState=()=>({tag:'status'});
 for(const name of ['renderRotateCcwIcon24','renderSearchIcon24','renderCircleStopIcon24','renderSquareChartGanttIcon24'])c[name]=()=>null;
 const toolbar=c.renderToolbar({pendingCount:0,runtimeStatus:{pending:true,busy:false},actionStatus:'idle'});
 assert.equal(walk(toolbar).find(node=>node?.tag==='button'&&node.children==='Apply').attrs.disabled,false,'backend pending proof enables apply without a UCI draft');
 console.log('PASS: persisted service proof can enable Apply with no UI draft through backend pending status');
+calls.length=0;
+state.subscriptionItemsWidget={data:[{...pool,items:[{id:'a',supported:true},{id:'b',supported:true}]}],pendingChanges:{},actionStatus:'idle'};
+c.PodkopShellMethods.checkSubscriptionServices=async(code,id)=>{calls.push(id);if(id==='a')throw new Error('request_timeout');return {success:true,data:{success:true}};};
+await c.handleCheckSubscriptionServices('geo',['gemini'],true);
+assert.deepEqual(calls,['a','b'],'one failed node must not prevent later nodes from being checked');
+assert.match(state.subscriptionItemsWidget.actionMessage,/Ошибок: 1/,'batch retains a visible truthful error count');
+assert.match(c.getSubscriptionActionErrorMessage(new Error('service_results_stale_or_missing'),'generic'),/устарели|не найдены/,'missing proof must explain required recheck');
+assert.match(c.getSubscriptionActionErrorMessage(new Error('service_no_eligible_nodes'),'generic'),/ни одного|нет.*узл/i,'empty admission must not be reported as reload failure');

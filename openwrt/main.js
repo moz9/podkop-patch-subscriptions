@@ -5403,6 +5403,8 @@ function getStatusLabel({
   }
   if (item.subscriptionDisabled) return "Подписка отключена";
   if (effectiveEnabled && tagFiltered) return "Исключён фильтром тегов";
+  if (effectiveEnabled && serviceExcluded?.includes('google_country')) return 'Исключён: страна по Google';
+  if (effectiveEnabled && serviceExcluded?.includes('exit_country')) return 'Исключён: страна выхода';
   if (effectiveEnabled && serviceExcluded?.length) return 'Исключён: сервисы';
   if (pending) {
     return effectiveEnabled ? _("Will be included") : _("Will be excluded");
@@ -5431,7 +5433,7 @@ function getSubscriptionRowStatusTitle({item, effectiveEnabled, tagFiltered, ser
   if (!effectiveEnabled) return 'Узел не выбран вручную.';
   if (tagFiltered) return 'Узел не подходит под фильтр тегов этой секции.';
   if (!serviceExcluded.length) return 'Узел проходит выбранные фильтры и попадёт в набор при применении.';
-  const labels = {gemini:'Gemini', chatgpt:'ChatGPT'};
+  const labels = {gemini:'Gemini', chatgpt:'ChatGPT', google_country:'Страна по Google', exit_country:'Страна по IP', google_country:'Страна по Google', exit_country:'Страна по IP'};
   return serviceExcluded.map(service => `${labels[service] || service}: ${getSubscriptionServiceStateLabel(item.services?.[service])}`).join('; ');
 }
 function renderEmptyState(text) {
@@ -5511,12 +5513,12 @@ function getToolbarMessage({
   if (failed) {
     return actionMessage || _("Failed to load subscription configs");
   }
-  if (actionStatus === "verifying") return actionMessage || "Проверяем результат применения на роутере. Повторное применение не запускается.";
+  if (actionStatus === "verifying") return actionMessage || "Проверяем применение; повторять не нужно.";
   if (applying || status === "applying") {
     return _("Applying changes. Podkop will be restarted once.");
   }
-  if (runtimeStatus?.unknown) return "Проверяем связь с роутером. Пока состояние неизвестно, запуск операций недоступен.";
-  if (runtimeStatus?.busy && actionStatus !== "running") return "Podkop завершает другую операцию. Кнопки станут доступны автоматически; повторять нажатие сейчас не нужно.";
+  if (runtimeStatus?.unknown) return "Нет статуса роутера; операции заблокированы.";
+  if (runtimeStatus?.busy && actionStatus !== "running") return "Podkop занят; дождитесь завершения.";
   if (actionStatus === "running") {
     return actionMessage || _("Action is running");
   }
@@ -5532,11 +5534,11 @@ function getToolbarMessage({
   if (pendingCount > 0) {
     return `${_("Unsaved changes")}: ${pendingCount}. ${_("Click Apply to restart Podkop once.")}`;
   }
-  if (runtimeStatus?.pending) return "Конфиги или результаты проверок обновлены, но ещё не применены. Нажмите «Применить», когда допустим краткий перерыв соединений.";
+  if (runtimeStatus?.pending) return "Нажмите «Применить»; возможен краткий перерыв соединений.";
   if (status === "success") {
     return _("Changes applied. Podkop has been restarted.");
   }
-  return 'Настройте отбор узлов и нажмите «Применить». Проверки и изменения выбора сами рабочее подключение не переключают.';
+  return 'Выберите узлы и нажмите «Применить».';
 }
 function getToolbarClass(status, actionStatus, pendingCount) {
   if (status === "applying") {
@@ -5578,7 +5580,7 @@ function renderToolbar({
   const blocked = runtimeStatus?.busy || runtimeStatus?.unknown;
   const canRunAction = !loading && !failed && !applying && !actionRunning && !blocked;
   const canRunSubscriptionAction = canRunAction && pendingCount === 0;
-  const canRefresh = !loading && !applying && !actionRunning && !blocked && (failed || applyUnconfirmed || pendingCount === 0);
+  const canRefresh = !loading && !applying && !actionRunning && !runtimeStatus?.busy && (!runtimeStatus?.unknown || failed || applyUnconfirmed) && (failed || applyUnconfirmed || pendingCount === 0);
   const canApply = (pendingCount > 0 || runtimeStatus?.pending) && canRunAction;
   const canReset = pendingCount > 0 && !applying && !actionRunning;
   return E(
@@ -5939,7 +5941,7 @@ function getSubscriptionServiceCheckTargets(section, services, force = false, pe
   if (!services.length) return [];
   const include=getEffectiveSubscriptionTags(pendingChanges,section,'include');
   const exclude=getEffectiveSubscriptionTags(pendingChanges,section,'exclude');
-  return section.items.filter(item=>item.supported && getEffectiveSubscriptionItemEnabled(pendingChanges,section,item) &&
+  const subscriptions=section.items.filter(item=>item.supported && getEffectiveSubscriptionItemEnabled(pendingChanges,section,item) &&
     !isSubscriptionTagFiltered(item,include,exclude) &&
     (!(section.sources || []).length ? !item.subscriptionDisabled : section.sources.some(source=>
       (item.sourceIds?.length ? item.sourceIds.includes(source.id) : (item.sourceIndex || 1) === source.sourceIndex) &&
@@ -5947,6 +5949,9 @@ function getSubscriptionServiceCheckTargets(section, services, force = false, pe
     const result=item.services?.[service];
     return !isSubscriptionServiceEvidenceFresh(result);
   })));
+  const manual=(section.manualItems||[]).filter(item=>item.supported && (force || services.some(service=>!isSubscriptionServiceEvidenceFresh(item.services?.[service]))));
+  const seen=new Set(subscriptions.map(item=>item.id));
+  return [...subscriptions,...manual.filter(item=>!seen.has(item.id) && seen.add(item.id))];
 }
 function getSubscriptionServiceRoutingHint(section, services) {
   if (!services.includes('gemini')) return '';
@@ -5978,12 +5983,32 @@ function getSubscriptionServiceSummary(section, services, pendingChanges) {
 function getSubscriptionServiceStateLabel(result) {
   if (!result) return 'Не проверен — исключён';
   if (!isSubscriptionServiceEvidenceFresh(result)) return 'Проверка устарела или дата некорректна — исключён';
+  if (String(result.reason || '').startsWith('google_country_')) {
+    const declared=/^[A-Z]{2}$/.test(result.declaredCountry || '') ? result.declaredCountry : '?';
+    const observed=/^[A-Z]{2}$/.test(result.googleCountry || '') ? result.googleCountry : '?';
+    if (result.state === 'pass' && result.reason === 'google_country_match') return `${declared} → ${observed}: страна по Google совпадает`;
+    if (result.state === 'fail' && result.reason === 'google_country_mismatch') return `${declared} → ${observed}: страна по Google не совпадает — исключён`;
+    const reason={google_country_declared_missing:'В названии не указана страна',
+      google_country_declared_ambiguous:'Страна в названии неоднозначна',
+      google_country_unavailable:'Страна по Google не определена'}[result.reason] || 'Страна по Google не определена';
+    return `${reason} — исключён`;
+  }
+  if (String(result.reason || '').startsWith('exit_country_')) {
+    const declared=/^[A-Z]{2}$/.test(result.declaredCountry || '') ? result.declaredCountry : '?';
+    const observed=/^[A-Z]{2}$/.test(result.exitCountry || '') ? result.exitCountry : '?';
+    if (result.state === 'pass' && result.reason === 'exit_country_match') return `${declared} → ${observed}: страна совпадает`;
+    if (result.state === 'fail' && result.reason === 'exit_country_mismatch') return `${declared} → ${observed}: страна не совпадает — исключён`;
+    const reason={exit_country_sources_disagree:'Источники расходятся',exit_country_unavailable:'Страна выхода не определена',
+      exit_country_declared_missing:'В названии не указана страна',exit_country_declared_ambiguous:'Страна в названии неоднозначна'}[result.reason] || 'Страна не подтверждена';
+    return `${reason} — исключён`;
+  }
   const region = /^[A-Z]{3}$/.test(result.region || '') ? ` (${result.region})` : '';
   if (!result.manual && result.state === 'pass' && result.reason === 'region_precheck_passed') return `Регион${region} предварительно проходит`;
   if (result.state === 'fail' && result.reason === 'region_denied') return `Регион${region} отклонён — исключён`;
   if (result.state === 'pass') return result.manual ? 'Подтверждён вами' : 'Предварительно проходит';
   if (result.state === 'fail') return 'Недоступен — исключён';
-  return result.network === 'pass' || result.network === true ? 'Не определено · Требует подтверждения чата — исключён' : 'Не определено · Ошибка соединения — исключён';
+  const curl=Number.isInteger(result.curlCode) && result.curlCode>0 && result.curlCode<=99 ? ` (curl ${result.curlCode})` : '';
+  return result.network === 'pass' || result.network === true ? 'Не определено · Требует подтверждения чата — исключён' : `Не определено · Ошибка соединения${curl} — исключён`;
 }
 function canConfirmSubscriptionService(service, result) {
   return ['gemini','chatgpt'].includes(service) && result?.state === 'unknown' &&
@@ -5992,13 +6017,17 @@ function canConfirmSubscriptionService(service, result) {
 function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onToggle, actions) {
   const selected = getEffectiveRequiredServices(pendingChanges, section);
   if (!section.serviceSupport) return E('small', {role:'status'}, 'Эта версия backend не поддерживает фильтр сервисов. Обновите патч.');
-  const labels = {gemini:'Gemini (регион)',chatgpt:'ChatGPT (веб-чат)'};
+  const labels = {gemini:'Gemini (регион)',chatgpt:'ChatGPT (веб-чат)',
+    ...section.serviceCatalog?.some(service=>service.id==='google_country') ? {google_country:'Страна по Google'} : {},
+    ...section.serviceCatalog?.some(service=>service.id==='exit_country') ? {exit_country:'Страна по IP'} : {}};
   const busy = actions?.modeDisabled || disabled;
   const checkRunning = actions?.serviceRunning && actions.serviceSection === section.code;
   const candidates = getSubscriptionServiceCheckTargets(section,selected,true,pendingChanges);
   const targets = getSubscriptionServiceCheckTargets(section,selected,false,pendingChanges);
   const summary = getSubscriptionServiceSummary(section,selected,pendingChanges);
   const routingHint = getSubscriptionServiceRoutingHint(section,selected);
+  const requestsPerNode = selected.length + (selected.includes('exit_country') ? 1 : 0) -
+    (selected.includes('gemini') && selected.includes('google_country') ? 1 : 0);
   return E('div', {class:'pdk_subscriptions-page__service-filter',style:'margin:8px 0'}, [
     E('div', {style:'display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px'}, [
     E('span', {}, 'Обязательные сервисы:'),
@@ -6015,29 +6044,38 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
       ? `Подходят: ${summary.passed} из ${summary.candidates} · Свежие результаты: ${summary.fresh} · Нужна проверка: ${summary.needsCheck} · Отказ: ${summary.failed} · Не определено: ${summary.unknown}`
       : 'Фильтр выключен · выберите сервис для проверки'),
     E('small', {'data-service-next-step':'true', style:'display:block;margin:4px 0'}, !selected.length
-      ? 'Выберите сервис, если доступ к нему обязателен для этой секции.'
+      ? 'Выберите обязательные проверки.'
       : !summary.candidates
-      ? 'Нет кандидатов для проверки. Проверьте включённые подписки, теги и ручной выбор.'
+      ? 'Нет кандидатов. Проверьте подписки, теги и ручной выбор.'
       : summary.needsCheck
-      ? 'Нажмите «Проверить новые/устаревшие». Рабочее подключение при проверке не переключается.'
+      ? 'Проверьте новые/устаревшие узлы. Рабочий прокси не переключается.'
       : summary.unknown
-      ? 'Неопределённые узлы исключены. Откройте результаты: подтверждайте только чат, который вы действительно проверили через этот узел. Для новой попытки нажмите «Перепроверить всё».'
+      ? 'Неопределённые узлы исключены. Откройте результаты; подтверждайте только лично проверенный чат.'
       : summary.failed
-      ? 'Свежие отказы исключены. Причины доступны в результатах; для новой попытки нажмите «Перепроверить всё».'
-      : 'Все кандидаты предварительно подходят. Изменённый набор начнёт работать только после «Применить».'),
+      ? 'Отказы исключены. Причины в результатах; повтор: «Перепроверить всё».'
+      : 'Узлы предварительно подходят. Набор изменится после «Применить».'),
+    ...selected.includes('gemini') && selected.includes('google_country') ? [E('div', {role:'status',style:'margin:4px 0'}, [
+      E('small', {}, 'Дополнительно требуется совпадение страны с названием. '),
+      E('button', {type:'button',class:'cbi-button',disabled:busy?'disabled':void 0,
+        click:()=>onToggle(section.code,{id:'services:required',enabled:section.requiredServices||[]},selected.filter(service=>service!=='google_country'))}, 'Не требовать совпадения с названием')
+    ])] : [],
+    E('a', {href:'https://github.com/moz9/podkop-patch-subscriptions/blob/pe-dns-pairs-20261007/docs/user-guide.md',target:'_blank',rel:'noopener noreferrer'}, 'Справка'),
     E('details', {}, [E('summary', {}, 'Подробнее'),
-      E('p', {}, 'Gemini: предварительная региональная проверка по ответу публичной страницы. Она не гарантирует ответ чата или доступ аккаунта. HTTP 200 или страница входа не доказывают работу чата. Неопределённый результат, отказ региона и отсутствие проверки — разные состояния.'),
-      E('p', {}, 'Для конфигов подписок; отдельные proxy-ссылки не проверяются. Секция с отдельными proxy-ссылками не может использовать этот фильтр. Непроверенные и устаревшие узлы не допускаются в новое применение. Истечение срока не переключает рабочий прокси: может сохраняться прежний допущенный набор. Проверки не переключают рабочий прокси и не применяют изменения.'),
+      E('p', {}, 'Все выбранные проверки обязательны. Совпадение страны не подтверждает доступность Gemini. Gemini проверяет регион; HTTP 200 не доказывает работу чата. Страна по Google и страна по IP проверяются отдельно. Без свежего успешного результата узел исключён из нового применения. Проверки не переключают рабочий прокси; старый набор может продолжать работать.'),
       ...routingHint ? [E('p', {},routingHint)]:[],
-      E('p', {}, `Результаты кешируются на 24 часа. До ${targets.length*selected.length} проверок сервисов. Ориентир сетевой части: до ${targets.length*selected.length*4} с плюс запуск временных процессов; это не гарантированный срок. Свежие результаты, включая отказы и неопределённые, повторно не проверяются.`)
+      E('p', {}, 'Кеш: 24 часа. До '+targets.length*requestsPerNode+' сетевых запросов; до '+targets.length*requestsPerNode*4+' с плюс запуск процессов (не гарантированный срок). Свежие результаты повторяются только через «Перепроверить всё». Ручные proxy-ссылки проверяются отдельно от тегов подписки; обязательные сервисы проверяются для всех узлов.')
     ]),
-    E('details', {}, [E('summary', {}, 'Результаты по узлам и сервисам'),
-      ...!selected.length ? [E('small', {}, 'Выберите сервис для просмотра результатов.')]:[],
+    E('details', {}, [E('summary', {}, 'Результаты проверок по конфигам'),
+      ...!selected.length ? [E('small', {}, 'Выберите проверку для просмотра результатов.')]:[],
       ...candidates.map(item=>E('div', {style:'margin:6px 0'}, [E('span', {}, item.name||item.id),
         ...selected.map(service=>{
           const result=item.services?.[service];
           const reasons={region_precheck_passed:'Предварительная региональная проверка пройдена',anonymous_models_available:'Анонимный список моделей доступен',challenge_required:'Требуется CAPTCHA или другая проверка',region_denied:'Регион отклонён сервисом',region_unknown:'Результат региона не определён',region_marker_missing:'Маркер региона отсутствует',region_marker_ambiguous:'Маркер региона неоднозначен',region_missing:'Регион отсутствует в ответе',region_ambiguous:'Регион неоднозначен'};
           return E('div', {style:'margin-left:12px'}, [E('span', {title:reasons[result?.reason]||result?.reason||''}, `${labels[service]||service}: ${getSubscriptionServiceStateLabel(result)}`),
+            ...service === 'google_country' && result ? [E('small',{style:'display:block;margin-left:12px'},
+              `Регион в ответе Gemini: ${/^[A-Z]{3}$/.test(result.region || '') ? result.region : 'не определён'}`)] : [],
+            ...service === 'exit_country' ? (result?.observations || []).map(observation=>E('small',{style:'display:block;margin-left:12px'},
+              `${observation.provider}: ${observation.ip || 'IP не определён'} · ${observation.country || 'страна не определена'}`)) : [],
             ...canConfirmSubscriptionService(service,result) ? [E('button',{type:'button',class:'cbi-button',disabled:busy?'disabled':void 0,
               click:()=>handleConfirmSubscriptionService(section.code,item.id,service)},'Я проверил реальный чат через этот узел')]:[]]);
         })]))])
@@ -6089,7 +6127,7 @@ function renderSubscriptionTagPicker(section, pendingChanges, kind, disabled, on
     E('details', {class:'pdk_tag-picker__dropdown', open:subscriptionTagPickerOpen[key] ? 'open' : void 0,
       toggle:event => { subscriptionTagPickerOpen[key] = event.target.open; }}, [
       E('summary', {}, picked.length ? picked.map(choice => choice.label).join(' · ') : (kind === 'include' ? 'Все теги' : 'Не исключать')),
-      E('div', {class:'pdk_tag-picker__choices'}, choices.length ? choices.map(choice => E('label', {class:'pdk_tag-picker__choice'}, [
+      E('div', {class:'pdk_tag-picker__choices', 'data-subscription-scroll-key':key}, choices.length ? choices.map(choice => E('label', {class:'pdk_tag-picker__choice'}, [
         E('input', {type:'checkbox', value:choice.value, checked:selected.includes(choice.value) ? 'checked' : void 0,
           disabled:disabled ? 'disabled' : void 0,
           change:event => {
@@ -6223,7 +6261,7 @@ function renderSection({
       click:()=>onToggleSection(section.code)},
       `${collapsed ? "▸" : "▾"} ${section.displayName} · ${getSectionCollapsedSummary(section, pendingChanges)}`),
     ...collapsed ? [] : [
-    E("small", {style:"display:block;margin:8px 0"}, "Настройте теги и нужные сервисы. Проверьте узлы и итоговый набор, затем нажмите «Применить»."),
+    E("small", {style:"display:block;margin:8px 0"}, "Изменения вступят в силу после «Применить»."),
     E("label", {style:"display:flex;align-items:center;gap:8px;margin:8px 0"}, [
       E("input", {type:"checkbox", checked:getEffectiveSelectionMode(pendingChanges, section) !== "auto" ? "checked" : void 0,
         disabled:applying || sourceActions?.modeDisabled ? "disabled" : void 0,
@@ -6232,7 +6270,7 @@ function renderSection({
       E("span", {}, "Ручной отбор конфигов")
     ]),
     ...getEffectiveSelectionMode(pendingChanges, section) === "auto" ? [
-      E("small", {style:"display:block;margin:4px 0"}, "Узлы включённых подписок выбираются автоматически. К применению допускаются только прошедшие фильтры тегов и сервисов. Сохранённые ручные исключения сейчас не действуют.")
+      E("small", {style:"display:block;margin:4px 0"}, "Автоотбор по тегам и сервисам. Ручные исключения не действуют.")
     ] : [E("label", {style:"display:block;margin:8px 0"}, [
       E("span", {}, "Конфиги этой секции: "),
       E("select", {
@@ -6243,8 +6281,8 @@ function renderSection({
         E("option", {value:"selected", selected:getEffectiveSelectionMode(pendingChanges, section) === "selected" ? "selected" : void 0}, "Только выбранные")
       ]),
       E("small", {style:"display:block;margin-top:4px"}, getEffectiveSelectionMode(pendingChanges, section) === "selected"
-        ? "Новые конфиги не включаются автоматически. Оставьте галочки только у нужных узлов и нажмите «Применить»."
-        : "Новые конфиги подписок включаются автоматически. Выключенные вручную остаются выключенными.")
+        ? "Новые конфиги не включаются автоматически."
+        : "Новые узлы включаются; ручные исключения сохраняются.")
     ])],
     E("div", {class:"pdk_tag-pickers"}, [
       ...["include","exclude"].map(kind => renderSubscriptionTagPicker(section,pendingChanges,kind,applying || sourceActions?.modeDisabled,onToggle))
@@ -6266,16 +6304,16 @@ function renderSection({
         ...[['all','Все'],['gaming','Игровые'],['non-gaming','Неигровые']].map(([value,label]) =>
           E("option", {value,selected:gameMode === value ? "selected" : void 0},label))
       ]),
-      E("small", {style:"display:block;margin-top:4px"}, "Игровые — со словом «Игровой» в названии. Неигровые — без этой метки. Страны и остальные фильтры продолжают действовать.")
+      E("small", {style:"display:block;margin-top:4px"}, "Тип определяется словом «Игровой» в названии. Проверки страны независимы.")
     ]),
     ...section.serviceSupport !== undefined ? [renderSubscriptionServiceFilter(section,pendingChanges,applying,onToggle,sourceActions)]:[],
-    E("details", {}, [E("summary", {}, "Как работают теги"), E("small", {}, "Префиксы определены из названий узлов: SE, FI, US и другие. Флаг и буквенный код одной страны считаются одним тегом. Исключение важнее разрешения. При ручном отборе фильтр дополнительно ограничивает ваш выбор.")]),
+    E("details", {}, [E("summary", {}, "Как работают теги"), E("small", {}, "Теги берутся из названий. Флаг и код страны равнозначны. Исключение важнее разрешения; фильтры действуют и при ручном выборе.")]),
     E("small", {style:"display:block;margin:4px 0"}, tagPreview.uncertain
       ? `По прежнему режиму подходят: ${tagPreview.enabled}. После смены режима итоговое число определится при применении.`
       : tagPreview.enabled === 0
       ? "К применению: 0. Сохранение будет отклонено. Проверьте причины исключения ниже."
       : `К применению: ${tagPreview.enabled} из ${section.items.length} конфигов.`),
-    E("small", {style:"display:block;margin:4px 0"}, `Исключено: несовместимые — ${tagPreview.unsupported}; подписки выключены — ${tagPreview.sourceExcluded}; не выбраны вручную — ${tagPreview.manualExcluded}; теги — ${tagPreview.filtered}; сервисы — ${tagPreview.serviceExcluded}. Причины учитываются по порядку, без двойного счёта.`),
+    E("small", {style:"display:block;margin:4px 0"}, `Исключено: несовместимые — ${tagPreview.unsupported}; подписки выключены — ${tagPreview.sourceExcluded}; не выбраны вручную — ${tagPreview.manualExcluded}; теги — ${tagPreview.filtered}; сервисы — ${tagPreview.serviceExcluded}. Без двойного счёта.`),
     sourceGroups.length === 0 ? renderEmptyState(
       _("Subscription cache is empty. Click refresh to load configs.")
     ) : E(
@@ -6396,7 +6434,7 @@ function renderSubscriptionSections({
         target:actionTarget,
         modeDisabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying",
         disabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || pendingCount > 0,
-        refreshDisabled:applying || loading || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || (!failed && !applyUnconfirmed && pendingCount > 0),
+        refreshDisabled:applying || loading || runtimeStatus?.busy || (runtimeStatus?.unknown && !failed && !applyUnconfirmed) || actionStatus === "running" || actionStatus === "verifying" || (!failed && !applyUnconfirmed && pendingCount > 0),
         speedRunning:action === "speed" && actionStatus === "running",
         serviceRunning:action === "services" && actionStatus === "running",
         serviceSection:actionTarget?.sectionCode,
@@ -6460,15 +6498,15 @@ var subscriptionsLifecycleRegistered = false;
 var subscriptionStatusTimer;
 var subscriptionStatusGeneration = 0;
 function subscriptionStateLabel(widget) {
-  if (widget.applying) return ["busy", "Применяется", "Сохраняем выбор и применяем настройки. Повторное нажатие не требуется."];
-  if (widget.actionStatus === "verifying") return ["busy", "Проверяем результат", "Ответ на применение задержался. Ждём завершения операции и сверяем сохранённые настройки. Повторно применять не нужно."];
-  if (widget.actionStatus === "running") return ["busy", widget.action === "refresh" ? "Обновляется" : "Тестируется", "Дождитесь завершения текущей операции. Бенчмарк можно остановить его кнопкой."];
-  if (widget.runtimeStatus?.unknown) return ["unknown", "Нет статуса", "Не удалось получить состояние роутера. Проверка повторяется автоматически; при истёкшей сессии войдите заново."];
-  if (widget.runtimeStatus?.busy) return ["busy", "Podkop занят", "Применяются настройки или выполняется другая операция. Кнопки станут доступны после завершения; повторять нажатие не нужно."];
+  if (widget.applying) return ["busy", "Применяется", "Дождитесь применения; повторять не нужно."];
+  if (widget.actionStatus === "verifying") return ["busy", "Проверяем результат", "Проверяем результат; повторять применение не нужно."];
+  if (widget.actionStatus === "running") return ["busy", widget.action === "refresh" ? "Обновляется" : "Тестируется", "Дождитесь завершения или остановите бенчмарк."];
+  if (widget.runtimeStatus?.unknown) return ["unknown", "Нет статуса", "Статус проверяется повторно. При истёкшей сессии войдите заново."];
+  if (widget.runtimeStatus?.busy) return ["busy", "Podkop занят", "Дождитесь завершения операции."];
   if (widget.loading) return ["busy", "Загрузка", "Читаем состояние подписок."];
-  if (widget.failed || widget.actionStatus === "error") return ["error", "Ошибка", "Причина указана рядом. Несохранённый выбор сохранён в этой вкладке."];
-  if (widget.pendingCount > 0 || widget.runtimeStatus?.pending) return ["pending", "Нужно применить", "Есть несохранённый выбор, обновлённые конфиги или результаты проверок, ещё не применённые Podkop. Нажмите «Применить»; соединения могут кратко прерваться."];
-  return ["ready", "Готово", "Подписки доступны для действий. Это состояние операций, не проверка доступности всех прокси."];
+  if (widget.failed || widget.actionStatus === "error") return ["error", "Ошибка", "См. причину ошибки. Ваш выбор сохранён."];
+  if (widget.pendingCount > 0 || widget.runtimeStatus?.pending) return ["pending", "Нужно применить", "Нажмите «Применить»; возможен краткий перерыв соединений."];
+  return ["ready", "Готово", "Операции доступны; работоспособность прокси не проверена."];
 }
 function renderSubscriptionState(widget) {
   const [kind,label,title] = subscriptionStateLabel(widget);
@@ -6560,7 +6598,7 @@ function canRunServiceAction() {
 }
 function canRefreshSubscriptions() {
   const widget = store.get().subscriptionItemsWidget;
-  return !widget.loading && !widget.applying && !widget.applyVerification && !widget.runtimeStatus?.busy && !widget.runtimeStatus?.unknown && !isActionRunning() && (widget.failed || getPendingCount2(widget.pendingChanges) === 0 || !!widget.applyUnconfirmed);
+  return !widget.loading && !widget.applying && !widget.applyVerification && !widget.runtimeStatus?.busy && (!widget.runtimeStatus?.unknown || widget.failed || !!widget.applyUnconfirmed) && !isActionRunning() && (widget.failed || getPendingCount2(widget.pendingChanges) === 0 || !!widget.applyUnconfirmed);
 }
 function setActionState({
   action,
@@ -6592,8 +6630,17 @@ async function refreshSubscriptionServiceEvidence(sectionCode) {
   const widget = store.get().subscriptionItemsWidget;
   const byId = new Map(response.data.results.map(result=>[result.id,normalizeSubscriptionServiceEvidence(result)]));
   store.set({subscriptionItemsWidget:{...widget,data:widget.data.map(section=>section.code!==sectionCode?section:{...section,
-    serviceSupport:true,requiredServices:response.data.requiredServices || [],
-    items:section.items.map(item=>({...item,services:byId.get(item.id)||{}}))})}});
+    serviceSupport:true,serviceCatalog:response.data.catalog || [],requiredServices:response.data.requiredServices || [],
+    items:section.items.map(item=>({...item,services:byId.get(item.id)||{}})),
+    ...(response.data.manualCandidates?.length || section.manualItems ? {manualItems:(response.data.manualCandidates||[]).map(item=>({...item,services:byId.get(item.id)||{}}))} : {})})}});
+}
+function getSubscriptionServiceCheckError(error, sectionCode, item, stage) {
+  const raw=String(error?.message||'');
+  const code=/^[a-z][a-z0-9_]{0,79}$/.test(raw)?raw:/timeout|timed out/i.test(raw)?'request_timeout':'request_failed';
+  const diagnostic=error?.diagnostic||{};
+  const safeStage=/^[a-z][a-z0-9_]{0,39}$/.test(diagnostic.stage||'')?diagnostic.stage:stage;
+  const safeName=String(item?.name||item?.id||'—').replace(/[\u0000-\u001f\u007f]/g,' ').replace(/\S+:\/\/\S+/g,'[адрес]').slice(0,120);
+  return {code,stage:safeStage,message:`${sectionCode} / ${safeName}: ${safeStage} · ${code}. Рабочий прокси не изменён.`};
 }
 async function handleCheckSubscriptionServices(sectionCode, services, force = false) {
   const widget = store.get().subscriptionItemsWidget;
@@ -6607,19 +6654,36 @@ async function handleCheckSubscriptionServices(sectionCode, services, force = fa
   }
   store.set({subscriptionItemsWidget:{...widget,serviceCancel:false}});
   setActionState({action:'services',actionStatus:'running',actionTarget:{sectionCode},actionMessage:'Подготовка изолированной проверки сервисов. Рабочий прокси не переключается.'});
+  let currentItem;
+  let currentStage='service_request';
+  const failures=[];
   try {
     for (let index=0;index<items.length;index++) {
       if (store.get().subscriptionItemsWidget.serviceCancel) break;
       const item=items[index];
+      currentItem=item;
+      currentStage='service_request';
       setActionState({action:'services',actionStatus:'running',actionMessage:`Сервисы: ${section.displayName||sectionCode} / ${item.name||item.id} (${index+1}/${items.length}): ${services.join(', ')}`});
+      try {
       const response=await PodkopShellMethods.checkSubscriptionServices(sectionCode,item.id,services);
-      if (!response.success || response.data?.success !== true) throw new Error(response.data?.error||response.error||'service_check_failed');
+      if (!response.success || response.data?.success !== true) {
+        const error=new Error(response.data?.error||response.error||'service_check_failed');
+        error.diagnostic=response.data?.diagnostic||response.data;
+        throw error;
+      }
+      currentStage='read_results';
       await refreshSubscriptionServiceEvidence(sectionCode);
+      } catch(error) {
+        const detail=getSubscriptionServiceCheckError(error,sectionCode,item,currentStage);
+        if (detail.code==='service_busy' || detail.code==='service_support_missing') throw error;
+        failures.push(detail);
+      }
     }
     const persistedFilter=store.get().subscriptionItemsWidget.data.find(section=>section.code===sectionCode)?.requiredServices?.length>0;
-    setActionState({action:'services',actionStatus:'idle',actionMessage:(store.get().subscriptionItemsWidget.serviceCancel?'Проверка остановлена. Полученные результаты сохранены.':'Проверка завершена. Результаты показаны по узлам и сервисам.') + (persistedFilter?' Нажмите «Применить», чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.':' Изменения рабочего подключения не применены.')});
+    setActionState({action:'services',actionStatus:failures.length===items.length?'error':'idle',actionError:failures[0]?.code,actionMessage:(store.get().subscriptionItemsWidget.serviceCancel?'Проверка остановлена. Полученные результаты сохранены.':'Проверка завершена. Результаты показаны по узлам и сервисам.') + (failures.length?` Ошибок: ${failures.length}. ${failures[0].message}`:'') + (persistedFilter?' Нажмите «Применить», чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.':' Изменения рабочего подключения не применены.')});
   } catch (error) {
-    setActionState({action:'services',actionStatus:'error',actionError:error?.message,actionMessage:getSubscriptionActionErrorMessage(error,'Не удалось завершить проверку сервисов. Сохранён ваш выбор; рабочий прокси не изменён.')});
+    const detail=getSubscriptionServiceCheckError(error,sectionCode,currentItem,currentStage);
+    setActionState({action:'services',actionStatus:'error',actionTarget:{sectionCode,itemId:currentItem?.id},actionError:detail.code,actionMessage:detail.message});
   }
 }
 function handleConfirmSubscriptionService(sectionCode, itemId, service) {
@@ -6672,7 +6736,8 @@ async function readSubscriptionSections() {
       excludeTags:normalizeSubscriptionTags(section.subscription_exclude_tags),
       communityLists:normalizeSubscriptionTags(section.community_lists),
       requiredServices:serviceData?.requiredServices || normalizeSubscriptionTags(section.subscription_required_services),
-      serviceSupport:!!serviceData,
+      serviceSupport:!!serviceData,serviceCatalog:serviceData?.catalog || [],
+      ...(serviceData?.manualCandidates?.length ? {manualItems:serviceData.manualCandidates.map(item=>({...item,services:serviceResults.get(item.id)||{}}))} : {}),
       items:items.data.map(item=>({...item,services:serviceResults.get(item.id)||{}})), sources:sources.data};
   }));
 }
@@ -6886,6 +6951,24 @@ async function handleApply() {
     if (PodkopShellMethods.getSubscriptionOperationStatus) await refreshSubscriptionRuntimeStatus();
   }
 }
+async function refreshSubscriptionSources(target) {
+  if (target?.sourceId) return PodkopShellMethods.updateSubscriptions(target.sectionCode,target.sourceId);
+  const targets=store.get().subscriptionItemsWidget.data.flatMap(section=>(section.sources||[]).map(source=>({sectionCode:section.code,sourceId:source.id})));
+  if (!targets.length) return PodkopShellMethods.updateSubscriptions();
+  let failure;
+  for (let index=0;index<targets.length;index++) {
+    const source=targets[index];
+    setActionState({action:'refresh',actionStatus:'running',actionMessage:`Читаем подписку ${source.sectionCode} (${index+1}/${targets.length}). Рабочий прокси не перезапускается.`});
+    const result=await PodkopShellMethods.updateSubscriptions(source.sectionCode,source.sourceId);
+    // A transport timeout is not proof the mutation ended. Stop dispatching;
+    // the existing status reconciliation keeps retries behind the shared lock.
+    if (!result.success || typeof result.data?.success!=='boolean' || result.data.error==='service_busy') {
+      throw new Error(result.error||result.data?.error||'subscription_update_unconfirmed');
+    }
+    if (!result.data.success) failure ||= result;
+  }
+  return failure||{success:true,data:{success:true}};
+}
 async function handleRefreshSubscriptions(target) {
   if (!canRefreshSubscriptions()) {
     return;
@@ -6898,6 +6981,7 @@ async function handleRefreshSubscriptions(target) {
       await refreshSubscriptionRuntimeStatus();
       return;
     }
+    await refreshSubscriptionRuntimeStatus();
     await fetchSubscriptionItems("idle");
     return;
   }
@@ -6908,7 +6992,7 @@ async function handleRefreshSubscriptions(target) {
     actionMessage: "Скачиваем подписки без перезапуска работающего прокси."
   });
   try {
-    const result = await PodkopShellMethods.updateSubscriptions(target?.sectionCode, target?.sourceId);
+    const result = await refreshSubscriptionSources(target);
     if (!result.success || !result.data.success) {
       throw new Error(result.success ? result.data.error || result.data.output : result.error);
     }
@@ -7192,8 +7276,11 @@ function getErrorText(error) {
 }
 function getSubscriptionActionErrorMessage(error, fallback) {
   const detail = getErrorText(error);
+  if (/service_results_stale_or_missing/.test(detail)) return 'Результаты обязательных проверок устарели, относятся к другим настройкам или не найдены. Запустите проверку выбранных сервисов и повторите применение. Рабочее подключение не изменено; ваш выбор сохранён.';
+  if (/service_no_eligible_nodes/.test(detail)) return 'После выбранных фильтров нет ни одного узла с действующими положительными результатами всех обязательных проверок. Проверьте результаты по узлам или измените фильтры. Рабочее подключение не изменено; ваш выбор сохранён.';
   if (/service_snapshot_storage_unavailable/.test(detail)) return 'Не удалось подготовить безопасную копию рабочего подключения: проверьте свободное место или локальные списки. Изменения фильтра не применены; ваш выбор сохранён. При нехватке места освободите его и повторите применение.';
-  if (/service_manual_links_unsupported/.test(detail)) return 'Фильтр сервисов нельзя применить: в секции есть отдельные proxy-ссылки, которые пока не проверяются. Перенесите их в отдельную секцию или отключите фильтр сервисов. Настройки не применены; ваш выбор сохранён.';
+  if (/service_manual_results_stale_or_missing/.test(detail)) return 'Ручные proxy-ссылки ещё не прошли обязательные проверки. Нажмите «Проверить новые/устаревшие» в фильтре сервисов. Рабочий набор не изменён; ваш выбор сохранён.';
+  if (/service_manual_links_unsupported/.test(detail)) return 'Установленный backend ещё не поддерживает проверку ручных proxy-ссылок вместе с подпиской. Обновите патч; рабочий набор и ваш выбор сохранены.';
   if (/probe_start_failed/.test(detail)) return "Не удалось запустить временный процесс проверки. Рабочее подключение не изменено.";
   if (/probe_curl_|dns_config_invalid/.test(detail)) return "Проверочное подключение не удалось. Проверьте доступность сервера и настройки DNS.";
   if (/cannot_disable_last_enabled_link/.test(detail)) return "В секции должен остаться хотя бы один включённый конфиг из включённой подписки.";
@@ -7993,7 +8080,16 @@ function splitProxyString(str) {
 // src/helpers/preserveScrollForPage.ts
 function preserveScrollForPage(renderFn) {
   const scrollY = window.scrollY;
+  const pickerScroll = new Map();
+  document.querySelectorAll('.pdk_tag-picker__choices[data-subscription-scroll-key]').forEach(el => {
+    pickerScroll.set(el.getAttribute('data-subscription-scroll-key'), el.scrollTop);
+  });
   renderFn();
+  // Restore while the replacement is attached, before another render or user scroll.
+  document.querySelectorAll('.pdk_tag-picker__choices[data-subscription-scroll-key]').forEach(el => {
+    const key = el.getAttribute('data-subscription-scroll-key');
+    if (pickerScroll.has(key)) el.scrollTop = pickerScroll.get(key);
+  });
   requestAnimationFrame(() => {
     window.scrollTo({ top: scrollY });
   });

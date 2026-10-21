@@ -25,6 +25,18 @@ for version in $(jq -r '.supportedPodkopVersions[]' "$repo/openwrt/update-manife
     sed -n '/^has_latest_subscription_backend() {/,/^}/p' "$repo/i" |
         sed "s| /usr/bin/podkop 2>| $work/runtime 2>|g; s|/usr/lib/podkop/helpers.sh|$work/helpers|g" > "$work/predicate"
     . "$work/predicate"
+    PODKOP_INIT_SCRIPT="$work/init"
+    ENGINE_INIT_SCRIPT="$work/engine-init"
+    export PODKOP_SOURCES_ENGINE_INIT_TARGET="$ENGINE_INIT_SCRIPT"
+    printf '%s\n' '#!/bin/sh /etc/rc.common' 'USE_PROCD=1' \
+        'start_service() { /usr/bin/podkop start; }' \
+        'stop_service() { /usr/bin/podkop stop; }' > "$PODKOP_INIT_SCRIPT"
+    printf '%s\n' '#!/bin/sh /etc/rc.common' 'service_triggers() {' '}' > "$ENGINE_INIT_SCRIPT"
+    chmod 755 "$PODKOP_INIT_SCRIPT" "$ENGINE_INIT_SCRIPT"
+    PODKOP_SOURCES_SAFE_RESTART_ONLY=1 PODKOP_SOURCES_TARGET="$work/runtime" \
+        PODKOP_SOURCES_SOURCE="$repo/openwrt/runtime-$version/usr/bin/podkop" \
+        PODKOP_SOURCES_INIT_TARGET="$PODKOP_INIT_SCRIPT" \
+        sh "$repo/openwrt/podkop-subscription-sources-upgrade.sh" >/dev/null
     if ! has_latest_subscription_backend; then
         echo "FAIL: installer rejects the delivered $version backend as outdated" >&2
         exit 1

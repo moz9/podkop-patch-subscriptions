@@ -11,6 +11,8 @@ export PODKOP_DNS_OPTIMIZER_STATE_DIR="$work/optimizer-state" PODKOP_DNS_OPTIMIZ
 export PODKOP_MUTATION_LOCK_DIR="$work/mutation" PODKOP_MUTATION_LEGACY_LOCK_FILE="$work/legacy"
 . "$repo/openwrt/podkop-dns-benchmark"
 fail() { echo "FAIL: $*" >&2; exit 1; }
+# Preserve in-shell curl fixtures under the common deadline wrapper.
+timeout() { shift; "$@"; }
 db_prepare
 db_work="$work"; db_worker_pid=0; db_report_id=pairs-report
 jq -n '{log:{level:"info"},experimental:{cache_file:{enabled:true,path:"/tmp/live.db"},clash_api:{external_controller:"127.0.0.1:9090",secret:"private-token"}},dns:{servers:[{tag:"bootstrap",type:"udp",server:"8.8.8.8"},{tag:"dns-server",type:"https",server:"old.example",domain_resolver:"bootstrap"},{tag:"fakeip",type:"fakeip",inet4_range:"198.18.0.0/15"}],final:"dns-server",rules:[{rule_set:["media"],server:"dns-server"},{query_type:["A"],server:"fakeip"}]},inbounds:[{type:"tproxy",tag:"tproxy-in",listen_port:1602},{type:"direct",tag:"dns-in",listen_port:53}],outbounds:[{type:"direct",tag:"direct",domain_resolver:"dns-server"},{type:"selector",tag:"selected",outbounds:["node-a","node-b"],default:"node-a"},{type:"urltest",tag:"auto",outbounds:["node-a","node-b"]},{type:"trojan",tag:"node-a",server:"a.example",password:"secret-a"},{type:"trojan",tag:"node-b",server:"b.example",password:"secret-b"}],route:{default_domain_resolver:"dns-server",final:"selected",rules:[{inbound:["tproxy-in"],action:"sniff"},{inbound:"tproxy-in",rule_set:["media"],outbound:"auto"},{protocol:"dns",action:"hijack-dns"}],rule_set:[{type:"inline",tag:"media",rules:[{domain_suffix:["example.com"]}]}]}}' > "$work/runtime.json"
@@ -113,17 +115,20 @@ db_state running pairs starting 0 0 1 ''
 db_pairs || fail 'measured matrix failed'
 db_status | jq -e '.state=="done" and .action=="pairs" and .total==2 and (.pairResults|length)==2 and (.pairResults|all(.success and .stats.reliable)) and .pairResults[0].bootstrapProtocol=="udp" and .pairResults[1].bootstrapProtocol=="tcp" and (.results|length)==3 and (.bootstrapResults|length)==2' >/dev/null || fail 'matrix report or measured candidate filtering wrong'
 [ ! -s "$DB_PROOF" ] || fail 'matrix granted apply proof'
-db_child_start() { db_child_error=listener_collision; return 1; }
+db_child_start() { db_child_error=child_dns_unavailable; return 1; }
 db_pairs || fail 'one failed candidate aborted entire matrix'
-db_status | jq -e '.state=="done" and (.pairResults|all(.success==false and .error=="listener_collision" and .stats==null))' >/dev/null || fail 'child failure was not reported per exact tuple'
+db_status | jq -e '.state=="done" and (.pairResults|all(.success==false and .error=="child_dns_unavailable" and .stats==null))' >/dev/null || fail 'child failure was not reported per exact tuple'
+db_child_start() { db_child_error=listener_collision; return 1; }
+if db_pairs; then fail 'infrastructure collision did not stop matrix'; fi
+db_status | jq -e '.state=="error" and .error=="listener_collision" and (.pairResults|length)==1' >/dev/null || fail 'infrastructure failure repeated on entire matrix'
 db_child_start() { [ "${5:-}" = pair ] || fail 'pair measurement started DNS-only child'; return 0; }
 db_results='[]'; db_pair_results='[]'
 if db_pairs; then fail 'matrix guessed unmeasured candidates'; fi
 db_status | jq -e '.error=="measured_candidates_required"' >/dev/null
 db_results="$(jq -cn '[range(0;5)|{protocol:"udp",id:("c"+tostring),dnsServer:"1.1.1.1",reliable:true,primaryEligible:true}]')"
 db_bootstrap_results="$(jq -cn '[range(0;5)|{server:"8.8.8.8",reliable:true}]')"
-if db_pairs; then fail '25 pairs silently truncated'; fi
-db_status | jq -e '.error=="too_many_pairs" and .total==25' >/dev/null
+db_pairs || fail '25-pair matrix rejected'
+db_status | jq -e '.total==25 and (.pairResults|length)==25' >/dev/null
 uci() {
     case "$*" in
         *bootstrap_dns_type*) echo tcp;;
