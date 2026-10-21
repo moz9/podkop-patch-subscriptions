@@ -5483,15 +5483,15 @@ function getSourceSummary({
   const sourceEnabled = getEffectiveSourceEnabled(draft, section.code, group);
   const includeTags = getEffectiveSubscriptionTags(draft, section, "include");
   const excludeTags = getEffectiveSubscriptionTags(draft, section, "exclude");
-  const runtimeCount = sourceEnabled ? group.items.filter(item =>
+  const previewCount = sourceEnabled ? group.items.filter(item =>
     item.supported && getEffectiveSubscriptionItemEnabled(draft, section, item) &&
     !isSubscriptionTagFiltered(item, includeTags, excludeTags) &&
     !getSubscriptionServiceExclusions(item,getEffectiveRequiredServices(draft,section)).length).length : 0;
   const unsupportedCount = group.items.length - supportedCount;
   const parts = [
     `Конфигов: ${group.items.length}`,
-    ...(getEffectiveSelectionMode(pendingChanges,section) === "auto" ? [] : [`${modeChanging ? "Выбрано сейчас" : "Выбрано"}: ${selectedCount}/${supportedCount}`]),
-    `${modeChanging ? "По прежнему режиму" : "К применению"}: ${runtimeCount}`
+    ...(getEffectiveSelectionMode(pendingChanges,section) === "auto" ? [] : [`${modeChanging ? "Выбрано в сохранённых настройках" : "Выбрано"}: ${selectedCount}/${supportedCount}`]),
+    `${modeChanging ? "Предпросмотр по сохранённому режиму" : "Предпросмотр нового применения"}: ${previewCount}`
   ];
   if (modeChanging) parts.push("После смены режима — после применения");
   if (!sourceEnabled) parts.push("Выключена");
@@ -5598,10 +5598,10 @@ function renderToolbar({
     },
     [
       renderSubscriptionState({loading,failed,applying,action,actionStatus,pendingCount,runtimeStatus}),
-      runtimeStatus?.pending ? E("span", {
+      ...(runtimeStatus?.pending ? [E("span", {
         class:"pdk_subscriptions-page__catalog-status", role:"status",
         style:"flex:1 0 100%;order:1;font-size:12px"
-      }, `Каталог и проверки обновлены${runtimeStatus.pendingSections?.length ? `: ${runtimeStatus.pendingSections.join(", ")}` : ""}. Само обновление каталога не меняет рабочие наборы. Применение каталога — отдельной кнопкой в секции.`) : null,
+      }, `Каталог и проверки обновлены${runtimeStatus.pendingSections?.length ? `: ${runtimeStatus.pendingSections.join(", ")}` : ""}. Само обновление каталога не меняет рабочие наборы. Применение каталога — отдельной кнопкой в секции.`)] : []),
       E(
         "div",
         { class: "pdk_subscriptions-page__toolbar-message" },
@@ -6242,7 +6242,7 @@ function getTagFilterPreview(section, pendingChanges) {
 }
 function getSectionCollapsedSummary(section, pendingChanges) {
   const preview = getTagFilterPreview(section, pendingChanges);
-  const parts = [`${section.items.length} конфигов`, `${preview.uncertain ? "по прежнему режиму" : "к применению"} ${preview.enabled}`];
+  const parts = [`${section.items.length} конфигов`, `${preview.uncertain ? "предпросмотр по сохранённому режиму" : "предпросмотр нового применения"}: ${preview.enabled}`];
   if (preview.uncertain) parts.push("после смены режима — после применения");
   if (getEffectiveSelectionMode(pendingChanges, section) === "selected") parts.push("только выбранные");
   if (getEffectiveSubscriptionTags(pendingChanges, section, "include").length ||
@@ -6280,6 +6280,9 @@ function renderSection({
   const isolationBlocked = isolatedSections.length > 0 && (!sectionIsolated || runtimeStatus.isolatedReady !== true);
   const sectionPending = Object.keys(pendingChanges).some(key => key.startsWith(`${section.code}:`));
   const sectionRuntimePending = Array.isArray(runtimeStatus?.pendingSections) ? runtimeStatus.pendingSections.includes(section.code) : runtimeStatus?.pending;
+  const activeSection = runtimeStatus?.sections?.find(value => value.section === section.code);
+  const activeCountKnown = !runtimeStatus?.busy && !runtimeStatus?.unknown && activeSection?.ready === true &&
+    Number.isSafeInteger(activeSection.activeNodeCount) && activeSection.activeNodeCount >= 0;
   return E("div", { class: "pdk_subscriptions-page__section" }, [
     E("button", {type:"button", class:"pdk_subscriptions-page__section-title",
       style:"display:block;width:100%;text-align:left;cursor:pointer",
@@ -6288,6 +6291,22 @@ function renderSection({
       "aria-expanded":collapsed ? "false" : "true",
       click:()=>onToggleSection(section.code)},
       `${collapsed ? "▸" : "▾"} ${section.displayName} · ${getSectionCollapsedSummary(section, pendingChanges)}`),
+    E("div", {class:"pdk_subscriptions-page__composition"}, [
+      E("div", {class:"pdk_subscriptions-page__composition-active",role:"status"}, [
+        E("strong", {}, "Текущий рабочий набор"),
+        E("div", {}, activeCountKnown ? `${activeSection.activeNodeCount} узлов в рабочей конфигурации` : "Нет подтверждённых данных"),
+        E("small", {}, "По конфигурации запущенного процесса. Доступность сайтов здесь не проверяется.")
+      ]),
+      E("div", {class:"pdk_subscriptions-page__composition-preview"}, [
+        E("strong", {}, "Предпросмотр нового применения"),
+        E("div", {}, tagPreview.uncertain
+          ? `По сохранённому режиму: ${tagPreview.enabled}. Новый состав пока не рассчитан.`
+          : tagPreview.enabled === 0
+          ? "Подтверждено для нового применения: 0. Применение будет отклонено. Это не означает, что текущий рабочий набор пуст."
+          : `Подтверждено для нового применения: ${tagPreview.enabled} из ${section.items.length} конфигов.`),
+        E("small", {}, "Расчёт по каталогу, фильтрам и свежим проверкам. Меняет рабочий набор только после отдельного применения.")
+      ])
+    ]),
     ...sourceActions?.onApply ? [E("button", {type:"button",class:"pdk_subscriptions-page__section-apply",
       disabled:applying || sourceActions?.modeDisabled || isolationBlocked || (!sectionPending && !sectionRuntimePending) ? "disabled" : void 0,
       title:isolationBlocked ? (!sectionIsolated ? "Новая секция ещё не подготовлена. Сначала примените структуру через общие настройки Podkop." : "Сервис ещё не готов к применению.") : singleRuntime ? "Применить только выбор этой секции; черновики остальных сохранятся. Возможен краткий разрыв соединений всех секций." : "Применить только выбор этой секции; черновики остальных секций сохранятся.",
@@ -6343,11 +6362,6 @@ function renderSection({
     ]),
     ...section.serviceSupport !== undefined ? [renderSubscriptionServiceFilter(section,pendingChanges,applying,onToggle,sourceActions)]:[],
     E("details", {}, [E("summary", {}, "Как работают теги"), E("small", {}, "Теги берутся из названий. Флаг и код страны равнозначны. Исключение важнее разрешения; фильтры действуют и при ручном выборе.")]),
-    E("small", {style:"display:block;margin:4px 0"}, tagPreview.uncertain
-      ? `По прежнему режиму подходят: ${tagPreview.enabled}. После смены режима итоговое число определится при применении.`
-      : tagPreview.enabled === 0
-      ? "К применению: 0. Сохранение будет отклонено. Проверьте причины исключения ниже."
-      : `К применению: ${tagPreview.enabled} из ${section.items.length} конфигов.`),
     E("small", {style:"display:block;margin:4px 0"}, `Исключено: несовместимые — ${tagPreview.unsupported}; подписки выключены — ${tagPreview.sourceExcluded}; не выбраны вручную — ${tagPreview.manualExcluded}; теги — ${tagPreview.filtered}; сервисы — ${tagPreview.serviceExcluded}. Без двойного счёта.`),
     sourceGroups.length === 0 ? renderEmptyState(
       _("Subscription cache is empty. Click refresh to load configs.")
@@ -7512,6 +7526,11 @@ var styles5 = `
 .pdk-subscription-state--busy::before { background:#6199ed; }
 .pdk-subscription-state--pending::before { background:#dbac42; }
 .pdk-subscription-state--error::before,.pdk-subscription-state--unknown::before { background:#e86666; }
+.pdk_subscriptions-page__composition { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.75rem; margin:.75rem 0; }
+.pdk_subscriptions-page__composition-active,.pdk_subscriptions-page__composition-preview { padding:.625rem; border:1px solid var(--background-color-low,lightgray); border-radius:4px; min-width:0; }
+.pdk_subscriptions-page__composition strong { display:block; margin-bottom:.375rem; }
+.pdk_subscriptions-page__composition small { display:block; margin-top:.375rem; color:var(--text-color-medium); }
+@media (max-width:600px) { .pdk_subscriptions-page__composition { grid-template-columns:minmax(0,1fr); } }
 #cbi-podkop-subscriptions,
 #cbi-podkop-subscriptions-_mount_node,
 #cbi-podkop-subscriptions-_mount_node > div {

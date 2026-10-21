@@ -462,7 +462,32 @@ status() (
     identity="$(main_ready)" || identity="0 0"
     workers_stopped || identity="0 0"
     pid="${identity%% *}" start="${identity#* }"
-    jq -c --argjson p "$pid" --argjson t "$start" '{mode:"single",runtimeMode:"single",registryVersion:3,section:.section,ready:($p>1),pid:$p,starttime:$t,sections:[.sections[]|{section:.section,ready:($p>1),pid:$p,starttime:$t}]}' "$ROOT/metadata.json" 2>/dev/null ||
+    # Read the working graph, never the subscription catalog or expired proofs.
+    # Unsupported/missing groups are unknown, not an empty working pool.
+    jq -c --argjson p "$pid" --argjson t "$start" --slurpfile active "$FRONTEND" '
+      def active_count($section):
+        ($active[0].outbounds // []) as $nodes |
+        INDEX($nodes[];.tag) as $byTag |
+        def members($tag):
+          $byTag[$tag] as $node |
+          if $node==null or $node.type=="block" or $node.type=="dns" then null
+          elif $node.type=="urltest" or $node.type=="selector" then
+            if ($node.outbounds|type)=="array" and all($node.outbounds[];type=="string")
+            then $node.outbounds else null end
+          else [$tag] end;
+        members($section+"-out") as $top |
+        if $top==null or ($nodes|map(.tag)|unique|length)!=($nodes|length) then null
+        else [$top[]|members(.)] as $branches |
+          if any($branches[];.==null) then null
+          else ($branches|flatten|unique) as $tags |
+            if all($tags[];$byTag[.] as $node | $node!=null and
+              $node.type!="selector" and $node.type!="urltest" and $node.type!="block" and $node.type!="dns")
+            then ($tags|length) else null end
+          end
+        end;
+      {mode:"single",runtimeMode:"single",registryVersion:3,section:.section,ready:($p>1),pid:$p,starttime:$t,
+       sections:[.sections[]|{section:.section,ready:($p>1),pid:$p,starttime:$t,
+         activeNodeCount:(if $p>1 then active_count(.section) else null end)}]}' "$ROOT/metadata.json" 2>/dev/null ||
       printf '{"mode":"single","runtimeMode":"single","ready":false,"sections":[]}\n'
 )
 case "${1:-}" in

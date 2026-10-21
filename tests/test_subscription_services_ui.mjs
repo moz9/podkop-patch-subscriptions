@@ -85,7 +85,7 @@ assert.equal(c.getSubscriptionServiceCheckTargets(subset,['gemini'],true,{'geo:m
 assert.deepEqual([...c.getSubscriptionServiceExclusions({services:{gemini:{state:'pass',checkedAt:now+1,expiresAt:now+30}}},['gemini'])],['gemini'],'future timestamps cannot admit a node');
 assert.match(c.getSubscriptionServiceStateLabel({state:'pass',checkedAt:now+1,expiresAt:now+30}),/устарела/i,'malformed timestamp must not be labelled passing');
 assert.equal(c.getSubscriptionServiceCheckTargets({items:[{id:'bad-date',supported:true,services:{gemini:{state:'pass',expiresAt:now+30}}}]},['gemini']).length,1,'missing checkedAt requires a new observation');
-assert.match(c.getSourceSummary({section:pool,group,pendingChanges:{'geo:services:required':['gemini']}}),/К применению: 1/);
+assert.match(c.getSourceSummary({section:pool,group,pendingChanges:{'geo:services:required':['gemini']}}),/Предпросмотр нового применения: 1/);
 console.log('PASS: service eligibility is reflected in preview, source counts, status and draft recovery');
 let state={subscriptionItemsWidget:{data:[pool],pendingChanges:{'geo:a':false},actionStatus:'idle'}};
 const calls=[];

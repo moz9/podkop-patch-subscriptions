@@ -118,7 +118,7 @@ assert.equal(uncertain.uncertain, true, 'auto-to-manual mode change keeps the co
 const sourceSummary = c.getSourceSummary({section: reasonPool,
   group: {id: 'one', enabled: true, items: reasonPool.items.filter(value => value.sourceIds.includes('one'))},
   pendingChanges: {}});
-assert.match(sourceSummary, /К применению: 2/);
-assert.match(c.getSectionCollapsedSummary(reasonPool, {}), /к применению 2/);
+assert.match(sourceSummary, /Предпросмотр нового применения: 2/);
+assert.match(c.getSectionCollapsedSummary(reasonPool, {}), /предпросмотр нового применения: 2/);
 assert.doesNotMatch(c.getToolbarMessage({}), /Select configs/);
 console.log('PASS: truthful service freshness, selection labels, admission counts and exclusion priority');
