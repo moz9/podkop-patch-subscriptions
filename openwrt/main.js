@@ -5543,7 +5543,7 @@ function getToolbarMessage({
   if (status === "success") {
     return scoped ? "Секция применена." : _("Changes applied. Podkop has been restarted.");
   }
-  return scoped ? "Примените нужную секцию." : _("Выберите узлы и нажмите «Применить».");
+  return "Нет несохранённых изменений. Рабочий набор показан отдельно.";
 }
 function getToolbarClass(status, actionStatus, pendingCount) {
   if (status === "applying") {

@@ -91,6 +91,11 @@ assert.match(c.getToolbarMessage({runtimeStatus:{busy:true}}),/Podkop занят
 assert.match(c.getToolbarMessage({runtimeStatus:{pending:true}}),/Нет несохранённых изменений/);
 assert.doesNotMatch(c.getToolbarMessage({runtimeStatus:{pending:true}}),/Нажмите.*Применить/,'catalog alone must not request ordinary Apply');
 assert.match(c.getToolbarMessage({pendingCount:1,runtimeStatus:{pending:true}}),/Unsaved changes.*1/);
+for(const runtimeStatus of [{pending:false},{pending:false,isolatedSections:['main','GEOBLOCK']}]) {
+ const cleanMessage=c.getToolbarMessage({pendingCount:0,runtimeStatus});
+ assert.match(cleanMessage,/Нет несохранённых изменений/,'a clean reload must state that nothing needs saving');
+ assert.doesNotMatch(cleanMessage,/Примените|нажмите.*Применить/i,'clean state must not request application');
+}
 for(const name of ['renderSubscriptionState','renderToolbar']) {
  const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));
  assert.ok(match,name);vm.runInContext(match[0],c);
