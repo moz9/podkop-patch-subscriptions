@@ -90,6 +90,21 @@ for rel in \
 	section.js \
 	settings.js \
 	podkop-dns-optimizer \
+	podkop-dns-benchmark \
+	podkop-dns-apply \
+	podkop-dns-native.sh \
+	podkop-diagnostic-policy.sh \
+	dns_benchmark.js \
+	dns-main.json \
+	dns-bootstrap.json \
+	podkop-section-runtime \
+	podkop-single-runtime \
+	podkop-memdoc-guard \
+	podkop-memdoc-upgrade.sh \
+	podkop-section-worker.init \
+	podkop-section-hooks.sh \
+	podkop-section-upgrade.sh \
+	podkop-section-runtime-upgrade.patch \
 	podkop-subscription-maintenance-upgrade.sh \
 	podkop-subscription-urltest-runtime.patch \
 	podkop-subscription-v0719-runtime.patch \

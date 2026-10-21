@@ -16,6 +16,9 @@ fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 # Use the installed PE functions, not the historical subscription helper.
 sed -n '/^# subscription_sources_v1 begin$/,/^# subscription_sources_v1 end$/p' "$runtime" > "$work/backend"
 sed -n '/^# subscription_apply_v2 begin$/,/^# subscription_apply_v2 end$/p' "$runtime" >> "$work/backend"
+for name in subscription_pending_sections_json subscription_pending_mark subscription_pending_clear; do
+    sed -n "/^$name() {$/,/^}$/p" "$runtime" >> "$work/backend"
+done
 . "$work/backend"
 
 PODKOP_CONFIG="$work/config"

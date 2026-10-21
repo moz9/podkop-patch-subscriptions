@@ -12,7 +12,8 @@ trap 'rm -f "$tmp"' EXIT
 }
 
 if grep -q '^load_active_dns_settings() {' "$target" 2> /dev/null &&
-    grep -q 'dns_failover_active_slot' "$target" 2> /dev/null; then
+    grep -q 'ACTIVE_BOOTSTRAP_DNS_TYPE' "$target" 2> /dev/null &&
+    grep -Fq 'sing_box_cf_add_dns_server "$config" "$bootstrap_dns_type"' "$target"; then
     exit 0
 fi
 
@@ -25,13 +26,17 @@ BEGIN {
     check_values = 0
 }
 
+$0 == "load_active_dns_settings() {" { in_old_active = 1; next }
+in_old_active { if ($0 == "}") in_old_active = 0; next }
+
 $0 == "sing_box_configure_dns() {" && !inserted {
     print "load_active_dns_settings() {"
-    print "    local failover_enabled active_slot secondary_dns_type secondary_dns_server secondary_bootstrap_dns_server"
+    print "    local failover_enabled active_slot secondary_dns_type secondary_dns_server secondary_bootstrap_dns_server secondary_bootstrap_dns_type"
     print ""
     print "    config_get ACTIVE_DNS_TYPE \"settings\" \"dns_type\" \"doh\""
     print "    config_get ACTIVE_DNS_SERVER \"settings\" \"dns_server\" \"1.1.1.1\""
     print "    config_get ACTIVE_BOOTSTRAP_DNS_SERVER \"settings\" \"bootstrap_dns_server\" \"77.88.8.8\""
+    print "    config_get ACTIVE_BOOTSTRAP_DNS_TYPE \"settings\" \"bootstrap_dns_type\" \"udp\""
     print "    config_get_bool failover_enabled \"settings\" \"dns_failover_enabled\" \"0\""
     print "    config_get active_slot \"settings\" \"dns_failover_active_slot\" \"primary\""
     print ""
@@ -40,10 +45,12 @@ $0 == "sing_box_configure_dns() {" && !inserted {
     print "        config_get secondary_dns_type \"settings\" \"secondary_dns_type\""
     print "        config_get secondary_dns_server \"settings\" \"secondary_dns_server\""
     print "        config_get secondary_bootstrap_dns_server \"settings\" \"secondary_bootstrap_dns_server\""
+    print "        config_get secondary_bootstrap_dns_type \"settings\" \"secondary_bootstrap_dns_type\" \"udp\""
     print "        if [ -n \"$secondary_dns_type\" ] && [ -n \"$secondary_dns_server\" ] && [ -n \"$secondary_bootstrap_dns_server\" ]; then"
     print "            ACTIVE_DNS_TYPE=\"$secondary_dns_type\""
     print "            ACTIVE_DNS_SERVER=\"$secondary_dns_server\""
     print "            ACTIVE_BOOTSTRAP_DNS_SERVER=\"$secondary_bootstrap_dns_server\""
+    print "            ACTIVE_BOOTSTRAP_DNS_TYPE=\"$secondary_bootstrap_dns_type\""
     print "            ACTIVE_DNS_SLOT=\"secondary\""
     print "        else"
     print "            log \"Secondary DNS pair is incomplete, using the primary pair\" \"warn\""
@@ -57,17 +64,23 @@ $0 == "sing_box_configure_dns() {" && !inserted {
     next
 }
 
-in_dns && $0 ~ /^[[:space:]]+local dns_type dns_server bootstrap_dns_server dns_domain_resolver dns_server_address$/ {
-    print
+in_dns && $0 ~ /^[[:space:]]+local dns_type dns_server bootstrap_dns_server( bootstrap_dns_type)? dns_domain_resolver dns_server_address$/ {
+    print "    local dns_type dns_server bootstrap_dns_server bootstrap_dns_type dns_domain_resolver dns_server_address"
     print "    load_active_dns_settings"
     print "    dns_type=\"$ACTIVE_DNS_TYPE\""
     print "    dns_server=\"$ACTIVE_DNS_SERVER\""
     print "    bootstrap_dns_server=\"$ACTIVE_BOOTSTRAP_DNS_SERVER\""
+    print "    bootstrap_dns_type=\"$ACTIVE_BOOTSTRAP_DNS_TYPE\""
     dns_values = 1
     next
 }
 
-in_dns && dns_values && $0 ~ /^[[:space:]]+config_get (dns_type|dns_server|bootstrap_dns_server) / {
+in_dns && dns_values && $0 ~ /^[[:space:]]+(config_get (dns_type|dns_server|bootstrap_dns_server|bootstrap_dns_type) |load_active_dns_settings|dns_type=|dns_server=|bootstrap_dns_server=|bootstrap_dns_type=)/ {
+    next
+}
+
+in_dns && $0 ~ /config=\$\(sing_box_cm_add_udp_dns_server .*SB_BOOTSTRAP_SERVER_TAG/ {
+    print "    config=$(sing_box_cf_add_dns_server \"$config\" \"$bootstrap_dns_type\" \"$SB_BOOTSTRAP_SERVER_TAG\" \"$bootstrap_dns_server\" \"\")"
     next
 }
 
@@ -87,7 +100,7 @@ in_check && $0 ~ /^[[:space:]]+local dns_type dns_server bootstrap_dns_server$/ 
     next
 }
 
-in_check && check_values && $0 ~ /^[[:space:]]+config_get (dns_type|dns_server|bootstrap_dns_server) / {
+in_check && check_values && $0 ~ /^[[:space:]]+(config_get (dns_type|dns_server|bootstrap_dns_server) |load_active_dns_settings|dns_type=|dns_server=|bootstrap_dns_server=)/ {
     next
 }
 

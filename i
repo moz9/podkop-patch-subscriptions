@@ -21,7 +21,15 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261010-game-filter-v2"
+SECTION_RUNTIME_FILE="podkop-section-runtime"
+SINGLE_RUNTIME_FILE="podkop-single-runtime"
+MEMDOC_GUARD_FILE="podkop-memdoc-guard"
+MEMDOC_UPGRADE_FILE="podkop-memdoc-upgrade.sh"
+SECTION_WORKER_INIT_FILE="podkop-section-worker.init"
+SECTION_HOOKS_FILE="podkop-section-hooks.sh"
+SECTION_UPGRADE_FILE="podkop-section-upgrade.sh"
+SECTION_UPGRADE_PATCH_FILE="podkop-section-runtime-upgrade.patch"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261021-stability-v1"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -33,13 +41,20 @@ SETTINGS_JS_FILE="settings.js"
 DASHBOARD_JS_FILE="dashboard.js"
 DIAGNOSTIC_JS_FILE="diagnostic.js"
 PODKOP_JS_FILE="podkop.js"
+DNS_BENCHMARK_FILE="podkop-dns-benchmark"
+DNS_APPLY_FILE="podkop-dns-apply"
+DNS_NATIVE_FILE="podkop-dns-native.sh"
+DIAGNOSTIC_POLICY_FILE="podkop-diagnostic-policy.sh"
+DNS_BENCHMARK_JS_FILE="dns_benchmark.js"
+DNS_MAIN_CATALOG_FILE="dns-main.json"
+DNS_BOOTSTRAP_CATALOG_FILE="dns-bootstrap.json"
 DNS_OPTIMIZER_FILE="podkop-dns-optimizer"
-DNS_OPTIMIZER_VERSION="20260814-dns-optimizer-v18"
+DNS_OPTIMIZER_VERSION="20261011-dns-optimizer-v21"
 DNS_OPTIMIZER_GOOGLE_PLAY_GUARD_CAPABILITY="google_play_dns_transport_guard_v1"
 DNS_OPTIMIZER_CHATGPT_GUARD_CAPABILITY="chatgpt_dns_transport_guard_v1"
 DNS_FAILOVER_FILE="podkop-dns-failover"
 DNS_FAILOVER_INIT_FILE="podkop-dns-failover.init"
-DNS_FAILOVER_VERSION="20260813-dns-failover-v3"
+DNS_FAILOVER_VERSION="20261011-dns-failover-v4"
 DNS_FAILOVER_UPGRADE_FILE="podkop-dns-failover-upgrade.sh"
 UPDATE_MANAGER_FILE="podkop-update-manager"
 UPDATE_MANAGER_VERSION="20260813-update-manager-v3"
@@ -49,7 +64,7 @@ RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
 RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261010_game_filter_v2"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261021_stability_v1"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -57,14 +72,41 @@ INSTALLER_ACTION_LOCK_FILE="${PODKOP_PATCH_ACTION_LOCK_FILE:-/tmp/podkop-subscri
 INSTALLER_ACTION_LOCK_DIR="${PODKOP_PATCH_ACTION_LOCK_DIR:-/tmp/podkop-subscription-action.lock.d}"
 BACKUP_ROOT="${PODKOP_PATCH_BACKUP_ROOT:-/root}"
 PODKOP_INIT_SCRIPT="${PODKOP_PATCH_PODKOP_INIT_SCRIPT:-/etc/init.d/podkop}"
+ENGINE_INIT_SCRIPT="${PODKOP_PATCH_ENGINE_INIT_SCRIPT:-/etc/init.d/sing-box}"
 PODKOP_RUNTIME_BIN="${PODKOP_PATCH_PODKOP_RUNTIME_BIN:-/usr/bin/podkop}"
 DNS_FAILOVER_INIT_SCRIPT="${PODKOP_PATCH_DNS_FAILOVER_INIT_SCRIPT:-/etc/init.d/podkop-dns-failover}"
 
 RUNTIME_FILES="
+etc/init.d/sing-box
 usr/bin/podkop
+etc/init.d/podkop
 usr/bin/podkop-dns-optimizer
+usr/bin/podkop-dns-benchmark
+usr/bin/podkop-dns-apply
+usr/bin/podkop-diagnostic-policy.sh
+usr/lib/podkop/dns-native.sh
+usr/share/podkop/dns-main.json
+usr/share/podkop/dns-bootstrap.json
+www/luci-static/resources/view/podkop/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261021_stability_v1/main.js
+www/luci-static/resources/view/podkop_patch_20261021_stability_v1/podkop.js
+www/luci-static/resources/view/podkop_patch_20261021_stability_v1/section.js
+www/luci-static/resources/view/podkop_patch_20261021_stability_v1/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261021_stability_v1/settings.js
+www/luci-static/resources/view/podkop_patch_20261021_stability_v1/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261021_stability_v1/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261021_stability_v1/dns_benchmark.js
+www/luci-static/resources/view/$LUCI_MODULE_NAMESPACE/dns_benchmark.js
 usr/bin/podkop-dns-failover
 usr/bin/podkop-update-manager
+usr/bin/podkop-section-runtime
+usr/bin/podkop-single-runtime
+usr/libexec/podkop-memdoc-guard
+usr/bin/memdoc
+usr/bin/memdoc.podkop-original
+usr/bin/memdoc.podkop-guarded
+etc/init.d/podkop-section-worker
+usr/lib/podkop/section-hooks.sh
 etc/init.d/podkop-dns-failover
 etc/rc.d/K10podkop-dns-failover
 etc/rc.d/S100podkop-dns-failover
@@ -325,6 +367,74 @@ install_prebuilt_0722_runtime() {
 	cp "$tmp_dir/podkop.js.runtime-0.7.22" "$LUCI_VIEW_ROOT/podkop/podkop.js"
 }
 
+install_section_runtime_assets() {
+	local root="${SECTION_INSTALL_ROOT:-}" asset destination
+	grep -q 'podkop_section_bootstrap' "$root/usr/bin/podkop" &&
+		grep -q 'podkop_section_preflight' "$root/usr/bin/podkop" || return 1
+	mkdir -p "$root/usr/bin" "$root/etc/init.d" "$root/usr/lib/podkop" || return 1
+	for asset in "$SECTION_RUNTIME_FILE" "$SINGLE_RUNTIME_FILE" "$SECTION_WORKER_INIT_FILE" "$SECTION_HOOKS_FILE"; do
+		case "$asset" in
+			"$SECTION_RUNTIME_FILE") destination="$root/usr/bin/podkop-section-runtime" ;;
+			"$SINGLE_RUNTIME_FILE") destination="$root/usr/bin/podkop-single-runtime" ;;
+			"$SECTION_WORKER_INIT_FILE") destination="$root/etc/init.d/podkop-section-worker" ;;
+			"$SECTION_HOOKS_FILE") destination="$root/usr/lib/podkop/section-hooks.sh" ;;
+		esac
+		sh -n "$tmp_dir/$asset" || return 1
+		cp "$tmp_dir/$asset" "$destination" && chmod 755 "$destination" || return 1
+	done
+	# Do not enable the service or write the isolation UCI option. Opt-in remains explicit.
+}
+
+section_runtime_assets_current() {
+	grep -q 'podkop_section_bootstrap' /usr/bin/podkop &&
+		grep -q 'podkop_section_preflight' /usr/bin/podkop &&
+		grep -Fq '/^podkop.settings.subscription_isolated_section=/d' /usr/bin/podkop &&
+		[ -x /usr/bin/podkop-section-runtime ] &&
+		cmp -s /usr/bin/podkop-section-runtime "$tmp_dir/$SECTION_RUNTIME_FILE" &&
+		[ -x /usr/bin/podkop-single-runtime ] &&
+		cmp -s /usr/bin/podkop-single-runtime "$tmp_dir/$SINGLE_RUNTIME_FILE" &&
+		memdoc_compatibility_current &&
+		[ -x /etc/init.d/podkop-section-worker ] &&
+		cmp -s /etc/init.d/podkop-section-worker "$tmp_dir/$SECTION_WORKER_INIT_FILE" &&
+		cmp -s /usr/lib/podkop/section-hooks.sh "$tmp_dir/$SECTION_HOOKS_FILE"
+}
+
+install_memdoc_compatibility() {
+	local root="${SECTION_INSTALL_ROOT:-}" init running=0
+	init="$root/etc/init.d/memdoc"
+	mkdir -p "$root/usr/libexec" || return 1
+	sh -n "$tmp_dir/$MEMDOC_GUARD_FILE" || return 1
+	cp "$tmp_dir/$MEMDOC_GUARD_FILE" "$root/usr/libexec/podkop-memdoc-guard" &&
+		chmod 755 "$root/usr/libexec/podkop-memdoc-guard" || return 1
+	[ -f "$root/usr/bin/memdoc" ] || return 0
+	if [ -x "$init" ] && "$init" status 2>/dev/null | grep -q running; then running=1; fi
+	PODKOP_MEMDOC_TARGET="$root/usr/bin/memdoc" sh "$tmp_dir/$MEMDOC_UPGRADE_FILE" || return 1
+	if [ "$running" = 1 ]; then
+		memdoc_restart_on_restore=1
+		"$init" restart >/dev/null 2>&1 || return 1
+	fi
+}
+
+memdoc_compatibility_current() {
+	if [ "${PODKOP_PATCH_SINGLE_MIGRATE:-0}" = 1 ]; then
+		[ "$(cat "${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}/runtime-mode" 2>/dev/null || true)" = single ] || return 1
+	fi
+	[ -x /usr/libexec/podkop-memdoc-guard ] &&
+		cmp -s /usr/libexec/podkop-memdoc-guard "$tmp_dir/$MEMDOC_GUARD_FILE" || return 1
+	[ ! -f /usr/bin/memdoc ] ||
+		{ grep -Fq '# podkop_memdoc_guard begin' /usr/bin/memdoc &&
+		  cmp -s /usr/bin/memdoc /usr/bin/memdoc.podkop-guarded; }
+}
+
+migrate_section_runtime_if_requested() {
+	[ "${PODKOP_PATCH_SINGLE_MIGRATE:-0}" = 1 ] || return 0
+	local root="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}" sections
+	[ -f "$root/metadata.json" ] && [ -f "$root/logical.json" ] || return 1
+	[ "$(cat "$root/runtime-mode" 2>/dev/null || true)" != single ] || return 0
+	sections="$(jq -ce 'if (.sections|type)=="array" then [.sections[].section] else [.section] end' "$root/metadata.json")" || return 1
+	/usr/bin/podkop-section-runtime single-migrate "$root/logical.json" "$sections"
+}
+
 prefetch_patch_assets() {
 	download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 	download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
@@ -335,12 +445,27 @@ prefetch_patch_assets() {
 	download "$RAW_BASE/$DIAGNOSTIC_JS_FILE" "$tmp_dir/$DIAGNOSTIC_JS_FILE"
 	download "$RAW_BASE/$PODKOP_JS_FILE" "$tmp_dir/$PODKOP_JS_FILE"
 	download "$RAW_BASE/$DNS_OPTIMIZER_FILE" "$tmp_dir/$DNS_OPTIMIZER_FILE"
+	download "$RAW_BASE/$DNS_BENCHMARK_FILE" "$tmp_dir/$DNS_BENCHMARK_FILE"
+	download "$RAW_BASE/$DNS_APPLY_FILE" "$tmp_dir/$DNS_APPLY_FILE"
+	download "$RAW_BASE/$DNS_NATIVE_FILE" "$tmp_dir/$DNS_NATIVE_FILE"
+	download "$RAW_BASE/$DIAGNOSTIC_POLICY_FILE" "$tmp_dir/$DIAGNOSTIC_POLICY_FILE"
+	download "$RAW_BASE/$DNS_BENCHMARK_JS_FILE" "$tmp_dir/$DNS_BENCHMARK_JS_FILE"
+	download "$RAW_BASE/$DNS_MAIN_CATALOG_FILE" "$tmp_dir/$DNS_MAIN_CATALOG_FILE"
+	download "$RAW_BASE/$DNS_BOOTSTRAP_CATALOG_FILE" "$tmp_dir/$DNS_BOOTSTRAP_CATALOG_FILE"
 	download "$RAW_BASE/$DNS_FAILOVER_FILE" "$tmp_dir/$DNS_FAILOVER_FILE"
 	download "$RAW_BASE/$DNS_FAILOVER_INIT_FILE" "$tmp_dir/$DNS_FAILOVER_INIT_FILE"
 	download "$RAW_BASE/$DNS_FAILOVER_UPGRADE_FILE" "$tmp_dir/$DNS_FAILOVER_UPGRADE_FILE"
 	download "$RAW_BASE/$APPLY_V2_UPGRADE_FILE" "$tmp_dir/$APPLY_V2_UPGRADE_FILE"
 	download "$RAW_BASE/$SOURCES_UPGRADE_FILE" "$tmp_dir/$SOURCES_UPGRADE_FILE"
 	download "$RAW_BASE/$SEAMLESS_RELOAD_UPGRADE_FILE" "$tmp_dir/$SEAMLESS_RELOAD_UPGRADE_FILE"
+	download "$RAW_BASE/$SECTION_RUNTIME_FILE" "$tmp_dir/$SECTION_RUNTIME_FILE"
+	download "$RAW_BASE/$SINGLE_RUNTIME_FILE" "$tmp_dir/$SINGLE_RUNTIME_FILE"
+	download "$RAW_BASE/$MEMDOC_GUARD_FILE" "$tmp_dir/$MEMDOC_GUARD_FILE"
+	download "$RAW_BASE/$MEMDOC_UPGRADE_FILE" "$tmp_dir/$MEMDOC_UPGRADE_FILE"
+	download "$RAW_BASE/$SECTION_WORKER_INIT_FILE" "$tmp_dir/$SECTION_WORKER_INIT_FILE"
+	download "$RAW_BASE/$SECTION_HOOKS_FILE" "$tmp_dir/$SECTION_HOOKS_FILE"
+	download "$RAW_BASE/$SECTION_UPGRADE_FILE" "$tmp_dir/$SECTION_UPGRADE_FILE"
+	download "$RAW_BASE/$SECTION_UPGRADE_PATCH_FILE" "$tmp_dir/$SECTION_UPGRADE_PATCH_FILE"
 	download "$RAW_BASE/$UPDATE_MANAGER_FILE" "$tmp_dir/$UPDATE_MANAGER_FILE"
 	download "$RAW_BASE/$UI_FIX_BACKEND_FILE" "$tmp_dir/$UI_FIX_BACKEND_FILE"
 	download "$RAW_BASE/$ACTIONS_UPGRADE_PATCH_FILE" "$tmp_dir/$ACTIONS_UPGRADE_PATCH_FILE"
@@ -695,6 +820,9 @@ restart_podkop_after_restore() {
 
 restore_patch_service_state() {
 	service_restore_ok=1
+	if [ "${memdoc_restart_on_restore:-0}" = 1 ] && [ -x /etc/init.d/memdoc ]; then
+		/etc/init.d/memdoc restart >/dev/null 2>&1 || service_restore_ok=0
+	fi
 	restart_podkop_after_restore || service_restore_ok=0
 
 	case "${dns_failover_service_state:-unknown}" in
@@ -899,9 +1027,12 @@ has_latest_subscription_backend() {
 		grep -q "set_subscription_sections_enabled" /usr/bin/podkop 2>/dev/null &&
 		grep -q '^set_subscription_sections_enabled)' /usr/bin/podkop 2>/dev/null &&
 		grep -q "subscription_apply_v2" /usr/bin/podkop 2>/dev/null &&
+		sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -Fq 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' &&
 		grep -Fq '# subscription_sources_v1 begin' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_source_actions_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop 2>/dev/null &&
+		grep -Fqx 'subscription_pending_sections_json() {' /usr/bin/podkop 2>/dev/null &&
+		grep -Fqx 'subscription_pending_clear() {' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_selection_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_optional_selection_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_tag_prefix_v1' /usr/bin/podkop 2>/dev/null &&
@@ -912,6 +1043,12 @@ has_latest_subscription_backend() {
 		grep -Fqx '# subscription_gemini_region_v2' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_probe_context_v2' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_service_snapshot_v1 end' /usr/bin/podkop 2>/dev/null &&
+		grep -Fq '# subscription_safe_restart_v1:' /usr/bin/podkop 2>/dev/null &&
+		grep -Fqx '# subscription_safe_init_restart_v1' "$PODKOP_INIT_SCRIPT" 2>/dev/null &&
+        grep -Fqx 'subscription_config_apply() (' /usr/bin/podkop 2>/dev/null &&
+        grep -Fqx 'subscription_config_apply)' /usr/bin/podkop 2>/dev/null &&
+        grep -Fq 'exec /usr/bin/podkop subscription_config_apply' "$PODKOP_INIT_SCRIPT" 2>/dev/null &&
+        grep -Fq 'procd_add_config_trigger "config.change" "podkop"' "$ENGINE_INIT_SCRIPT" 2>/dev/null &&
 		grep -Fqx '# subscription_source_ruleset_reuse_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fqx '# subscription_service_filter_v1' /usr/bin/podkop 2>/dev/null &&
 		sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop 2>/dev/null | grep -q 'set_subscription_sections_enabled' &&
@@ -991,7 +1128,7 @@ prepare_versioned_luci_assets() {
 	rm -rf "$versioned_tmp_dir"
 	mkdir -p "$versioned_tmp_dir" || return 1
 
-	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
 		[ -s "$tmp_dir/$asset" ] || return 1
 		sed "s/require view\\.podkop\\./require view.$LUCI_MODULE_NAMESPACE./g" \
 			"$tmp_dir/$asset" > "$versioned_tmp_dir/$asset" || return 1
@@ -1000,7 +1137,7 @@ prepare_versioned_luci_assets() {
 }
 
 base_luci_assets_current() {
-	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
 		[ -f "$LUCI_VIEW_ROOT/podkop/$asset" ] || return 1
 		cmp -s "$LUCI_VIEW_ROOT/podkop/$asset" "$tmp_dir/$asset" || return 1
 	done
@@ -1010,7 +1147,7 @@ versioned_luci_assets_current() {
 	versioned_tmp_dir="$tmp_dir/luci-versioned/$LUCI_MODULE_NAMESPACE"
 	versioned_view_dir="$LUCI_VIEW_ROOT/$LUCI_MODULE_NAMESPACE"
 
-	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
 		[ -f "$versioned_view_dir/$asset" ] || return 1
 		cmp -s "$versioned_view_dir/$asset" "$versioned_tmp_dir/$asset" || return 1
 	done
@@ -1041,7 +1178,7 @@ install_versioned_luci_assets() {
 	mkdir -p "$LUCI_VIEW_ROOT/podkop" "$versioned_view_dir" "$(dirname "$LUCI_MENU_FILE")" ||
 		abort_with_restore "failed to create Podkop LuCI asset directories"
 
-	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js; do
+	for asset in main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js; do
 		cp "$tmp_dir/$asset" "$LUCI_VIEW_ROOT/podkop/$asset" ||
 			abort_with_restore "failed to install Podkop LuCI asset: $asset"
 		cp "$versioned_tmp_dir/$asset" "$versioned_view_dir/$asset" ||
@@ -1060,8 +1197,20 @@ install_versioned_luci_assets() {
 luci_assets_current() {
 	decode_lmo_asset || return 1
 
-	base_luci_assets_current &&
+	grep -Fq '[ "${PODKOP_LIBRARY_ONLY:-0}" != 1 ] || return 0' /usr/bin/podkop &&
+		grep -Fq '[ ! -r "$PODKOP_LIB/dns-native.sh" ] || . "$PODKOP_LIB/dns-native.sh"' /usr/bin/podkop &&
+		grep -q 'ACTIVE_BOOTSTRAP_DNS_TYPE' /usr/bin/podkop &&
+		section_runtime_assets_current &&
+		base_luci_assets_current &&
 		versioned_luci_assets_current &&
+		[ -x /usr/bin/podkop-dns-benchmark ] &&
+		cmp -s /usr/bin/podkop-dns-benchmark "$tmp_dir/$DNS_BENCHMARK_FILE" &&
+		[ -x /usr/bin/podkop-dns-apply ] &&
+		cmp -s /usr/bin/podkop-dns-apply "$tmp_dir/$DNS_APPLY_FILE" &&
+		cmp -s /usr/lib/podkop/dns-native.sh "$tmp_dir/$DNS_NATIVE_FILE" &&
+		cmp -s /usr/bin/podkop-diagnostic-policy.sh "$tmp_dir/$DIAGNOSTIC_POLICY_FILE" &&
+		cmp -s /usr/share/podkop/dns-main.json "$tmp_dir/$DNS_MAIN_CATALOG_FILE" &&
+		cmp -s /usr/share/podkop/dns-bootstrap.json "$tmp_dir/$DNS_BOOTSTRAP_CATALOG_FILE" &&
 		[ -x /usr/bin/podkop-dns-optimizer ] &&
 		dns_optimizer_has_google_play_guard /usr/bin/podkop-dns-optimizer &&
 		cmp -s /usr/bin/podkop-dns-optimizer "$tmp_dir/$DNS_OPTIMIZER_FILE" &&
@@ -1073,6 +1222,7 @@ luci_assets_current() {
 		[ -x /usr/bin/podkop-update-manager ] &&
 		cmp -s /usr/bin/podkop-update-manager "$tmp_dir/$UPDATE_MANAGER_FILE" &&
 		jq -e '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] == ["exec"]' /usr/share/rpcd/acl.d/luci-app-podkop.json >/dev/null 2>&1 &&
+		jq -e '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-benchmark"] == ["exec"]' /usr/share/rpcd/acl.d/luci-app-podkop.json >/dev/null 2>&1 &&
 		jq -e '.["luci-app-podkop"].read.file["/usr/bin/podkop-update-manager"] == ["exec"]' /usr/share/rpcd/acl.d/luci-app-podkop.json >/dev/null 2>&1 &&
 		[ -f /usr/lib/lua/luci/i18n/podkop.ru.lmo ] &&
 		cmp -s /usr/lib/lua/luci/i18n/podkop.ru.lmo "$tmp_dir/$LMO_DECODED_FILE"
@@ -1083,11 +1233,36 @@ ensure_dns_optimizer_acl() {
 	acl_tmp="$tmp_dir/luci-app-podkop.json"
 
 	[ -f "$acl_file" ] || abort_with_restore "Podkop RPC ACL is missing"
-	jq '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] = ["exec"] | .["luci-app-podkop"].read.file["/usr/bin/podkop-update-manager"] = ["exec"]' "$acl_file" > "$acl_tmp" ||
+	jq '.["luci-app-podkop"].read.file["/usr/bin/podkop-dns-optimizer"] = ["exec"] | .["luci-app-podkop"].read.file["/usr/bin/podkop-dns-benchmark"] = ["exec"] | .["luci-app-podkop"].read.file["/usr/bin/podkop-update-manager"] = ["exec"]' "$acl_file" > "$acl_tmp" ||
 		abort_with_restore "failed to update Podkop RPC ACL"
 	jq -e . "$acl_tmp" >/dev/null 2>&1 || abort_with_restore "Podkop RPC ACL validation failed"
 	cp "$acl_tmp" "$acl_file" || abort_with_restore "failed to install Podkop RPC ACL"
 	chmod 644 "$acl_file"
+}
+
+ensure_native_dns_runtime_hooks() {
+	local target="$1" hook_tmp source_present=0 guard_present=0
+	grep -Fq '[ ! -r "$PODKOP_LIB/dns-native.sh" ] || . "$PODKOP_LIB/dns-native.sh"' "$target" && source_present=1
+	grep -Fq '[ "${PODKOP_LIBRARY_ONLY:-0}" != 1 ] || return 0' "$target" && guard_present=1
+	[ "$source_present" = 1 ] && [ "$guard_present" = 1 ] && return 0
+	hook_tmp="$(mktemp "${target}.dns-hooks.XXXXXX")" || abort_with_restore "failed to stage native DNS runtime hooks"
+	if ! awk -v source_present="$source_present" -v guard_present="$guard_present" '
+	  $0 == ". \"$PODKOP_LIB/sing_box_config_facade.sh\"" {
+	    sources++; print
+	    if (!source_present) print "[ ! -r \"$PODKOP_LIB/dns-native.sh\" ] || . \"$PODKOP_LIB/dns-native.sh\""
+	    next
+	  }
+	  $0 == "case \"$1\" in" {
+	    dispatchers++
+	    if (!guard_present) print "[ \"${PODKOP_LIBRARY_ONLY:-0}\" != 1 ] || return 0"
+	  }
+	  { print }
+	  END { if (sources!=1 || dispatchers!=1) exit 1 }
+	' "$target" > "$hook_tmp" || ! sh -n "$hook_tmp"; then
+		rm -f "$hook_tmp"
+		abort_with_restore "native DNS runtime hook anchors or syntax invalid"
+	fi
+	chmod 755 "$hook_tmp" && mv "$hook_tmp" "$target" || abort_with_restore "failed to install native DNS runtime hooks"
 }
 
 ensure_podkop_dispatcher() {
@@ -1728,7 +1903,8 @@ if ! sh "$tmp_dir/$UPDATE_CENTER_UPGRADE_FILE"; then
 	abort_with_restore "runtime update center upgrade failed"
 fi
 
-if ! grep -q '^load_active_dns_settings() {' /usr/bin/podkop 2>/dev/null; then
+if ! grep -q '^load_active_dns_settings() {' /usr/bin/podkop 2>/dev/null ||
+	! grep -q 'ACTIVE_BOOTSTRAP_DNS_TYPE' /usr/bin/podkop; then
 	if ! sh "$tmp_dir/$DNS_FAILOVER_UPGRADE_FILE"; then
 		abort_with_restore "DNS failover runtime upgrade failed"
 	fi
@@ -1761,8 +1937,11 @@ if ! grep -Fqx '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/nul
 	fi
 fi
 
-if ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
+if ! sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop | grep -Fq 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' ||
+    ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop ||
+    ! grep -Fqx 'subscription_pending_sections_json() {' /usr/bin/podkop ||
+    ! grep -Fqx 'subscription_pending_clear() {' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_selection_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_optional_selection_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_tag_prefix_v1' /usr/bin/podkop ||
@@ -1776,10 +1955,28 @@ if ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_source_ruleset_reuse_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_service_filter_v1' /usr/bin/podkop ||
     ! sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop | grep -q 'set_subscription_sections_enabled' ||
-    ! grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop; then
+    ! grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop ||
+    ! grep -Fq '# subscription_safe_restart_v1:' /usr/bin/podkop ||
+    ! grep -Fqx '# subscription_safe_init_restart_v1' "$PODKOP_INIT_SCRIPT" ||
+    ! grep -Fqx 'subscription_config_apply() (' /usr/bin/podkop ||
+    ! grep -Fqx 'subscription_config_apply)' /usr/bin/podkop ||
+    ! grep -Fq 'exec /usr/bin/podkop subscription_config_apply' "$PODKOP_INIT_SCRIPT" ||
+    ! grep -Fq 'procd_add_config_trigger "config.change" "podkop"' "$ENGINE_INIT_SCRIPT"; then
     PODKOP_SOURCES_SOURCE="$tmp_dir/podkop.runtime-0.7.20" \
+        PODKOP_SOURCES_INIT_TARGET="$PODKOP_INIT_SCRIPT" \
+        PODKOP_SOURCES_ENGINE_INIT_TARGET="$ENGINE_INIT_SCRIPT" \
         sh "$tmp_dir/$SOURCES_UPGRADE_FILE" || abort_with_restore "subscription source controls upgrade failed"
 fi
+
+if ! PODKOP_SECTION_UPGRADE_VERSION="$(current_podkop_version)" \
+	PODKOP_SECTION_UPGRADE_BACKUP="$backup_dir/section-runtime-before-upgrade" \
+	sh "$tmp_dir/$SECTION_UPGRADE_FILE"; then
+	abort_with_restore "section runtime integration upgrade failed; custom runtime left recoverable in backup"
+fi
+install_section_runtime_assets || abort_with_restore "section runtime assets install failed"
+install_memdoc_compatibility || abort_with_restore "memdoc compatibility install failed; unsupported watchdog left unchanged"
+migrate_section_runtime_if_requested || abort_with_restore "explicit single-runtime migration failed"
+
 
 for runtime_file in /usr/bin/podkop /usr/lib/podkop/helpers.sh; do
 	if [ -f "$runtime_file" ]; then
@@ -1895,6 +2092,16 @@ install_versioned_luci_assets
 base_luci_assets_current && versioned_luci_assets_current ||
 	abort_with_restore "versioned Podkop LuCI asset verification failed"
 cp "$tmp_dir/$DNS_OPTIMIZER_FILE" /usr/bin/podkop-dns-optimizer
+cp "$tmp_dir/$DNS_BENCHMARK_FILE" /usr/bin/podkop-dns-benchmark
+cp "$tmp_dir/$DNS_APPLY_FILE" /usr/bin/podkop-dns-apply
+cp "$tmp_dir/$DIAGNOSTIC_POLICY_FILE" /usr/bin/podkop-diagnostic-policy.sh
+chmod 644 /usr/bin/podkop-diagnostic-policy.sh
+cp "$tmp_dir/$DNS_NATIVE_FILE" /usr/lib/podkop/dns-native.sh
+chmod 644 /usr/lib/podkop/dns-native.sh
+mkdir -p /usr/share/podkop
+cp "$tmp_dir/$DNS_MAIN_CATALOG_FILE" /usr/share/podkop/dns-main.json
+cp "$tmp_dir/$DNS_BOOTSTRAP_CATALOG_FILE" /usr/share/podkop/dns-bootstrap.json
+chmod 644 /usr/share/podkop/dns-main.json /usr/share/podkop/dns-bootstrap.json
 cp "$tmp_dir/$DNS_FAILOVER_FILE" /usr/bin/podkop-dns-failover
 cp "$tmp_dir/$DNS_FAILOVER_INIT_FILE" /etc/init.d/podkop-dns-failover
 cp "$tmp_dir/$UPDATE_MANAGER_FILE" /usr/bin/podkop-update-manager
@@ -1907,7 +2114,7 @@ fi
 cp "$tmp_dir/$LMO_DECODED_FILE" /usr/lib/lua/luci/i18n/podkop.ru.lmo || abort_with_restore "failed to install LuCI translation"
 
 chmod 755 /usr/bin/podkop
-chmod 755 /usr/bin/podkop-dns-optimizer
+chmod 755 /usr/bin/podkop-dns-optimizer /usr/bin/podkop-dns-benchmark /usr/bin/podkop-dns-apply
 chmod 755 /usr/bin/podkop-dns-failover
 chmod 755 /etc/init.d/podkop-dns-failover
 chmod 755 /usr/bin/podkop-update-manager
@@ -1915,12 +2122,13 @@ chmod 755 /usr/bin/podkop-update-manager
 chmod 644 /usr/lib/lua/luci/i18n/podkop.ru.lmo
 
 ensure_podkop_dispatcher /usr/bin/podkop
+ensure_native_dns_runtime_hooks /usr/bin/podkop
 
 if ! ash -n /usr/bin/podkop; then
 	abort_with_restore "podkop syntax check failed"
 fi
 
-if ! ash -n /usr/bin/podkop-dns-optimizer; then
+if ! ash -n /usr/bin/podkop-dns-optimizer || ! ash -n /usr/bin/podkop-dns-benchmark || ! ash -n /usr/bin/podkop-dns-apply || ! ash -n /usr/lib/podkop/dns-native.sh || ! ash -n /usr/bin/podkop-diagnostic-policy.sh; then
 	abort_with_restore "DNS optimizer syntax check failed"
 fi
 

@@ -182,11 +182,33 @@ subscription_reconcile_choices() {
 }
 
 get_subscription_operation_status() {
-    local busy=false pending=false
+    # single_runtime_status_v1: scoped settings, shared process lifecycle.
+    if command -v podkop_section_single_mode >/dev/null && podkop_section_single_mode; then
+        local single_busy=false single_pending=false single_names single_status single_pending_sections
+        subscription_runtime_busy && single_busy=true
+        [ ! -f "$(subscription_reload_pending_file)" ] || single_pending=true
+        single_names="$(podkop_section_names)" || single_names='[]'
+        single_status="$(podkop_section_manager status 2>/dev/null)" || single_status='{}'
+        if command -v subscription_pending_sections_json >/dev/null; then
+            single_pending_sections="$(subscription_pending_sections_json)" || single_pending_sections='[]'
+        elif [ "$single_pending" = true ]; then single_pending_sections="$single_names"
+        else single_pending_sections='[]'; fi
+        printf '%s' "$single_status" | jq -c --argjson busy "$single_busy" --argjson pending "$single_pending" \
+            --argjson names "$single_names" --argjson pendingSections "$single_pending_sections" \
+            '($pendingSections|map(select(. as $s|$names|index($s)))|unique) as $currentPending |
+             {busy:$busy,pending:($currentPending|length>0),pendingSections:$currentPending,runtimeMode:"single",isolatedSection:($names[0]//""),isolatedSections:$names,sections:(.sections//[]),isolatedReady:(.ready==true and ($names|length)>0),retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+        return
+    fi
+    local busy=false pending=false isolated="" ready=false pending_sections='[]'
     subscription_runtime_busy && busy=true
     [ ! -f "$(subscription_reload_pending_file)" ] || pending=true
-    jq -cn --argjson busy "$busy" --argjson pending "$pending" \
-        '{busy:$busy,pending:$pending,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+    pending_sections="$(subscription_pending_sections_json)" || pending_sections='[]'
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        isolated="$(podkop_section_name)"
+        podkop_section_ready && ready=true
+    fi
+    jq -cn --argjson busy "$busy" --argjson pending "$pending" --arg isolated "$isolated" --argjson ready "$ready" --argjson pendingSections "$pending_sections" \
+        '{busy:$busy,pending:$pending,pendingSections:$pendingSections,isolatedSection:$isolated,isolatedReady:$ready,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
 }
 
 subscription_cached_source_append() {
@@ -226,7 +248,7 @@ subscription_cached_source_append() {
 subscription_source_policy() {
     local services="${8:-}"
     [ -n "$services" ] || services='{"required":[],"results":[]}'
-    printf '%s\n' "$services" | jq -c --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
+    printf '%s\n' "$services" | jq -c --argjson country_map "$(if command -v subscription_services_country_map >/dev/null 2>&1; then subscription_services_country_map; else printf '{}\n'; fi)" --argjson now "$(date +%s)" --argjson disabled "$1" --argjson excluded "$2" --arg mode "${4:-all}" --argjson selected "${5:-[]}" \
         --argjson include "${6:-[]}" --argjson exclude "${7:-[]}" --slurpfile policy_items "$3" '
         . as $services
         | ($services.results | map({key:.id,value:.services}) | from_entries) as $service_status
@@ -304,6 +326,17 @@ subscription_source_policy() {
               elif $legacy_code != null then prefix_matches($legacy_code; $name)
               else glob_matches($pattern; $name) end;
         def matches($patterns; $name): any($patterns[]; pattern_matches(.; $name));
+        def google_declared($name):
+            ($name|explode) as $chars
+            | [range(0; (($chars|length)-1)) | . as $i
+                | select(all($chars[$i:$i+2][]; .>=127462 and .<=127487))
+                | [$chars[$i:$i+2][]|.-127397]|implode] as $flags
+            | (if ($chars|length)>=2 and all($chars[0:2][]; .>=65 and .<=90)
+                and (($chars|length)==2 or ([" ","\t","\n","\r","\f",".","_",":","/","-"]|index($name[2:3])!=null))
+                then [$name[0:2]] else [] end) as $leading
+            | ($flags+$leading|unique) as $candidates
+            | if ($candidates|length)==1 and ($country_map[$candidates[0]]!=null)
+              then $candidates[0] else null end;
         map(. as $item
             | .enabled = (.supported == true and (if $mode=="selected" then
                 ($selected | index($item.selectionId // $item.id)) != null
@@ -313,7 +346,34 @@ subscription_source_policy() {
                 any(.sourceIds[]; . as $id | ($disabled | index($id)) == null)
                 else ($disabled | length) == 0 end)
             | .tagExcluded = ((($include|length)>0 and (matches($include; $item.name // $item.tag // "")|not)) or matches($exclude; $item.name // $item.tag // ""))
-            | .serviceExcluded = (all($services.required[]; . as $service | $service_status[$item.id][$service].state=="pass") | not)
+            | .serviceExcluded = (all($services.required[]; . as $service
+                | $service_status[$item.id][$service] as $proof
+                | $proof.state=="pass" and (if $service=="exit_country" then
+                    $proof.proofVersion==1 and $proof.manual==false
+                    and $proof.declaredName==($item.name // $item.tag // "")
+                    and ($proof.declaredCountry|type=="string" and length==2)
+                    and $proof.network=="pass"
+                    and $proof.declaredCountry==google_declared($item.name // $item.tag // "")
+                    and ($proof.checkedAt|type=="number") and $proof.checkedAt>0 and $proof.checkedAt<=$now
+                    and ($proof.expiresAt|type=="number") and $proof.expiresAt>$now and $proof.expiresAt<=($proof.checkedAt+86400)
+                    and $proof.exitCountry==$proof.declaredCountry
+                    and ($proof.observations|type=="array" and length==2
+                        and (map(.provider)|sort)==["ipinfo","ipwhois"]
+                        and all(.[]; .valid==true and .country==$proof.exitCountry))
+                  elif $service=="google_country" then
+                    $proof.proofVersion==1 and $proof.manual==false
+                    and $proof.network=="pass" and $proof.httpCode==200
+                    and $proof.declaredName==($item.name // $item.tag // "")
+                    and ($proof.declaredCountry|type=="string" and length==2)
+                    and $proof.declaredCountry==google_declared($item.name // $item.tag // "")
+                    and ($proof.googleCountry|type=="string" and length==2)
+                    and ($proof.region|type=="string" and length==3)
+                    and $country_map[$proof.region]==$proof.googleCountry
+                    and $country_map[$proof.googleCountry]==$proof.region
+                    and $proof.googleCountry==$proof.declaredCountry
+                    and ($proof.checkedAt|type=="number") and $proof.checkedAt>0 and $proof.checkedAt<=$now
+                    and ($proof.expiresAt|type=="number") and $proof.expiresAt>$now and $proof.expiresAt<=($proof.checkedAt+86400)
+                  else true end)) | not)
             | .runtimeEnabled = (.enabled and .sourceEnabled and (.tagExcluded|not) and (.serviceExcluded|not))
             | if .supported then .reason = (if .enabled and .tagExcluded then "tag_filtered" elif .enabled then "" elif $mode=="selected" then "user_unselected" else "user_excluded" end) else . end)
     '
@@ -404,8 +464,8 @@ subscription_sources_prepare() {
             SUBSCRIPTION_SOURCES_ERROR=service_snapshot_storage_unavailable
             return 1
         fi
-        if [ "$required" != '[]' ] && command -v collect_urltest_proxy_links >/dev/null 2>&1 && collect_urltest_proxy_links "$section" "$dir/services.$section.manual" && [ -s "$dir/services.$section.manual" ]; then
-            SUBSCRIPTION_SOURCES_ERROR=service_manual_links_unsupported
+        if [ "$required" != '[]' ] && ! subscription_services_manual_ready "$section" "$required"; then
+            SUBSCRIPTION_SOURCES_ERROR=service_manual_results_stale_or_missing
             return 1
         fi
         printf '%s\n' "$required" > "$dir/services.$section.required" || return 1
@@ -429,6 +489,13 @@ subscription_sources_prepare() {
     exclude="$(cat "$dir/tags.$section.exclude")" || return 1
     subscription_source_policy "$proposed" "$excluded" "$dir/sources.$section.items" "$mode" "$selected" "$include" "$exclude" "$services" > "$dir/sources.$section.effective" || return 1
     SUBSCRIPTION_SOURCES_REMAINING="$(jq '[.[] | select(.runtimeEnabled)] | length' "$dir/sources.$section.effective")"
+    if [ "$SUBSCRIPTION_SOURCES_REMAINING" -eq 0 ] && [ "$required" != '[]' ]; then
+        SUBSCRIPTION_SOURCES_ERROR=service_no_eligible_nodes
+        if printf '%s' "$services" | jq -e '.results|length==0' >/dev/null; then
+            SUBSCRIPTION_SOURCES_ERROR=service_results_stale_or_missing
+        fi
+        return 1
+    fi
     SUBSCRIPTION_SOURCES_CHANGED="$count"
 }
 

@@ -113,7 +113,7 @@ if ! sed -n '/async function handleRefreshSubscriptions(/,/^}/p' openwrt/main.js
     fail 'subscription refresh handler must use the recoverable refresh guard'
 fi
 
-if ! sed -n '/async function handleApply()/,/^}/p' openwrt/main.js \
+if ! sed -n '/async function handleApply(/,/^}/p' openwrt/main.js \
     | grep -q 'result.data?.state === "rollback_failed"' ||
     ! sed -n '/function getSubscriptionActionErrorMessage/,/^}/p' openwrt/main.js \
     | grep -q 'case "rollback_failed"'; then

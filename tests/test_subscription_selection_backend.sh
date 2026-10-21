@@ -36,7 +36,7 @@ subscription_source_policy '[]' '[]' "$work/tag-fallback.items" all '[]' '["Node
 for version in 0.7.20 0.7.22; do
  runtime="$repo/openwrt/runtime-$version/usr/bin/podkop"
  sed -n '/^# subscription_apply_v2 begin$/,/^# subscription_apply_v2 end$/p' "$runtime" > "$work/backend"
- for name in apply_subscription_exclusions_to_cached_links set_subscription_links_enabled normalize_subscription_enabled_value; do
+ for name in subscription_pending_sections_json subscription_pending_mark subscription_pending_clear apply_subscription_exclusions_to_cached_links set_subscription_links_enabled normalize_subscription_enabled_value; do
    sed -n "/^$name() {$/,/^}$/p" "$runtime" >> "$work/backend"
  done
  . "$work/backend"

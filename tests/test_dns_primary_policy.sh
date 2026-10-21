@@ -104,7 +104,8 @@ if ! grep -q 'select(.primaryEligible == true)' openwrt/podkop-dns-optimizer; th
     fail 'primary DNS ranking must filter by primary eligibility'
 fi
 
-if ! grep -q 'secondary_recommendation="$(printf.*"\$primary_ranking"' openwrt/podkop-dns-optimizer; then
+if ! sed -n '/secondary_recommendation="$(jq -c/,/"\$ranking_file")/p' openwrt/podkop-dns-optimizer |
+    grep -Fq '"$ranking_file")'; then
     fail 'secondary selection must use the Yandex-free normal DNS ranking'
 fi
 

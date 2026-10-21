@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260814-dns-optimizer-v18"
+VERSION="20261011-dns-optimizer-v21"
 GOOGLE_PLAY_GUARD_CAPABILITY="google_play_dns_transport_guard_v1"
 CHATGPT_GUARD_CAPABILITY="chatgpt_dns_transport_guard_v1"
 STATE_DIR="${PODKOP_DNS_OPTIMIZER_STATE_DIR:-/tmp/podkop-dns-optimizer}"
@@ -120,6 +120,70 @@ write_status() {
         '{state:$state,action:$action,message:$message,progress:$progress,completed:$completed,total:$total,pid:$pid,updatedAt:$updatedAt}' \
         > "$tmp" && mv "$tmp" "$STATUS_FILE"
     chmod 600 "$STATUS_FILE" 2> /dev/null || true
+    if [ "$action" = benchmark ] && [ -n "${BENCHMARK_MEMORY_FILE:-}" ]; then
+        annotate_benchmark_status "$STATUS_FILE"
+    fi
+}
+
+# The benchmark is serial. File-backed metrics survive command-substitution
+# subshells, as does the abort marker; never classify resource failure as DNS.
+benchmark_available_memory() {
+    local source="${PODKOP_DNS_OPTIMIZER_MEMINFO_FILE:-/proc/meminfo}"
+    case "$source" in /*) ;; *) return 1;; esac
+    [ -f "$source" ] && [ -r "$source" ] || return 1
+    awk '$1 == "MemAvailable:" && $2 ~ /^[0-9]+$/ && $3 == "kB" { print $2; found=1; exit } END { if (!found) exit 1 }' "$source"
+}
+
+annotate_benchmark_status() {
+    local file="$1" start minimum waits seconds tmp
+    IFS='|' read -r start minimum waits seconds < "$BENCHMARK_MEMORY_FILE"
+    tmp="$file.memory.$$"
+    jq --arg mode "$BENCHMARK_MODE" --arg requested "$BENCHMARK_REQUESTED_MODE" \
+        --argjson start "$start" --argjson minimum "$minimum" --argjson waits "$waits" --argjson seconds "$seconds" '
+        .benchmarkMode=$mode | .requestedMode=$requested | .parallelism=1
+        | .diagnosticsSkipped=($mode=="economy") | .benchmarkScope="dns-only"
+        | .optionalProbeCoverage=(if $mode=="economy" then "skipped" else "dns-only" end)
+        | .memory={startAvailableKiB:$start,minAvailableKiB:$minimum,waitCount:$waits,waitSeconds:$seconds,guardFloorKiB:24576,resumeKiB:32768,waitLimitSeconds:45}
+        | if .state=="error" then .recommendation=null | .secondaryRecommendation=null else . end
+    ' "$file" > "$tmp" && mv "$tmp" "$file"
+}
+
+benchmark_memory_guard() {
+    [ -n "${BENCHMARK_MEMORY_FILE:-}" ] || return 0
+    [ ! -e "$BENCHMARK_ABORT_FILE" ] || return 75
+    local available start minimum waits seconds waiting=0 floor=24576
+    IFS='|' read -r start minimum waits seconds < "$BENCHMARK_MEMORY_FILE"
+    while :; do
+        available="$(benchmark_available_memory || true)"
+        if [ -n "$available" ]; then
+            if [ "$minimum" = null ] || [ "$available" -lt "$minimum" ]; then minimum="$available"; fi
+        fi
+        printf '%s|%s|%s|%s\n' "$start" "$minimum" "$waits" "$seconds" > "$BENCHMARK_MEMORY_FILE"
+        if [ -n "$available" ] && [ "$available" -ge "$floor" ]; then
+            return 0
+        fi
+        if [ "$waiting" -eq 0 ]; then waits=$((waits + 1)); waiting=1; floor=32768; fi
+        printf '%s|%s|%s|%s\n' "$start" "$minimum" "$waits" "$seconds" > "$BENCHMARK_MEMORY_FILE"
+        if [ "$seconds" -ge 45 ]; then
+            : > "$BENCHMARK_ABORT_FILE"
+            return 75
+        fi
+        write_status running benchmark waiting_for_memory 0 0 0 "$$"
+        sleep 1
+        seconds=$((seconds + 1))
+    done
+}
+
+benchmark_query() {
+    local result rc
+    if result="$(run_dns_query "$@" 2>/dev/null)"; then printf '%s\n' "$result"; return 0; fi
+    rc=0
+    [ ! -e "${BENCHMARK_ABORT_FILE:-/nonexistent}" ] || rc=75
+    return "$rc"
+}
+
+benchmark_resource_failure() {
+    write_status error benchmark resource_wait_timeout 100 "${completed:-0}" "${total:-0}" "$$"
 }
 
 write_final_status() {
@@ -168,6 +232,40 @@ candidate_path() {
         *) printf '/dns-query\n' ;;
     esac
 }
+
+dns_catalog_endpoint() {
+    local protocol="$1" value="$2" kind="${3:-main}" catalog
+    case "$protocol" in
+        udp|tcp|doh|dot) ;;
+        *) printf 'unsupported_engine_protocol: %s\n' "$protocol" >&2; return 1;;
+    esac
+    catalog="${PODKOP_DNS_CATALOG_DIR:-/usr/share/podkop}/dns-$kind.json"
+    if [ -s "$catalog" ]; then
+        jq -ce --arg value "$value" --arg protocol "$protocol" '
+          [.servers[] | select(.value==$value or ((.aliases//[])|index($value)))] as $rows |
+          if ($rows|length)>0 then
+            [$rows[]|select(.protocols|index($protocol))][0] as $row |
+            if $row==null then error("unsupported catalog protocol") else
+              ($row.endpoints[$protocol] // {host:$row.value,port:53})
+            end
+          else {host:($value|split("/")[0]|split(":")[0]),
+            port:(if ($value|split("/")[0]|contains(":")) then ($value|split("/")[0]|split(":")[1]|tonumber) else {udp:53,tcp:53,doh:443,dot:853,doq:853,h3:443}[$protocol] end),
+            path:(if ($value|contains("/")) then "/"+($value|split("/")[1:]|join("/")) else "/dns-query" end)} end' "$catalog"
+    else
+        jq -cn --arg host "$(candidate_host "$value")" --arg path "$(candidate_path "$value")" --arg protocol "$protocol" \
+          '{host:$host,path:$path,port:({udp:53,tcp:53,doh:443,dot:853,doq:853,h3:443}[$protocol])}'
+    fi
+}
+
+
+write_catalog_candidates() {
+    local protocol="$1" file="$2" kind="${3:-main}" catalog
+    case "$protocol" in udp|tcp|doh|dot) ;; *) printf 'unsupported_engine_protocol: %s\n' "$protocol" >&2; return 1;; esac
+    catalog="${PODKOP_DNS_CATALOG_DIR:-/usr/share/podkop}/dns-$kind.json"
+    [ -s "$catalog" ] || return 1
+    jq -r --arg protocol "$protocol" '.servers[] | select(.protocols|index($protocol)) | [.id,.label,.value,.profile] | join("|")' "$catalog" > "$file"
+}
+
 
 append_unique_candidate() {
     local file="$1"
@@ -243,7 +341,7 @@ write_main_candidates() {
 
     : > "$file"
     case "$protocol" in
-        udp)
+        udp|tcp)
             cat >> "$file" <<'EOF'
 cloudflare|Cloudflare|1.1.1.1|unfiltered
 google|Google|8.8.8.8|unfiltered
@@ -253,7 +351,7 @@ adguard_unfiltered|AdGuard Unfiltered|94.140.14.140|unfiltered
 controld_unfiltered|Control D Unfiltered|76.76.2.0|unfiltered
 EOF
             ;;
-        doh)
+        doh|h3)
             cat >> "$file" <<'EOF'
 cloudflare|Cloudflare|1.1.1.1|unfiltered
 google|Google|8.8.8.8|unfiltered
@@ -264,7 +362,7 @@ controld_unfiltered|Control D Unfiltered|freedns.controld.com/p0|unfiltered
 mullvad|Mullvad|dns.mullvad.net/dns-query|privacy
 EOF
             ;;
-        dot)
+        dot|doq)
             cat >> "$file" <<'EOF'
 cloudflare|Cloudflare|1.1.1.1|unfiltered
 google|Google|8.8.8.8|unfiltered
@@ -280,6 +378,20 @@ EOF
             ;;
     esac
 
+    if ! write_catalog_candidates "$protocol" "$file" main; then
+        # Legacy fallback is only authoritative for the three old transports.
+        # Do not turn a DoT/DoH row into an assumed DoQ/H3 provider.
+        case "$protocol" in doq|h3) : > "$file"; return 1;; esac
+    fi
+    # Preserve the established Yandex upstream exclusion; bootstrap is separate.
+    local eligible_file="$file.eligible"
+    : > "$eligible_file"
+    while IFS='|' read -r catalog_id catalog_provider catalog_value catalog_profile; do
+        if candidate_is_primary_eligible "$catalog_id" "$catalog_provider" "$catalog_value"; then
+            printf '%s|%s|%s|%s\n' "$catalog_id" "$catalog_provider" "$catalog_value" "$catalog_profile" >> "$eligible_file"
+        fi
+    done < "$file"
+    mv "$eligible_file" "$file"
     filter_selected_candidates "$file" "dns_optimizer_candidates"
     append_saved_custom_candidates "$protocol" "$file"
 
@@ -309,8 +421,10 @@ EOF
     fi
 }
 
+
 write_bootstrap_candidates() {
     local file="$1"
+    local protocol="${2:-udp}"
     local current current_pair active_slot index dns include_current include_wan
 
     cat > "$file" <<'EOF'
@@ -326,6 +440,7 @@ adguard_unfiltered|AdGuard Unfiltered|94.140.14.140|unfiltered
 controld_unfiltered|Control D Unfiltered|76.76.2.0|unfiltered
 EOF
 
+    write_catalog_candidates "$protocol" "$file" bootstrap || { [ "$protocol" = udp ] || { : > "$file"; return 1; }; }
     filter_selected_candidates "$file" "dns_optimizer_bootstrap_candidates"
 
     include_current="$(uci -q get podkop.settings.dns_optimizer_include_current 2> /dev/null || echo 1)"
@@ -726,24 +841,37 @@ run_dns_query() {
     local path="$4"
     local domain="$5"
     local expected="$6"
-    local output status elapsed
+    local endpoint_port="${7:-}"
+    local output status elapsed port_args=''
+
+    if [ -z "$endpoint_port" ]; then
+        case "$protocol" in doh) endpoint_port=443;; dot) endpoint_port=853;; *) endpoint_port=53;; esac
+    fi
+    case "$endpoint_port" in *[!0-9]*) return 1;; esac
+    [ "$endpoint_port" -ge 1 ] && [ "$endpoint_port" -le 65535 ] || return 1
+
+    benchmark_memory_guard || return 75
+    [ "$endpoint_port" = 53 ] || port_args="-p $endpoint_port"
 
     case "$protocol" in
         udp)
-            output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +timeout=2 +tries=1 +stats 2>&1 || true)"
+            output="$(run_with_timeout 4 dig @"$endpoint_ip" $port_args "$domain" A +timeout=2 +tries=1 +stats 2>&1 || true)"
+            ;;
+        tcp)
+            output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +tcp +timeout=2 +tries=1 +stats 2>&1 || true)"
             ;;
         doh)
             if [ -n "$tls_hostname" ]; then
-                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +https="$path" +tls-hostname="$tls_hostname" +timeout=2 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +https="$path" +tls-hostname="$tls_hostname" +timeout=2 +tries=1 +stats 2>&1 || true)"
             else
-                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +https="$path" +timeout=2 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +https="$path" +timeout=2 +tries=1 +stats 2>&1 || true)"
             fi
             ;;
         dot)
             if [ -n "$tls_hostname" ]; then
-                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +tls +tls-hostname="$tls_hostname" +timeout=2 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +tls +tls-hostname="$tls_hostname" +timeout=2 +tries=1 +stats 2>&1 || true)"
             else
-                output="$(run_with_timeout 4 dig @"$endpoint_ip" "$domain" A +tls +timeout=2 +tries=1 +stats 2>&1 || true)"
+                output="$(run_with_timeout 4 dig @"$endpoint_ip" -p "$endpoint_port" "$domain" A +tls +timeout=2 +tries=1 +stats 2>&1 || true)"
             fi
             ;;
         *)
@@ -758,10 +886,10 @@ run_dns_query() {
     esac
 
     if [ "$expected" = "NXDOMAIN" ]; then
-        [ "$status" = "NXDOMAIN" ] || return 1
+        [ "$status" = "NXDOMAIN" ] || { printf 'unexpected_status:%s\n' "${status:-no_response}" >&2; return 1; }
     else
-        [ "$status" = "NOERROR" ] || return 1
-        printf '%s\n' "$output" | dns_output_has_usable_a "$endpoint_ip" || return 1
+        [ "$status" = "NOERROR" ] || { printf 'unexpected_status:%s\n' "${status:-no_response}" >&2; return 1; }
+        printf '%s\n' "$output" | dns_output_has_usable_a "$endpoint_ip" || { printf 'no_usable_a\n' >&2; return 1; }
     fi
 
     printf '%s\n' "$elapsed"
@@ -771,8 +899,54 @@ resolve_host() {
     local bootstrap="$1"
     local host="$2"
 
+    benchmark_memory_guard || return 75
+
     dig @"$bootstrap" "$host" A +timeout=2 +tries=1 +short 2> /dev/null |
         awk '/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ { print; exit }'
+}
+
+# Stable 0.7.x configures bootstrap as UDP/53. Test that resolver itself,
+# including when the primary is numeric, without Engine/catalog dependencies.
+probe_bootstrap() {
+    local protocol="$1" server="$2" primary_host="${3:-}"
+    local endpoint endpoint_ip port path tls_hostname domain expected checks success reason result elapsed
+
+    case "$protocol" in
+        udp|tcp|doh|dot) ;;
+        *) jq -cn --arg protocol "$protocol" --arg server "$server" \
+            '{success:false,protocol:$protocol,server:$server,error:"unsupported_engine_protocol",checks:[]}'; return 1;;
+    esac
+    endpoint="$(dns_catalog_endpoint "$protocol" "$server" bootstrap)" || {
+        jq -cn --arg protocol "$protocol" --arg server "$server" \
+            '{success:false,protocol:$protocol,server:$server,error:"unsupported_catalog_protocol",checks:[]}'
+        return 1
+    }
+    endpoint_ip="$(printf '%s' "$endpoint" | jq -r '.host//empty')"
+    port="$(printf '%s' "$endpoint" | jq -r '.port//empty')"
+    path="$(printf '%s' "$endpoint" | jq -r '.path//"/dns-query"')"
+    tls_hostname="$(printf '%s' "$endpoint" | jq -r '.server_name//empty')"
+    if ! is_ipv4 "$endpoint_ip"; then
+        jq -cn --arg protocol "$protocol" --arg server "$server" \
+            '{success:false,protocol:$protocol,server:$server,error:"bootstrap_endpoint_not_numeric",checks:[]}'
+        return 1
+    fi
+    # The actual main resolver hostname is required only when it needs resolving.
+    if is_ipv4 "$primary_host"; then primary_host=''; fi
+    checks='[]'; success=true
+    for domain in $primary_host example.com github.com podkop-bootstrap-test.invalid; do
+        expected=NOERROR; [ "$domain" != podkop-bootstrap-test.invalid ] || expected=NXDOMAIN
+        if result="$(run_dns_query "$protocol" "$endpoint_ip" "$tls_hostname" "$path" "$domain" "$expected" "$port" 2>&1)"; then
+            elapsed="$result"; reason=''; result=true
+        else
+            reason="${result:-dns_query_failed}"; elapsed=null; result=false; success=false
+        fi
+        checks="$(jq -cn --argjson checks "$checks" --arg domain "$domain" --arg reason "$reason" \
+            --argjson success "$result" --argjson elapsed "${elapsed:-null}" \
+            '$checks + [{domain:$domain,success:$success,reason:$reason,elapsedMs:$elapsed}]')"
+    done
+    jq -cn --arg protocol "$protocol" --arg server "$server" --argjson success "$success" --argjson checks "$checks" \
+        '{success:$success,protocol:$protocol,server:$server,error:(if $success then "" else "bootstrap_query_failed" end),checks:$checks}'
+    [ "$success" = true ]
 }
 
 read_configured_pair() {
@@ -813,7 +987,17 @@ probe_configured_pair() {
     local slot="$1"
     local pair protocol dns_server bootstrap host endpoint_ip tls_hostname path domain elapsed successes total
     local play_dns_available chatgpt_dns_available chatgpt_api_dns_available error
+    local bootstrap_protocol prefix benchmark endpoint endpoint_port bootstrap_result benchmark_result
 
+    prefix=''; [ "$slot" != secondary ] || prefix=secondary_
+    bootstrap_protocol="$(uci -q get "podkop.settings.${prefix}bootstrap_dns_type" 2>/dev/null || true)"
+    protocol="$(uci -q get "podkop.settings.${prefix}dns_type" 2>/dev/null || true)"
+    case "$protocol:${bootstrap_protocol:-udp}" in
+        doq:*|h3:*|*:doq|*:h3)
+            jq -cn --arg slot "$slot" '{success:false,slot:$slot,error:"unsupported_engine_protocol"}'
+            return 1
+            ;;
+    esac
     pair="$(read_configured_pair "$slot" || true)"
     if [ -z "$pair" ]; then
         jq -cn --arg slot "$slot" '{success:false,slot:$slot,error:"pair_not_configured"}'
@@ -822,13 +1006,36 @@ probe_configured_pair() {
     protocol="$(printf '%s\n' "$pair" | cut -d '|' -f 1)"
     dns_server="$(printf '%s\n' "$pair" | cut -d '|' -f 2)"
     bootstrap="$(printf '%s\n' "$pair" | cut -d '|' -f 3)"
-    host="$(candidate_host "$dns_server")"
-    path="$(candidate_path "$dns_server")"
+    endpoint="$(dns_catalog_endpoint "$protocol" "$dns_server" main)" || {
+        jq -cn --arg slot "$slot" '{success:false,slot:$slot,error:"unsupported_catalog_protocol"}'
+        return 1
+    }
+    host="$(printf '%s' "$endpoint" | jq -r '.host')"
+    if ! bootstrap_result="$(probe_bootstrap "${bootstrap_protocol:-udp}" "$bootstrap" "$host")"; then
+        jq -cn --arg slot "$slot" --arg protocol "$protocol" --argjson bootstrap "$bootstrap_result" \
+            '{success:false,slot:$slot,protocol:$protocol,error:"bootstrap_failed",bootstrap:$bootstrap}'
+        return 1
+    fi
+    case "${bootstrap_protocol:-udp}" in
+        tcp|doh|dot)
+            benchmark="${PODKOP_DNS_BENCHMARK_COMMAND:-/usr/bin/podkop-dns-benchmark}"
+            if [ -x "$benchmark" ] && benchmark_result="$(sh "$benchmark" probe_pair "$slot")" && \
+                printf '%s' "$benchmark_result" | jq -se 'length==1 and (.[0]|type=="object" and .success==true)' >/dev/null 2>&1; then
+                printf '%s\n' "$benchmark_result" | jq --argjson bootstrap "$bootstrap_result" '. + {bootstrap:$bootstrap}'
+                return 0
+            fi
+            jq -cn --arg slot "$slot" --argjson bootstrap "$bootstrap_result" \
+                '{success:false,slot:$slot,error:"pair_probe_failed",bootstrap:$bootstrap}'
+            return 1
+            ;;
+    esac
+    endpoint_port="$(printf '%s' "$endpoint" | jq -r '.port')"
+    path="$(printf '%s' "$endpoint" | jq -r '.path//"/dns-query"')"
     endpoint_ip="$host"
-    tls_hostname=""
+    tls_hostname="$(printf '%s' "$endpoint" | jq -r '.server_name//empty')"
     if ! is_ipv4 "$host"; then
         endpoint_ip="$(resolve_host "$bootstrap" "$host")"
-        tls_hostname="$host"
+        [ -n "$tls_hostname" ] || tls_hostname="$host"
     fi
     if ! is_ipv4 "$endpoint_ip"; then
         jq -cn --arg slot "$slot" --arg protocol "$protocol" '{success:false,slot:$slot,protocol:$protocol,error:"bootstrap_failed"}'
@@ -841,7 +1048,7 @@ probe_configured_pair() {
     chatgpt_dns_available=0
     chatgpt_api_dns_available=0
     for domain in example.com github.com play.googleapis.com chatgpt.com api.openai.com; do
-        elapsed="$(run_dns_query "$protocol" "$endpoint_ip" "$tls_hostname" "$path" "$domain" NOERROR 2> /dev/null || true)"
+        elapsed="$(run_dns_query "$protocol" "$endpoint_ip" "$tls_hostname" "$path" "$domain" NOERROR "$endpoint_port" 2> /dev/null || true)"
         if [ -n "$elapsed" ]; then
             successes=$((successes + 1))
             [ "$domain" != "play.googleapis.com" ] || play_dns_available=1
@@ -909,16 +1116,16 @@ benchmark_bootstrap_candidate() {
     success=0
     failures=0
     total=8
-    run_dns_query udp "$server" "" "" example.net NOERROR >/dev/null 2>&1 || true
+    benchmark_query udp "$server" "" "" example.net NOERROR >/dev/null || { rm -f "$times"; return 75; }
     for round in 1 2; do
         for domain in example.com github.com cdn.jsdelivr.net cloudflare.com; do
-            output="$(run_dns_query udp "$server" "" "" "$domain" NOERROR 2> /dev/null || true)"
+            output="$(benchmark_query udp "$server" "" "" "$domain" NOERROR)" || { rm -f "$times"; return 75; }
             if [ -n "$output" ]; then
                 printf '%s\n' "$output" >> "$times"
                 success=$((success + 1))
             else
                 failures=$((failures + 1))
-                [ "$failures" -ge 2 ] && break 2
+                if [ "$failures" -ge 2 ] && [ "${BENCHMARK_MODE:-full}" != economy ]; then break 2; fi
             fi
         done
     done
@@ -946,7 +1153,7 @@ find_compatible_bootstrap() {
     local bootstrap_json="$1"
     local host="$2"
     local main_id="$3"
-    local family server ip line candidates
+    local family server ip line candidates rows
 
     family="${main_id%%_*}"
     candidates="$(mktemp)"
@@ -974,16 +1181,20 @@ find_compatible_bootstrap() {
         return 0
     fi
 
-    jq -c '.[]' "$candidates" |
-        while IFS= read -r line; do
-            server="$(printf '%s\n' "$line" | jq -r '.server')"
-            ip="$(resolve_host "$server" "$host")"
-            if [ -n "$ip" ]; then
-                printf '%s|%s|%s\n' "$server" "$ip" "$line"
-                break
-            fi
-        done
-    rm -f "$candidates"
+    rows="$(mktemp)"
+    jq -c '.[]' "$candidates" > "$rows"
+    while IFS= read -r line; do
+        server="$(printf '%s\n' "$line" | jq -r '.server')"
+        if ! ip="$(resolve_host "$server" "$host")"; then
+            rm -f "$candidates" "$rows"
+            return 75
+        fi
+        if [ -n "$ip" ]; then
+            printf '%s|%s|%s\n' "$server" "$ip" "$line"
+            break
+        fi
+    done < "$rows"
+    rm -f "$candidates" "$rows"
 }
 
 benchmark_main_candidate() {
@@ -1001,7 +1212,9 @@ benchmark_main_candidate() {
     local compatibility_failures compatibility_unstable universal_eligible community_probe_total community_probe_passed community_probe_stable
     local community_score community_selected community_tested community_passed community_stable selected_community_json primary_eligible
     local advisory_counts advisory_total advisory_passed advisory_stable advisory_score advisory_failures advisory_unstable
-    local required_success_count required_total_queries
+    local required_success_count required_total_queries diagnostics_skipped=false performed=true
+
+    if [ "${BENCHMARK_MODE:-full}" = economy ]; then diagnostics_skipped=true; performed=false; fi
 
     host="$(candidate_host "$value")"
     primary_eligible="$(candidate_primary_eligible_json "$id" "$provider" "$value")"
@@ -1030,10 +1243,16 @@ benchmark_main_candidate() {
     advisory_stable="${advisory_counts%%|*}"
     advisory_total="${advisory_counts#*|}"
     required_success_count=0
-    required_total_queries=$(((compatibility_total + community_probe_total) * 2))
+    # Selected-community DNS is diagnostic/advisory, not application-access proof.
+    required_total_queries=$((compatibility_total * 2))
+    if [ "$diagnostics_skipped" = true ]; then total="$required_total_queries"; fi
     community_selected="$(wc -l < "$selected_file" | tr -d ' ')"
     selected_community_json="$(jq -Rsc 'split("\n") | map(select(length > 0))' "$selected_file")"
     compatible="$(find_compatible_bootstrap "$bootstrap_json" "$host" "$id" || true)"
+    if [ -e "${BENCHMARK_ABORT_FILE:-/nonexistent}" ]; then
+        rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
+        return 75
+    fi
     if [ -z "$compatible" ]; then
         build_community_results "$successful_file" "$probes_file" "$selected_file" "$community_results_file" false
         jq -cn \
@@ -1044,8 +1263,9 @@ benchmark_main_candidate() {
             --argjson advisoryPassed "$advisory_passed" --argjson advisoryStable "$advisory_stable" --argjson advisoryTotal "$advisory_total" \
             --argjson requiredSuccessCount "$required_success_count" --argjson requiredTotalQueries "$required_total_queries" \
             --argjson primaryEligible "$primary_eligible" \
+            --argjson diagnosticsSkipped "$diagnostics_skipped" \
             --slurpfile communityResults "$community_results_file" \
-            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,primaryEligible:$primaryEligible,successCount:0,totalQueries:$totalQueries,successRate:0,requiredSuccessCount:$requiredSuccessCount,requiredTotalQueries:$requiredTotalQueries,medianMs:0,p90Ms:0,jitterMs:0,nxdomainOk:false,compatibilityPassed:0,compatibilityStable:0,compatibilityTotal:$compatibilityTotal,compatibilityScore:0,compatibilityFailures:[],compatibilityUnstable:[],advisoryPassed:$advisoryPassed,advisoryStable:$advisoryStable,advisoryTotal:$advisoryTotal,advisoryScore:0,advisoryFailures:[],advisoryUnstable:[],selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:0,communityPassed:0,communityStable:0,communityProbePassed:0,communityProbeStable:0,communityProbeTotal:$communityProbeTotal,communityScore:0,communityResults:$communityResults,universalEligible:false,reliable:false,score:-1000000,error:$error}'
+            '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,primaryEligible:$primaryEligible,successCount:0,totalQueries:$totalQueries,successRate:0,requiredSuccessCount:$requiredSuccessCount,requiredTotalQueries:$requiredTotalQueries,medianMs:0,p90Ms:0,jitterMs:0,nxdomainOk:false,compatibilityPassed:0,compatibilityStable:0,compatibilityTotal:$compatibilityTotal,compatibilityScore:0,compatibilityFailures:[],compatibilityUnstable:[],advisoryPassed:$advisoryPassed,advisoryStable:$advisoryStable,advisoryTotal:$advisoryTotal,advisoryScore:0,advisoryFailures:[],advisoryUnstable:[],selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:0,communityPassed:0,communityStable:0,communityProbePassed:0,communityProbeStable:0,communityProbeTotal:$communityProbeTotal,communityScore:0,communityResults:$communityResults,universalEligible:false,reliable:false,score:-1000000,error:$error} | .diagnosticsSkipped=$diagnosticsSkipped | .communityAdvisory=true | .warnings=([.communityResults[] | select(.tested==true and .passed!=true) | "community_dns_failed_advisory"] + [.communityResults[] | select(.tested==true and .passed==true and .stable!=true) | "community_dns_unstable_advisory"] | unique)'
         rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
         return 0
     fi
@@ -1070,17 +1290,18 @@ benchmark_main_candidate() {
     failures=0
     stop_early=0
     if is_ipv4 "$host"; then
-        run_dns_query "$protocol" "$endpoint_ip" "" "$path" example.net NOERROR >/dev/null 2>&1 || true
+        benchmark_query "$protocol" "$endpoint_ip" "" "$path" example.net NOERROR >/dev/null || { rm -f "$times" "$probes_file" "$selected_file" "$successful_file" "$community_results_file"; return 75; }
     else
-        run_dns_query "$protocol" "$endpoint_ip" "$host" "$path" example.net NOERROR >/dev/null 2>&1 || true
+        benchmark_query "$protocol" "$endpoint_ip" "$host" "$path" example.net NOERROR >/dev/null || { rm -f "$times" "$probes_file" "$selected_file" "$successful_file" "$community_results_file"; return 75; }
     fi
     for round in 1 2; do
         while IFS='|' read -r scope service domain; do
             [ -n "$domain" ] || continue
+            if [ "$diagnostics_skipped" = true ] && [ "$scope" != base ]; then continue; fi
             if is_ipv4 "$host"; then
-                output="$(run_dns_query "$protocol" "$endpoint_ip" "" "$path" "$domain" NOERROR 2> /dev/null || true)"
+                output="$(benchmark_query "$protocol" "$endpoint_ip" "" "$path" "$domain" NOERROR)" || { rm -f "$times" "$probes_file" "$selected_file" "$successful_file" "$community_results_file"; return 75; }
             else
-                output="$(run_dns_query "$protocol" "$endpoint_ip" "$host" "$path" "$domain" NOERROR 2> /dev/null || true)"
+                output="$(benchmark_query "$protocol" "$endpoint_ip" "$host" "$path" "$domain" NOERROR)" || { rm -f "$times" "$probes_file" "$selected_file" "$successful_file" "$community_results_file"; return 75; }
             fi
             if [ -n "$output" ]; then
                 printf '%s\n' "$output" >> "$times"
@@ -1088,7 +1309,7 @@ benchmark_main_candidate() {
                 success=$((success + 1))
             else
                 failures=$((failures + 1))
-                if [ "$failures" -ge 2 ] && [ "$success" -eq 0 ]; then
+                if [ "$failures" -ge 2 ] && [ "$success" -eq 0 ] && [ "$diagnostics_skipped" != true ]; then
                     stop_early=1
                     break
                 fi
@@ -1112,15 +1333,16 @@ benchmark_main_candidate() {
     advisory_counts="${advisory_counts#*|}"
     advisory_stable="${advisory_counts%%|*}"
     advisory_total="${advisory_counts#*|}"
-    required_success_count=$((compatibility_passed + compatibility_stable + community_probe_passed + community_probe_stable))
-    required_total_queries=$(((compatibility_total + community_probe_total) * 2))
+    required_success_count=$((compatibility_passed + compatibility_stable))
+    required_total_queries=$((compatibility_total * 2))
+    if [ "$diagnostics_skipped" = true ]; then total="$required_total_queries"; fi
 
     nxdomain_ok=false
     if [ "$required_success_count" -ge $((required_total_queries - 1)) ]; then
         if is_ipv4 "$host"; then
-            output="$(run_dns_query "$protocol" "$endpoint_ip" "" "$path" "podkop-dns-test.invalid" NXDOMAIN 2> /dev/null || true)"
+            output="$(benchmark_query "$protocol" "$endpoint_ip" "" "$path" "podkop-dns-test.invalid" NXDOMAIN)" || { rm -f "$times" "$probes_file" "$selected_file" "$successful_file" "$community_results_file"; return 75; }
         else
-            output="$(run_dns_query "$protocol" "$endpoint_ip" "$host" "$path" "podkop-dns-test.invalid" NXDOMAIN 2> /dev/null || true)"
+            output="$(benchmark_query "$protocol" "$endpoint_ip" "$host" "$path" "podkop-dns-test.invalid" NXDOMAIN)" || { rm -f "$times" "$probes_file" "$selected_file" "$successful_file" "$community_results_file"; return 75; }
         fi
         [ -n "$output" ] && nxdomain_ok=true
     fi
@@ -1154,7 +1376,7 @@ benchmark_main_candidate() {
     else
         advisory_score=100
     fi
-    build_community_results "$successful_file" "$probes_file" "$selected_file" "$community_results_file" true
+    build_community_results "$successful_file" "$probes_file" "$selected_file" "$community_results_file" "$performed"
     community_tested="$(jq -s 'map(select(.tested == true)) | length' "$community_results_file")"
     community_passed="$(jq -s 'map(select(.tested == true and .passed == true)) | length' "$community_results_file")"
     community_stable="$(jq -s 'map(select(.tested == true and .stable == true)) | length' "$community_results_file")"
@@ -1163,13 +1385,16 @@ benchmark_main_candidate() {
     else
         community_score=100
     fi
+    if [ "$diagnostics_skipped" = true ]; then
+        advisory_score=0; community_score=0
+        advisory_failures='[]'; advisory_unstable='[]'
+    fi
     score=$((compatibility_score * 10000 + community_score * 15000 + success_rate * 1000 - median * 30 - p90 * 12 - jitter * 15 - bootstrap_median * 5))
     reliable=false
     universal_eligible=false
     error=""
     if [ "$required_success_count" -ge $((required_total_queries - 1)) ] \
         && [ "$compatibility_passed" -eq "$compatibility_total" ] \
-        && [ "$community_probe_passed" -eq "$community_probe_total" ] \
         && [ "$nxdomain_ok" = true ]; then
         reliable=true
         if profile_is_universal "$profile" && [ "$bootstrap_universal_eligible" = true ]; then
@@ -1180,8 +1405,6 @@ benchmark_main_candidate() {
         error="nxdomain_check_failed"
     elif [ "$compatibility_passed" -lt "$compatibility_total" ]; then
         error="service_compatibility_failed"
-    elif [ "$community_probe_passed" -lt "$community_probe_total" ]; then
-        error="community_service_failed"
     else
         error="dns_queries_failed"
     fi
@@ -1207,8 +1430,9 @@ benchmark_main_candidate() {
         --argjson communityProbePassed "$community_probe_passed" --argjson communityProbeStable "$community_probe_stable" \
         --argjson communityProbeTotal "$community_probe_total" --argjson communityScore "$community_score" \
         --argjson nxdomainOk "$nxdomain_ok" --argjson primaryEligible "$primary_eligible" --argjson universalEligible "$universal_eligible" --argjson reliable "$reliable" --argjson score "$score" \
+        --argjson diagnosticsSkipped "$diagnostics_skipped" \
         --slurpfile communityResults "$community_results_file" \
-        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,primaryEligible:$primaryEligible,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapProfile:$bootstrapProfile,bootstrapSuccessRate:$bootstrapSuccessRate,bootstrapMedianMs:$bootstrapMedianMs,bootstrapP90Ms:$bootstrapP90Ms,bootstrapJitterMs:$bootstrapJitterMs,bootstrapUniversalEligible:$bootstrapUniversalEligible,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,requiredSuccessCount:$requiredSuccessCount,requiredTotalQueries:$requiredTotalQueries,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,advisoryPassed:$advisoryPassed,advisoryStable:$advisoryStable,advisoryTotal:$advisoryTotal,advisoryScore:$advisoryScore,advisoryFailures:$advisoryFailures,advisoryUnstable:$advisoryUnstable,selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:$communityTested,communityPassed:$communityPassed,communityStable:$communityStable,communityProbePassed:$communityProbePassed,communityProbeStable:$communityProbeStable,communityProbeTotal:$communityProbeTotal,communityScore:$communityScore,communityResults:$communityResults,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)}'
+        '{id:$id,provider:$provider,dnsServer:$dnsServer,profile:$profile,protocol:$protocol,primaryEligible:$primaryEligible,endpointIp:$endpointIp,bootstrapDnsServer:$bootstrapDnsServer,bootstrapProvider:$bootstrapProvider,bootstrapProfile:$bootstrapProfile,bootstrapSuccessRate:$bootstrapSuccessRate,bootstrapMedianMs:$bootstrapMedianMs,bootstrapP90Ms:$bootstrapP90Ms,bootstrapJitterMs:$bootstrapJitterMs,bootstrapUniversalEligible:$bootstrapUniversalEligible,successCount:$successCount,totalQueries:$totalQueries,successRate:$successRate,requiredSuccessCount:$requiredSuccessCount,requiredTotalQueries:$requiredTotalQueries,medianMs:$medianMs,p90Ms:$p90Ms,jitterMs:$jitterMs,nxdomainOk:$nxdomainOk,compatibilityPassed:$compatibilityPassed,compatibilityStable:$compatibilityStable,compatibilityTotal:$compatibilityTotal,compatibilityScore:$compatibilityScore,compatibilityFailures:$compatibilityFailures,compatibilityUnstable:$compatibilityUnstable,advisoryPassed:$advisoryPassed,advisoryStable:$advisoryStable,advisoryTotal:$advisoryTotal,advisoryScore:$advisoryScore,advisoryFailures:$advisoryFailures,advisoryUnstable:$advisoryUnstable,selectedCommunityServices:$selectedCommunityServices,communitySelected:$communitySelected,communityTested:$communityTested,communityPassed:$communityPassed,communityStable:$communityStable,communityProbePassed:$communityProbePassed,communityProbeStable:$communityProbeStable,communityProbeTotal:$communityProbeTotal,communityScore:$communityScore,communityResults:$communityResults,universalEligible:$universalEligible,reliable:$reliable,score:$score,error:(if $error == "" then null else $error end)} | .diagnosticsSkipped=$diagnosticsSkipped | .communityAdvisory=true | .warnings=([.communityResults[] | select(.tested==true and .passed!=true) | "community_dns_failed_advisory"] + [.communityResults[] | select(.tested==true and .passed==true and .stable!=true) | "community_dns_unstable_advisory"] | unique)'
     rm -f "$probes_file" "$selected_file" "$successful_file" "$community_results_file"
 }
 
@@ -1221,7 +1445,7 @@ normalize_benchmark_protocols() {
     protocols=""
     for candidate_protocol in $requested; do
         case "$candidate_protocol" in
-            udp|doh|dot) ;;
+            udp|tcp|doh|dot) ;;
             *) return 1 ;;
         esac
         case " $protocols " in
@@ -1236,15 +1460,35 @@ normalize_benchmark_protocols() {
 
 run_benchmark() {
     local requested_protocols="$1"
+    local requested_mode="${2:-auto}" available_memory benchmark_work_dir
+    local TMPDIR="${TMPDIR:-/tmp}"
     local protocols protocol_count scope_protocol protocols_json candidate_protocol candidate_file
-    local main_file bootstrap_file bootstrap_jsonl bootstrap_json main_jsonl final_file
+    local main_file bootstrap_file bootstrap_jsonl bootstrap_json main_jsonl final_file ranking_file
     local total completed line id provider value profile result recommendation secondary_recommendation safe_ranking primary_ranking confidence recommendation_reason current_candidate state message current_protocol current_dns current_bootstrap current_pair active_slot
 
+    case "$requested_mode" in auto|economy|full) ;; *)
+        write_status error benchmark invalid_resource_mode 100 0 0 "$$"; return 1;; esac
+    BENCHMARK_REQUESTED_MODE="$requested_mode"
+    available_memory="$(benchmark_available_memory || true)"
+    BENCHMARK_MODE="$requested_mode"
+    if [ "$requested_mode" = auto ]; then
+        BENCHMARK_MODE=full
+        if [ -z "$available_memory" ] || [ "$available_memory" -lt 98304 ]; then BENCHMARK_MODE=economy; fi
+    fi
     protocols="$(normalize_benchmark_protocols "$requested_protocols" || true)"
     if [ -z "$protocols" ]; then
         write_status "error" "benchmark" "invalid_protocol" 0 0 0 "$$"
         return 1
     fi
+    # Scope every nested mktemp (including query timing files) to this run.
+    # A POSIX shell can defer TERM while waiting for a command substitution;
+    # the guard bounds that deferral to 45s and EXIT still clears all its files.
+    benchmark_work_dir="$(mktemp -d)"
+    TMPDIR="$benchmark_work_dir"
+    export TMPDIR
+    BENCHMARK_MEMORY_FILE="$(mktemp)"
+    BENCHMARK_ABORT_FILE="$BENCHMARK_MEMORY_FILE.abort"
+    printf '%s|%s|0|0\n' "${available_memory:-null}" "${available_memory:-null}" > "$BENCHMARK_MEMORY_FILE"
     set -- $protocols
     protocol_count="$#"
     if [ "$protocol_count" -gt 1 ]; then
@@ -1261,7 +1505,9 @@ run_benchmark() {
     bootstrap_json="$(mktemp)"
     main_jsonl="$(mktemp)"
     final_file="$(mktemp)"
-    trap "rm -f '$main_file' '$candidate_file' '$bootstrap_file' '$bootstrap_jsonl' '$bootstrap_json' '$main_jsonl' '$final_file'; rm -rf '$LOCK_DIR'" EXIT INT TERM
+    ranking_file="$(mktemp)"
+    trap "rm -rf '$benchmark_work_dir' '$LOCK_DIR'" EXIT
+    trap 'write_status error benchmark benchmark_cancelled 100 0 0 "$$"; exit 130' INT TERM HUP
 
     : > "$main_file"
     for candidate_protocol in $protocols; do
@@ -1282,7 +1528,9 @@ run_benchmark() {
 
     while IFS='|' read -r id provider value profile; do
         [ -n "$id" ] || continue
-        benchmark_bootstrap_candidate "$id" "$provider" "$value" "$profile" >> "$bootstrap_jsonl"
+        if ! benchmark_bootstrap_candidate "$id" "$provider" "$value" "$profile" >> "$bootstrap_jsonl"; then
+            benchmark_resource_failure; return 1
+        fi
         completed=$((completed + 1))
         write_status "running" "benchmark" "benchmarking_bootstrap" $((completed * 100 / total)) "$completed" "$total" "$$"
     done < "$bootstrap_file"
@@ -1290,7 +1538,9 @@ run_benchmark() {
 
     while IFS='|' read -r candidate_protocol id provider value profile; do
         [ -n "$id" ] || continue
-        benchmark_main_candidate "$candidate_protocol" "$id" "$provider" "$value" "$profile" "$bootstrap_json" >> "$main_jsonl"
+        if ! benchmark_main_candidate "$candidate_protocol" "$id" "$provider" "$value" "$profile" "$bootstrap_json" >> "$main_jsonl"; then
+            benchmark_resource_failure; return 1
+        fi
         completed=$((completed + 1))
         write_status "running" "benchmark" "benchmarking_main_$candidate_protocol" $((completed * 100 / total)) "$completed" "$total" "$$"
     done < "$main_file"
@@ -1300,12 +1550,13 @@ run_benchmark() {
     current_protocol="$(printf '%s\n' "$current_pair" | cut -d '|' -f 1)"
     current_dns="$(printf '%s\n' "$current_pair" | cut -d '|' -f 2)"
     current_bootstrap="$(printf '%s\n' "$current_pair" | cut -d '|' -f 3)"
-    safe_ranking="$(jq -s '
+    jq -s '
         map(select(
             .reliable == true
             and .universalEligible == true
             and .bootstrapUniversalEligible == true
         ))
+        | map(select(.primaryEligible == true))
         | sort_by([
             (-(if .successRate < .bootstrapSuccessRate then .successRate else .bootstrapSuccessRate end)),
             (-.communityScore),
@@ -1316,10 +1567,9 @@ run_benchmark() {
             .id,
             .bootstrapDnsServer
         ])
-    ' "$main_jsonl")"
-    primary_ranking="$(printf '%s\n' "$safe_ranking" | jq 'map(select(.primaryEligible == true))')"
-    recommendation="$(printf '%s\n' "$primary_ranking" | jq -c '.[0] // null')"
-    confidence="$(printf '%s\n' "$primary_ranking" | jq '
+    ' "$main_jsonl" > "$ranking_file"
+    recommendation="$(jq -c '.[0] // null' "$ranking_file")"
+    confidence="$(jq '
         if length < 2 then 100
         else
             (.[0].score - .[1].score) as $gap
@@ -1327,10 +1577,10 @@ run_benchmark() {
             | (($gap * 100 / $noise) | floor)
             | if . < 0 then 0 elif . > 100 then 100 else . end
         end
-    ')"
+    ' "$ranking_file")"
     recommendation_reason="clear_winner"
     if [ "$confidence" -lt 35 ] && [ "$recommendation" != "null" ]; then
-        current_candidate="$(printf '%s\n' "$primary_ranking" | jq -c --arg currentProtocol "$current_protocol" --arg current "$current_dns" --arg currentBootstrap "$current_bootstrap" '
+        current_candidate="$(jq -c --arg currentProtocol "$current_protocol" --arg current "$current_dns" --arg currentBootstrap "$current_bootstrap" '
             .[0] as $best
             | (map(select(
                 .protocol == $currentProtocol
@@ -1342,7 +1592,7 @@ run_benchmark() {
             | if $currentResult != null
                 and (($best.score - $currentResult.score) <= (($best.jitterMs + $currentResult.jitterMs + 5) * 40))
               then $currentResult else null end
-        ')"
+        ' "$ranking_file")"
         if [ "$current_candidate" != "null" ]; then
             recommendation="$current_candidate"
             recommendation_reason="close_results_keep_current"
@@ -1350,7 +1600,7 @@ run_benchmark() {
             recommendation_reason="close_results"
         fi
     fi
-    secondary_recommendation="$(printf '%s\n' "$primary_ranking" | jq -c --argjson primary "$recommendation" '
+    secondary_recommendation="$(jq -c --argjson primary "$recommendation" '
         if $primary == null then null
         else
             (map(select(
@@ -1366,7 +1616,7 @@ run_benchmark() {
             ))[0])
             // null
         end
-    ')"
+    ' "$ranking_file")"
     state="success"
     message="benchmark_complete"
     if [ "$recommendation" = "null" ]; then
@@ -1383,6 +1633,7 @@ run_benchmark() {
         --slurpfile results "$main_jsonl" --slurpfile bootstrapResults "$bootstrap_json" \
         '{state:$state,action:$action,message:$message,protocol:$protocol,protocols:$testedProtocols,progress:100,completed:$completed,total:$total,pid:$pid,updatedAt:$updatedAt,methodVersion:$methodVersion,current:{protocol:$currentProtocol,dnsServer:$currentDnsServer,bootstrapDnsServer:$currentBootstrapDnsServer},recommendation:$recommendation,secondaryRecommendation:$secondaryRecommendation,recommendationConfidence:$recommendationConfidence,recommendationReason:$recommendationReason,activeSlot:$activeSlot,results:($results | sort_by(.score) | reverse),bootstrapResults:($bootstrapResults[0] // [])}' \
         > "$final_file"
+    annotate_benchmark_status "$final_file"
     save_last_benchmark "$final_file" || true
     write_final_status "$final_file"
 }
@@ -1538,9 +1789,11 @@ validate_service_compatibility() {
     community_counts="${community_counts#*|}"
     community_stable="${community_counts%%|*}"
     community_total="${community_counts#*|}"
-    total=$((base_total + community_total))
-    passed=$((base_passed + community_passed))
-    stable=$((base_stable + community_stable))
+    # Same admission policy as benchmarking: community failures must not cause
+    # a DNS-only apply rollback when mandatory baseline lookups remain healthy.
+    total="$base_total"
+    passed="$base_passed"
+    stable="$base_stable"
     success_count=$((passed + stable))
     rm -f "$probes" "$selected" "$successful"
     [ "$passed" -eq "$total" ] && [ "$success_count" -ge $((total * 2 - 1)) ]
@@ -1932,7 +2185,7 @@ start_worker() {
 }
 
 show_status() {
-    local state pid tmp backup_available
+    local state pid observed_updated_at snapshot backup_available project_stopped=false filter
 
     if [ ! -s "$STATUS_FILE" ]; then
         if [ -s "$LAST_BENCHMARK_FILE" ]; then
@@ -1943,20 +2196,28 @@ show_status() {
         fi
         return 0
     fi
-    state="$(jq -r '.state // ""' "$STATUS_FILE" 2> /dev/null || true)"
-    pid="$(jq -r '.pid // 0' "$STATUS_FILE" 2> /dev/null || echo 0)"
+    snapshot="$(jq -r '[(.state // ""), ((.pid // 0)|tostring), (.updatedAt // "")] | join("|")' "$STATUS_FILE" 2>/dev/null || true)"
+    state="${snapshot%%|*}"
+    snapshot="${snapshot#*|}"
+    pid="${snapshot%%|*}"
+    observed_updated_at="${snapshot#*|}"
     if [ "$state" = "running" ] && [ "$pid" != "0" ] && ! pid_alive "$pid"; then
-        tmp="$STATUS_FILE.tmp.$$"
-        jq '.state = "error" | .message = "worker_stopped" | .progress = 100' "$STATUS_FILE" > "$tmp" && mv "$tmp" "$STATUS_FILE"
-        rm -rf "$LOCK_DIR"
+        project_stopped=true
     fi
+    # Project stale worker state in the response only. Recheck the generation
+    # against the fresh file so a finishing worker/new run cannot be overwritten.
+    filter='if $stopped and .state=="running" and ((.pid // 0)|tostring)==$pid and (.updatedAt // "")==$updatedAt
+        then .state="error" | .message="worker_stopped" | .progress=100 | .recommendation=null | .secondaryRecommendation=null else . end
+        | .backupAvailable=$backupAvailable'
     backup_available=false
     [ -s "$PREVIOUS_FILE" ] && backup_available=true
     if [ -s "$LAST_BENCHMARK_FILE" ]; then
-        jq --argjson backupAvailable "$backup_available" --slurpfile lastBenchmark "$LAST_BENCHMARK_FILE" \
-            '.backupAvailable = $backupAvailable | .lastBenchmark = ($lastBenchmark[0] // null)' "$STATUS_FILE"
+        jq --argjson stopped "$project_stopped" --arg pid "$pid" --arg updatedAt "$observed_updated_at" \
+            --argjson backupAvailable "$backup_available" --slurpfile lastBenchmark "$LAST_BENCHMARK_FILE" \
+            "$filter | .lastBenchmark = (\$lastBenchmark[0] // null)" "$STATUS_FILE"
     else
-        jq --argjson backupAvailable "$backup_available" '.backupAvailable = $backupAvailable' "$STATUS_FILE"
+        jq --argjson stopped "$project_stopped" --arg pid "$pid" --arg updatedAt "$observed_updated_at" \
+            --argjson backupAvailable "$backup_available" "$filter" "$STATUS_FILE"
     fi
 }
 
@@ -1965,18 +2226,34 @@ show_help() {
 Usage: podkop-dns-optimizer <command>
 
 Commands:
-  benchmark_start [auto|udp|doh|dot|udp,doh|udp,dot|doh,dot]
+  benchmark_start [auto|udp|doh|dot|udp,doh|udp,dot|doh,dot] [auto|economy|full]
   apply_start <protocol> <candidate_id> <bootstrap_ipv4> <expected_dns_server> [secondary_protocol secondary_candidate_id secondary_bootstrap_ipv4 expected_secondary_dns_server]
   probe_pair <primary|secondary>
+  probe_bootstrap <udp> <bootstrap_ipv4> [primary-host]
   rollback_start
   status
   version
 EOF
 }
 
+[ "${PODKOP_DNS_OPTIMIZER_LIBRARY_ONLY:-0}" != 1 ] || return 0
+# Public desktop-client facade uses the same bounded selector and transaction.
+case "${1:-}" in
+    benchmark_start|status|apply_start|rollback_start)
+        benchmark="${PODKOP_DNS_BENCHMARK_HELPER:-/usr/bin/podkop-dns-benchmark}"
+        [ -x "$benchmark" ] || { echo '{"success":false,"error":"benchmark_helper_unavailable"}'; exit 1; }
+        case "$1" in
+            benchmark_start) exec "$benchmark" select_start;;
+            status) exec "$benchmark" legacy_status;;
+            apply_start) shift; exec "$benchmark" legacy_apply_start "$@";;
+            rollback_start) exec "$benchmark" rollback_start;;
+        esac
+        ;;
+esac
+
 case "${1:-}" in
     benchmark_start)
-        start_worker "benchmark" "${2:-auto}"
+        start_worker "benchmark" "${2:-auto}" "${3:-auto}"
         ;;
     apply_start)
         [ -n "${2:-}" ] && [ -n "${3:-}" ] && [ -n "${4:-}" ] && [ -n "${5:-}" ] || {
@@ -1991,6 +2268,10 @@ case "${1:-}" in
             *) echo '{"success":false,"error":"invalid_slot"}'; exit 1 ;;
         esac
         ;;
+    probe_bootstrap)
+        [ -n "${2:-}" ] && [ -n "${3:-}" ] || { echo '{"success":false,"error":"arguments_required"}'; exit 1; }
+        probe_bootstrap "$2" "$3" "${4:-}"
+        ;;
     rollback_start)
         start_worker "rollback"
         ;;
@@ -2004,7 +2285,7 @@ case "${1:-}" in
         action="${2:-}"
         shift 2
         case "$action" in
-            benchmark) run_benchmark "${1:-auto}" ;;
+            benchmark) run_benchmark "${1:-auto}" "${2:-auto}" ;;
             apply) run_apply "${1:-}" "${2:-}" "${3:-}" "${4:-}" "${5:-}" "${6:-}" "${7:-}" "${8:-}" ;;
             rollback) run_rollback ;;
             *) rm -rf "$LOCK_DIR"; exit 1 ;;
