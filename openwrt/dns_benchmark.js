@@ -637,7 +637,12 @@ function openBenchmark(map) {
           ? `Основная: ${lightSelection.primary.dnsServer} + ${lightSelection.primary.bootstrapDnsServer}. Резервная: ${lightSelection.secondary.dnsServer} + ${lightSelection.secondary.bootstrapDnsServer}. Проверены DNS-ответы, не приложения. Не применено.`
           : status.state==='running'?'Подбираем основную и независимую резервную пары…':'Подбор неполный: '+errorMessage(status.error || 'independent_reserve_unavailable');
       }
-      if (status.action!=='reserve_save' && Array.isArray(status.results) && Array.isArray(status.bootstrapResults)) renderResults(status);
+      // Mutation status may retain the preceding native selection's flat rows.
+      // They are not full pair measurements and must not mask apply/rollback.
+      const mutationStatus=["apply","select_apply","rollback"].includes(status.action);
+      if(mutationStatus) { recommendationNotice.textContent=""; matrixDetails.hidden=true; matrixNotice.textContent=""; }
+      const measurementStatus=["benchmark","pairs","pair_test",...RECOMMENDATION_ACTIONS].includes(status.action);
+      if (measurementStatus && Array.isArray(status.results) && Array.isArray(status.bootstrapResults)) renderResults(status);
       else if(state.running && RECOMMENDATION_ACTIONS.includes(status.action)) renderResults({...status,results:[],bootstrapResults:[],pairResults:[]});
       if(status.action==='recommend_reserve' && status.state==='done' && state.report?.reportId && !reserveLoading && readinessCheckedReport!==state.report.reportId) await readReserve();
       error.textContent="";
@@ -696,7 +701,7 @@ function openBenchmark(map) {
         if(!success && endpointContext(status.pairResult)) pairStatus.textContent += " "+endpointContext(status.pairResult);
         message.textContent="Проверка пары завершена";
       } else if (["apply","rollback"].includes(status.action) && status.state === "done") {
-        state.verified=""; message.textContent=status.action === "apply" ? "DNS-пара применена" : "Предыдущие DNS восстановлены";
+        state.verified=""; message.textContent=status.action === "apply" ? "Настройки DNS применены" : "Предыдущие DNS восстановлены";
         if (!reloadAfterCompletion) { actions(); return; }
         state.needsReload=true;
         uci.unload("podkop"); await uci.load("podkop");
