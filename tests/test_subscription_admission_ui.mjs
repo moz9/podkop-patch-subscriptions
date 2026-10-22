@@ -119,6 +119,6 @@ const sourceSummary = c.getSourceSummary({section: reasonPool,
   group: {id: 'one', enabled: true, items: reasonPool.items.filter(value => value.sourceIds.includes('one'))},
   pendingChanges: {}});
 assert.match(sourceSummary, /К применению: 2/);
-assert.match(c.getSectionCollapsedSummary(reasonPool, {}), /к применению 2/);
+assert.doesNotMatch(c.getSectionCollapsedSummary(reasonPool, {}), /предпросмотр|К применению/);
 assert.doesNotMatch(c.getToolbarMessage({}), /Select configs/);
 console.log('PASS: truthful service freshness, selection labels, admission counts and exclusion priority');

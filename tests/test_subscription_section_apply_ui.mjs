@@ -16,6 +16,7 @@ vm.runInContext('var subscriptionStatusGeneration=0;',c);
 const other={'Other:a':false,'Other:tags:include':['US']};
 const main={'Main:a':false,'Main:tags:exclude':['RU'],'Main:selection:mode':'selected','Main:services:required':['youtube'],'Main:source:s':false};
 function reset(runtimeStatus={busy:false,pending:false}) {
+  delete c.PodkopShellMethods.getSubscriptionOperationStatus;
   state={subscriptionItemsWidget:{pendingChanges:{...other,...main},data:sections,latencyByRow:{},speedByRow:{},actionStatus:'idle',runtimeStatus}};
   payload=null;outcome={success:true,data:{success:true}};reads=sections;
 }
@@ -65,6 +66,38 @@ for(const error of ['section_isolation_unavailable','shared_config_changed','iso
 reset();c.PodkopShellMethods.getSubscriptionOperationStatus=async()=>({success:true,data:{busy:false,pending:false,isolatedSection:'Main',isolatedReady:true}});
 await c.refreshSubscriptionRuntimeStatus();
 assert.equal(state.subscriptionItemsWidget.runtimeStatus.isolatedSection,'Main');assert.equal(state.subscriptionItemsWidget.runtimeStatus.isolatedReady,true,'status refresh preserves isolation readiness fields');
+// A second isolated worker may stay pending while the selected one completes.
+reset({busy:false,pending:true,pendingSections:['Main','Other'],isolatedSections:['Main','Other'],isolatedReady:true});
+await c.handleApply('Main');
+assert.deepEqual(Object.keys(payload),['Main']);
+assert.deepEqual({...state.subscriptionItemsWidget.pendingChanges},other);
+reset({busy:false,pending:true,pendingSections:['Main','Other'],isolatedSections:['Main','Other'],isolatedReady:true});
+outcome=new Error('RPC timeout');await c.handleApply('Main');
+reads=sections.map(s=>s.code==='Main'?{...s,selectionMode:'selected',excludeTags:['RU'],requiredServices:['youtube'],sources:[{id:'s',enabled:false}],items:[{id:'a',enabled:false}]}:s);
+state.subscriptionItemsWidget.runtimeStatus={busy:false,pending:true,pendingSections:['Other'],isolatedSections:['Main','Other'],isolatedReady:true};
+await c.reconcileSubscriptionApplyTimeout(state.subscriptionItemsWidget.applyVerification,0);
+assert.equal(state.subscriptionItemsWidget.status,'success','peer pending must not prevent target confirmation');
+assert.deepEqual({...state.subscriptionItemsWidget.pendingChanges},other,'timeout preserves peer drafts exactly');
+for (const runtimeStatus of [
+  {busy:true,isolatedSections:['Main','Other'],isolatedReady:true},
+  {busy:false,unknown:true,isolatedSections:['Main','Other'],isolatedReady:true},
+  {busy:false,isolatedSections:['Main','Other'],isolatedReady:false}
+]) {
+  reset(runtimeStatus);await c.handleApply('Main');assert.equal(payload,null,'unsafe status blocks scoped RPC');
+}
+reset({busy:false,pending:true,pendingSections:['Other'],isolatedSections:['Main','Other'],isolatedReady:true});
+state.subscriptionItemsWidget.pendingChanges={};await c.handleApply('Main');
+assert.equal(payload,null,'peer runtime pending must not activate a clean target');
+reset({busy:false,pending:true,pendingSections:['Main'],isolatedSections:['Main','Other'],isolatedReady:true});
+state.subscriptionItemsWidget.pendingChanges={...other};await c.handleApply();
+assert.deepEqual(Object.keys(payload||{}),['Other'],'a peer catalog update must not block or join the only user draft');
+reset({busy:false,pending:true,pendingSections:['Main'],isolatedSections:['Main','Other'],isolatedReady:true});
+state.subscriptionItemsWidget.pendingChanges={};await c.handleApply();
+assert.equal(payload,null,'ordinary Apply cannot apply a catalog without a user draft');
+const catalogButton=button({pendingSections:['Main'],isolatedSections:['Main','Other'],isolatedReady:true},'Main',{});
+assert.match(catalogButton.children,/Применить каталог Main/,'catalog application is an explicit section action');
+const allButtons=['Main','Other'].map(code=>button({pendingSections:[code],isolatedSections:['Main','Other'],isolatedReady:true},code,{}));
+assert.ok(allButtons.every(b=>b && b.attrs.disabled===undefined),'collapsed isolated sections retain their action');
 for(const error of ['section_memory_low','section_memory_unavailable']) {
   reset();outcome={success:true,data:{success:false,state:'rolled_back',error}};await c.handleApply('Main');
   assert.deepEqual({...state.subscriptionItemsWidget.pendingChanges},{...other,...main},'memory failure preserves drafts');

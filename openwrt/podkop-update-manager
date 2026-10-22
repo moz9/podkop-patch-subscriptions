@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260813-update-manager-v3"
+VERSION="20261022-update-manager-v4"
 STATE_DIR="/tmp/podkop-update-manager"
 STATUS_FILE="$STATE_DIR/status.json"
 DETAILS_FILE="$STATE_DIR/details.json"
@@ -213,6 +213,14 @@ version_supported() {
     jq -e --arg version "$version" '.supportedPodkopVersions | index($version) != null' "$manifest" >/dev/null 2>&1
 }
 
+reset_check_details() {
+    jq -cn --arg currentPodkopVersion "$(normalize_version "$(current_podkop_version)")" \
+      --arg currentPatchVersion "$(current_patch_version)" \
+      '{currentPodkopVersion:$currentPodkopVersion,currentPatchVersion:$currentPatchVersion,
+        latestPodkopVersion:"",latestPatchVersion:"",canUpdate:false,updateMode:"none",
+        podkopUpdateAvailable:false,patchUpdateAvailable:false}' > "$DETAILS_FILE"
+}
+
 perform_check() {
     local publish="${1:-1}"
     local manifest release current_podkop latest_podkop current_patch latest_patch
@@ -222,10 +230,11 @@ perform_check() {
     manifest="$STATE_DIR/manifest.json"
     release="$STATE_DIR/release.json"
     cache_buster="$(date +%s 2>/dev/null || echo 0)"
+    reset_check_details || return 1
     log_line "Checking Podkop and subscription patch updates."
 
     if ! download_file "$MANIFEST_URL?t=$cache_buster" "$manifest" ||
-        ! jq -e '.schemaVersion == 1 and (.patchVersion | type == "string" and length > 0) and (.supportedPodkopVersions | type == "array")' "$manifest" >/dev/null 2>&1; then
+        ! jq -e '.schemaVersion == 1 and (.channel // "podkop-legacy") == "podkop-legacy" and (.patchVersion | type == "string" and length > 0) and (.supportedPodkopVersions | type == "array" and length>0 and all(.[]; .=="0.7.19" or .=="0.7.20" or .=="0.7.21" or .=="0.7.22"))' "$manifest" >/dev/null 2>&1; then
         log_line "Compatibility manifest download or validation failed."
         write_status "error" "manifest_failed"
         return 1
@@ -265,8 +274,15 @@ perform_check() {
         mode="blocked"
         message="published_patch_older"
     elif [ "$podkop_update" = true ] && [ "$latest_supported" != true ]; then
-        mode="blocked"
-        message="unsupported_podkop"
+        if [ "$patch_update" = true ] && [ "$current_supported" = true ]; then
+            mode="patch"
+            can_update=true
+            podkop_update=false
+            message="updates_available"
+        else
+            mode="blocked"
+            message="unsupported_podkop"
+        fi
     elif [ "$podkop_update" = true ]; then
         mode="podkop_and_patch"
         can_update=true
@@ -333,7 +349,7 @@ perform_update() {
     force_podkop_update=0
     [ "$mode" = "podkop_and_patch" ] && force_podkop_update=1
     if ! run_with_timeout 900 env \
-        PODKOP_PATCH_UPDATE_PODKOP=1 \
+        PODKOP_PATCH_UPDATE_PODKOP="$force_podkop_update" \
         PODKOP_PATCH_FORCE_PODKOP_UPDATE="$force_podkop_update" \
         sh "$installer"; then
         log_line "Installer returned an error. Existing backup and rollback rules remain active."

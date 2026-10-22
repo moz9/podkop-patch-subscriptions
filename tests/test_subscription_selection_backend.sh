@@ -166,6 +166,27 @@ for version in 0.7.20 0.7.22; do
  [ "$(cat "$SUBSCRIPTION_CACHE_DIR/main.links")" = alpha ] || fail 'auto must still honor source and tag gates'
  set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"selected","changes":[]}]}' | jq -e '.success and .committed' >/dev/null
  [ "$choices" = "$(jq -c '.main | {selected:.subscription_selected_link_ids,excluded:.subscription_excluded_link_ids}' "$PODKOP_CONFIG")" ] || fail 'auto-to-selected did not resume saved choices'
+ # Route lists must not override the user's explicit service-filter choice.
+ # This matches the home failure: tags changed while the UI sent services: [].
+ cp "$PODKOP_CONFIG" "$work/before-implied-config"
+ cp "$SUBSCRIPTION_CACHE_DIR/main.items" "$work/before-implied-items"
+ cp "$SUBSCRIPTION_CACHE_DIR/main.links" "$work/before-implied-links"
+ . "$repo/openwrt/podkop-service-checks.sh"
+ subscription_services_snapshot_capacity() { return 0; }
+ collect_urltest_proxy_links() { return 1; }
+ subscription_services_read() {
+   jq '[.[]|{id,services:{gemini:{state:"pass"}}}]' "$SUBSCRIPTION_CACHE_DIR/main.items"
+ }
+ jq '.main.community_lists=["google_ai"] | .main.subscription_required_services=["gemini"]' "$PODKOP_CONFIG" > "$PODKOP_CONFIG.next"; mv "$PODKOP_CONFIG.next" "$PODKOP_CONFIG"
+ payload='{"sections":[{"section":"main","includeTags":["US*"],"requiredServices":[],"changes":[],"sources":[]}]}'
+ result="$(set_subscription_sections_enabled "$payload" || true)"
+ printf '%s' "$result" | jq -e '.success and .committed and .state=="success"' >/dev/null || fail 'empty service draft with Google AI caused committed_config_mismatch'
+ jq -e '(.main.subscription_required_services//[])==[] and .main.subscription_include_tags==["US*"] and .main.community_lists==["google_ai"]' "$PODKOP_CONFIG" >/dev/null || fail 'user service choice, selected tags or route lists were lost'
+ [ "$peer_before" = "$(jq -c '.peer' "$PODKOP_CONFIG")" ] || fail 'normalized services changed peer config'
+ [ "$(cat "$SUBSCRIPTION_CACHE_DIR/main.links")" = "$(printf 'beta\ndelta')" ] || fail 'normalized service transaction did not activate selected tags'
+ cp "$work/before-implied-config" "$PODKOP_CONFIG"
+ cp "$work/before-implied-items" "$SUBSCRIPTION_CACHE_DIR/main.items"
+ cp "$work/before-implied-links" "$SUBSCRIPTION_CACHE_DIR/main.links"
  rm -f "$work/commits" "$work/reloads"
 done
 # Required-service storage failure exercises the full real transaction plus

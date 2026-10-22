@@ -1721,6 +1721,7 @@ subscription_sources_prepare() {
         old_required="$(subscription_required_services_json "$section")" || return 1
         required="$(printf '%s' "$changes" | jq -c --argjson current "$old_required" '.requiredServices // $current')" || return 1
         subscription_services_validate "$required" || return 1
+        required="$(subscription_required_services_json "$section" "$required")" || return 1
         if [ "$required" != '[]' ] && { ! command -v subscription_services_snapshot_capacity >/dev/null 2>&1 || ! subscription_services_snapshot_capacity; }; then
             SUBSCRIPTION_SOURCES_ERROR=service_snapshot_storage_unavailable
             return 1
@@ -2583,7 +2584,7 @@ set_subscription_sections_enabled() {
     SUBSCRIPTION_APPLY_V2_STAGED=0
     SUBSCRIPTION_APPLY_V2_CHANGED=0
     PODKOP_SECTION_ERROR=""
-    PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=0
+    PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=1
     if [ -z "$SUBSCRIPTION_APPLY_V2_TMP" ] || [ ! -d "$SUBSCRIPTION_APPLY_V2_TMP" ]; then
         subscription_apply_v2_print_result false error prepare temporary_directory_failed false false 0 false
         subscription_apply_v2_cleanup
@@ -2853,6 +2854,7 @@ set_subscription_sections_enabled() {
         fi
     done < "$validated_sections_file"
 
+    PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=0
     if ! subscription_apply_v2_reload; then
         subscription_apply_v2_fail reload "${PODKOP_SECTION_ERROR:-reload_failed}" true
         return $?
@@ -3503,20 +3505,19 @@ subscription_services_validate() {
 }
 
 subscription_required_services_json() {
-    local values lists raw
+    local values raw
     if [ -n "${PODKOP_DNS_COMMITTED_FILE:-}" ]; then
         [ -r "$PODKOP_DNS_COMMITTED_FILE" ] && [ ! -L "$PODKOP_DNS_COMMITTED_FILE" ] || return 1
         raw="$(uci -q get "/proc/self/fd/3.$1.subscription_required_services" 3< "$PODKOP_DNS_COMMITTED_FILE" 2>/dev/null || true)"
         values="$(printf '%s\n' "$raw" | jq -Rc 'split(" ")|map(select(length>0))')" || return 1
-        raw="$(uci -q get "/proc/self/fd/3.$1.community_lists" 3< "$PODKOP_DNS_COMMITTED_FILE" 2>/dev/null || true)"
-        lists="$(printf '%s\n' "$raw" | jq -Rc 'split(" ")|map(select(length>0))')" || return 1
     else
         values="$(subscription_tags_json "$1" subscription_required_services)" || return 1
-        lists="$(subscription_tags_json "$1" community_lists)" || return 1
     fi
+    # Only explicit user choices gate nodes. Route lists never enable filters.
+    # Apply proposals and committed DNS snapshots use the same representation.
+    [ "$#" -lt 2 ] || values="$2"
     subscription_services_validate "$values" || return 1
-    # Exact known lists only; generic lists never imply geo/application tests.
-    printf '%s' "$values" | jq -c --argjson lists "$lists" '. + (if ($lists|index("google_ai"))!=null then ["gemini"] else [] end) | unique'
+    printf '%s' "$values" | jq -c 'unique'
 }
 
 subscription_services_context() {

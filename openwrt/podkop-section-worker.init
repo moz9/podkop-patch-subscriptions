@@ -1,0 +1,46 @@
+#!/bin/sh /etc/rc.common
+# shellcheck disable=SC2034
+START=98
+STOP=10
+USE_PROCD=1
+
+podkop_worker_single_mode() {
+    local root="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
+    [ "$(cat "$root/runtime-mode" 2>/dev/null)" = single ] ||
+        jq -e '.mode=="single"' "$root/metadata.json" >/dev/null 2>&1
+}
+
+start_service() {
+    podkop_worker_single_mode && return 0
+    local section enabled root port api available sing_box
+    root="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
+    sing_box="${PODKOP_SECTION_SING_BOX:-/usr/bin/sing-box}"
+    enabled="$(uci -q get podkop.settings.subscription_isolated_section)"
+    [ -n "$enabled" ] || return 0
+    section="$(jq -er '.section' "$root/metadata.json" 2>/dev/null)" || return 1
+    [ "$section" = "$enabled" ] || return 1
+    port="$(jq -er '.port' "$root/metadata.json" 2>/dev/null)" || return 1
+    api="$(jq -er '.api_port' "$root/metadata.json" 2>/dev/null)" || return 1
+    [ "$port" = 19160 ] && [ "$api" = 19163 ] || return 1
+    # No LAN listener, transparent inbound, or shared cache may enter this service.
+    jq -e --argjson port "$port" --arg api "127.0.0.1:$api" '
+        .inbounds==[{type:"socks",tag:"section-in",listen:"127.0.0.1",listen_port:$port}] and
+        .experimental.clash_api.external_controller==$api and
+        (.experimental|has("cache_file")|not) and
+        .route.auto_detect_interface==true and (.route|has("rule_set")|not)
+    ' "$root/worker.json" >/dev/null 2>&1 || return 1
+    available="$(awk '/^MemAvailable:/ {print $2; exit}' /proc/meminfo)"
+    case "$available" in ''|*[!0-9]*) return 1;; esac
+    [ "$available" -ge 28672 ] || return 1
+    "$sing_box" check -c "$root/worker.json" >/dev/null 2>&1 || return 1
+    procd_open_instance worker
+    procd_set_param command "$sing_box" run -c "$root/worker.json"
+    # Trade extra GC CPU for lower transient heap overhead in main only.
+    [ "$section" != main ] || procd_set_param env GOGC=25
+    procd_set_param respawn 3600 5 5
+    procd_set_param stdout 0
+    procd_set_param stderr 0
+    procd_close_instance
+}
+
+# Intentionally no podkop reload trigger: partial application is worker-only.

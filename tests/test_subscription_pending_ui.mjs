@@ -55,15 +55,15 @@ assert.equal(c.getTagFilterPreview({code:'main',items:[{id:'a',name:'🇷🇺 М
 assert.equal(c.getStatusLabel({item:{supported:true},effectiveEnabled:true,tagFiltered:true,pending:false}),'Исключён фильтром тегов');
 const summarySection={code:'main',displayName:'Основная',selectionMode:'all',includeTags:[],excludeTags:[],sources:[{id:'s',sourceIndex:1,enabled:true}],items:[{id:'a',name:'🇷🇺 Москва 1',sourceIds:['s'],supported:true,enabled:true},{id:'b',name:'US West',sourceIds:['s'],supported:true,enabled:true},{id:'c',name:'🇷🇺 Москва 2',sourceIds:['s'],supported:true,enabled:false}]};
 const summaryDraft={'main:tags:include':['🇷🇺 Москва *']};
-assert.match(c.getSectionCollapsedSummary(summarySection,summaryDraft),/3 конфигов · к применению 1 · фильтр тегов/);
+assert.match(c.getSectionCollapsedSummary(summarySection,summaryDraft),/3 конфигов · фильтр тегов/);
 assert.match(c.getSectionCollapsedSummary({...summarySection,selectionMode:'selected'},summaryDraft),/только выбранные · фильтр тегов/);
 const summaryGroup={id:'s',sourceIndex:1,enabled:true,items:summarySection.items};
 assert.match(c.getSourceSummary({section:summarySection,group:summaryGroup,pendingChanges:summaryDraft}),/Выбрано: 2\/3 \| К применению: 1/);
 assert.match(c.getSourceSummary({section:summarySection,group:summaryGroup,pendingChanges:{...summaryDraft,'main:source:s':false}}),/Выбрано: 2\/3 \| К применению: 0 \| Выключена/);
 const switchingSection={...summarySection,selectionMode:'selected',items:[{...summarySection.items[0],enabled:true},{...summarySection.items[1],enabled:false}]};
 const switchingDraft={'main:selection:mode':false};
-assert.match(c.getSectionCollapsedSummary(switchingSection,switchingDraft),/по прежнему режиму 1 · после смены режима — после применения/);
-assert.match(c.getSourceSummary({section:switchingSection,group:{...summaryGroup,items:switchingSection.items},pendingChanges:switchingDraft}),/Выбрано сейчас: 1\/2 \| По прежнему режиму: 1 \| После смены режима — после применения/);
+assert.match(c.getSectionCollapsedSummary(switchingSection,switchingDraft),/после смены режима — после применения/);
+assert.match(c.getSourceSummary({section:switchingSection,group:{...summaryGroup,items:switchingSection.items},pendingChanges:switchingDraft}),/Выбрано в сохранённых настройках: 1\/2 \| По сохранённому режиму: 1 \| После смены режима — после применения/);
 const sourceRender=js.match(/function renderSourceGroup\([\s\S]*?\n}(?=\r?\n)/);
 vm.runInContext(sourceRender[0],c);
 c.E=(tag,attrs,children)=>({tag,attrs,children});
@@ -84,10 +84,38 @@ for (const runtimeStatus of [{busy:true},{unknown:true}]) {
  assert.equal(state.subscriptionItemsWidget.pendingChanges,draft);
 }
 assert.equal(c.subscriptionStateLabel({runtimeStatus:{busy:true}})[1],'Podkop занят');
-assert.equal(c.subscriptionStateLabel({runtimeStatus:{pending:true}})[1],'Нужно применить');
+assert.equal(c.subscriptionStateLabel({runtimeStatus:{pending:true}})[1],'Ваших изменений нет');
+assert.equal(c.subscriptionStateLabel({pendingCount:1,runtimeStatus:{pending:true}})[1],'Ваши изменения: 1','catalog pending must not hide the user draft');
 assert.equal(c.subscriptionStateLabel({})[1],'Готово');
 assert.match(c.getToolbarMessage({runtimeStatus:{busy:true}}),/Podkop занят.*дождитесь/);
-assert.match(c.getToolbarMessage({runtimeStatus:{pending:true}}),/Применить.*перерыв соединений/);
+assert.match(c.getToolbarMessage({runtimeStatus:{pending:true}}),/Нет несохранённых изменений/);
+assert.doesNotMatch(c.getToolbarMessage({runtimeStatus:{pending:true}}),/Нажмите.*Применить/,'catalog alone must not request ordinary Apply');
+assert.match(c.getToolbarMessage({pendingCount:1,runtimeStatus:{pending:true}}),/Unsaved changes.*1/);
+for(const runtimeStatus of [{pending:false},{pending:false,isolatedSections:['main','GEOBLOCK']}]) {
+ const cleanMessage=c.getToolbarMessage({pendingCount:0,runtimeStatus});
+ assert.match(cleanMessage,/Нет несохранённых изменений/,'a clean reload must state that nothing needs saving');
+ assert.doesNotMatch(cleanMessage,/Примените|нажмите.*Применить/i,'clean state must not request application');
+}
+for(const name of ['renderSubscriptionState','renderToolbar']) {
+ const match=js.match(new RegExp(`function ${name}\\([\\s\\S]*?\\n}(?=\\r?\\n)`));
+ assert.ok(match,name);vm.runInContext(match[0],c);
+}
+c.getToolbarClass=()=>'';
+c.renderButton=options=>({tag:'button',attrs:options,children:options.text});
+for(const name of ['renderRotateCcwIcon24','renderSearchIcon24','renderSquareChartGanttIcon24','renderCircleStopIcon24']) c[name]=()=>null;
+const toolbarOptions={loading:false,failed:false,applying:false,status:'idle',actionStatus:'idle',pendingCount:0,runtimeStatus:{busy:false,pending:true,pendingSections:['main']}};
+const toolbar=c.renderToolbar(toolbarOptions);
+assert.ok(!c.renderToolbar({...toolbarOptions,runtimeStatus:{busy:false,pending:false}}).children.includes(null),'an absent catalog notice must not render a literal null');
+const catalogNotice=toolbar.children.find(node=>node?.attrs?.class==='pdk_subscriptions-page__catalog-status');
+assert.ok(catalogNotice,'catalog status must be rendered separately');
+assert.match(catalogNotice.children,/main/);
+assert.match(catalogNotice.children,/не меняет рабочие наборы/);
+const actions=toolbar.children.find(node=>node?.attrs?.class==='pdk_subscriptions-page__toolbar-actions').children;
+assert.equal(actions.find(button=>button.children==='Apply').attrs.disabled,true,'catalog pending alone must not enable ordinary Apply');
+assert.equal(actions.find(button=>button.children==='Reset').attrs.disabled,true,'catalog is not a resettable user draft');
+const dirtyToolbar=c.renderToolbar({...toolbarOptions,pendingCount:1});
+assert.ok(dirtyToolbar.children.find(node=>node?.attrs?.class==='pdk_subscriptions-page__catalog-status'),'catalog notice survives a user draft');
+assert.equal(dirtyToolbar.children.find(node=>node?.attrs?.class==='pdk_subscriptions-page__toolbar-actions').children.find(button=>button.children==='Apply').attrs.disabled,false,'catalog does not block ordinary draft Apply');
 assert.deepEqual({...c.rebaseSubscriptionDraft({'main:a':false,'main:b':false},[{code:'main',items:[{id:'a',enabled:false}]}])},{'main:b':false});
 let finish, calls=0;
 c.PodkopShellMethods.setSubscriptionSectionsEnabled=()=>{calls++;return new Promise(resolve=>finish=resolve)};

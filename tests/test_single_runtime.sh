@@ -242,6 +242,7 @@ jq -e --arg sha "$new_snapshot_hash" --slurpfile old before-snapshot.json '.conf
 [ "$(cat root/runtime-mode)" = single ] || fail 'mode not persisted'
 cmp source.json root/logical.json && cmp source.json active.json || fail 'migration changed graph'
 sh "$helper" status | jq -e '.ready and .mode=="single" and (.sections|length)==2' >/dev/null || fail 'single status'
+sh "$helper" status | jq -e 'all(.sections[];.activeNodeCount==1)' >/dev/null || fail 'working pool counts from actual ready process graph'
 echo 'PASS: admission before worker stop; unsplit migration and owned readiness'
 oldpid="$(cat daemon.pid)"
 jq '(.outbounds[]|select(.tag=="main-1-out")).password="new-private"' source.json > changed.json

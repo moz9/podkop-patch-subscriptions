@@ -339,6 +339,19 @@ if result="$(set_subscription_sections_enabled "$payload")"; then exit 1; fi
 [ "$(cat "$tmp/reload-count")" -eq "$((before + 2))" ] || {
     printf '%s\n' 'unproven unchanged flag suppressed the required runtime rollback' >&2; exit 1;
 }
+# A committed UCI verification failure happens before activation. Regenerating
+# the worker during rollback can silently pick newer cached nodes and stale the
+# admitted snapshot, even though no new pool was ever authorized.
+before="$(cat "$tmp/reload-count")"
+config_before="$(sha256sum "$PODKOP_CONFIG")"
+subscription_tags_verify() { return 1; }
+if result="$(set_subscription_sections_enabled "$payload")"; then exit 1; fi
+[ "$(printf '%s' "$result" | jq -r '.error')" = committed_config_mismatch ]
+[ "$(printf '%s' "$result" | jq -r '.rolledBack')" = true ]
+[ "$(cat "$tmp/reload-count")" -eq "$before" ] || {
+    printf '%s\n' 'preactivation verification rollback rebuilt the untouched runtime' >&2; exit 1;
+}
+[ "$config_before" = "$(sha256sum "$PODKOP_CONFIG")" ]
 HARNESS_EOF
 chmod +x "$tmp/harness.sh"
 

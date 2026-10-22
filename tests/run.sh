@@ -2,6 +2,9 @@
 set -eu
 
 test_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+sh "$test_dir/test_update_channel_isolation.sh"
+sh "$test_dir/test_subscription_runtime_counts.sh"
+node "$test_dir/test_subscription_composition_ui.mjs"
 sh "$test_dir/test_config_change_apply_initd.sh"
 sh "$test_dir/test_engine_config_change_trigger.sh"
 sh "$test_dir/test_engine_trigger_full_install.sh"

@@ -29,7 +29,7 @@ SECTION_WORKER_INIT_FILE="podkop-section-worker.init"
 SECTION_HOOKS_FILE="podkop-section-hooks.sh"
 SECTION_UPGRADE_FILE="podkop-section-upgrade.sh"
 SECTION_UPGRADE_PATCH_FILE="podkop-section-runtime-upgrade.patch"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261021-stability-v1"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261022-legacy-v33"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -57,14 +57,14 @@ DNS_FAILOVER_INIT_FILE="podkop-dns-failover.init"
 DNS_FAILOVER_VERSION="20261011-dns-failover-v4"
 DNS_FAILOVER_UPGRADE_FILE="podkop-dns-failover-upgrade.sh"
 UPDATE_MANAGER_FILE="podkop-update-manager"
-UPDATE_MANAGER_VERSION="20260813-update-manager-v3"
+UPDATE_MANAGER_VERSION="20261022-update-manager-v4"
 UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
 RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261021_stability_v1"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261022_legacy_v33"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -77,6 +77,14 @@ PODKOP_RUNTIME_BIN="${PODKOP_PATCH_PODKOP_RUNTIME_BIN:-/usr/bin/podkop}"
 DNS_FAILOVER_INIT_SCRIPT="${PODKOP_PATCH_DNS_FAILOVER_INIT_SCRIPT:-/etc/init.d/podkop-dns-failover}"
 
 RUNTIME_FILES="
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/main.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/podkop.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/section.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/settings.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/dns_benchmark.js
 etc/init.d/sing-box
 usr/bin/podkop
 etc/init.d/podkop
