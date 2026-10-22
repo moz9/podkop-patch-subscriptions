@@ -61,7 +61,7 @@ SECTION_WORKER_INIT_FILE="podkop-section-worker.init"
 SECTION_HOOKS_FILE="podkop-section-hooks.sh"
 SECTION_UPGRADE_FILE="podkop-section-upgrade.sh"
 SECTION_UPGRADE_PATCH_FILE="podkop-section-runtime-upgrade.patch"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261022-legacy-v33"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261022-legacy-v34"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -96,7 +96,7 @@ RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
 RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261022_legacy_v33"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261022_legacy_v34"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -109,14 +109,14 @@ PODKOP_RUNTIME_BIN="${PODKOP_PATCH_PODKOP_RUNTIME_BIN:-/usr/bin/podkop}"
 DNS_FAILOVER_INIT_SCRIPT="${PODKOP_PATCH_DNS_FAILOVER_INIT_SCRIPT:-/etc/init.d/podkop-dns-failover}"
 
 RUNTIME_FILES="
-www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/main.js
-www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/podkop.js
-www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/section.js
-www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/settings.js
-www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261022_legacy_v33/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v34/main.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v34/podkop.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v34/section.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v34/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v34/settings.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v34/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v34/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261022_legacy_v34/dns_benchmark.js
 etc/init.d/sing-box
 usr/bin/podkop
 etc/init.d/podkop
@@ -753,6 +753,7 @@ backup_runtime() {
 		fail "Podkop package generation changed while the patch backup was being created"
 	}
 	capture_patch_service_state
+	capture_live_patch_runtime
 	mv "$rollback_tmp" "$rollback_dir" || {
 		rm -rf "$rollback_tmp"
 		fail "failed to finalize patch rollback backup"
@@ -852,6 +853,43 @@ capture_patch_service_state() {
 	esac
 }
 
+patch_runtime_fingerprint() (
+	local pid stat start rel
+	pid="$(pidof sing-box)" || exit 1
+	case "$pid" in ''|*[!0-9]*) exit 1;; esac
+	stat="$(cat "/proc/$pid/stat")" || exit 1
+	stat="${stat##*) }"
+	set -- $stat
+	case "$1" in R|S) ;; *) exit 1;; esac
+	shift 19; start="$1"
+	tr '\000' '\n' < "/proc/$pid/cmdline" | grep -Fxq /etc/sing-box/config.json || exit 1
+	[ "$(uci -q get podkop.settings.config_path)" = /etc/sing-box/config.json ] || exit 1
+	[ -s /etc/sing-box/config.json ] || exit 1
+	printf '%s %s\n' "$pid" "$start"
+	for rel in etc/config/podkop etc/config/dhcp etc/config/network etc/config/firewall \
+		etc/sing-box/config.json etc/podkop/section-runtime/logical.json \
+		etc/podkop/section-runtime/metadata.json etc/podkop/section-runtime/context.sha256 \
+		etc/podkop/subscriptions/service-runtime/snapshot.json; do
+		[ ! -L "/$rel" ] || exit 1
+		if [ -e "/$rel" ]; then sha256sum "/$rel" || exit 1
+		else printf 'absent %s\n' "$rel"; fi
+	done
+)
+
+capture_live_patch_runtime() {
+	live_patch_runtime=""
+	# Existing native engine instances read their new shell helpers on the next
+	# action. A patch-only file refresh does not require a traffic restart.
+	[ "$PODKOP_PATCH_UPDATE_PODKOP" = 0 ] && has_subscription_backend &&
+		[ "$(query_service_running_state sing-box)" = running ] || return 0
+	live_patch_runtime="$(patch_runtime_fingerprint)" || fail "cannot safely fingerprint the running engine before patch changes"
+}
+
+verify_live_patch_runtime() {
+	[ -n "${live_patch_runtime:-}" ] &&
+		[ "$(patch_runtime_fingerprint)" = "$live_patch_runtime" ]
+}
+
 restart_podkop_after_restore() {
 	[ -x "$PODKOP_INIT_SCRIPT" ] || return 1
 	[ -x "$PODKOP_RUNTIME_BIN" ] || return 1
@@ -863,7 +901,11 @@ restore_patch_service_state() {
 	if [ "${memdoc_restart_on_restore:-0}" = 1 ] && [ -x /etc/init.d/memdoc ]; then
 		/etc/init.d/memdoc restart >/dev/null 2>&1 || service_restore_ok=0
 	fi
-	restart_podkop_after_restore || service_restore_ok=0
+	if [ -n "${live_patch_runtime:-}" ] && [ "${runtime_activation_started:-0}" = 0 ]; then
+		verify_live_patch_runtime || service_restore_ok=0
+	else
+		restart_podkop_after_restore || service_restore_ok=0
+	fi
 
 	case "${dns_failover_service_state:-unknown}" in
 	stopped)
@@ -1817,6 +1859,8 @@ restore_on_fail=0
 restore_done=0
 transaction_phase="preflight"
 light_reload=0
+live_patch_runtime=""
+runtime_activation_started=0
 installer_mutation_lock_owned=0
 trap 'installer_exit_handler "$?"' EXIT
 trap 'installer_signal_handler 130' INT
@@ -1995,6 +2039,7 @@ if ! sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop | grep 
     ! grep -Fqx '# subscription_gemini_region_v2' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_probe_context_v2' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_service_snapshot_v1 end' /usr/bin/podkop ||
+    ! grep -Fqx 'subscription_services_snapshot_unfiltered() {' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_source_ruleset_reuse_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_service_filter_v1' /usr/bin/podkop ||
     ! sed -n '/^set_subscription_links_enabled() {/,/^}/p' /usr/bin/podkop | grep -q 'set_subscription_sections_enabled' ||
@@ -2211,7 +2256,17 @@ fi
 rm -f /tmp/luci-indexcache /tmp/luci-indexcache.*.json
 rm -rf /tmp/luci-modulecache/* 2>/dev/null || true
 
-if [ -x /etc/init.d/podkop ]; then
+if command -v sing-box >/dev/null 2>&1 && [ -f /etc/sing-box/config.json ]; then
+	if ! sing-box check -c /etc/sing-box/config.json; then
+		abort_with_restore "sing-box config check failed before activation"
+	fi
+fi
+
+if [ -n "$live_patch_runtime" ]; then
+	verify_live_patch_runtime || abort_with_restore "live runtime changed during patch-only update"
+	log "Patch files updated; preserving the running sing-box, DNS and active pools."
+elif [ -x /etc/init.d/podkop ]; then
+	runtime_activation_started=1
 	if [ "$light_reload" -eq 1 ] && podkop_dnsmasq_configured; then
 		reload_command="PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload"
 	else
@@ -2223,14 +2278,10 @@ if [ -x /etc/init.d/podkop ]; then
 	fi
 fi
 
-if command -v sing-box >/dev/null 2>&1 && [ -f /etc/sing-box/config.json ]; then
-	if ! sing-box check -c /etc/sing-box/config.json; then
-		abort_with_restore "sing-box config check failed"
-	fi
+if [ -z "$live_patch_runtime" ]; then
+	/etc/init.d/podkop-dns-failover enable >/dev/null 2>&1 || abort_with_restore "failed to enable DNS failover service"
+	/etc/init.d/podkop-dns-failover restart >/dev/null 2>&1 || abort_with_restore "failed to restart DNS failover service"
 fi
-
-/etc/init.d/podkop-dns-failover enable >/dev/null 2>&1 || abort_with_restore "failed to enable DNS failover service"
-/etc/init.d/podkop-dns-failover restart >/dev/null 2>&1 || abort_with_restore "failed to restart DNS failover service"
 
 /etc/init.d/rpcd restart >/dev/null 2>&1 || true
 /etc/init.d/uhttpd restart >/dev/null 2>&1 || true

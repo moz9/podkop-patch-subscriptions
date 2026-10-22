@@ -265,6 +265,7 @@ if grep -Fqx '# subscription_choices_and_busy_v1' "$target" &&
     grep -Fq '# single_runtime_status_v1' "$target" &&
     grep -Fqx 'subscription_config_apply() (' "$target" &&
     source_capability_current 'subscription_pending_sections_json() {' &&
+    source_capability_current 'subscription_services_snapshot_unfiltered() {' &&
     source_capability_current 'subscription_pending_mark() {' &&
     source_capability_current 'subscription_pending_clear() {' &&
     source_capability_current '    # subscription_apply_v2_native_intent_v1' &&
