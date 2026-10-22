@@ -55,16 +55,16 @@ main() {
     case "$route" in
       legacy)
         # Keep the installed supported base; do not chase unsupported upstream latest.
-        export PODKOP_PATCH_VERSION=499a960eff211786909fbe1f7bb896d35f8d9069
+        export PODKOP_PATCH_VERSION=ded4fcf7b162893572fd3d8eba17e6df4dc63e25
         export PODKOP_PATCH_RAW_BASE=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PODKOP_PATCH_VERSION/openwrt
         export PODKOP_PATCH_UPDATE_PODKOP=0 PODKOP_PATCH_FORCE_PODKOP_UPDATE=0
-        download_run "$PODKOP_PATCH_VERSION" i 65714934edaa85637b7da212210d588ac3db3c21b3be9bf82d5f2f6c662c0e78
+        download_run "$PODKOP_PATCH_VERSION" i 49fa02b3e98610dc7b40bf46b9c45671fb3aafb2b986c090d43408e1c97c5203
         ;;
       pe023)
-        export PODKOP_PATCH_VERSION=2f2de39e98d0697a71b242e2fdb3161275d4cd1f
+        export PODKOP_PATCH_VERSION=0c5abc7f9cdc553525362d13eaeec11738d0838a
         export PODKOP_PATCH_RAW_BASE=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PODKOP_PATCH_VERSION/openwrt
         export PODKOP_PATCH_UPDATE_PODKOP=0 PODKOP_PATCH_FORCE_PODKOP_UPDATE=0
-        download_run "$PODKOP_PATCH_VERSION" i 08a9186f0bb617cf144ebba9d53670d5dab3b159cc383d65deb54b21b06b3e6b
+        download_run "$PODKOP_PATCH_VERSION" i 65276328ca080a2313271034710a7806a7e555f4dfd9c9b2fd2cf2b434fa3a9c
         ;;
       migrate)
         printf 'Selected: stock Podkop 0.7.24 -> unofficial PE, preserving configuration.\n'
