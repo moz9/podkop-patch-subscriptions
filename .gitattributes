@@ -12,6 +12,7 @@ openwrt/podkop-dns-failover text eol=lf
 openwrt/podkop-dns-optimizer text eol=lf
 openwrt/podkop-dns-benchmark text eol=lf
 openwrt/podkop-update-manager text eol=lf
+openwrt/podkop-* text eol=lf
 openwrt/runtime-*/usr/bin/podkop text eol=lf
 
 # The source patch series is consumed by git am and must remain byte-stable.

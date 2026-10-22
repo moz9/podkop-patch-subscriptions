@@ -5,7 +5,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 fail() { echo "FAIL: $*" >&2; exit 1; }
 set -- "$repo"/openwrt/runtime-*/usr/bin/podkop
-if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+if [ "$(jq -r 'if .routerdeskPatch.mode == "files-only" then "prepared" else (.releaseStatus // "released") end' "$repo/openwrt/update-manifest.json")" = prepared ]; then
     jq -e '.supportedPodkopVersions==["0.7.24"]' "$repo/openwrt/update-manifest.json" >/dev/null
     set -- "$repo/openwrt/runtime-0.7.24/usr/bin/podkop"
 fi

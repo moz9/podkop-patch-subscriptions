@@ -7,7 +7,7 @@ trap 'rm -rf "$work"' EXIT INT TERM
 source_action_runtime="$repo/openwrt/runtime-0.7.23/usr/bin/podkop"
 [ -f "$source_action_runtime" ] || source_action_runtime="$repo/openwrt/runtime-0.7.20/usr/bin/podkop"
 source_action_functions='refresh_subscription_cache subscription_update_section_handler subscription_update subscription_update_json'
-if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+if [ "$(jq -r 'if .routerdeskPatch.mode == "files-only" then "prepared" else (.releaseStatus // "released") end' "$repo/openwrt/update-manifest.json")" = prepared ]; then
     source_action_runtime="$repo/openwrt/runtime-0.7.24/usr/bin/podkop"
     source_action_functions="$source_action_functions subscription_pending_sections_json subscription_pending_mark"
 fi
@@ -63,7 +63,7 @@ printf '%s\n' shared other > "$work/main.links"
 printf '[]\n' > "$work/main.skipped"
 printf '{"%s":"download_failed"}\n' "$two" > "$work/main.items.refresh-errors"
 subscription_update_json main "$one" | jq -e '.success' >/dev/null
-if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+if [ "$(jq -r 'if .routerdeskPatch.mode == "files-only" then "prepared" else (.releaseStatus // "released") end' "$repo/openwrt/update-manifest.json")" = prepared ]; then
     # This source is disabled: metadata changes do not change the effective links.
     [ ! -f "$work/pending" ] || { echo 'FAIL: disabled source with unchanged active links marked activation pending'; exit 1; }
 fi

@@ -2,6 +2,8 @@
 set -eu
 
 test_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+sh "$test_dir/test_subscription_apply_fallback.sh"
+sh "$test_dir/test_update_channel_isolation.sh"
 sh "$test_dir/test_subscription_runtime_counts.sh"
 node "$test_dir/test_subscription_composition_ui.mjs"
 sh "$test_dir/test_config_change_apply_initd.sh"
@@ -41,7 +43,7 @@ sh "$test_dir/test_memdoc_compatibility.sh"
 sh "$test_dir/test_memdoc_delivery.sh"
 
 # Prepared releases have a different package boundary: migrations stay disabled.
-if [ "$(jq -r '.releaseStatus // "released"' "$test_dir/../openwrt/update-manifest.json")" = prepared ]; then
+if [ "$(jq -r 'if .routerdeskPatch.mode == "files-only" then "prepared" else (.releaseStatus // "released") end' "$test_dir/../openwrt/update-manifest.json")" = prepared ]; then
     exec sh "$test_dir/run-0724-preparation.sh"
 fi
 

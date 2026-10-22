@@ -8,7 +8,7 @@ fail() { echo "FAIL: $*" >&2; exit 1; }
 . "$repo/openwrt/podkop-subscription-sources.sh"
 . "$repo/openwrt/podkop-service-checks.sh"
 . "$repo/openwrt/podkop-subscription-probe.sh"
-if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+if [ "$(jq -r 'if .routerdeskPatch.mode == "files-only" then "prepared" else (.releaseStatus // "released") end' "$repo/openwrt/update-manifest.json")" = prepared ]; then
     # Current helpers call the real section-aware pending API outside their block.
     for pending_function in subscription_pending_sections_json subscription_pending_mark; do
         sed -n "/^$pending_function() {$/,/^}$/p" "$repo/openwrt/runtime-0.7.24/usr/bin/podkop" >> "$tmp/pending-functions"

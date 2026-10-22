@@ -4,7 +4,7 @@ repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 . "$repo/openwrt/podkop-subscription-sources.sh"
-if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+if [ "$(jq -r 'if .routerdeskPatch.mode == "files-only" then "prepared" else (.releaseStatus // "released") end' "$repo/openwrt/update-manifest.json")" = prepared ]; then
     for pending_function in subscription_pending_sections_json subscription_pending_mark subscription_pending_clear; do
         sed -n "/^$pending_function() {$/,/^}$/p" "$repo/openwrt/runtime-0.7.24/usr/bin/podkop" >> "$work/pending-functions"
     done
@@ -45,7 +45,7 @@ subscription_source_policy '[]' '[]' "$work/country.items" all '[]' '["*🇫🇮
 subscription_source_policy '[]' '[]' "$work/country.items" selected '["fi","nl"]' '["*🇫🇮*"]' '["*🇳🇱*"]' \
  | jq -e '.[0].runtimeEnabled and (.[1].runtimeEnabled|not) and (.[2].runtimeEnabled|not)' >/dev/null || fail 'country filters must intersect the explicit node selection'
 canonical_pe_version=0.7.23
-if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+if [ "$(jq -r 'if .routerdeskPatch.mode == "files-only" then "prepared" else (.releaseStatus // "released") end' "$repo/openwrt/update-manifest.json")" = prepared ]; then
     canonical_pe_version=0.7.24
 fi
 for version in 0.7.20 0.7.22 0.7.23 0.7.24; do

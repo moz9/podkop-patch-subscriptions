@@ -5,7 +5,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM HUP
 fail() { echo "FAIL: $*" >&2; exit 1; }
 set -- "$repo"/openwrt/runtime-*/usr/bin/podkop
-if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+if [ "$(jq -r 'if .routerdeskPatch.mode == "files-only" then "prepared" else (.releaseStatus // "released") end' "$repo/openwrt/update-manifest.json")" = prepared ]; then
     set -- "$repo/openwrt/runtime-0.7.24/usr/bin/podkop"
 fi
 for runtime do
@@ -86,7 +86,8 @@ for runtime do
         podkop_section_enabled() { return 0; }
         podkop_section_context_matches() { return 1; }
         podkop_section_root() { printf '%s/section-context' "$tmp"; }
-        mkdir "$tmp/section-context"
+        mkdir -p "$tmp/section-context"
+        rm -f "$tmp/context-hash-read"
         printf 'v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' > "$tmp/section-context/context.sha256"
         podkop_section_context_hash() {
             : > "$tmp/context-hash-read"

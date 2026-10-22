@@ -3,7 +3,7 @@ set -eu
 repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work="$(mktemp -d)"; trap 'rm -rf "$work"' EXIT
 . "$repo/openwrt/podkop-subscription-sources.sh"
-if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+if [ "$(jq -r 'if .routerdeskPatch.mode == "files-only" then "prepared" else (.releaseStatus // "released") end' "$repo/openwrt/update-manifest.json")" = prepared ]; then
     sed -n '/^subscription_pending_sections_json() {$/,/^}$/p' "$repo/openwrt/runtime-0.7.24/usr/bin/podkop" > "$work/pending-functions"
     . "$work/pending-functions"
 fi

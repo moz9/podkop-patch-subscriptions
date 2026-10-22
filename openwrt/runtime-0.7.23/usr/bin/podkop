@@ -2429,7 +2429,14 @@ subscription_apply_v2_print_result() {
 }
 
 subscription_apply_v2_reload() {
-    PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
+    # subscription_apply_v2_native_intent_v1
+    local apply_now=1
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        podkop_section_apply
+        return $?
+    fi
+    [ "${PODKOP_SECTION_ROLLBACK:-0}" != 1 ] || apply_now=0
+    PODKOP_SUBSCRIPTION_APPLY_NOW="$apply_now" PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
 }
 
 subscription_apply_v2_cleanup() {

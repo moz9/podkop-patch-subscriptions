@@ -267,6 +267,7 @@ if grep -Fqx '# subscription_choices_and_busy_v1' "$target" &&
     source_capability_current 'subscription_pending_sections_json() {' &&
     source_capability_current 'subscription_pending_mark() {' &&
     source_capability_current 'subscription_pending_clear() {' &&
+    source_capability_current '    # subscription_apply_v2_native_intent_v1' &&
     source_capability_current '# subscription_optional_selection_v1' &&
     source_capability_current '# subscription_tag_prefix_v1' &&
     source_capability_current '# subscription_probe_diagnostics_v1' &&
@@ -311,7 +312,7 @@ for block in subscription_sources_v1 subscription_isolated_probe_v1 subscription
     sed -n "/^# $block begin$/,/^# $block end$/p" "$source_runtime" > "$work/$block"
     [ -s "$work/$block" ]
 done
-names='start_main start sing_box_init_config prepare_source_ruleset subscription_reload_seamless reload restart append_subscription_item filter_working_subscription_proxy_links refresh_subscription_cache load_subscription_proxy_links_for_section apply_subscription_exclusions_to_cached_links set_subscription_links_enabled set_subscription_sections_enabled subscription_apply_v2_restore subscription_speedtest_stop subscription_update subscription_update_json subscription_runtime_busy'
+names='start_main start sing_box_init_config prepare_source_ruleset subscription_reload_seamless reload restart append_subscription_item filter_working_subscription_proxy_links refresh_subscription_cache load_subscription_proxy_links_for_section apply_subscription_exclusions_to_cached_links set_subscription_links_enabled set_subscription_sections_enabled subscription_apply_v2_reload subscription_apply_v2_restore subscription_speedtest_stop subscription_update subscription_update_json subscription_runtime_busy'
 names="$names subscription_reload_pending_file"
 : > "$work/pending-helpers"
 if grep -Fqx 'subscription_pending_sections_json() {' "$source_runtime"; then

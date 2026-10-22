@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const installer = fs.readFileSync(path.join(root, 'openwrt/install.sh'), 'utf8');
 const manifest = JSON.parse(fs.readFileSync(path.join(root, 'openwrt/update-manifest.json'), 'utf8'));
-const runtimeDirectories = manifest.releaseStatus === 'prepared'
+const runtimeDirectories = manifest.routerdeskPatch?.mode === 'files-only'
   ? (assert.deepEqual(manifest.supportedPodkopVersions, ['0.7.24']), ['runtime-0.7.24'])
   : fs.readdirSync(path.join(root, 'openwrt')).filter(name => /^runtime-/.test(name));
 assert.equal(fs.readFileSync(path.join(root, 'i'), 'utf8'), installer);

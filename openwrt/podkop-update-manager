@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260813-update-manager-v3"
+VERSION="20261022-update-manager-v4"
 STATE_DIR="/tmp/podkop-update-manager"
 STATUS_FILE="$STATE_DIR/status.json"
 DETAILS_FILE="$STATE_DIR/details.json"
@@ -292,10 +292,11 @@ perform_check() {
 
     # The file-only channel requires RouterDesk's backup/confirmation protocol.
     # Never invoke the old installer, and do not label an installed release bad.
-    if [ "$current_podkop" = 0.7.24 ] && [ "$latest_podkop" = 0.7.24 ] &&
+    if [ "$(jq -r '.releaseStatus // "released"' "$manifest")" = released ] &&
        jq -e '.routerdeskPatch.schemaVersion==1 and .routerdeskPatch.mode=="files-only"' "$manifest" >/dev/null; then
         can_update=false
-        if [ "$patch_update" = true ]; then mode=blocked; message=routerdesk_update_required
+        if [ "$current_podkop" != 0.7.24 ]; then mode=blocked; message=installed_podkop_unsupported
+        elif [ "$patch_update" = true ]; then mode=blocked; message=routerdesk_update_required
         else mode=none; message=up_to_date; fi
     fi
 

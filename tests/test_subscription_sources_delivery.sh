@@ -5,7 +5,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 versions='0.7.20 0.7.22 0.7.23'
 pe_version=0.7.23
-if [ "$(jq -r '.releaseStatus // "released"' "$repo/openwrt/update-manifest.json")" = prepared ]; then
+if [ "$(jq -r 'if .routerdeskPatch.mode == "files-only" then "prepared" else (.releaseStatus // "released") end' "$repo/openwrt/update-manifest.json")" = prepared ]; then
     jq -e '.supportedPodkopVersions==["0.7.24"]' "$repo/openwrt/update-manifest.json" >/dev/null
     versions=0.7.24; pe_version=0.7.24
 fi

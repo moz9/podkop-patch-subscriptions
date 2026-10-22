@@ -39,7 +39,7 @@ STATE_DIR="$work/state"; mkdir -p "$STATE_DIR"
 DETAILS_FILE="$STATE_DIR/details.json"; STATUS_FILE="$STATE_DIR/status.json"; LOG_FILE="$STATE_DIR/log"
 MANIFEST_URL=fixture-manifest; RELEASE_URL=fixture-release
 download_file() {
-    case "$1" in fixture-manifest*) cp "$repo/openwrt/update-manifest.json" "$2";; fixture-release) printf '{"tag_name":"0.7.24"}\n' > "$2";; *) return 91;; esac
+    case "$1" in fixture-manifest*) jq '.releaseStatus="prepared"' "$repo/openwrt/update-manifest.json" > "$2";; fixture-release) printf '{"tag_name":"0.7.24"}\n' > "$2";; *) return 91;; esac
 }
 current_podkop_version() { printf '0.7.23\n'; }
 current_patch_version() { printf '20261010-pe-v13\n'; }

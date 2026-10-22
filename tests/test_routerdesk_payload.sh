@@ -38,6 +38,6 @@ for name in subscription_patch_update_check get_subscription_patch_update_log; d
 done
 if jq -e 'has("routerdeskPatch")' "$repo/openwrt/update-manifest.json" >/dev/null; then
     jq -e '.routerdeskPatch.initIntegration==1 and (.sha256["openwrt/podkop-subscription-sources-upgrade.sh"]|length)==64' "$repo/openwrt/update-manifest.json" >/dev/null
-    jq -e '.releaseStatus=="prepared" and .routerdeskPatch.schemaVersion==1 and .routerdeskPatch.mode=="files-only" and (.routerdeskPatch.coordinatorSha256|test("^[a-f0-9]{64}$")) and (.routerdeskPatch.filesSha256|test("^[a-f0-9]{64}$"))' "$repo/openwrt/update-manifest.json" >/dev/null
+    jq -e '.releaseStatus=="released" and .routerdeskPatch.schemaVersion==1 and .routerdeskPatch.mode=="files-only" and (.routerdeskPatch.coordinatorSha256|test("^[a-f0-9]{64}$")) and (.routerdeskPatch.filesSha256|test("^[a-f0-9]{64}$"))' "$repo/openwrt/update-manifest.json" >/dev/null
 fi
 echo 'PASS: RouterDesk prebuilt runtime includes update-center entrypoints; migration remains gated'
