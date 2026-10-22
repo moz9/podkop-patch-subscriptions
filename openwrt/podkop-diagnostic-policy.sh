@@ -36,23 +36,32 @@ diag_request_limit() {
 
 diag_admit() {
     local estimate="$1" reserve=24576 threshold available memdoc
+    DIAG_ERROR=memory_policy_unreadable
     case "$estimate" in ''|*[!0-9]*) return 1;; esac
     [ "$estimate" -le 8192 ] || return 1
     memdoc="${PODKOP_DIAG_MEMDOC_FILE:-/usr/bin/memdoc}"
     if [ -e "$memdoc" ]; then
-        # Parse literal policy only. Never source executable watchdog code.
+        # Conditional watchdog branches can contain several literal thresholds.
+        # Reserve for the largest branch; never execute watchdog code or infer
+        # that a dynamic/unknown assignment is safe.
         threshold="$(awk '
+          /^[ \t]*#/ {next}
+          /THRESHOLD[ \t]*=/ && !/^[ \t]*(export[ \t]+)?THRESHOLD=/ {bad=1}
           /^[ \t]*(export[ \t]+)?THRESHOLD=/ {
             value=$0; sub(/^[ \t]*(export[ \t]+)?THRESHOLD=/,"",value)
-            sub(/[ \t]*#.*/,"",value); gsub(/[ \t\r]/,"",value)
+            sub(/[ \t]*#.*/,"",value); sub(/[ \t\r]+$/,"",value)
             if (value !~ /^[0-9]+$/ || value+0>1048576) bad=1
-            result=value; count++
+            if (value+0>result) result=value+0
+            count++
           }
-          END {if (count!=1 || bad) exit 1; print result}
+          END {if (count<1 || bad) exit 1; printf "%.0f\n",result}
         ' "$memdoc")" || return 1
         [ "$((threshold+8192))" -le "$reserve" ] || reserve=$((threshold+8192))
     fi
+    DIAG_ERROR=memory_status_unavailable
     available="$(awk '/^MemAvailable:/ {print $2; count++} END {if(count!=1) exit 1}' "${PODKOP_DIAG_MEMINFO_FILE:-/proc/meminfo}")" || return 1
     case "$available" in ''|*[!0-9]*) return 1;; esac
-    [ "$available" -ge "$((reserve+estimate))" ]
+    DIAG_ERROR=insufficient_memory
+    [ "$available" -ge "$((reserve+estimate))" ] || return 1
+    DIAG_ERROR=''
 }

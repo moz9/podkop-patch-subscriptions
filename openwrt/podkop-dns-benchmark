@@ -656,7 +656,13 @@ db_runtime_safe() {
     [ ! -f "$db_cancel_file" ] || { db_child_error=cancelled; return 1; }
     if [ "${db_light_policy:-0}" = 1 ]; then
         diag_remaining >/dev/null || { db_child_error=measurement_timeout; return 1; }
-        diag_admit 0 || { db_child_error=memory_pressure; return 1; }
+        diag_admit 0 || {
+            case "${DIAG_ERROR:-}" in
+                memory_policy_unreadable|memory_status_unavailable) db_child_error="$DIAG_ERROR";;
+                *) db_child_error=memory_pressure;;
+            esac
+            return 1
+        }
     fi
     [ "$db_deadline" -eq 0 ] || [ "$(date +%s)" -lt "$db_deadline" ] || { db_child_error=measurement_timeout; return 1; }
     [ "$db_probe_deadline" -eq 0 ] || [ "$(date +%s)" -lt "$db_probe_deadline" ] || { db_child_error=pair_budget_exceeded; return 1; }
@@ -1337,7 +1343,7 @@ db_check_pair() {
 }
 
 db_infrastructure_error() {
-    case "$1" in unsupported_client_routing|unsupported_ruleset_routing|unsupported_section_runtime|runtime_config_unavailable|active_selection_unavailable|rules_cache_unavailable|netstat_unavailable|listener_collision|insufficient_memory|memory_pressure|production_stopped|child_config_invalid|configuration_changed|cancelled|measurement_timeout) return 0;; *) return 1;; esac
+    case "$1" in unsupported_client_routing|unsupported_ruleset_routing|unsupported_section_runtime|runtime_config_unavailable|active_selection_unavailable|rules_cache_unavailable|netstat_unavailable|listener_collision|insufficient_memory|memory_pressure|memory_policy_unreadable|memory_status_unavailable|production_stopped|child_config_invalid|configuration_changed|cancelled|measurement_timeout) return 0;; *) return 1;; esac
 }
 
 db_pair_test() {
@@ -1933,7 +1939,7 @@ db_quick_benchmark() {
     . "$helper"
     PODKOP_DIAG_MEMINFO_FILE="${PODKOP_DNS_BENCHMARK_MEMINFO_FILE:-/proc/meminfo}"
     diag_begin selection 60 || { db_state error benchmark clock_unavailable 100 0 0 clock_unavailable; return 1; }
-    diag_admit 8192 || { db_state error benchmark insufficient_memory 100 0 0 insufficient_memory; return 1; }
+    diag_admit 8192 || { db_child_error="${DIAG_ERROR:-insufficient_memory}"; db_state error benchmark "$db_child_error" 100 0 0 "$db_child_error"; return 1; }
     db_light_policy=1
     started="$(date +%s)"; deadline=$((started+60))
     [ "$db_deadline" -gt 0 ] && [ "$db_deadline" -le "$deadline" ] || db_deadline="$deadline"
@@ -2124,8 +2130,11 @@ db_light_publish() {
 }
 db_light_select() {
     local fingerprint after choice primary=null secondary=null failed='[]' stats key row attempts=0 complete=false error=''
-    db_light_policy_load && diag_begin selection 60 && diag_admit 8192 || {
-        db_state error select insufficient_memory 100 0 0 insufficient_memory; return 1;
+    db_light_policy_load || { db_state error select diagnostic_policy_unavailable 100 0 0 diagnostic_policy_unavailable; return 1; }
+    diag_begin selection 60 || { db_state error select clock_unavailable 100 0 0 clock_unavailable; return 1; }
+    diag_admit 8192 || {
+        db_child_error="${DIAG_ERROR:-insufficient_memory}"
+        db_state error select "$db_child_error" 100 0 0 "$db_child_error"; return 1;
     }
     rm -f "$DB_PERSIST/light-pairs-proof.json" "$DB_PROOF" "$DB_RESERVE_PROOF"
     fingerprint="$(db_light_fingerprint)" || { db_light_publish false null null '' unsupported_dns_route; return; }
@@ -2206,8 +2215,11 @@ db_light_legacy_apply() {
 }
 db_light_manual() {
     local stats='null' fingerprint after error=''
-    db_light_policy_load && diag_begin pair 12 && diag_admit 8192 || {
-        db_state error light_pair insufficient_memory 100 0 1 insufficient_memory; return 1;
+    db_light_policy_load || { db_state error light_pair diagnostic_policy_unavailable 100 0 1 diagnostic_policy_unavailable; return 1; }
+    diag_begin pair 12 || { db_state error light_pair clock_unavailable 100 0 1 clock_unavailable; return 1; }
+    diag_admit 8192 || {
+        db_child_error="${DIAG_ERROR:-insufficient_memory}"
+        db_state error light_pair "$db_child_error" 100 0 1 "$db_child_error"; return 1;
     }
     rm -f "$DB_PERSIST/light-pairs-proof.json" "$DB_PROOF"
     fingerprint="$(db_light_fingerprint)" || error=unsupported_dns_route
