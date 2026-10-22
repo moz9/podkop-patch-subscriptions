@@ -2006,10 +2006,25 @@ db_light_select() {
     db_light_publish "$complete" "$primary" "$secondary" "$fingerprint" "$error"
 }
 db_light_proof_valid() {
-    local fingerprint now proof="$DB_PERSIST/light-pairs-proof.json"
+    local fingerprint now tuple proof="$DB_PERSIST/light-pairs-proof.json"
+    case "${2:-pairs}" in pairs) :;; manual) proof="$DB_PERSIST/light-manual-proof.json";; *) return 1;; esac
     [ ! -e "$db_cancel_file" ] && [ -s "$proof" ] && [ -s "$DB_REPORT" ] || return 1
     db_light_policy_load || return 1
     now="$(diag_now)" && fingerprint="$(db_light_fingerprint)" || return 1
+    if [ "${2:-pairs}" = manual ]; then
+        jq -e --arg id "$1" --arg fingerprint "$fingerprint" --argjson now "$now" --slurpfile r "$DB_REPORT" '
+          .reportId==$id and .reportId==$r[0].reportId and .fingerprint==$fingerprint and
+          .state=="done" and .action=="light_pair" and .scope=="direct_dns_pair" and
+          .manualApplyReady==true and .error==null and .httpsTested==false and
+          (.testedMonotonic|type)=="number" and .testedMonotonic<=$now and $now-.testedMonotonic<=300 and
+          .pairResult.success==true and .pairResult.reliable==true and
+          .pairResult==$r[0].pairResult and $r[0].manualApplyReady==true
+        ' "$proof" >/dev/null || return 1
+        tuple="$(jq -er '.pairResult|[.protocol,.id,.dnsServer,.bootstrapDnsServer,.bootstrapProtocol]|join(" ")' "$proof")" || return 1
+        set -- $tuple
+        [ "$#" = 5 ] && db_validate_pair "$@"
+        return $?
+    fi
     jq -e --arg id "$1" --arg fingerprint "$fingerprint" --argjson now "$now" --slurpfile r "$DB_REPORT" '
       .reportId==$id and .reportId==$r[0].reportId and .fingerprint==$fingerprint and
       .state=="done" and .selectionComplete==true and .partial==false and .scope=="direct_dns_pair" and
@@ -2019,14 +2034,19 @@ db_light_proof_valid() {
     ' "$proof" >/dev/null
 }
 db_light_apply() {
-    local id="$1" proof="$DB_PERSIST/light-pairs-proof.json" tuple
+    local id="$1" mode="${2:-pairs}" proof="$DB_PERSIST/light-pairs-proof.json" tuple operation=apply_pairs
+    case "$mode" in pairs) :;; manual) proof="$DB_PERSIST/light-manual-proof.json"; operation=apply;; *) return 1;; esac
     podkop_mutation_lock_acquire dns_benchmark_apply || { db_state error apply busy 100 0 1 busy; return 1; }
-    db_light_proof_valid "$id" && ! db_reload_busy || { db_state error apply stale_proof 100 0 1 stale_proof; return 1; }
-    tuple="$(jq -r '[.recommendation,.secondaryRecommendation]|map([.protocol,.dnsServer,.bootstrapProtocol,.bootstrapDnsServer])|add|join(" ")' "$proof")" || return 1
+    db_light_proof_valid "$id" "$mode" && ! db_reload_busy || { db_state error apply stale_proof 100 0 1 stale_proof; return 1; }
+    if [ "$mode" = manual ]; then
+        tuple="$(jq -r '.pairResult|[.protocol,.dnsServer,.bootstrapProtocol,.bootstrapDnsServer]|join(" ")' "$proof")" || return 1
+    else
+        tuple="$(jq -r '[.recommendation,.secondaryRecommendation]|map([.protocol,.dnsServer,.bootstrapProtocol,.bootstrapDnsServer])|add|join(" ")' "$proof")" || return 1
+    fi
     set -- $tuple
     db_state running apply applying 10 0 1 ''
     rm -f "$proof"
-    if db_dns_transaction apply_pairs "$@"; then db_state done apply apply_complete 100 1 1 ''; return 0; fi
+    if db_dns_transaction "$operation" "$@"; then db_state done apply apply_complete 100 1 1 ''; return 0; fi
     db_state error apply "$db_transaction_error" 100 1 1 "$db_transaction_error"; return 1
 }
 db_light_legacy_status() {
@@ -2054,13 +2074,13 @@ db_light_legacy_apply() {
 }
 db_light_manual() {
     local stats='null' fingerprint after error=''
+    rm -f "$DB_PERSIST/light-manual-proof.json" "$DB_PERSIST/light-pairs-proof.json" "$DB_PROOF"
     db_light_policy_load || { db_state error light_pair diagnostic_policy_unavailable 100 0 1 diagnostic_policy_unavailable; return 1; }
     diag_begin pair 12 || { db_state error light_pair clock_unavailable 100 0 1 clock_unavailable; return 1; }
     diag_admit 8192 || {
         db_child_error="${DIAG_ERROR:-insufficient_memory}"
         db_state error light_pair "$db_child_error" 100 0 1 "$db_child_error"; return 1;
     }
-    rm -f "$DB_PERSIST/light-pairs-proof.json" "$DB_PROOF"
     fingerprint="$(db_light_fingerprint)" || error=unsupported_dns_route
     if [ -z "$error" ]; then
         stats="$(db_light_probe "$1" "$3" "$4" "${5:-udp}")" || { stats=null; error=pair_test_failed; }
@@ -2068,10 +2088,19 @@ db_light_manual() {
         after="$(db_light_fingerprint)" && [ "$fingerprint" = "$after" ] || { stats=null; error=runtime_changed; }
     fi
     jq -cn --arg id "$db_report_id" --argjson stats "$stats" --arg error "$error" \
+      --arg p "$1" --arg candidate "$2" --arg server "$3" --arg boot "$4" --arg bp "${5:-udp}" \
       '{state:"done",action:"light_pair",reportId:$id,progress:100,budgetSeconds:12,
        scope:"direct_dns_pair",httpsTested:false,selectionComplete:false,
-       pairResult:$stats,error:(if $error=="" then null else $error end)}' > "$DB_STATUS.tmp.$$" &&
-       mv "$DB_STATUS.tmp.$$" "$DB_STATUS"
+       manualApplyReady:($error=="" and $stats.success==true and $stats.reliable==true),
+       pairResult:(if $stats==null then null else $stats+{protocol:$p,id:$candidate,dnsServer:$server,bootstrapDnsServer:$boot,bootstrapProtocol:$bp} end),
+       error:(if $error=="" then null else $error end)}' > "$DB_STATUS.tmp.$$" || return 1
+    [ ! -e "$db_cancel_file" ] || return 1
+    mv "$DB_STATUS.tmp.$$" "$DB_STATUS" && cp "$DB_STATUS" "$DB_REPORT" || return 1
+    if jq -e '.manualApplyReady' "$DB_REPORT" >/dev/null; then
+        jq --arg fingerprint "$fingerprint" --argjson tested "$(diag_now)" \
+          '.+{fingerprint:$fingerprint,testedMonotonic:$tested}' "$DB_REPORT" > "$DB_PERSIST/light-manual-proof.json.tmp.$$" &&
+          mv "$DB_PERSIST/light-manual-proof.json.tmp.$$" "$DB_PERSIST/light-manual-proof.json"
+    fi
 }
 # lightweight_dns_pairs_v1 end
 
@@ -2295,6 +2324,9 @@ db_start() {
         mkdir "$DB_LOCK" 2>/dev/null || { db_reply busy; return 1; }
     fi
     rm -f "$DB_DIR/cancel" "$DB_DIR/start.ready"
+    # Any new check invalidates the preceding manual authorization. Mutation
+    # keeps it only until the worker rechecks under the shared lock and consumes it.
+    [ "$action" = select_apply ] || rm -f "$DB_PERSIST/light-manual-proof.json"
     db_worker_pid=0; db_action="$action"
     if [ -s "$DB_STATUS" ]; then
         db_results="$(jq -c '.results//[]' "$DB_STATUS")"; db_bootstrap_results="$(jq -c '.bootstrapResults//[]' "$DB_STATUS")"
@@ -2325,7 +2357,7 @@ db_cancel() {
     if [ "$state" = running ] && { [ "$action" = apply ] || [ "$action" = rollback ] || [ "$action" = reserve_save ] || [ "$action" = select_apply ]; }; then db_reply busy; return 1; fi
     : > "$DB_DIR/cancel"
     if [ "$state" = running ] && [ "$pid" != 0 ] && db_coordinator_owned "$pid" "$action"; then kill "$pid" 2>/dev/null || true; fi
-    rm -f "$DB_PROOF" "$DB_RESERVE_PROOF"
+    rm -f "$DB_PROOF" "$DB_RESERVE_PROOF" "$DB_PERSIST/light-manual-proof.json"
     jq '.state="cancelled" | .message="cancelled" | .error="cancelled" | .selectionComplete=false | .fullVerificationComplete=false | .exhaustiveSelected=false | .comparisonComplete=false | .recommendation=null | (if .action=="recommend_verified" then .pairResult=null else . end)' "$DB_STATUS" > "$DB_STATUS.tmp.$$"; mv "$DB_STATUS.tmp.$$" "$DB_STATUS"
     db_reply
 }
@@ -2341,6 +2373,7 @@ case "${1:-}" in
     light_pair_start) [ "$#" = 6 ] || { db_reply arguments_required; exit 1; }; shift; db_start light_pair "$@";;
     select_start) db_start select;;
     apply_selected_start) [ "$#" = 2 ] || { db_reply arguments_required; exit 1; }; db_start select_apply "$2";;
+    apply_manual_start) [ "$#" = 2 ] || { db_reply arguments_required; exit 1; }; db_start select_apply "$2" manual;;
     benchmark_start) db_start benchmark;;
     recommend_start) db_start recommend;;
     recommend_full_start) db_start recommend_full;;
