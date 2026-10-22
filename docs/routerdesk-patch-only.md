@@ -6,13 +6,17 @@ RouterDesk pins the commit and validates every payload hash. The manifest separa
 
 The stability candidate adds `routerdeskPatch.initIntegration: 1`. Its hash-pinned source upgrader prepares the Podkop and sing-box init handlers on private copies; both files join the same backup/install/rollback inventory. After installation, the coordinator updates only the resident service's trigger list through `service.add`, without an `instances` member. Existing unrelated triggers are preserved, and rollback removes the added handler when the restored init no longer declares it. Proxy process fingerprints must remain unchanged. The relevant procd boundary is [service_update](https://github.com/openwrt/procd/blob/master/service/service.c): instance updates are conditional on the separate instances field. This contract requires a matching RouterDesk coordinator; an older application refuses its hash instead of silently installing an incomplete fix.
 
-The manifest remains `releaseStatus: prepared` for the older installer/update-manager and package-migration paths. Only the explicit `routerdeskPatch.mode: files-only` contract admits this narrower update. This is not a full installed-state or package backup. The new UI provides separate selection and application of both DNS pairs; applying settings is a separate operation and is not undone by rolling back patch files.
+The PE 0.7.24 v33 manifest has `releaseStatus: released`. The `routerdeskPatch.mode: files-only` contract still limits installation to RouterDesk; LuCI directs the user there, and package migration remains blocked. The backup covers replaced patch files, not the full installed state or packages; selection and application of both DNS pairs remain separate actions. Applying settings is not undone by rolling back patch files.
 
-Legacy `main` and the older `podkop-pe` channel are not changed by this publication. A local build/test result does not establish hardware compatibility: use an individually backed-up canary before deploying to other devices.
+Legacy `main` and PE 0.7.23 (`podkop-pe` / `pe-dns-pairs-20261007`) have separate v33 releases. Patch-only updates preserve the installed Podkop base version. Current RouterDesk supports PE patch-only updates on 0.7.24, not 0.7.23. Local tests, public payload hashes and CI are not live-router acceptance; no router was contacted for this release. Test one backed-up router before broader deployment.
 
 An older unversioned section-runtime checkpoint may differ from current desired settings. The file update does not migrate it. A separate DNS application can now continue an exact section-admitted graph only after verifying its compound hash, graph aliases, required-service sets, admitted observations, and both live and archived local rules. It changes the selected DNS pair(s) only; the old global checkpoint, admission policy, routes, proxy membership and unrelated saved/draft preferences remain untouched. It does not certify those global preferences as active or bypass the full-restart gate. Missing scoped provenance, v2 context drift, changed evidence/rules or conflicting DNS drafts still fail before mutation.
 
 DNS rollback restores the exact prior configuration and admission snapshot. Its final check binds the restored UCI digest, not the just-reverted candidate, and still rejects concurrent foreign edits. Patch-file rollback remains separate. Local/CI results alone do not prove hardware activation: complete the home-only live cycle before recommending deployment.
+
+## Historical candidate notes
+
+The notes below describe earlier candidates, before v33 entered the standard channels.
 
 ### v22: diagnostic-cache independence and update status
 
