@@ -267,6 +267,7 @@ if grep -Fqx '# subscription_choices_and_busy_v1' "$target" &&
     source_capability_current 'subscription_pending_sections_json() {' &&
     source_capability_current 'subscription_pending_mark() {' &&
     source_capability_current 'subscription_pending_clear() {' &&
+    source_capability_current 'subscription_services_snapshot_unfiltered() {' &&
     source_capability_current '    # subscription_apply_v2_native_intent_v1' &&
     source_capability_current '# subscription_optional_selection_v1' &&
     source_capability_current '# subscription_tag_prefix_v1' &&

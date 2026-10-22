@@ -117,7 +117,8 @@ start_main() {
 
     # subscription_safe_start_v1: fresh re-tests never authorize new boot pools.
     if [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] &&
-       { [ -e "$(subscription_services_snapshot_dir)/snapshot.json" ] || [ -L "$(subscription_services_snapshot_dir)/snapshot.json" ]; }; then
+       { [ -e "$(subscription_services_snapshot_dir)/snapshot.json" ] || [ -L "$(subscription_services_snapshot_dir)/snapshot.json" ]; } &&
+       ! subscription_services_snapshot_unfiltered; then
         subscription_services_snapshot_continuity_prepare || return 1
         PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=1
     fi
@@ -4154,13 +4155,32 @@ subscription_services_snapshot_enabled_section() {
     [ "$(subscription_required_services_json "$1")" = '[]' ] || SNAPSHOT_HAS_REQUIRED=1
 }
 
+subscription_services_snapshot_unfiltered() {
+    # An empty receipt admits no nodes. With no selected service filters it
+    # must not turn an old graph hash into a mandatory service requirement.
+    local dir SNAPSHOT_HAS_REQUIRED=0
+    config_foreach subscription_services_snapshot_enabled_section section
+    [ "$SNAPSHOT_HAS_REQUIRED" = 0 ] || return 1
+    dir="$(subscription_services_snapshot_dir)"
+    [ -f "$dir/snapshot.json" ] && [ ! -L "$dir" ] && [ ! -L "$dir/snapshot.json" ] || return 1
+    jq -e '.version==1 and .sections==[]
+        and (.config|type=="string" and length==64)
+        and (.rules|type=="array" and length<=128)
+        and all(.rules[]; (.name|type=="string") and (.sha|type=="string" and length==64))' \
+        "$dir/snapshot.json" >/dev/null 2>&1
+}
+
 subscription_services_restart_prepare() {
     # Service/config-triggered restarts are not permission to apply new pools.
     # Explicit apply keeps its fresh-evidence gate and transactional workflow.
     PODKOP_SERVICE_RESTART_CONTINUITY=0
     SNAPSHOT_HAS_REQUIRED=0
     config_foreach subscription_services_snapshot_enabled_section section
-    if [ "$SNAPSHOT_HAS_REQUIRED" = 1 ] && [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ]; then
+    if [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] &&
+       { [ "$SNAPSHOT_HAS_REQUIRED" = 1 ] ||
+         { { [ -e "$(subscription_services_snapshot_dir)/snapshot.json" ] ||
+             [ -L "$(subscription_services_snapshot_dir)/snapshot.json" ]; } &&
+           ! subscription_services_snapshot_unfiltered; }; }; then
         subscription_services_continuity_context_ready || return 1
         subscription_services_snapshot_continuity_prepare || return 1
         PODKOP_SERVICE_RESTART_CONTINUITY=1

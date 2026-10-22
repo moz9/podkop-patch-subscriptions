@@ -25,7 +25,7 @@ MAINTENANCE_UPGRADE_FILE="podkop-subscription-maintenance-upgrade.sh"
 APPLY_V2_UPGRADE_FILE="podkop-subscription-apply-v2-upgrade.sh"
 SOURCES_UPGRADE_FILE="podkop-subscription-sources-upgrade.sh"
 SEAMLESS_RELOAD_UPGRADE_FILE="podkop-subscription-seamless-reload-upgrade.sh"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261022-pe-v35"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261022-pe-v36"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -63,7 +63,7 @@ UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
 RUNTIME_PE_PODKOP_FILE="runtime-0.7.24/usr/bin/podkop"
 RUNTIME_PE_PODKOP_JS_FILE="runtime-0.7.24/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261022_pe_v35"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261022_pe_v36"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -79,14 +79,14 @@ LUCI_UHTTPD_INIT_SCRIPT="${PODKOP_PATCH_UHTTPD_INIT_SCRIPT:-/etc/init.d/uhttpd}"
 LUCI_UHTTPD_UBUS_MODULE="${PODKOP_PATCH_UHTTPD_UBUS_MODULE:-/usr/lib/uhttpd_ubus.so}"
 
 RUNTIME_FILES="
-www/luci-static/resources/view/podkop_patch_20261022_pe_v35/main.js
-www/luci-static/resources/view/podkop_patch_20261022_pe_v35/podkop.js
-www/luci-static/resources/view/podkop_patch_20261022_pe_v35/section.js
-www/luci-static/resources/view/podkop_patch_20261022_pe_v35/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261022_pe_v35/settings.js
-www/luci-static/resources/view/podkop_patch_20261022_pe_v35/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261022_pe_v35/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261022_pe_v35/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261022_pe_v36/main.js
+www/luci-static/resources/view/podkop_patch_20261022_pe_v36/podkop.js
+www/luci-static/resources/view/podkop_patch_20261022_pe_v36/section.js
+www/luci-static/resources/view/podkop_patch_20261022_pe_v36/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261022_pe_v36/settings.js
+www/luci-static/resources/view/podkop_patch_20261022_pe_v36/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261022_pe_v36/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261022_pe_v36/dns_benchmark.js
 usr/bin/podkop
 etc/init.d/podkop
 etc/init.d/sing-box
@@ -2024,6 +2024,7 @@ if ! sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop | grep 
     ! grep -Fqx '# subscription_gemini_region_v2' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_probe_context_v2' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_service_snapshot_v1 end' /usr/bin/podkop ||
+    ! grep -Fqx 'subscription_services_snapshot_unfiltered() {' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_source_ruleset_reuse_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_service_filter_v1' /usr/bin/podkop ||
     ! grep -Fq '# subscription_safe_restart_v1:' /usr/bin/podkop ||
