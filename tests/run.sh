@@ -36,6 +36,8 @@ sh "$test_dir/test_memdoc_compatibility.sh"
 sh "$test_dir/test_memdoc_delivery.sh"
 sh "$test_dir/test_legacy_section_pending.sh"
 
+python3 "$test_dir/test_public_dispatch.py"
+
 sh "$test_dir/test_update_manager_mode_env.sh"
 sh "$test_dir/test_patch_update_direction.sh"
 sh "$test_dir/test_update_center_direction_ui.sh"

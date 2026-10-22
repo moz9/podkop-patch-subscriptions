@@ -499,4 +499,3 @@ case "${1:-}" in
     wait-ready) wait_main_ready && workers_stopped;;
     *) error invalid_command; exit 1;;
 esac
-

@@ -819,4 +819,3 @@ function renderOpenButton(map) {
 }
 
 return baseclass.extend({normalizeLightSelection,catalogCandidates,renderOpenButton,normalizeReport,pairMatches,pairSummary,errorMessage,precheckStateText});
-
