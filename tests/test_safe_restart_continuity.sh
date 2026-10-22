@@ -85,7 +85,17 @@ for runtime do
         continuity=1
         podkop_section_enabled() { return 0; }
         podkop_section_context_matches() { return 1; }
-        start_main && fail 'stale traffic context permitted network reconfiguration' || :
+        podkop_section_root() { printf '%s/section-context' "$tmp"; }
+        mkdir -p "$tmp/section-context"
+        rm -f "$tmp/context-hash-read"
+        printf 'v2:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n' > "$tmp/section-context/context.sha256"
+        podkop_section_context_hash() {
+            : > "$tmp/context-hash-read"
+            printf 'v2:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\n'
+        }
+        start_main 2> "$tmp/context-refusal.stderr" && fail 'stale traffic context permitted network reconfiguration' || :
+        [ ! -s "$tmp/context-refusal.stderr" ] || fail 'context refusal was caused by an incomplete fixture'
+        [ -f "$tmp/context-hash-read" ] || fail 'saved and desired traffic contexts were not compared'
         [ ! -e "$tmp/daemon-started" ] && [ ! -e "$tmp/network-changed" ] || fail 'traffic-context refusal touched network or daemon'
         rm "$tmp/admission/snapshot.json"; rmdir "$tmp/admission"
     ) || exit 1

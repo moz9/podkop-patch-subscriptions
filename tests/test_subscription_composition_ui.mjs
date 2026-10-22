@@ -31,7 +31,7 @@ for(const status of [{unknown:true,...known},{...known,busy:true},{sections:[]},
 preview={enabled:4,uncertain:false};
 assert.match(text(walk(render(known)).find(n=>n.attrs?.class==='pdk_subscriptions-page__composition-preview')),/4 из 6/);
 preview={enabled:4,uncertain:true};
-assert.match(text(walk(render(known)).find(n=>n.attrs?.class==='pdk_subscriptions-page__composition-preview')),/Для нового режима пока не рассчитано.*По сохранённому: 4/);
+assert.match(text(walk(render(known)).find(n=>n.attrs?.class==='pdk_subscriptions-page__composition-preview')),/Для нового режима пока не рассчитано.*В сохранённом режиме: 4/);
 c.getPendingCount=()=>0;c.renderToolbar=()=>null;
 c.renderSections2=({sections,sourceActions})=>sections.map(section=>c.renderSection({section,pendingChanges:{},collapsedSections:{},sourceActions}));
 vm.runInContext(js.match(/function renderSubscriptionSections\([\s\S]*?\n}(?=\r?\n)/)[0],c);
@@ -39,6 +39,7 @@ const page=c.renderSubscriptionSections({sections:[{code:'main',displayName:'mai
 assert.equal(walk(page).filter(n=>n.attrs?.id==='pdk-composition-active-heading').length,1,'working heading appears once for all sections');
 assert.equal(walk(page).filter(n=>n.attrs?.id==='pdk-composition-preview-heading').length,1,'apply heading appears once for all sections');
 assert.match(text(page),/Рабочий набор/);assert.match(text(page),/К применению/);
+assert.match(text(page),/Свежие проверки учитываются, если включены/,'the shared explanation must not make optional service checks mandatory');
 assert.doesNotMatch(text(page),/Предпросмотр нового применения/);
 assert.match(text(page),/Доступность сайтов здесь не проверяется/,'the shared explanation retains the live-access caveat');
 console.log('PASS: one shared composition header, concise section rows, and distinct zero/unknown states');

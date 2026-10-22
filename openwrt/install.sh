@@ -14,13 +14,19 @@ if [ -z "${PODKOP_PATCH_RAW_BASE:-}" ]; then
       0.7.19|0.7.20|0.7.21|0.7.22) ;;
       *)
         bootstrap_dir=$(mktemp -d /tmp/podkop-entry.XXXXXX)
-        bootstrap_url=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/main/u
+        bootstrap_ref="${PODKOP_PATCH_VERSION:-main}"
+        case "$bootstrap_ref" in
+          main) ;;
+          *) [ "${#bootstrap_ref}" -eq 40 ] || exit 1
+             case "$bootstrap_ref" in *[!0123456789abcdef]*) exit 1;; esac;;
+        esac
+        bootstrap_url=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$bootstrap_ref/u
         if command -v curl >/dev/null 2>&1; then
             curl --proto '=https' --proto-redir '=https' -fSL --connect-timeout 10 --max-time 120 "$bootstrap_url" -o "$bootstrap_dir/u"
         else
             wget -T 120 -O "$bootstrap_dir/u" "$bootstrap_url"
         fi
-        printf '%s  %s\n' 120a430c255170c323fb6521f6668521c4f0b2c6a6db3fc4807f7ba65f855252 "$bootstrap_dir/u" | sha256sum -c - || exit 1
+        printf '%s  %s\n' e9c0dd004f28d66191a855e7ef7692ff68767e51d04f533235dc44c7d0a63d13 "$bootstrap_dir/u" | sha256sum -c - || exit 1
         exec sh "$bootstrap_dir/u"
         ;;
     esac
@@ -1053,6 +1059,7 @@ abort_with_restore() {
 }
 
 has_latest_subscription_backend() {
+    grep -Fq '# subscription_apply_v2_native_intent_v1' /usr/bin/podkop 2>/dev/null || return 1
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
 	[ "${count:-0}" -ge 2 ] &&
 		grep -q '^case "\$1" in' /usr/bin/podkop 2>/dev/null &&
@@ -1973,6 +1980,7 @@ if ! grep -Fqx '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/nul
 fi
 
 if ! sed -n '/^subscription_apply_v2_restore() {/,/^}/p' /usr/bin/podkop | grep -Fq 'PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED' ||
+    ! grep -Fq '# subscription_apply_v2_native_intent_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop ||
     ! grep -Fqx 'subscription_pending_sections_json() {' /usr/bin/podkop ||

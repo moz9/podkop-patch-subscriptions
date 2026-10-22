@@ -154,18 +154,6 @@ for version in 0.7.20 0.7.22; do
  [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")" ] || fail 'tag rollback mismatch'
  result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","includeTags":["bad\nnewline"],"changes":[]}]} ' || true)"
  printf '%s' "$result" | jq -e '.phase=="validation" and .error=="invalid_payload"' >/dev/null || fail 'newline tag must be rejected'
- # Turning manual selection off must be atomic and preserve choices for resuming.
- choices="$(jq -c '.main | {selected:.subscription_selected_link_ids,excluded:.subscription_excluded_link_ids}' "$PODKOP_CONFIG")"
- before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")"
- : > "$work/fail-reload"
- result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"auto","changes":[]}]}' || true)"
- printf '%s' "$result" | jq -e '.state=="rolled_back" and .rolledBack' >/dev/null || fail 'auto transition failure must roll back'
- [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")" ] || fail 'auto rollback mismatch'
- set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"auto","changes":[]}]}' | jq -e '.success and .committed' >/dev/null
- [ "$choices" = "$(jq -c '.main | {selected:.subscription_selected_link_ids,excluded:.subscription_excluded_link_ids}' "$PODKOP_CONFIG")" ] || fail 'auto transition erased manual node choices'
- [ "$(cat "$SUBSCRIPTION_CACHE_DIR/main.links")" = alpha ] || fail 'auto must still honor source and tag gates'
- set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"selected","changes":[]}]}' | jq -e '.success and .committed' >/dev/null
- [ "$choices" = "$(jq -c '.main | {selected:.subscription_selected_link_ids,excluded:.subscription_excluded_link_ids}' "$PODKOP_CONFIG")" ] || fail 'auto-to-selected did not resume saved choices'
  # Route lists must not override the user's explicit service-filter choice.
  # This matches the home failure: tags changed while the UI sent services: [].
  cp "$PODKOP_CONFIG" "$work/before-implied-config"
@@ -187,6 +175,18 @@ for version in 0.7.20 0.7.22; do
  cp "$work/before-implied-config" "$PODKOP_CONFIG"
  cp "$work/before-implied-items" "$SUBSCRIPTION_CACHE_DIR/main.items"
  cp "$work/before-implied-links" "$SUBSCRIPTION_CACHE_DIR/main.links"
+ # Turning manual selection off must be atomic and preserve choices for resuming.
+ choices="$(jq -c '.main | {selected:.subscription_selected_link_ids,excluded:.subscription_excluded_link_ids}' "$PODKOP_CONFIG")"
+ before="$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")"
+ : > "$work/fail-reload"
+ result="$(set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"auto","changes":[]}]}' || true)"
+ printf '%s' "$result" | jq -e '.state=="rolled_back" and .rolledBack' >/dev/null || fail 'auto transition failure must roll back'
+ [ "$before" = "$(sha256sum "$PODKOP_CONFIG" "$SUBSCRIPTION_CACHE_DIR/main.items" "$SUBSCRIPTION_CACHE_DIR/main.links")" ] || fail 'auto rollback mismatch'
+ set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"auto","changes":[]}]}' | jq -e '.success and .committed' >/dev/null
+ [ "$choices" = "$(jq -c '.main | {selected:.subscription_selected_link_ids,excluded:.subscription_excluded_link_ids}' "$PODKOP_CONFIG")" ] || fail 'auto transition erased manual node choices'
+ [ "$(cat "$SUBSCRIPTION_CACHE_DIR/main.links")" = alpha ] || fail 'auto must still honor source and tag gates'
+ set_subscription_sections_enabled '{"sections":[{"section":"main","selectionMode":"selected","changes":[]}]}' | jq -e '.success and .committed' >/dev/null
+ [ "$choices" = "$(jq -c '.main | {selected:.subscription_selected_link_ids,excluded:.subscription_excluded_link_ids}' "$PODKOP_CONFIG")" ] || fail 'auto-to-selected did not resume saved choices'
  rm -f "$work/commits" "$work/reloads"
 done
 # Required-service storage failure exercises the full real transaction plus

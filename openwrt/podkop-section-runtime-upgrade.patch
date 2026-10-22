@@ -74,17 +74,17 @@
 +    jq -cn --argjson busy "$busy" --argjson pending "$pending" --arg isolated "$isolated" --argjson ready "$ready" --argjson pendingSections "$pending_sections" \
 +        '{busy:$busy,pending:$pending,pendingSections:$pendingSections,isolatedSection:$isolated,isolatedReady:$ready,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
 +}
-@@ -2335,6 +2351,10 @@ subscription_apply_v2_print_result() {
- }
- 
+@@ -2337,6 +2353,10 @@ subscription_apply_v2_print_result() {
  subscription_apply_v2_reload() {
+     # subscription_apply_v2_native_intent_v1
+     local apply_now=1
 +    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
 +        podkop_section_apply
 +        return $?
 +    fi
-     PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
+     [ "${PODKOP_SECTION_ROLLBACK:-0}" != 1 ] || apply_now=0
+     PODKOP_SUBSCRIPTION_APPLY_NOW="$apply_now" PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
  }
- 
 @@ -2380,9 +2400,9 @@ subscription_apply_v2_restore() {
      esac
  
