@@ -55,10 +55,10 @@ main() {
     case "$route" in
       legacy)
         # Keep the installed supported base; do not chase unsupported upstream latest.
-        export PODKOP_PATCH_VERSION=858fefe9c9c92992d45c42b9204ab0bfdacec028
+        export PODKOP_PATCH_VERSION=1021f7b19345504de3dc9cd9a11c7548ddcc586e
         export PODKOP_PATCH_RAW_BASE=https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PODKOP_PATCH_VERSION/openwrt
         export PODKOP_PATCH_UPDATE_PODKOP=0 PODKOP_PATCH_FORCE_PODKOP_UPDATE=0
-        download_run "$PODKOP_PATCH_VERSION" i fca348a9f272be27e50c9b7d1129d510ec8161b459c9174620044a633641c637
+        download_run "$PODKOP_PATCH_VERSION" i 8eca923b983d61a7f5a63c2945cc0b619a871963e6d605faef6f6e1f3d4dced2
         ;;
       pe023)
         export PODKOP_PATCH_VERSION=9c434e61be13dd2e2e3d4fe00e6e8c8704c09a8e
