@@ -1,0 +1,10 @@
+import fs from 'node:fs';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const source=fs.readFileSync(new URL('../openwrt/dns_benchmark.js',import.meta.url),'utf8');
+const errors=vm.runInNewContext('('+source.match(/const ERRORS = (\{[\s\S]*?^\});/m)[1]+')');
+assert.ok(errors.memory_policy_unreadable,'policy error has its own explanation');
+assert.ok(errors.memory_status_unavailable,'unreadable RAM has its own explanation');
+assert.notEqual(errors.memory_policy_unreadable,errors.insufficient_memory);
+assert.ok(!errors.insufficient_memory.includes('отдельного процесса'),'light selection must not imply a second engine');
+console.log('PASS: memory errors are distinct and do not mislabel native selection as another engine');
