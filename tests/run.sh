@@ -4,6 +4,7 @@ set -eu
 test_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 sh "$test_dir/test_dns_memory_errors.sh"
 node "$test_dir/test_dns_memory_errors.mjs"
+node "$test_dir/test_dns_reserve_clean_read.mjs"
 sh "$test_dir/test_subscription_apply_fallback.sh"
 sh "$test_dir/test_update_channel_isolation.sh"
 sh "$test_dir/test_subscription_runtime_counts.sh"
