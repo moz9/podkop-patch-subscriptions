@@ -472,7 +472,14 @@ function openBenchmark(map) {
       const current=option?.formvalue?.('settings');
       if(current!=null && String(current)!==String(baseline)) return;
       if(option?.cfgvalue && option?.getUIElement) {
-        option.getUIElement('settings')?.setValue(next);
+        const widget=option.getUIElement('settings');
+        if(widget?.isChanged?.() || widget?.node?.getAttribute?.('data-changed')==='true') return;
+        if(current==null || String(current)!==next) {
+          widget?.setValue(next);
+          // LuCI Dropdown.setValue emits a change even for a server readback.
+          // Only remove the marker created by this synchronous clean rebase.
+          widget?.node?.removeAttribute?.('data-changed');
+        }
         option.cfgvalue('settings',next);
       }
       const loaded=uci.state?.values?.podkop?.settings;
