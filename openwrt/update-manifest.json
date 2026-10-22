@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "patchVersion": "20261022-pe-v34-023",
+  "patchVersion": "20261022-pe-v35-023",
   "channel": "podkop-pe",
   "engineVersion": "1.13.21-pdk-r11",
   "supportedPodkopVersions": [
@@ -10,14 +10,14 @@
   "publishedAt": "2026-10-22T00:00:00+07:00",
   "sha256": {
     "a": "db63a8cb6c8a03d388104307945b5f51402498a997a54526233da813868ff5b2",
-    "i": "08a9186f0bb617cf144ebba9d53670d5dab3b159cc383d65deb54b21b06b3e6b",
+    "i": "65276328ca080a2313271034710a7806a7e555f4dfd9c9b2fd2cf2b434fa3a9c",
     "m": "b884d024254596d5537fa5dc2490e5e5a489b964854072e6e532f027dddf68ae",
     "openwrt/dashboard.js": "6a075ab405160ecfe2742cca4ca5ef24af2d7fca2108d05c3fb48541c0e639aa",
     "openwrt/diagnostic.js": "25fcfd513a23bd3203a04d64f201e724de01f8584ee6435940e47c358a349ad2",
     "openwrt/dns-bootstrap.json": "c2b478fcf742406bb42699e49b0dead6f91f7a0c51d7e8b2982168028deabdbd",
     "openwrt/dns-main.json": "b7f16eeb7d0519833bf60109dcc829af8478b915a1a480ee9849f9be1beddefb",
-    "openwrt/dns_benchmark.js": "e1527b0a7a11ec0a905cab8e3b86aa77ce253356a1d877bc2335cf246314f4bb",
-    "openwrt/install.sh": "08a9186f0bb617cf144ebba9d53670d5dab3b159cc383d65deb54b21b06b3e6b",
+    "openwrt/dns_benchmark.js": "0148dfc0d810c5f6fbc7089e4ea5d87b2c73bc92e8be9b0655f84c41cb71154b",
+    "openwrt/install.sh": "65276328ca080a2313271034710a7806a7e555f4dfd9c9b2fd2cf2b434fa3a9c",
     "openwrt/main.js": "ff49b47e4293bbef93d09762aaeed1bfcaeb16451798618e0857dcd47b8738e8",
     "openwrt/podkop-actions-ui-fix.sh": "2bc17d2a3cbc365d21d080612e4d5463ffee12c8b818fa2f6c839ee0645d605f",
     "openwrt/podkop-diagnostic-policy.sh": "9ac27b2bf3908d0b238781b0bc07a489d5584251ae7f16b8c250ac6f8cb0cdeb",
