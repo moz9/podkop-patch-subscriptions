@@ -1661,6 +1661,7 @@ subscription_sources_prepare() {
         old_required="$(subscription_required_services_json "$section")" || return 1
         required="$(printf '%s' "$changes" | jq -c --argjson current "$old_required" '.requiredServices // $current')" || return 1
         subscription_services_validate "$required" || return 1
+        required="$(subscription_required_services_json "$section" "$required")" || return 1
         if [ "$required" != '[]' ] && { ! command -v subscription_services_snapshot_capacity >/dev/null 2>&1 || ! subscription_services_snapshot_capacity; }; then
             SUBSCRIPTION_SOURCES_ERROR=service_snapshot_storage_unavailable
             return 1
@@ -2377,6 +2378,10 @@ subscription_apply_v2_print_result() {
 }
 
 subscription_apply_v2_reload() {
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        podkop_section_apply
+        return $?
+    fi
     PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload > /dev/null 2>&1
 }
 
@@ -2397,7 +2402,7 @@ subscription_apply_v2_restore() {
     restore_ok=1
     uci -q revert podkop > /dev/null 2>&1 || true
 
-    restore_tmp="${PODKOP_CONFIG}.subscription-apply-v2.$$"
+    restore_tmp="${PODKOP_CONFIG}.subscription-apply-v2.$"
     if ! cp "$SUBSCRIPTION_APPLY_V2_TMP/podkop.config" "$restore_tmp" 2> /dev/null ||
         ! mv "$restore_tmp" "$PODKOP_CONFIG" 2> /dev/null; then
         rm -f "$restore_tmp"
@@ -2422,8 +2427,10 @@ subscription_apply_v2_restore() {
     esac
 
     config_load "$PODKOP_CONFIG"
-    if ! subscription_apply_v2_reload; then
-        restore_ok=0
+    if [ "${PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED:-0}" != 1 ]; then
+        if ! PODKOP_SECTION_ROLLBACK=1 subscription_apply_v2_reload; then
+            restore_ok=0
+        fi
     fi
 
     [ "$restore_ok" -eq 1 ]
@@ -2497,12 +2504,21 @@ set_subscription_sections_enabled() {
     SUBSCRIPTION_APPLY_V2_COMMITTED=0
     SUBSCRIPTION_APPLY_V2_STAGED=0
     SUBSCRIPTION_APPLY_V2_CHANGED=0
+    PODKOP_SECTION_ERROR=""
+    PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=1
     if [ -z "$SUBSCRIPTION_APPLY_V2_TMP" ] || [ ! -d "$SUBSCRIPTION_APPLY_V2_TMP" ]; then
         subscription_apply_v2_print_result false error prepare temporary_directory_failed false false 0 false
         subscription_apply_v2_cleanup
         return 1
     fi
     trap 'subscription_apply_v2_interrupted' INT TERM HUP
+
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        if ! podkop_section_preflight "$payload"; then
+            subscription_apply_v2_fail validation "${PODKOP_SECTION_ERROR:-section_isolation_unavailable}" false
+            return $?
+        fi
+    fi
 
     payload_file="$SUBSCRIPTION_APPLY_V2_TMP/payload.json"
     sections_file="$SUBSCRIPTION_APPLY_V2_TMP/sections.jsonl"
@@ -2518,10 +2534,10 @@ set_subscription_sections_enabled() {
                 and (.section | type == "string" and length > 0)
                 and (.changes | type == "array")
                 and ((.sources // []) | type == "array")
-                and (if has("selectionMode") then (.selectionMode == "all" or .selectionMode == "selected") else true end)
+                and (if has("selectionMode") then (.selectionMode == "auto" or .selectionMode == "all" or .selectionMode == "selected") else true end)
                 and (if has("includeTags") then (.includeTags | type=="array" and all(.[]; type=="string" and length>0 and length<=256 and (contains("\n")|not) and (contains("\r")|not))) else true end)
                 and (if has("excludeTags") then (.excludeTags | type=="array" and all(.[]; type=="string" and length>0 and length<=256 and (contains("\n")|not) and (contains("\r")|not))) else true end)
-                and (if has("requiredServices") then (.requiredServices | type=="array" and length<=2 and all(.[]; .=="gemini" or .=="chatgpt") and length==(unique|length)) else true end)
+                and (if has("requiredServices") then (.requiredServices | type=="array" and length<=4 and all(.[]; .=="gemini" or .=="chatgpt" or .=="exit_country" or .=="google_country") and length==(unique|length)) else true end)
                 and ((.changes | length) + ((.sources // []) | length) > 0 or has("selectionMode") or has("includeTags") or has("excludeTags") or has("requiredServices"))
                 and all((.sources // [])[]; type == "object" and (.id | type == "string" and length == 32) and (.enabled | type == "boolean"))
                 and (([.sources[]?.id] | length) == ([.sources[]?.id] | unique | length))
@@ -2660,8 +2676,8 @@ set_subscription_sections_enabled() {
     SUBSCRIPTION_APPLY_V2_CHANGED="$changed_count"
     if [ "$changed_count" -eq 0 ]; then
         if [ -f "$(subscription_reload_pending_file)" ]; then
-            if ! (PODKOP_SUBSCRIPTION_APPLY_NOW=1 subscription_reload_seamless); then
-                subscription_apply_v2_print_result false error reload reload_failed false false 0 false
+            if ! PODKOP_SUBSCRIPTION_APPLY_NOW=1 subscription_reload_seamless; then
+                subscription_apply_v2_print_result false error reload "${PODKOP_SECTION_ERROR:-reload_failed}" false false 0 false
                 subscription_apply_v2_cleanup
                 return 1
             fi
@@ -2748,7 +2764,7 @@ set_subscription_sections_enabled() {
             return $?
         fi
         if ! apply_subscription_exclusions_to_cached_links "$section"; then
-            subscription_apply_v2_fail cache subscription_cache_update_failed true
+            subscription_apply_v2_fail cache "${SUBSCRIPTION_CACHE_ERROR:-subscription_cache_update_failed}" true
             return $?
         fi
         items_cache_path="$(get_subscription_items_cache_path "$section")"
@@ -2759,12 +2775,13 @@ set_subscription_sections_enabled() {
         fi
     done < "$validated_sections_file"
 
+    PODKOP_SECTION_APPLY_RUNTIME_UNCHANGED=0
     if ! subscription_apply_v2_reload; then
-        subscription_apply_v2_fail reload reload_failed true
+        subscription_apply_v2_fail reload "${PODKOP_SECTION_ERROR:-reload_failed}" true
         return $?
     fi
 
-    rm -f "$(subscription_reload_pending_file)"
+    subscription_pending_clear "${PODKOP_SECTION_TARGET:-}" || return 1
     subscription_apply_v2_print_result true success complete "" true false "$changed_count" true
     subscription_apply_v2_cleanup
     return 0
@@ -2772,6 +2789,52 @@ set_subscription_sections_enabled() {
 # subscription_apply_v2 end
 
 # subscription_seamless_reload begin
+subscription_pending_sections_json() {
+    local pending value
+    pending="$(subscription_reload_pending_file)" || return 1
+    [ -f "$pending" ] || { printf '[]\n'; return 0; }
+    if value="$(jq -ce 'select(type=="array" and all(.[];type=="string" and length>0 and all(explode[]; (.>=65 and .<=90) or (.>=97 and .<=122) or (.>=48 and .<=57) or .==95)))|unique' "$pending" 2>/dev/null)"; then
+        printf '%s\n' "$value"
+    elif command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        # An older empty marker cannot identify its targets: preserve every pool.
+        podkop_section_names
+    else
+        printf '[]\n'
+    fi
+}
+
+subscription_pending_mark() {
+    local pending current proposed target="${1:-}"
+    pending="$(subscription_reload_pending_file)" || return 1
+    if ! command -v podkop_section_enabled >/dev/null || ! podkop_section_enabled; then
+        (umask 077; touch "$pending")
+        return $?
+    fi
+    current="$(subscription_pending_sections_json)" || return 1
+    if [ -n "$target" ]; then
+        proposed="$(printf '%s' "$current" | jq -ce --arg section "$target" '.+[$section]|unique')" || return 1
+    else
+        proposed="$(podkop_section_names)" || return 1
+    fi
+    (umask 077; printf '%s\n' "$proposed" > "$pending.tmp.$") && mv "$pending.tmp.$" "$pending"
+}
+
+subscription_pending_clear() {
+    local pending current remaining target="${1:-}"
+    pending="$(subscription_reload_pending_file)" || return 1
+    [ -f "$pending" ] || return 0
+    if ! command -v podkop_section_enabled >/dev/null || ! podkop_section_enabled; then
+        rm -f "$pending"
+        return $?
+    fi
+    [ -n "$target" ] || return 1
+    current="$(subscription_pending_sections_json)" || return 1
+    remaining="$(printf '%s' "$current" | jq -ce --arg section "$target" 'map(select(.!=$section))|unique')" || return 1
+    if [ "$remaining" = '[]' ]; then rm -f "$pending"; else
+        (umask 077; printf '%s\n' "$remaining" > "$pending.tmp.$") && mv "$pending.tmp.$" "$pending"
+    fi
+}
+
 subscription_sing_box_pid() {
     pidof sing-box 2> /dev/null | awk '{ print $1; exit }'
 }
@@ -3272,20 +3335,19 @@ subscription_services_validate() {
 }
 
 subscription_required_services_json() {
-    local values lists raw
+    local values raw
     if [ -n "${PODKOP_DNS_COMMITTED_FILE:-}" ]; then
         [ -r "$PODKOP_DNS_COMMITTED_FILE" ] && [ ! -L "$PODKOP_DNS_COMMITTED_FILE" ] || return 1
         raw="$(uci -q get "/proc/self/fd/3.$1.subscription_required_services" 3< "$PODKOP_DNS_COMMITTED_FILE" 2>/dev/null || true)"
         values="$(printf '%s\n' "$raw" | jq -Rc 'split(" ")|map(select(length>0))')" || return 1
-        raw="$(uci -q get "/proc/self/fd/3.$1.community_lists" 3< "$PODKOP_DNS_COMMITTED_FILE" 2>/dev/null || true)"
-        lists="$(printf '%s\n' "$raw" | jq -Rc 'split(" ")|map(select(length>0))')" || return 1
     else
         values="$(subscription_tags_json "$1" subscription_required_services)" || return 1
-        lists="$(subscription_tags_json "$1" community_lists)" || return 1
     fi
+    # Only explicit user choices gate nodes. Route lists never enable filters.
+    # Apply proposals and committed DNS snapshots use the same representation.
+    [ "$#" -lt 2 ] || values="$2"
     subscription_services_validate "$values" || return 1
-    # Exact known lists only; generic lists never imply geo/application tests.
-    printf '%s' "$values" | jq -c --argjson lists "$lists" '. + (if ($lists|index("google_ai"))!=null then ["gemini"] else [] end) | unique'
+    printf '%s' "$values" | jq -c 'unique'
 }
 
 subscription_services_context() {

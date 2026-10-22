@@ -5479,15 +5479,15 @@ function getSourceSummary({
   const sourceEnabled = getEffectiveSourceEnabled(draft, section.code, group);
   const includeTags = getEffectiveSubscriptionTags(draft, section, "include");
   const excludeTags = getEffectiveSubscriptionTags(draft, section, "exclude");
-  const runtimeCount = sourceEnabled ? group.items.filter(item =>
+  const previewCount = sourceEnabled ? group.items.filter(item =>
     item.supported && getEffectiveSubscriptionItemEnabled(draft, section, item) &&
     !isSubscriptionTagFiltered(item, includeTags, excludeTags) &&
     !getSubscriptionServiceExclusions(item,getEffectiveRequiredServices(draft,section)).length).length : 0;
   const unsupportedCount = group.items.length - supportedCount;
   const parts = [
     `Конфигов: ${group.items.length}`,
-    ...(getEffectiveSelectionMode(pendingChanges,section) === "auto" ? [] : [`${modeChanging ? "Выбрано сейчас" : "Выбрано"}: ${selectedCount}/${supportedCount}`]),
-    `${modeChanging ? "По прежнему режиму" : "К применению"}: ${runtimeCount}`
+    ...(getEffectiveSelectionMode(pendingChanges,section) === "auto" ? [] : [`${modeChanging ? "Выбрано в сохранённых настройках" : "Выбрано"}: ${selectedCount}/${supportedCount}`]),
+    `${modeChanging ? "По сохранённому режиму" : "К применению"}: ${previewCount}`
   ];
   if (modeChanging) parts.push("После смены режима — после применения");
   if (!sourceEnabled) parts.push("Выключена");
@@ -5507,6 +5507,7 @@ function getToolbarMessage({
   pendingCount,
   runtimeStatus
 }) {
+  const scoped = runtimeStatus?.isolatedSections?.length > 0 || !!runtimeStatus?.isolatedSection;
   if (loading) {
     return actionMessage || _("Loading subscription configs");
   }
@@ -5515,7 +5516,7 @@ function getToolbarMessage({
   }
   if (actionStatus === "verifying") return actionMessage || "Проверяем применение; повторять не нужно.";
   if (applying || status === "applying") {
-    return _("Applying changes. Podkop will be restarted once.");
+    return scoped ? "Применяем эту секцию." : _("Applying changes. Podkop will be restarted once.");
   }
   if (runtimeStatus?.unknown) return "Нет статуса роутера; операции заблокированы.";
   if (runtimeStatus?.busy && actionStatus !== "running") return "Podkop занят; дождитесь завершения.";
@@ -5532,13 +5533,13 @@ function getToolbarMessage({
     return _("Failed to save!");
   }
   if (pendingCount > 0) {
-    return `${_("Unsaved changes")}: ${pendingCount}. ${_("Click Apply to restart Podkop once.")}`;
+    return `${_("Unsaved changes")}: ${pendingCount}. ${scoped ? "Нажмите отдельную кнопку нужной секции." : _("Click Apply to restart Podkop once.")}`;
   }
-  if (runtimeStatus?.pending) return "Нажмите «Применить»; возможен краткий перерыв соединений.";
+  if (runtimeStatus?.pending) return "Нет несохранённых изменений. Рабочие конфиги продолжают использоваться.";
   if (status === "success") {
-    return _("Changes applied. Podkop has been restarted.");
+    return scoped ? "Секция применена." : _("Changes applied. Podkop has been restarted.");
   }
-  return 'Выберите узлы и нажмите «Применить».';
+  return "Нет несохранённых изменений. Рабочий набор показан отдельно.";
 }
 function getToolbarClass(status, actionStatus, pendingCount) {
   if (status === "applying") {
@@ -5581,7 +5582,7 @@ function renderToolbar({
   const canRunAction = !loading && !failed && !applying && !actionRunning && !blocked;
   const canRunSubscriptionAction = canRunAction && pendingCount === 0;
   const canRefresh = !loading && !applying && !actionRunning && !runtimeStatus?.busy && (!runtimeStatus?.unknown || failed || applyUnconfirmed) && (failed || applyUnconfirmed || pendingCount === 0);
-  const canApply = (pendingCount > 0 || runtimeStatus?.pending) && canRunAction;
+  const canApply = pendingCount > 0 && canRunAction;
   const canReset = pendingCount > 0 && !applying && !actionRunning;
   return E(
     "div",
@@ -5593,6 +5594,10 @@ function renderToolbar({
     },
     [
       renderSubscriptionState({loading,failed,applying,action,actionStatus,pendingCount,runtimeStatus}),
+      ...(runtimeStatus?.pending ? [E("span", {
+        class:"pdk_subscriptions-page__catalog-status", role:"status",
+        style:"flex:1 0 100%;order:1;font-size:12px"
+      }, `Каталог и проверки обновлены${runtimeStatus.pendingSections?.length ? `: ${runtimeStatus.pendingSections.join(", ")}` : ""}. Само обновление каталога не меняет рабочие наборы. Применение каталога — отдельной кнопкой в секции.`)] : []),
       E(
         "div",
         { class: "pdk_subscriptions-page__toolbar-message" },
@@ -6030,7 +6035,7 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
     (selected.includes('gemini') && selected.includes('google_country') ? 1 : 0);
   return E('div', {class:'pdk_subscriptions-page__service-filter',style:'margin:8px 0'}, [
     E('div', {style:'display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px'}, [
-    E('span', {}, 'Обязательные сервисы:'),
+    E('span', {}, 'Фильтр по сервисам:'),
     ...Object.entries(labels).map(([id,label]) => E('label', {style:'display:inline-flex;gap:4px;margin-right:12px'}, [
       E('input', {type:'checkbox',value:id,checked:selected.includes(id)?'checked':void 0,disabled:busy?'disabled':void 0,
         change:event=>onToggle(section.code,{id:'services:required',enabled:section.requiredServices||[]},event.target.checked?[...new Set([...selected,id])]:selected.filter(service=>service!==id))}),label
@@ -6042,9 +6047,9 @@ function renderSubscriptionServiceFilter(section, pendingChanges, disabled, onTo
     ]),
     E('small', {role:'status',style:'display:block;margin:4px 0'}, selected.length
       ? `Подходят: ${summary.passed} из ${summary.candidates} · Свежие результаты: ${summary.fresh} · Нужна проверка: ${summary.needsCheck} · Отказ: ${summary.failed} · Не определено: ${summary.unknown}`
-      : 'Фильтр выключен · выберите сервис для проверки'),
+      : 'Фильтр по сервисам выключен · не ограничивает новый набор'),
     E('small', {'data-service-next-step':'true', style:'display:block;margin:4px 0'}, !selected.length
-      ? 'Выберите обязательные проверки.'
+      ? 'Учитываются остальные выбранные фильтры. Доступность сервисов не проверяется.'
       : !summary.candidates
       ? 'Нет кандидатов. Проверьте подписки, теги и ручной выбор.'
       : summary.needsCheck
@@ -6222,7 +6227,7 @@ function getTagFilterPreview(section, pendingChanges) {
 }
 function getSectionCollapsedSummary(section, pendingChanges) {
   const preview = getTagFilterPreview(section, pendingChanges);
-  const parts = [`${section.items.length} конфигов`, `${preview.uncertain ? "по прежнему режиму" : "к применению"} ${preview.enabled}`];
+  const parts = [`${section.items.length} конфигов`];
   if (preview.uncertain) parts.push("после смены режима — после применения");
   if (getEffectiveSelectionMode(pendingChanges, section) === "selected") parts.push("только выбранные");
   if (getEffectiveSubscriptionTags(pendingChanges, section, "include").length ||
@@ -6252,16 +6257,46 @@ function renderSection({
   const gameMode = gameTags.includes('@game:only')
     ? (gameTags.includes('@game:exclude') ? 'conflict' : 'gaming')
     : gameTags.includes('@game:exclude') ? 'non-gaming' : 'all';
+  const runtimeStatus = sourceActions?.runtimeStatus;
+  const singleRuntime = runtimeStatus?.runtimeMode === "single";
+  const isolated = runtimeStatus?.isolatedSection;
+  const isolatedSections = runtimeStatus?.isolatedSections || (isolated ? [isolated] : []);
+  const sectionIsolated = isolatedSections.includes(section.code);
+  const isolationBlocked = isolatedSections.length > 0 && (!sectionIsolated || runtimeStatus.isolatedReady !== true);
+  const sectionPending = Object.keys(pendingChanges).some(key => key.startsWith(`${section.code}:`));
+  const sectionRuntimePending = Array.isArray(runtimeStatus?.pendingSections) ? runtimeStatus.pendingSections.includes(section.code) : runtimeStatus?.pending;
+  const activeSection = runtimeStatus?.sections?.find(value => value.section === section.code);
+  const activeCountKnown = !runtimeStatus?.busy && !runtimeStatus?.unknown && activeSection?.ready === true &&
+    Number.isSafeInteger(activeSection.activeNodeCount) && activeSection.activeNodeCount >= 0;
   return E("div", { class: "pdk_subscriptions-page__section" }, [
-    E("button", {type:"button", class:"pdk_subscriptions-page__section-title",
+    E("button", {type:"button", id:`pdk-subscription-section-${section.code}`, class:"pdk_subscriptions-page__section-title",
       style:"display:block;width:100%;text-align:left;cursor:pointer",
       title:collapsed ? "Развернуть секцию" : "Свернуть секцию",
       "aria-label":`${collapsed ? "Развернуть" : "Свернуть"} секцию ${section.displayName}`,
       "aria-expanded":collapsed ? "false" : "true",
       click:()=>onToggleSection(section.code)},
       `${collapsed ? "▸" : "▾"} ${section.displayName} · ${getSectionCollapsedSummary(section, pendingChanges)}`),
+    E("div", {class:"pdk_subscriptions-page__composition"}, [
+      E("div", {class:"pdk_subscriptions-page__composition-active",role:"status","aria-labelledby":`pdk-subscription-section-${section.code} pdk-composition-active-heading`}, [
+        E("div", {}, activeCountKnown ? `${activeSection.activeNodeCount} узлов` : runtimeStatus?.busy ? "Проверяем состояние" : "Не подтверждено")
+      ]),
+      E("div", {class:"pdk_subscriptions-page__composition-preview",role:"group","aria-labelledby":`pdk-subscription-section-${section.code} pdk-composition-preview-heading`}, [
+        E("div", {}, tagPreview.uncertain
+          ? `Для нового режима пока не рассчитано. По сохранённому: ${tagPreview.enabled}.`
+          : tagPreview.enabled === 0
+          ? `0 из ${section.items.length}. Применение будет отклонено. Рабочая конфигурация не изменится.`
+          : `${tagPreview.enabled} из ${section.items.length}`)
+      ])
+    ]),
+    ...sourceActions?.onApply ? [E("button", {type:"button",class:"pdk_subscriptions-page__section-apply",
+      disabled:applying || sourceActions?.modeDisabled || isolationBlocked || (!sectionPending && !sectionRuntimePending) ? "disabled" : void 0,
+      title:isolationBlocked ? (!sectionIsolated ? "Новая секция ещё не подготовлена. Сначала примените структуру через общие настройки Podkop." : "Сервис ещё не готов к применению.") : singleRuntime ? "Применить только выбор этой секции; черновики остальных сохранятся. Возможен краткий разрыв соединений всех секций." : "Применить только выбор этой секции; черновики остальных секций сохранятся.",
+      click:()=>sourceActions?.onApply?.(section.code)}, !singleRuntime && sectionIsolated && runtimeStatus.isolatedReady === true
+        ? `Применить ${sectionRuntimePending && !sectionPending ? "каталог " : ""}${section.code} без перезапуска других секций` : `Применить ${sectionRuntimePending && !sectionPending ? "каталог " : ""}${section.displayName}`)]:[],
+    ...sectionIsolated ? [E("small", {style:"display:block;margin:4px 0"},runtimeStatus.isolatedReady === true
+      ? singleRuntime ? "Сохраняется только эта секция. Один sing-box: возможен краткий разрыв соединений всех секций." : "Только эта секция; остальные не перезапускаются."
+      : "Изоляция не готова; применение заблокировано.")]:[],
     ...collapsed ? [] : [
-    E("small", {style:"display:block;margin:8px 0"}, "Изменения вступят в силу после «Применить»."),
     E("label", {style:"display:flex;align-items:center;gap:8px;margin:8px 0"}, [
       E("input", {type:"checkbox", checked:getEffectiveSelectionMode(pendingChanges, section) !== "auto" ? "checked" : void 0,
         disabled:applying || sourceActions?.modeDisabled ? "disabled" : void 0,
@@ -6308,11 +6343,6 @@ function renderSection({
     ]),
     ...section.serviceSupport !== undefined ? [renderSubscriptionServiceFilter(section,pendingChanges,applying,onToggle,sourceActions)]:[],
     E("details", {}, [E("summary", {}, "Как работают теги"), E("small", {}, "Теги берутся из названий. Флаг и код страны равнозначны. Исключение важнее разрешения; фильтры действуют и при ручном выборе.")]),
-    E("small", {style:"display:block;margin:4px 0"}, tagPreview.uncertain
-      ? `По прежнему режиму подходят: ${tagPreview.enabled}. После смены режима итоговое число определится при применении.`
-      : tagPreview.enabled === 0
-      ? "К применению: 0. Сохранение будет отклонено. Проверьте причины исключения ниже."
-      : `К применению: ${tagPreview.enabled} из ${section.items.length} конфигов.`),
     E("small", {style:"display:block;margin:4px 0"}, `Исключено: несовместимые — ${tagPreview.unsupported}; подписки выключены — ${tagPreview.sourceExcluded}; не выбраны вручную — ${tagPreview.manualExcluded}; теги — ${tagPreview.filtered}; сервисы — ${tagPreview.serviceExcluded}. Без двойного счёта.`),
     sourceGroups.length === 0 ? renderEmptyState(
       _("Subscription cache is empty. Click refresh to load configs.")
@@ -6419,6 +6449,16 @@ function renderSubscriptionSections({
       onSpeedtest,
       runtimeStatus
     }),
+    ...(sections.length ? [E("div", {class:"pdk_subscriptions-page__composition pdk_subscriptions-page__composition-head"}, [
+      E("div", {}, [
+        E("strong", {id:"pdk-composition-active-heading"}, "Рабочий набор"),
+        E("small", {}, "Узлы в запущенной конфигурации. Доступность сайтов здесь не проверяется.")
+      ]),
+      E("div", {}, [
+        E("strong", {id:"pdk-composition-preview-heading"}, "К применению"),
+        E("small", {}, "Расчёт по каталогу, фильтрам и свежим проверкам. Применяется отдельной кнопкой.")
+      ])
+    ])] : []),
     loading && !sections.length ? renderEmptyState(_("Loading")) : failed && !sections.length ? renderEmptyState(actionMessage || _("Failed to load subscription configs")) : renderSections2({
       sections,
       pendingChanges,
@@ -6431,6 +6471,7 @@ function renderSubscriptionSections({
       onToggleSection,
       onToggleSource,
       sourceActions: {
+        runtimeStatus, onApply,
         target:actionTarget,
         modeDisabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying",
         disabled:applying || loading || failed || runtimeStatus?.busy || runtimeStatus?.unknown || actionStatus === "running" || actionStatus === "verifying" || pendingCount > 0,
@@ -6505,7 +6546,8 @@ function subscriptionStateLabel(widget) {
   if (widget.runtimeStatus?.busy) return ["busy", "Podkop занят", "Дождитесь завершения операции."];
   if (widget.loading) return ["busy", "Загрузка", "Читаем состояние подписок."];
   if (widget.failed || widget.actionStatus === "error") return ["error", "Ошибка", "См. причину ошибки. Ваш выбор сохранён."];
-  if (widget.pendingCount > 0 || widget.runtimeStatus?.pending) return ["pending", "Нужно применить", "Нажмите «Применить»; возможен краткий перерыв соединений."];
+  if (widget.pendingCount > 0) return ["pending", `Ваши изменения: ${widget.pendingCount}`, "Есть несохранённые изменения выбора или фильтров. Примените нужную секцию; возможен краткий перерыв соединений."];
+  if (widget.runtimeStatus?.pending) return ["ready", "Ваших изменений нет", "Обновление каталога и проверок показано отдельно; оно не блокирует новые изменения."];
   return ["ready", "Готово", "Операции доступны; работоспособность прокси не проверена."];
 }
 function renderSubscriptionState(widget) {
@@ -6542,13 +6584,19 @@ async function reconcileSubscriptionApplyTimeout(snapshot, generation) {
     if (generation !== subscriptionStatusGeneration || store.get().subscriptionItemsWidget.applyVerification !== snapshot) { releaseSubscriptionApplyRead(snapshot,generation); return; }
     const current = store.get().subscriptionItemsWidget;
     const remaining = rebaseSubscriptionDraft(snapshot.pendingChanges,data);
-    const confirmed = Object.keys(remaining).length === 0 && current.runtimeStatus?.busy === false && current.runtimeStatus?.pending === false;
+    const expectedSections = snapshot.isolatedSections || (snapshot.isolatedSection ? [snapshot.isolatedSection] : []);
+    const actualSections = current.runtimeStatus?.isolatedSections || (current.runtimeStatus?.isolatedSection ? [current.runtimeStatus.isolatedSection] : []);
+    const isolationConfirmed = expectedSections.length === 0 && actualSections.length === 0 ||
+      (current.runtimeStatus?.isolatedReady === true && actualSections.includes(snapshot.sectionCode) &&
+        expectedSections.length === actualSections.length && expectedSections.every(section=>actualSections.includes(section)));
+    const targetPending = snapshot.sectionCode && Array.isArray(current.runtimeStatus?.pendingSections) ? current.runtimeStatus.pendingSections.includes(snapshot.sectionCode) : current.runtimeStatus?.pending;
+    const confirmed = Object.keys(remaining).length === 0 && current.runtimeStatus?.busy === false && targetPending === false && isolationConfirmed;
     store.set({subscriptionItemsWidget:{...current,data,loading:false,failed:false,applying:false,
       applyVerification:null,applyVerificationReading:false,applyUnconfirmed:confirmed ? null : snapshot,
-      pendingChanges:rebaseSubscriptionDraft(current.pendingChanges,data),status:confirmed ? "success" : "error",
+      pendingChanges:rebaseSubscriptionDraft(current.pendingChanges,data,snapshot.sectionCode),status:confirmed ? "success" : "error",
       action:"apply",actionStatus:confirmed ? "success" : "error",actionError:confirmed ? "" : "apply_unconfirmed",
       actionMessage:confirmed ? "Применено. Сохранённые настройки проверены; Podkop завершил операцию."
-        : current.runtimeStatus?.pending
+        : targetPending
         ? "Настройки прочитаны, но конфиги или результаты проверок ещё не применены. Ваш выбор сохранён. Проверьте его перед повторным применением."
         : "Podkop завершил операцию, но часть выбранных настроек не подтверждена. Ваш оставшийся выбор сохранён. Проверьте его перед повторным применением."}});
   } catch (_) {
@@ -6680,7 +6728,7 @@ async function handleCheckSubscriptionServices(sectionCode, services, force = fa
       }
     }
     const persistedFilter=store.get().subscriptionItemsWidget.data.find(section=>section.code===sectionCode)?.requiredServices?.length>0;
-    setActionState({action:'services',actionStatus:failures.length===items.length?'error':'idle',actionError:failures[0]?.code,actionMessage:(store.get().subscriptionItemsWidget.serviceCancel?'Проверка остановлена. Полученные результаты сохранены.':'Проверка завершена. Результаты показаны по узлам и сервисам.') + (failures.length?` Ошибок: ${failures.length}. ${failures[0].message}`:'') + (persistedFilter?' Нажмите «Применить», чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.':' Изменения рабочего подключения не применены.')});
+    setActionState({action:'services',actionStatus:failures.length===items.length?'error':'idle',actionError:failures[0]?.code,actionMessage:(store.get().subscriptionItemsWidget.serviceCancel?'Проверка остановлена. Полученные результаты сохранены.':'Проверка завершена. Результаты показаны по узлам и сервисам.') + (failures.length?` Ошибок: ${failures.length}. ${failures[0].message}`:'') + (persistedFilter?' Примените нужную секцию, чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.':' Изменения рабочего подключения не применены.')});
   } catch (error) {
     const detail=getSubscriptionServiceCheckError(error,sectionCode,currentItem,currentStage);
     setActionState({action:'services',actionStatus:'error',actionTarget:{sectionCode,itemId:currentItem?.id},actionError:detail.code,actionMessage:detail.message});
@@ -6702,7 +6750,7 @@ function handleConfirmSubscriptionService(sectionCode, itemId, service) {
           const response=await PodkopShellMethods.confirmSubscriptionService(sectionCode,itemId,service,true);
           if (!response.success || response.data?.success!==true) throw new Error(response.data?.error||response.error||'service_confirm_failed');
           await refreshSubscriptionServiceEvidence(sectionCode);
-          setActionState({action:'services',actionStatus:'idle',actionMessage:'Подтверждение сохранено. При включённом фильтре нажмите «Применить», чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.'});
+          setActionState({action:'services',actionStatus:'idle',actionMessage:'Подтверждение сохранено. При включённом фильтре примените нужную секцию, чтобы рабочее подключение использовало новые результаты. До применения оно не изменено.'});
         } catch(error) {setActionState({action:'services',actionStatus:'error',actionError:error?.message,actionMessage:getSubscriptionActionErrorMessage(error,'Подтверждение не сохранено. Повторите проверку сети.')});}
       }},'Да, получен ответ в реальном чате')
     ])
@@ -6777,7 +6825,9 @@ async function fetchSubscriptionItems(status = "idle", refreshedSource, preserve
         action: "none",
         actionStatus: "idle",
         actionMessage: "",
-        pendingChanges: preserveDraft ? rebaseSubscriptionDraft(store.get().subscriptionItemsWidget.pendingChanges, data) : {},
+        pendingChanges: typeof preserveDraft === "string"
+          ? Object.fromEntries(Object.entries(store.get().subscriptionItemsWidget.pendingChanges).filter(([key])=>!key.startsWith(`${preserveDraft}:`)))
+          : preserveDraft ? rebaseSubscriptionDraft(store.get().subscriptionItemsWidget.pendingChanges, data,prev.draftRebaseSection) : {},
         latencyByRow: refreshedSource?.sourceId ? retainOtherSubscriptionResults(prev.latencyByRow, data, refreshedSource) : {},
         speedByRow: refreshedSource?.sourceId ? retainOtherSubscriptionResults(prev.speedByRow, data, refreshedSource) : {},
         data
@@ -6806,9 +6856,10 @@ function retainOtherSubscriptionResults(results, sections, target) {
   const existing = new Set(sections.flatMap(section => section.items.map(item => getRowId2(section.code,item.id))));
   return Object.fromEntries(Object.entries(results || {}).filter(([id]) => existing.has(id) && !refreshed.has(id)));
 }
-function rebaseSubscriptionDraft(draft, sections) {
+function rebaseSubscriptionDraft(draft, sections, sectionCode) {
   const remaining = {...draft};
   for (const section of sections) {
+    if (sectionCode && section.code !== sectionCode) continue;
     const modeKey = `${section.code}:selection:mode`;
     if (modeKey in remaining && getEffectiveSelectionMode(remaining,section) === (section.selectionMode || "auto")) delete remaining[modeKey];
     for (const kind of ["include","exclude"]) {
@@ -6899,24 +6950,47 @@ function getChangesBySection(pendingChanges) {
     {}
   );
 }
-async function handleApply() {
+async function handleApply(sectionCode) {
   const widget = store.get().subscriptionItemsWidget;
-  const pendingChanges = widget.pendingChanges;
-  if ((getPendingCount2(pendingChanges) === 0 && !widget.runtimeStatus?.pending) || widget.applying || widget.loading || widget.applyVerification || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown || isActionRunning()) {
+  sectionCode = typeof sectionCode === "string" ? sectionCode : undefined;
+  // Catalog refresh is not a user draft or permission for an implicit Apply.
+  // Keep catalog-only application behind the explicit per-section action.
+  if (!sectionCode && getPendingCount2(widget.pendingChanges) === 0) return;
+  const isolated = widget.runtimeStatus?.isolatedSection;
+  const isolatedSections = widget.runtimeStatus?.isolatedSections || (isolated ? [isolated] : []);
+  if (!sectionCode && isolatedSections.length) {
+    const dirtySections = [...new Set(Object.keys(widget.pendingChanges).map(key=>key.split(':')[0]))];
+    if (dirtySections.length > 1 || dirtySections.length === 0 && isolatedSections.length > 1) {
+      const error = new Error('apply_sections_separately');
+      setActionState({action:"apply",actionStatus:"error",actionError:error.message,actionMessage:getSubscriptionActionErrorMessage(error,"")});
+      return;
+    }
+    sectionCode = dirtySections[0] || isolatedSections[0];
+  }
+  if (isolatedSections.length && (!isolatedSections.includes(sectionCode) || widget.runtimeStatus.isolatedReady !== true)) {
+    const error = new Error(widget.runtimeStatus.isolatedReady !== true ? "section_isolation_unavailable" : "isolated_section_only");
+    setActionState({action:"apply",actionStatus:"error",actionError:error.message,actionMessage:getSubscriptionActionErrorMessage(error,"Применение недоступно.")});
+    return;
+  }
+  sectionCode = sectionCode || undefined;
+  const pendingChanges = sectionCode ? Object.fromEntries(Object.entries(widget.pendingChanges).filter(([key])=>key.startsWith(`${sectionCode}:`))) : widget.pendingChanges;
+  const sectionRuntimePending = sectionCode && Array.isArray(widget.runtimeStatus?.pendingSections) ? widget.runtimeStatus.pendingSections.includes(sectionCode) : widget.runtimeStatus?.pending;
+  if ((getPendingCount2(pendingChanges) === 0 && !sectionRuntimePending) || widget.applying || widget.loading || widget.applyVerification || widget.runtimeStatus?.busy || widget.runtimeStatus?.unknown || isActionRunning()) {
     return;
   }
   store.set({
     subscriptionItemsWidget: {
       ...widget,
       applying: true,
+      draftRebaseSection: sectionCode,
       applyUnconfirmed: null,
       status: "applying"
     }
   });
   try {
     const changesBySection = getChangesBySection(pendingChanges);
-    if (!Object.keys(changesBySection).length && widget.runtimeStatus?.pending) {
-      const section = widget.data.find(section=>section.items.some(item=>item.supported));
+    if (!Object.keys(changesBySection).length && sectionRuntimePending) {
+      const section = widget.data.find(section=>(!sectionCode || section.code === sectionCode) && section.items.some(item=>item.supported));
       const item = section?.items.find(item=>item.supported);
       if (!item) throw new Error("subscription_cache_missing");
       changesBySection[section.code] = [{id:item.id,enabled:item.enabled}];
@@ -6930,13 +7004,13 @@ async function handleApply() {
       );
     }
     showToast(_("Saved!"), "success");
-    await fetchSubscriptionItems("success", null, false);
+    await fetchSubscriptionItems("success", null, sectionCode || false);
   } catch (error) {
     logger.error("[SUBSCRIPTIONS]", "failed to apply subscription changes");
     logger.error("[SUBSCRIPTIONS]", error);
     if (/timeout|timed out/i.test(error?.message || "")) {
       store.set({subscriptionItemsWidget:{...store.get().subscriptionItemsWidget,applying:false,status:"verifying",action:"apply",actionStatus:"verifying",
-        actionError:"",applyVerification:{pendingChanges:{...pendingChanges},data:widget.data},
+        actionError:"",applyVerification:{pendingChanges:{...pendingChanges},data:widget.data,sectionCode,isolatedSection:isolated || undefined,isolatedSections},
         actionMessage:"Ответ на применение задержался. Проверяем результат на роутере автоматически; повторно применять не нужно."}});
       return;
     }
@@ -7276,8 +7350,16 @@ function getErrorText(error) {
 }
 function getSubscriptionActionErrorMessage(error, fallback) {
   const detail = getErrorText(error);
+  if (/section_memory_low/.test(detail)) return "Недостаточно свободной памяти для безопасного применения секции. Рабочий процесс не изменён; ваш выбор сохранён. Дождитесь освобождения памяти и повторите применение.";
+  if (/section_memory_unavailable/.test(detail)) return "Не удалось проверить доступную память для безопасного применения секции. Рабочий процесс не изменён; ваш выбор сохранён. Проверьте состояние роутера и повторите применение.";
+  if (/section_runtime_/.test(detail)) return "Не удалось безопасно применить секцию. Ваш выбор сохранён; проверьте состояние секции и журнал Podkop перед повторной попыткой.";
   if (/service_results_stale_or_missing/.test(detail)) return 'Результаты обязательных проверок устарели, относятся к другим настройкам или не найдены. Запустите проверку выбранных сервисов и повторите применение. Рабочее подключение не изменено; ваш выбор сохранён.';
   if (/service_no_eligible_nodes/.test(detail)) return 'После выбранных фильтров нет ни одного узла с действующими положительными результатами всех обязательных проверок. Проверьте результаты по узлам или измените фильтры. Рабочее подключение не изменено; ваш выбор сохранён.';
+  if (/apply_sections_separately/.test(detail)) return "Применяйте секции отдельными кнопками. Черновики других секций сохранятся.";
+  if (/section_isolation_unavailable/.test(detail)) return "Изоляция секции недоступна или ещё не готова. Применение без перезапуска других секций не выполнено; ваш выбор сохранён.";
+  if (/shared_config_changed/.test(detail)) return "Общие настройки изменились. Нужен общий перезапуск через обычные настройки Podkop; черновики подписок сохранены.";
+  if (/isolated_section_only/.test(detail)) return "Секция ещё не изолирована. Черновики сохранены. Новую структуру секций сначала нужно применить через общие настройки Podkop.";
+  if (/uci_pending_changes/.test(detail)) return "Есть несохранённые общие настройки LuCI. Сначала сохраните или отмените их в обычных настройках Podkop; черновики подписок сохранены.";
   if (/service_snapshot_storage_unavailable/.test(detail)) return 'Не удалось подготовить безопасную копию рабочего подключения: проверьте свободное место или локальные списки. Изменения фильтра не применены; ваш выбор сохранён. При нехватке места освободите его и повторите применение.';
   if (/service_manual_results_stale_or_missing/.test(detail)) return 'Ручные proxy-ссылки ещё не прошли обязательные проверки. Нажмите «Проверить новые/устаревшие» в фильтре сервисов. Рабочий набор не изменён; ваш выбор сохранён.';
   if (/service_manual_links_unsupported/.test(detail)) return 'Установленный backend ещё не поддерживает проверку ручных proxy-ссылок вместе с подпиской. Обновите патч; рабочий набор и ваш выбор сохранены.';
@@ -7291,10 +7373,16 @@ function getSubscriptionActionErrorMessage(error, fallback) {
   if (/link_is_not_supported|invalid_link_id/.test(detail)) return "Список конфигов изменился. Несохранённый выбор оставлен на экране. Сверьте его с текущим списком; при необходимости нажмите «Сбросить» и выберите заново.";
   if (/permission|access denied|session/i.test(detail)) return "Сессия LuCI завершилась или недостаточно прав. Войдите в интерфейс заново.";
   switch (getErrorText(error)) {
+    case "committed_config_mismatch":
+      return "Проверка сохранённых настроек обнаружила расхождение; изменения отменены. Ваш отбор сохранён. Обновите патч перед повторным применением.";
     case "service_busy":
       return "Podkop ещё применяет настройки или выполняет другую операцию. Ваш выбор сохранён. Дождитесь статуса «Готово» или «Нужно применить» и повторите действие.";
     case "selector_not_available":
       return _("Podkop selector is not ready. Try again in a minute.");
+    case "section_snapshot_preflight_failed":
+      return "Не пройдена проверка сохранённого снимка или обязательных сервисов. Рабочая конфигурация не изменена; выбор сохранён.";
+    case "section_snapshot_recovery_required":
+      return "Предыдущее применение прервано; контрольный снимок требует восстановления. Повторный перезапуск не выполнялся.";
     case "reload_failed":
       return _("Podkop reload failed. Changes were not applied.");
     case "rollback_failed":
@@ -7325,10 +7413,24 @@ function getSubscriptionActionErrorMessage(error, fallback) {
       return fallback;
   }
 }
+function retainSubscriptionTagPickers(previous, next) {
+  const existing=new Map(Array.from(previous.querySelectorAll('[data-subscription-scroll-key]'),node=>[node.dataset.subscriptionScrollKey,node]));
+  for (const choices of next.querySelectorAll('[data-subscription-scroll-key]')) {
+    const old=existing.get(choices.dataset.subscriptionScrollKey);
+    if (!old) continue;
+    const inputs=Array.from(choices.querySelectorAll('input'));
+    const oldInputs=Array.from(old.querySelectorAll('input'));
+    if (inputs.length!==oldInputs.length || inputs.some((input,index)=>input.value!==oldInputs[index].value)) continue;
+    inputs.forEach((input,index)=>{oldInputs[index].checked=input.checked;oldInputs[index].disabled=input.disabled;});
+    old.parentElement.querySelector('summary').textContent=choices.parentElement.querySelector('summary').textContent;
+    choices.parentElement.replaceWith(old.parentElement);
+  }
+}
 async function renderSubscriptionItemsWidget() {
   logger.debug("[SUBSCRIPTIONS]", "renderSubscriptionItemsWidget");
   const subscriptionItemsWidget = store.get().subscriptionItemsWidget;
   const container = document.getElementById("subscriptions-sections-grid");
+  const focused=document.activeElement;
   const renderedWidget = renderSubscriptionSections({
     loading: subscriptionItemsWidget.loading,
     failed: subscriptionItemsWidget.failed,
@@ -7356,7 +7458,10 @@ async function renderSubscriptionItemsWidget() {
     onToggleSource: handleToggleSource
   });
   return preserveScrollForPage(() => {
+    if (renderSubscriptionItemsWidget.previousData===subscriptionItemsWidget.data) retainSubscriptionTagPickers(container,renderedWidget);
+    renderSubscriptionItemsWidget.previousData=subscriptionItemsWidget.data;
     container.replaceChildren(renderedWidget);
+    if (focused?.isConnected && container.contains(focused)) focused.focus({preventScroll:true});
   });
 }
 async function onStoreUpdate3(next, prev, diff) {
@@ -7414,6 +7519,11 @@ var styles5 = `
 .pdk-subscription-state--busy::before { background:#6199ed; }
 .pdk-subscription-state--pending::before { background:#dbac42; }
 .pdk-subscription-state--error::before,.pdk-subscription-state--unknown::before { background:#e86666; }
+.pdk_subscriptions-page__composition { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:.75rem; margin:.75rem 0; }
+.pdk_subscriptions-page__composition-active,.pdk_subscriptions-page__composition-preview { padding:0 .625rem; min-width:0; overflow-wrap:anywhere; }
+.pdk_subscriptions-page__composition-head { padding:0 .625rem; }
+.pdk_subscriptions-page__composition strong { display:block; margin-bottom:.375rem; }
+.pdk_subscriptions-page__composition small { display:block; margin-top:.375rem; color:var(--text-color-medium); }
 #cbi-podkop-subscriptions,
 #cbi-podkop-subscriptions-_mount_node,
 #cbi-podkop-subscriptions-_mount_node > div {
@@ -7467,6 +7577,7 @@ var styles5 = `
     align-items: center;
     justify-content: space-between;
     gap: 10px;
+    flex-wrap: wrap;
     min-height: 38px;
     border: 1px var(--background-color-low, lightgray) solid;
     border-radius: 4px;

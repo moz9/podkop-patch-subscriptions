@@ -173,11 +173,37 @@ subscription_reconcile_choices() {
 }
 
 get_subscription_operation_status() {
-    local busy=false pending=false
+    # single_runtime_status_v1: scoped settings, shared process lifecycle.
+    if command -v podkop_section_single_mode >/dev/null && podkop_section_single_mode; then
+        local single_busy=false single_pending=false single_names single_status single_pending_sections
+        subscription_runtime_busy && single_busy=true
+        [ ! -f "$(subscription_reload_pending_file)" ] || single_pending=true
+        single_names="$(podkop_section_names)" || single_names='[]'
+        single_status="$(podkop_section_manager status 2>/dev/null)" || single_status='{}'
+        if command -v subscription_pending_sections_json >/dev/null; then
+            single_pending_sections="$(subscription_pending_sections_json)" || single_pending_sections='[]'
+        elif [ "$single_pending" = true ]; then single_pending_sections="$single_names"
+        else single_pending_sections='[]'; fi
+        printf '%s' "$single_status" | jq -c --argjson busy "$single_busy" --argjson pending "$single_pending" \
+            --argjson names "$single_names" --argjson pendingSections "$single_pending_sections" \
+            '($pendingSections|map(select(. as $s|$names|index($s)))|unique) as $currentPending |
+             {busy:$busy,pending:($currentPending|length>0),pendingSections:$currentPending,runtimeMode:"single",isolatedSection:($names[0]//""),isolatedSections:$names,sections:(.sections//[]),isolatedReady:(.ready==true and ($names|length)>0),retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+        return
+    fi
+    local busy=false pending=false isolated="" ready=false isolated_sections='[]' section_status='[]' status pending_sections='[]'
     subscription_runtime_busy && busy=true
     [ ! -f "$(subscription_reload_pending_file)" ] || pending=true
-    jq -cn --argjson busy "$busy" --argjson pending "$pending" \
-        '{busy:$busy,pending:$pending,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
+    pending_sections="$(subscription_pending_sections_json)" || pending_sections='[]'
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        isolated="$(podkop_section_name)"
+        isolated_sections="$(podkop_section_names)" || isolated_sections='[]'
+        status="$(podkop_section_manager status 2>/dev/null)" || status='{}'
+        section_status="$(printf '%s' "$status" | jq -ce '.sections // []')" || section_status='[]'
+        printf '%s' "$status" | jq -e --argjson registered "$isolated_sections" '.ready==true and ($registered|length>0) and ((.sections|map(.section)|sort)==($registered|sort)) and all(.sections[];.ready==true)' >/dev/null && ready=true
+    fi
+    jq -cn --argjson busy "$busy" --argjson pending "$pending" --arg isolated "$isolated" --argjson ready "$ready" \
+        --argjson isolatedSections "$isolated_sections" --argjson sections "$section_status" --argjson pendingSections "$pending_sections" \
+        '{busy:$busy,pending:$pending,pendingSections:$pendingSections,isolatedSection:$isolated,isolatedSections:$isolatedSections,sections:$sections,isolatedReady:$ready,retryAfter:3,reason:(if $busy then "service_busy" else "" end)}'
 }
 
 subscription_cached_source_append() {
@@ -419,6 +445,7 @@ subscription_sources_prepare() {
         old_required="$(subscription_required_services_json "$section")" || return 1
         required="$(printf '%s' "$changes" | jq -c --argjson current "$old_required" '.requiredServices // $current')" || return 1
         subscription_services_validate "$required" || return 1
+        required="$(subscription_required_services_json "$section" "$required")" || return 1
         if [ "$required" != '[]' ] && { ! command -v subscription_services_snapshot_capacity >/dev/null 2>&1 || ! subscription_services_snapshot_capacity; }; then
             SUBSCRIPTION_SOURCES_ERROR=service_snapshot_storage_unavailable
             return 1

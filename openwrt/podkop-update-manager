@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20260813-update-manager-v3"
+VERSION="20261022-update-manager-v4"
 STATE_DIR="/tmp/podkop-update-manager"
 STATUS_FILE="$STATE_DIR/status.json"
 DETAILS_FILE="$STATE_DIR/details.json"
@@ -208,6 +208,14 @@ version_supported() {
     jq -e --arg version "$version" '.supportedPodkopVersions | index($version) != null' "$manifest" >/dev/null 2>&1
 }
 
+reset_check_details() {
+    jq -cn --arg currentPodkopVersion "$(normalize_version "$(current_podkop_version)")" \
+      --arg currentPatchVersion "$(current_patch_version)" \
+      '{currentPodkopVersion:$currentPodkopVersion,currentPatchVersion:$currentPatchVersion,
+        latestPodkopVersion:"",latestPatchVersion:"",canUpdate:false,updateMode:"none",
+        podkopUpdateAvailable:false,patchUpdateAvailable:false}' > "$DETAILS_FILE"
+}
+
 perform_check() {
     local publish="${1:-1}"
     local manifest release current_podkop latest_podkop current_patch latest_patch
@@ -217,6 +225,7 @@ perform_check() {
     manifest="$STATE_DIR/manifest.json"
     release="$STATE_DIR/release.json"
     cache_buster="$(date +%s 2>/dev/null || echo 0)"
+    reset_check_details || return 1
     log_line "Checking Podkop and subscription patch updates."
 
     if ! download_file "$MANIFEST_URL?t=$cache_buster" "$manifest" ||
@@ -337,7 +346,7 @@ perform_update() {
     force_podkop_update=0
     [ "$mode" = "podkop_and_patch" ] && force_podkop_update=1
     if ! run_with_timeout 900 env \
-        PODKOP_PATCH_UPDATE_PODKOP=1 \
+        PODKOP_PATCH_UPDATE_PODKOP="$force_podkop_update" \
         PODKOP_PATCH_VERSION=podkop-pe \
         PODKOP_PATCH_FORCE_PODKOP_UPDATE="$force_podkop_update" \
         sh "$installer"; then

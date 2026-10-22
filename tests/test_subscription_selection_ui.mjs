@@ -32,7 +32,7 @@ c._ = x => x;
 c.getSourceGroups = () => [];
 c.getEffectiveEnabled = (_, __, item) => item.enabled;
 c.getTagFilterPreview = () => ({enabled:0,filtered:0,unsupported:0,sourceExcluded:0,manualExcluded:0,serviceExcluded:0});
-c.getSectionCollapsedSummary = () => '0 конфигов · к применению 0';
+c.getSectionCollapsedSummary = () => '0 конфигов · предпросмотр нового применения: 0';
 c.isSubscriptionSectionCollapsed = (collapsed,code) => collapsed?.[code] !== false;
 c.getEffectiveSubscriptionTags = () => [];
 c.renderSubscriptionTagPicker = () => null;
@@ -40,7 +40,7 @@ c.renderEmptyState = text => text;
 vm.runInContext(js.match(/function renderSection\([\s\S]*?\n}(?=\r?\n)/)[0], c);
 let toggled;
 const props = {section:{code:'geo',selectionMode:'all',displayName:'GeoBlock',items:[]},pendingChanges:{'geo:us':true},applying:false,onToggle:(...args)=>toggled=args,sourceActions:{disabled:true,modeDisabled:false}};
-assert.equal(c.renderSection({...props,collapsedSections:{}}).children.length,1,'section defaults closed');
+assert.ok(!JSON.stringify(c.renderSection({...props,collapsedSections:{}})).includes('checkbox'),'section defaults closed without rendering selection controls');
 const rendered = c.renderSection({...props,collapsedSections:{geo:false}});
 const walk = node => Array.isArray(node) ? node.flatMap(walk) :
   !node || typeof node !== 'object' ? [] : [node,...walk(node.children)];

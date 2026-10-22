@@ -87,7 +87,7 @@ RESULT_PODKOP_VERSION=0.7.23
 RESULT_PATCH_VERSION=patch-v2
 perform_update
 
-if ! grep -Fxq 'PODKOP_PATCH_UPDATE_PODKOP=1' "$CAPTURE_FILE" ||
+if ! grep -Fxq 'PODKOP_PATCH_UPDATE_PODKOP=0' "$CAPTURE_FILE" ||
     ! grep -Fxq 'PODKOP_PATCH_FORCE_PODKOP_UPDATE=0' "$CAPTURE_FILE"; then
     printf '%s\n' 'FAIL: patch-only mode did not explicitly disable the forced official Podkop update' >&2
     printf '%s\n' 'Captured installer arguments:' >&2

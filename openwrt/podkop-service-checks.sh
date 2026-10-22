@@ -10,20 +10,19 @@ subscription_services_validate() {
 }
 
 subscription_required_services_json() {
-    local values lists raw
+    local values raw
     if [ -n "${PODKOP_DNS_COMMITTED_FILE:-}" ]; then
         [ -r "$PODKOP_DNS_COMMITTED_FILE" ] && [ ! -L "$PODKOP_DNS_COMMITTED_FILE" ] || return 1
         raw="$(uci -q get "/proc/self/fd/3.$1.subscription_required_services" 3< "$PODKOP_DNS_COMMITTED_FILE" 2>/dev/null || true)"
         values="$(printf '%s\n' "$raw" | jq -Rc 'split(" ")|map(select(length>0))')" || return 1
-        raw="$(uci -q get "/proc/self/fd/3.$1.community_lists" 3< "$PODKOP_DNS_COMMITTED_FILE" 2>/dev/null || true)"
-        lists="$(printf '%s\n' "$raw" | jq -Rc 'split(" ")|map(select(length>0))')" || return 1
     else
         values="$(subscription_tags_json "$1" subscription_required_services)" || return 1
-        lists="$(subscription_tags_json "$1" community_lists)" || return 1
     fi
+    # Only explicit user choices gate nodes. Route lists never enable filters.
+    # Apply proposals and committed DNS snapshots use the same representation.
+    [ "$#" -lt 2 ] || values="$2"
     subscription_services_validate "$values" || return 1
-    # Exact known lists only; generic lists never imply geo/application tests.
-    printf '%s' "$values" | jq -c --argjson lists "$lists" '. + (if ($lists|index("google_ai"))!=null then ["gemini"] else [] end) | unique'
+    printf '%s' "$values" | jq -c 'unique'
 }
 
 subscription_services_context() {
