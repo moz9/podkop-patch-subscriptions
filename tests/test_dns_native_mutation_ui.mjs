@@ -50,3 +50,46 @@ for(const action of ['apply','rollback']){
  assert.ok(calls.some(a=>a[0]===(action==='apply'?'apply_selected_start':'rollback_start')));
 }
 console.log('PASS: native selection history cannot mask apply/rollback results or prevent stale-form reload');
+
+for(const scenario of ['fresh','changed','not-ready','wrong-tuple','dirty','old-reserve']) {
+ let exported,modal,poll,reloaded=0,status=scenario==='old-reserve'?{state:'done',action:'recommend_reserve',results:[],bootstrapResults:[],pairResults:[],reportId:'old-reserve'}:{state:'idle'},dirty=false;
+ const calls=[];
+ const main={protocol:'udp',id:'google',dnsServer:'8.8.8.8',primaryEligible:true};
+ const bootstrap={protocol:'udp',server:'9.9.9.9',provider:'Quad9'};
+ const pair={...main,bootstrapProtocol:'udp',bootstrapDnsServer:'9.9.9.9',success:true,reliable:true,httpsTested:false};
+ const context=vm.createContext({baseclass:{extend:x=>(exported=x)},E:(...args)=>new Node(...args),
+  document:{getElementById:()=>true},window:{setTimeout:fn=>(poll=fn,1),clearTimeout(){},location:{reload(){reloaded++;}}},
+  ui:{showModal:(_title,children)=>{modal=new Node('modal',{},children);},hideModal(){}},
+  uci:{changes:async()=>({}),unload(){},load:async()=>{}},
+  fs:{exec:async(_path,args)=>{
+   calls.push(args);
+   if(args[0]==='status')return {code:0,stdout:JSON.stringify(status)};
+   if(args[0]==='catalog')return {code:0,stdout:JSON.stringify({success:true,availableResults:[main],availableBootstrapResults:[bootstrap]})};
+   if(args[0]==='reserve_status')return {code:0,stdout:'{"success":true,"reserve":null}'};
+   if(args[0]==='light_pair_start')status={state:'done',action:'light_pair',reportId:'manual-1',scope:'direct_dns_pair',manualApplyReady:scenario!=='not-ready',pairResult:{...pair,dnsServer:scenario==='wrong-tuple'?'1.1.1.1':pair.dnsServer}};
+   if(args[0]==='apply_manual_start')status={state:'running',action:'apply'};
+   return {code:0,stdout:'{"success":true}'};
+  }}
+ });
+ vm.runInContext('(function(){'+source+'})()',context);
+ const root=new Node('root');root.querySelector=()=>dirty?{}:null;
+ exported.renderOpenButton({root}).click();await flush();
+ const button=label=>walk(modal).find(n=>n.tag==='button'&&n.children.includes(label));
+ await button('Лёгкая проверка пары').click();await flush();
+ const apply=button('Применить пару');
+ assert.equal(apply.disabled,['not-ready','wrong-tuple'].includes(scenario),'fresh native proof enables only the exact manual tuple');
+ if(scenario==='changed') {
+  walk(modal).find(n=>n.tag==='select'&&n.attrs['aria-label']==='Основной DNS').listeners.change();
+  assert.equal(apply.disabled,true,'changing selection invalidates proof');
+ } else if(['fresh','dirty','old-reserve'].includes(scenario)) {
+  dirty=scenario==='dirty';await apply.click();await flush();
+  assert.equal(calls.some(a=>a[0]==='apply_manual_start'),!dirty,'draft changes block native apply');
+  assert.equal(calls.some(a=>a[0]==='apply_start'),false,'native proof never enters the full-HTTPS apply path');
+  if(!dirty) {
+   assert.deepEqual(Array.from(calls.find(a=>a[0]==='apply_manual_start')),['apply_manual_start','manual-1']);
+   status={state:'done',action:'apply',message:'apply_complete'};await poll();await flush();
+   assert.equal(reloaded,1,'native manual apply reloads stale form');
+  }
+ }
+}
+console.log('PASS: manual native DNS proof, exact tuple binding, draft gate and separate apply command');

@@ -370,7 +370,7 @@ function catalogCandidates(report, catalog, bootstrap) {
 
 function openBenchmark(map) {
   ensureStyle();
-  const state = {open: true, running: false, pending: false, needsReload: false, action: "", report: null, catalog: null, verified: "", timer: null, backup: false, activeTable: 0, mode: "individual"};
+  const state = {open: true, running: false, pending: false, needsReload: false, action: "", report: null, catalog: null, verified: "", nativeVerified: null, timer: null, backup: false, activeTable: 0, mode: "individual"};
   const message = E("div", {"aria-live": "polite"}, "Готов к проверке");
   const error = E("div", {class: "pdk-dns-benchmark__error", role: "alert"});
   const progress = E("progress", {max: 100, value: 0});
@@ -438,7 +438,7 @@ function openBenchmark(map) {
     start.disabled = busy; test.disabled = busy || !pair() || !bootstrapSelect.value;
     startPairs.disabled = busy || plannedPairs()===0;
     modeTabs.forEach(tab=>{tab.disabled=busy;});
-    apply.disabled = busy || state.report?.reserve || !pair() || state.verified !== pairKey(pair());
+    apply.disabled = busy || !pair() || !(state.nativeVerified?.key === pairKey(pair()) || !state.report?.reserve && state.verified === pairKey(pair()));
     cancel.disabled = !state.running || ["apply", "select_apply", "rollback", "reserve_save"].includes(state.action);
     rollback.disabled = busy || !state.backup;
     close.disabled = state.needsReload || state.pending || state.running && ["apply", "select_apply", "rollback", "reserve_save"].includes(state.action);
@@ -492,7 +492,7 @@ function openBenchmark(map) {
     reconcileReserveFields(persistedReserve);
     showReserveStatus();
   }
-  function resetVerification() { state.verified = ""; pairStatus.textContent = "Проверьте выбранную пару перед применением."; actions(); }
+  function resetVerification() { state.verified = ""; state.nativeVerified=null; pairStatus.textContent = "Проверьте выбранную пару перед применением."; actions(); }
   mainSelect.addEventListener("change", resetVerification);
   bootstrapSelect.addEventListener("change", resetVerification);
   function renderCatalog() {
@@ -627,6 +627,7 @@ function openBenchmark(map) {
       const reloadAfterCompletion=state.running && ["apply","select_apply","rollback"].includes(state.action);
       if (!["idle","running","done","error","cancelled"].includes(status.state)) throw new Error(ERRORS.request_failed);
       state.running=status.state === "running"; state.action=status.action || ""; state.backup=!!status.backupAvailable;
+      state.nativeVerified=null;
       progress.value=Math.min(100,Math.max(0,Number(status.progress)||0));
       count.textContent=(status.total ? `${status.phase==='full_verify'?'Полные проверки':status.state!=='done' && status.phase==='recheck'?'Повторно':(['pairs',...RECOMMENDATION_ACTIONS].includes(status.action)&&status.phase!=='endpoints'||status.phase==='pairs')?'Пары':'Проверено'}: ${status.completed || 0} / ${status.total}` : "")+(status.queryTotal ? ` · Запросы: ${status.queryCompleted || 0} / ${status.queryTotal}` : "");
       if(state.running && typeof status.currentSection==='string' && status.currentSection) count.textContent += ` · Секция: ${status.currentSection} · DNS: ${status.sectionQueryCompleted || 0} / ${status.sectionQueryTotal || 0} · HTTPS: ${status.sectionHttpsCompleted || 0}`;
@@ -674,7 +675,10 @@ function openBenchmark(map) {
       }
       else if (status.action === "light_pair" && status.state === "done") {
         state.verified="";
+        if(status.manualApplyReady===true && status.scope==='direct_dns_pair' && status.pairResult?.success===true && status.pairResult?.reliable===true && typeof status.reportId==='string' && status.reportId && pair() && pairKey(pair())===pairKey(status.pairResult))
+          state.nativeVerified={key:pairKey(pair()),reportId:status.reportId};
         message.textContent=status.pairResult?.success===true?"DNS-цепочка отвечает. Приложения и маршруты не проверялись.":errorMessage(status.error || "pair_test_failed");
+        pairStatus.textContent=state.nativeVerified?"Можно применить эту пару в течение 5 минут. Резерв и наборы конфигов не изменятся.":"Проверьте выбранную пару перед применением.";
       }
       else if (status.action === "select" && status.state === "done") {
         message.textContent=lightSelection?"Обе пары подобраны. Применение — отдельно.":"Нет подтверждённого результата для обеих пар. DNS не изменены.";
@@ -735,18 +739,18 @@ function openBenchmark(map) {
     state.pending=true; actions(); error.textContent="";
     try {
       const dirty=await hasChanges();
-      if(["apply_start","apply_selected_start","rollback_start"].includes(command) &&
+      if(["apply_start","apply_selected_start","apply_manual_start","rollback_start"].includes(command) &&
           map?.root?.querySelector('[data-changed="true"]')) throw new Error(ERRORS.unsaved_changes);
       draftNotice.hidden=!dirty;
       lightSelection=null;
       reserveReadiness={};readinessCheckedReport='';
-      state.verified=""; pairStatus.textContent="";
+      state.verified=""; state.nativeVerified=null; pairStatus.textContent="";
       if(RECOMMENDATION_ACTIONS.some(action=>command===action+'_start')) lastRecommendation="";
       recommendationNotice.textContent="";
       bootstrapStatus.textContent="";bootstrapStatus.replaceChildren();
       const accepted=await request([command,...args]);
       if (accepted.success !== true) throw new Error(ERRORS.request_failed);
-      state.running=true; state.action=command==='apply_selected_start'?'select_apply':command.replace(/_start$/,"");
+      state.running=true; state.action=['apply_selected_start','apply_manual_start'].includes(command)?'select_apply':command.replace(/_start$/,"");
       if(state.action==='benchmark') showMode("individual");
       if(RECOMMENDATION_ACTIONS.includes(state.action)) renderResults({action:state.action,results:[],bootstrapResults:[],pairResults:[],selectionMode:state.action==='recommend_full'?'all_selected':'two_stage',selectionComplete:false});
       await refresh();
@@ -782,7 +786,11 @@ function openBenchmark(map) {
   test=makeButton("Проверить пару",()=>{const selected=pair();return selected && operate("pair_test_start",pairArgs(selected));});
   testLight=makeButton("Лёгкая проверка пары",()=>{const selected=pair();return selected && operate("light_pair_start",pairArgs(selected));});
   testBootstrap=makeButton("Проверить bootstrap",()=>{const selected=pair();return selected && operate("bootstrap_test_start",[selected.bootstrapProtocol,selected.bootstrapDnsServer,selected.protocol,selected.dnsServer]);});
-  apply=makeButton("Применить пару",()=>{const selected=pair();return selected && state.verified===pairKey(selected) && operate("apply_start",pairArgs(selected));},"cbi-button-apply");
+  apply=makeButton("Применить пару",()=>{
+    const selected=pair(); if(!selected) return;
+    if(state.nativeVerified?.key===pairKey(selected)) return operate("apply_manual_start",[state.nativeVerified.reportId]);
+    if(state.verified===pairKey(selected)) return operate("apply_start",pairArgs(selected));
+  },"cbi-button-apply");
   rollback=makeButton("Откатить DNS",()=>operate("rollback_start"),"cbi-button-reset");
   cancel=makeButton("Отменить проверку",async()=>{if(["apply","select_apply","rollback"].includes(state.action))return;try{await request(["cancel"]);await refresh();}catch(failure){error.textContent=failure.message;}},"cbi-button-reset");
   close=makeButton("Закрыть",()=>{if(close.disabled)return;state.open=false;stopPoll();ui.hideModal();if(state.running)request(["cancel"]).catch(()=>{});},"cbi-button-reset");

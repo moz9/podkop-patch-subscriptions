@@ -44,9 +44,42 @@ bytes="$(du -sk "$work" | awk '{print $1}')"; [ "$bytes" -le 2048 ] || fail 'tem
 [ "$(wc -c < "$DB_REPORT")" -le 131072 ] || fail 'report exceeds 128 KiB'
 printf 'Native fixture: elapsed=%ss queries=%s temp=%sKiB report=%sbytes\n' "$(jq -r .elapsedSeconds "$DB_REPORT")" "$queries" "$bytes" "$(wc -c < "$DB_REPORT")"
 db_action=light_pair; db_report_id=manual-fixture
-db_light_manual udp google 8.8.8.8 9.9.9.9 udp
+db_light_manual udp google 8.8.8.8 77.88.8.8 udp
 jq -e '.action=="light_pair" and .pairResult.success and .budgetSeconds==12 and .selectionComplete==false' "$DB_STATUS" >/dev/null || fail 'manual pair did not finish'
 [ ! -e "$DB_PERSIST/light-pairs-proof.json" ] || fail 'manual test retained apply permission'
+jq -e '.manualApplyReady and .pairResult.protocol=="udp" and .pairResult.id=="google" and .pairResult.dnsServer=="8.8.8.8" and .pairResult.bootstrapDnsServer=="77.88.8.8"' "$DB_STATUS" >/dev/null || fail 'native manual pair cannot be applied separately'
+db_light_proof_valid manual-fixture manual || fail 'fresh manual proof rejected'
+! db_light_proof_valid wrong-id manual || fail 'wrong report accepted'
+! db_light_proof_valid manual-fixture || fail 'manual proof authorized both pairs'
+! db_light_proof_valid manual-fixture unknown || fail 'unknown mode accepted'
+proof="$DB_PERSIST/light-manual-proof.json"
+cp "$proof" "$work/proof-good"
+jq '.testedMonotonic-=301' "$proof" > "$work/expired"; mv "$work/expired" "$proof"
+! db_light_proof_valid manual-fixture manual || fail 'expired manual proof accepted'
+cp "$work/proof-good" "$proof"
+jq '.pairResult.dnsServer="1.1.1.1"' "$proof" > "$work/tampered"; mv "$work/tampered" "$proof"
+! db_light_proof_valid manual-fixture manual || fail 'mismatched tuple accepted'
+cp "$work/proof-good" "$proof"
+printf '# changed\n' >> "$work/podkop"
+! db_light_proof_valid manual-fixture manual || fail 'changed config accepted'
+printf "config settings 'settings'\n" > "$work/podkop"
+: > "$db_cancel_file"
+! db_light_proof_valid manual-fixture manual || fail 'cancelled proof accepted'
+rm "$db_cancel_file"
+# The existing scoped DNS transaction is tested separately against real fixtures.
+# Here capture its exact call: manual apply must never supply a reserve tuple.
+podkop_mutation_lock_acquire() { :; }; db_reload_busy() { return 1; }
+db_dns_transaction() { printf '%s\n' "$*" >> "$work/transactions"; }
+db_light_apply manual-fixture manual || fail 'manual native apply failed'
+[ "$(cat "$work/transactions")" = 'apply udp 8.8.8.8 udp 77.88.8.8' ] || fail 'manual apply changed more than the primary DNS tuple'
+! db_light_apply manual-fixture manual || fail 'manual proof replay accepted'
+[ "$(wc -l < "$work/transactions")" = 1 ] || fail 'replay reached transaction'
+db_action=light_pair; db_report_id=manual-failure
+db_light_manual udp google 8.8.8.8 77.88.8.8 udp
+db_dns_transaction() { db_transaction_error=reload_failed; return 1; }
+! db_light_apply manual-failure manual || fail 'failed transaction reported success'
+! db_light_proof_valid manual-failure manual || fail 'failed transaction left reusable proof'
+db_report_id=manual-low-memory
 printf 'MemAvailable: 28000 kB\n' > "$work/mem"
 before="$(wc -l < "$work/queries")"
 ! db_light_select || fail 'low memory admitted'
