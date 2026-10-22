@@ -949,6 +949,7 @@ abort_with_restore() {
 }
 
 has_latest_subscription_backend() {
+    grep -Fq '# subscription_apply_v2_native_intent_v1' /usr/bin/podkop 2>/dev/null || return 1
 	count="$(grep -c "PODKOP_SUBSCRIPTION_CACHE_ONLY=1 PODKOP_SKIP_LIST_UPDATE=1 /usr/bin/podkop reload" /usr/bin/podkop 2>/dev/null || true)"
 	[ "${count:-0}" -ge 2 ] &&
 		grep -q '^case "\$1" in' /usr/bin/podkop 2>/dev/null &&
@@ -1925,7 +1926,8 @@ if ! grep -Fqx '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/nul
 	fi
 fi
 
-if ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
+if ! grep -Fq '# subscription_apply_v2_native_intent_v1' /usr/bin/podkop ||
+    ! grep -Fqx '# subscription_sources_v1 begin' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_choices_and_busy_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_selection_v1' /usr/bin/podkop ||
     ! grep -Fqx '# subscription_tag_filters_v1' /usr/bin/podkop ||

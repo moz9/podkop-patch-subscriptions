@@ -6282,10 +6282,10 @@ function renderSection({
       ]),
       E("div", {class:"pdk_subscriptions-page__composition-preview",role:"group","aria-labelledby":`pdk-subscription-section-${section.code} pdk-composition-preview-heading`}, [
         E("div", {}, tagPreview.uncertain
-          ? `Для нового режима пока не рассчитано. По сохранённому: ${tagPreview.enabled}.`
+          ? `Для нового режима пока не рассчитано. В сохранённом режиме: ${tagPreview.enabled}.`
           : tagPreview.enabled === 0
-          ? `0 из ${section.items.length}. Применение будет отклонено. Рабочая конфигурация не изменится.`
-          : `${tagPreview.enabled} из ${section.items.length}`)
+          ? `0 из ${section.items.length} конфигов. Применение будет отклонено. Рабочая конфигурация не изменится.`
+          : `${tagPreview.enabled} из ${section.items.length} конфигов`)
       ])
     ]),
     ...sourceActions?.onApply ? [E("button", {type:"button",class:"pdk_subscriptions-page__section-apply",
@@ -6456,7 +6456,7 @@ function renderSubscriptionSections({
       ]),
       E("div", {}, [
         E("strong", {id:"pdk-composition-preview-heading"}, "К применению"),
-        E("small", {}, "Расчёт по каталогу, фильтрам и свежим проверкам. Применяется отдельной кнопкой.")
+        E("small", {}, "Каталог и выбранные фильтры. Свежие проверки учитываются, если включены. Новый набор применяется отдельно.")
       ])
     ])] : []),
     loading && !sections.length ? renderEmptyState(_("Loading")) : failed && !sections.length ? renderEmptyState(actionMessage || _("Failed to load subscription configs")) : renderSections2({

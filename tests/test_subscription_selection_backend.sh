@@ -4,6 +4,11 @@ repo="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT INT TERM
 . "$repo/openwrt/podkop-subscription-sources.sh"
+fixture_version="$(jq -r .recommendedPodkopVersion "$repo/openwrt/update-manifest.json")"
+for pending_function in subscription_pending_sections_json subscription_pending_mark subscription_pending_clear; do
+    sed -n "/^$pending_function() {$/,/^}$/p" "$repo/openwrt/runtime-$fixture_version/usr/bin/podkop" >> "$work/pending-functions"
+done
+. "$work/pending-functions"
 fail() { echo "FAIL: $*" >&2; exit 1; }
 if sed -n '/^subscription_source_policy() {/,/^}/p' "$repo/openwrt/podkop-subscription-sources.sh" | grep -Eq '(^|[^[:alnum:]_])(gsub|test|match|sub)\('; then
  fail 'tag policy must not require jq regex builtins (router jq lacks Oniguruma)'

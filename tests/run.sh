@@ -2,6 +2,8 @@
 set -eu
 
 test_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+sh "$test_dir/test_subscription_apply_fallback.sh"
+sh "$test_dir/test_safe_restart_continuity.sh"
 sh "$test_dir/test_update_channel_isolation.sh"
 node "$test_dir/test_subscription_composition_ui.mjs"
 sh "$test_dir/test_config_change_apply_initd.sh"
