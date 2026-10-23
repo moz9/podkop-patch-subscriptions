@@ -144,6 +144,8 @@ dns_apply_pair() {
       def ascii_host:
         if type!="string" then false else length>0 and
           (explode|all(.==45 or .==46 or (.>=48 and .<=57) or (.>=65 and .<=90) or (.>=97 and .<=122))) end;
+      def ipv4: split(".") | length==4 and all(.[];
+        length>0 and (explode|all(.>=48 and .<=57)) and (try (tonumber<256) catch false));
       def server($p;$e;$tag):
         if ($e.host|ascii_host|not) or
            ($e.port|type)!="number" or $e.port<1 or $e.port>65535 or ($e.port|floor)!=$e.port
@@ -153,7 +155,7 @@ dns_apply_pair() {
         (if $e.server_name then {tls:{enabled:true,server_name:$e.server_name}} else {} end) end;
       if (["udp","tcp","doh","dot"]|index($p))==null or (["udp","tcp","doh","dot"]|index($bp))==null
       then error("invalid protocol") else
-      [server($p;$main;"dns-server")+{domain_resolver:"bootstrap-dns-server"},server($bp;$boot;"bootstrap-dns-server")] end' > "$DA_WORK/pair.json"
+      [server($p;$main;"dns-server")+(if $main.host|ipv4 then {} else {domain_resolver:"bootstrap-dns-server"} end),server($bp;$boot;"bootstrap-dns-server")] end' > "$DA_WORK/pair.json"
 }
 dns_apply_add_file() {
     local path="$1" kind="$2" number
