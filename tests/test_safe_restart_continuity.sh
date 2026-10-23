@@ -12,6 +12,7 @@ for runtime do
     (
         . "$repo/openwrt/podkop-service-snapshot.sh"
         log() { :; }
+        subscription_sing_box_pid() { :; }
         required=1; continuity=0; fresh=1
         config_foreach() { "$1" main; }
         validate_subscription_urltest_section() { return 0; }
@@ -106,7 +107,7 @@ for runtime do
     awk '
       /^subscription_services_restart_prepare\(\) \{$/ {skip=1; next}
       skip {if($0=="}") skip=0; next}
-      /# subscription_safe_restart_v1:/ || $0=="    local PODKOP_SERVICE_RESTART_CONTINUITY=0" {next}
+      /# subscription_safe_restart_v1:/ || /^    local PODKOP_SERVICE_RESTART_CONTINUITY=0/ {next}
       $0=="    if [ \"$PODKOP_SERVICE_REUSE_ADMITTED_CONFIG\" = 1 ]; then" {branch=1; next}
       branch {if($0=="    elif ! subscription_services_preflight; then") {print "    if ! subscription_services_preflight; then"; branch=0}; next}
       {gsub(/PODKOP_SERVICE_REUSE_ADMITTED_CONFIG="\$\{PODKOP_SERVICE_RESTART_CONTINUITY:-0\}"/,"PODKOP_SERVICE_REUSE_ADMITTED_CONFIG=0");

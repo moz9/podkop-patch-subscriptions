@@ -58,7 +58,7 @@ for(const scenario of ['fresh','changed','not-ready','wrong-tuple','dirty','old-
  let exported,modal,poll,reloaded=0,status=scenario==='old-reserve'?{state:'done',action:'recommend_reserve',results:[],bootstrapResults:[],pairResults:[],reportId:'old-reserve'}:{state:'idle'},dirty=false;
  const calls=[];
  const main={protocol:'udp',id:'google',dnsServer:'8.8.8.8',primaryEligible:true};
- const bootstrap={protocol:'udp',server:'9.9.9.9',provider:'Quad9'};
+ const bootstrap={id:'quad9_1',protocol:'udp',server:'9.9.9.9',provider:'Quad9'};
  const pair={...main,bootstrapProtocol:'udp',bootstrapDnsServer:'9.9.9.9',success:true,reliable:true,httpsTested:false};
  const context=vm.createContext({baseclass:{extend:x=>(exported=x)},E:(...args)=>new Node(...args),
   document:{getElementById:()=>true},window:{setTimeout:fn=>(poll=fn,1),clearTimeout(){},location:{reload(){reloaded++;}}},
@@ -76,7 +76,7 @@ for(const scenario of ['fresh','changed','not-ready','wrong-tuple','dirty','old-
  });
  vm.runInContext('(function(){'+source+'})()',context);
  const root=new Node('root');root.querySelector=()=>dirty?{}:null;
- exported.renderOpenButton({root}).click();await flush();
+ exported.renderOpenButton({root,lookupOption:name=>name==='dns_optimizer_bootstrap_candidates'?[{formvalue:()=>['quad9_1']}]:[]}).click();await flush();
  const button=label=>walk(modal).find(n=>n.tag==='button'&&n.children.includes(label));
  await button('Лёгкая проверка пары').click();await flush();
  const apply=button('Применить пару');

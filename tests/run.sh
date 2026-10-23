@@ -2,6 +2,10 @@
 set -eu
 
 test_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+sh "$test_dir/test_restart_late_failure.sh"
+sh "$test_dir/test_restart_checkpoint.sh"
+node "$test_dir/test_dns_catalog_selection.mjs"
+sh "$test_dir/test_dns_apply_generation_parity.sh"
 sh "$test_dir/test_dns_memory_errors.sh"
 node "$test_dir/test_dns_memory_errors.mjs"
 node "$test_dir/test_dns_reserve_clean_read.mjs"

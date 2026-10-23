@@ -71,6 +71,121 @@ subscription_services_restart_prepare() {
     subscription_services_preflight
 }
 
+# subscription_restart_transaction_v1
+# A post-start proof/storage failure is still a failed apply. Keep a private,
+# bounded checkpoint before stop() removes DNS forwarding and local rulesets.
+subscription_restart_checkpoint_create() {
+    local config_path root path size total=0 free available mark
+    PODKOP_RESTART_WORK=''
+    [ -n "$(subscription_sing_box_pid)" ] || return 0
+    config_get config_path settings config_path
+    root="${PODKOP_SECTION_ROOT:-/etc/podkop/section-runtime}"
+    case "$config_path:$root:$TMP_RULESET_FOLDER" in *'..'*|*' '*|*'
+'*) return 1;; esac
+    [ -f "$config_path" ] && [ ! -L "$config_path" ] || return 1
+    sing-box check -c "$config_path" >/dev/null 2>&1 || return 1
+    PODKOP_RESTART_WORK="$(umask 077; mktemp -d /tmp/podkop-restart.XXXXXX)" || return 1
+    local work="$PODKOP_RESTART_WORK"
+    # This list is produced locally, never read from a supplied archive.
+    printf '%s\n' "$config_path" /etc/config/dhcp > "$work/paths" || return 1
+    for path in "$TMP_RULESET_FOLDER" "$root" "$(subscription_services_snapshot_dir)"; do
+        [ ! -L "$path" ] || return 1
+        [ -d "$path" ] || continue
+        find "$path" -type l | grep -q . && return 1
+        find "$path" -type f | while IFS= read -r file; do
+            case "$file" in *.json|*.srs|*.sha256|*/runtime-mode) printf '%s\n' "$file";; esac
+        done >> "$work/paths" || return 1
+    done
+    LC_ALL=C sort -u "$work/paths" > "$work/files" || return 1
+    [ "$(wc -l < "$work/files")" -le 256 ] || return 1
+    while IFS= read -r path; do
+        case "$path" in /*) :;; *) return 1;; esac
+        case "$path" in *'..'*|*' '*|*"$(printf '\t')"*) return 1;; esac
+        [ -f "$path" ] && [ ! -L "$path" ] || return 1
+        size="$(wc -c < "$path")" || return 1
+        total=$((total + size))
+    done < "$work/files"
+    [ "$total" -le 16777216 ] || return 1
+    free="$(df -Pk "$work" | awk 'NR==2 {print $4}')"
+    available="$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)"
+    [ "$free" -ge $(((total+1023)/1024+4096)) ] && [ "$available" -ge $(((total+1023)/1024+16384)) ] || return 1
+    while IFS= read -r path; do sha256sum "$path" || return 1; done < "$work/files" > "$work/hashes"
+    tar -cpf "$work/files.tar" -T "$work/files" 2>/dev/null || return 1
+    tar -tf "$work/files.tar" >/dev/null || return 1
+    sha256sum "$work/files.tar" > "$work/archive.sha256" || return 1
+    nft -s list table inet "$NFT_TABLE_NAME" > "$work/nft" || return 1
+    ip -4 route show table "$RT_TABLE_NAME" > "$work/routes" || return 1
+    mark="$(printf '0x%x' "$NFT_FAKEIP_MARK")" || return 1
+    ip -4 rule show | grep -F "fwmark $mark/$mark lookup $RT_TABLE_NAME" > "$work/rule" || return 1
+    [ "$(wc -l < "$work/rule")" = 1 ] || return 1
+    crontab -l 2>/dev/null | grep -E '/usr/bin/podkop (list_update|subscription_update)' > "$work/cron" || :
+    uci -q get podkop.settings.shutdown_correctly > "$work/shutdown" || return 1
+    cp /etc/config/dhcp "$work/dhcp" || return 1
+    sha256sum -c "$work/hashes" >/dev/null || return 1
+}
+
+subscription_restart_checkpoint_discard() {
+    case "${PODKOP_RESTART_WORK:-}" in /tmp/podkop-restart.*)
+        [ ! -L "$PODKOP_RESTART_WORK" ] && rm -rf "$PODKOP_RESTART_WORK";;
+        '') return 0;; *) return 1;; esac
+    PODKOP_RESTART_WORK=''
+}
+
+subscription_restart_checkpoint_restore() {
+    local work="${PODKOP_RESTART_WORK:-}" line dns_changed=0 mark flag pending
+    [ -n "$work" ] || return 0
+    case "$work" in /tmp/podkop-restart.*) :;; *) return 1;; esac
+    [ -d "$work" ] && [ ! -L "$work" ] && [ -s "$work/files.tar" ] || return 1
+    sha256sum -c "$work/archive.sha256" >/dev/null || return 1
+    cmp -s /etc/config/dhcp "$work/dhcp" || dns_changed=1
+    /etc/init.d/sing-box stop || return 1
+    [ ! -x /etc/init.d/podkop-section-worker ] || /etc/init.d/podkop-section-worker stop || return 1
+    tar -xpf "$work/files.tar" -C / || return 1
+    sha256sum -c "$work/hashes" >/dev/null || return 1
+    # Restore only Podkop's table, never flush fw4 or other runtime rules.
+    : > "$work/nft-restore"
+    if nft list table inet "$NFT_TABLE_NAME" >/dev/null 2>&1; then
+        printf 'delete table inet %s\n' "$NFT_TABLE_NAME" > "$work/nft-restore" || return 1
+    fi
+    cat "$work/nft" >> "$work/nft-restore" && nft -f "$work/nft-restore" || return 1
+    ip -4 route flush table "$RT_TABLE_NAME" || return 1
+    while IFS= read -r line; do
+        [ -n "$line" ] || continue
+        # Kernel-produced route tokens, no eval and no shell commands.
+        set -f; ip -4 route add table "$RT_TABLE_NAME" $line || return 1; set +f
+    done < "$work/routes"
+    mark="$(printf '0x%x' "$NFT_FAKEIP_MARK")" || return 1
+    if ! ip -4 rule show | grep -Fq "fwmark $mark/$mark lookup $RT_TABLE_NAME"; then
+        ip -4 rule add fwmark "$NFT_FAKEIP_MARK/$NFT_FAKEIP_MARK" table "$RT_TABLE_NAME" priority 105 || return 1
+    fi
+    { crontab -l 2>/dev/null | grep -vE '/usr/bin/podkop (list_update|subscription_update)' || :; cat "$work/cron"; } | crontab - || return 1
+    # Do not commit UCI here: that would also commit unrelated staged edits.
+    # Change only the existing operational flag in the committed file, checking
+    # for concurrent changes before the same-filesystem atomic replacement.
+    flag="$(cat "$work/shutdown")"
+    case "$flag" in 0|1) :;; *) return 1;; esac
+    [ -f /etc/config/podkop ] && [ ! -L /etc/config/podkop ] || return 1
+    cp /etc/config/podkop "$work/podkop-before-flag" || return 1
+    pending="$(mktemp /etc/config/.podkop-restart.XXXXXX)" || return 1
+    if cp -p /etc/config/podkop "$pending" &&
+        awk -v flag="$flag" '
+            /^config / { settings=($2=="settings") }
+            settings && $1=="option" && $2=="shutdown_correctly" {
+                print "\toption shutdown_correctly " sprintf("%c%s%c",39,flag,39); count++; next
+            }
+            { print }
+            END { if (count!=1) exit 1 }
+        ' "$work/podkop-before-flag" > "$pending" &&
+        cmp -s /etc/config/podkop "$work/podkop-before-flag" && mv "$pending" /etc/config/podkop; then :
+    else rm -f "$pending"; return 1; fi
+    if command -v podkop_section_enabled >/dev/null && podkop_section_enabled; then
+        podkop_section_start_workers || return 1
+    fi
+    /etc/init.d/sing-box start && subscription_sing_box_reload_ready || return 1
+    [ "$dns_changed" = 0 ] || /etc/init.d/dnsmasq restart || return 1
+    log 'Failed apply rolled back: previous runtime, rules and DNS forwarding restored; desired settings remain pending' warn
+}
+
 subscription_config_apply() (
     local stamp policy pending
     stamp="${PODKOP_CONFIG_APPLY_STAMP:-/tmp/podkop-config-applied.sha256}"

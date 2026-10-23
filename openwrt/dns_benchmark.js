@@ -375,17 +375,41 @@ function normalizeLightSelection(value) {
   return {reportId:value.reportId,primary:pairs[0],secondary:pairs[1]};
 }
 
-function catalogCandidates(report, catalog, bootstrap) {
+function catalogCandidates(report, catalog, bootstrap, selection) {
   const available=bootstrap?report?.availableBootstrapResults:report?.availableResults;
   const measured=bootstrap?report?.bootstrapResults:report?.results;
   const fallback=bootstrap?catalog?.availableBootstrapResults:catalog?.availableResults;
   const rows=[...(available || measured || []),...(fallback || [])];
+  const list=value=>Array.isArray(value)?value:String(value ?? '').split(/\s+/).filter(Boolean);
+  const protocols=selection && list(selection[bootstrap?'dns_optimizer_bootstrap_protocols':'dns_optimizer_protocols']);
+  const selected=selection && list(selection[bootstrap?'dns_optimizer_bootstrap_candidates':'dns_optimizer_candidates']);
+  if(selection && !bootstrap) for(const protocol of protocols) {
+    list(selection['dns_optimizer_custom_'+protocol]).forEach((dnsServer,index)=>{
+      if(!rows.some(row=>row.protocol===protocol && row.dnsServer===dnsServer))
+        rows.push({id:`saved_custom_${protocol}_${index+1}`,protocol,dnsServer,provider:'Свой DNS',profile:'custom',measured:false,reliable:false,automaticEligible:false,primaryEligible:true});
+    });
+  }
   const seen=new Set();
   return rows.filter(row=>{
+    if(selection && (!protocols.includes(row.protocol) || !(selected.includes(row.id) ||
+      !bootstrap && list(selection['dns_optimizer_custom_'+row.protocol]).includes(row.dnsServer)))) return false;
     const key=(bootstrap?'':row.id+':')+row.protocol+':'+(bootstrap?row.server:row.dnsServer);
     if(seen.has(key)) return false;
     seen.add(key);return true;
   });
+}
+
+function catalogSelection(map) {
+  const defaults={dns_optimizer_protocols:['udp','doh','dot'],dns_optimizer_candidates:['cloudflare','google','controld_unfiltered'],
+    dns_optimizer_bootstrap_protocols:['udp'],dns_optimizer_bootstrap_candidates:['cloudflare_1','cloudflare_2','google_1','google_2','yandex_1','yandex_2','controld_unfiltered']};
+  const selection={};
+  for(const name of [...Object.keys(defaults),...SUPPORTED_PROTOCOLS.map(protocol=>'dns_optimizer_custom_'+protocol)]) {
+    const option=map?.lookupOption?.(name,'settings')?.[0];
+    // Respect an explicitly empty form value; never turn it into every server.
+    selection[name]=option?.formvalue?.('settings') ?? option?.cfgvalue?.('settings') ??
+      uci.get?.('podkop','settings',name) ?? option?.default ?? defaults[name] ?? [];
+  }
+  return selection;
 }
 
 function openBenchmark(map) {
@@ -431,8 +455,9 @@ function openBenchmark(map) {
   function selectableCandidate(row,bootstrap) {
     return precheckCandidate(row) || state.report.pairResults.some(pair=>(pair.success || pair===state.report.latestPairFailure) && (bootstrap ? (pair.bootstrapProtocol || "udp")===row.protocol && pair.bootstrapDnsServer===row.server : pair.protocol===row.protocol && pair.id===row.id && pair.dnsServer===row.dnsServer));
   }
-  function mainCandidates() { return catalogCandidates(state.report,state.catalog,false).filter(row=>row.primaryEligible!==false); }
-  function bootstrapCandidates() { return catalogCandidates(state.report,state.catalog,true); }
+  const selection=catalogSelection(map);
+  function mainCandidates() { return catalogCandidates(state.report,state.catalog,false,selection).filter(row=>row.primaryEligible!==false); }
+  function bootstrapCandidates() { return catalogCandidates(state.report,state.catalog,true,selection); }
   function candidateLabel(row,bootstrap) {
     const report=state.report || {results:[],bootstrapResults:[],pairResults:[]};
     const prefix=row.automaticEligible===false?(report.selectionMode==='all_selected'?'только для сравнения · ':'только вручную · '):'';
@@ -576,7 +601,7 @@ function openBenchmark(map) {
     const mains=mainCandidates(), bootstraps=bootstrapCandidates();
     mainSelect.replaceChildren(...mains.map(row=>E("option",{value:row.id+":"+row.protocol+":"+row.dnsServer},row.protocol.toUpperCase()+" · "+row.dnsServer+" · "+candidateLabel(row,false))));
     bootstrapSelect.replaceChildren(...bootstraps.map(row=>E("option",{value:bootstrapValue(row)},row.protocol.toUpperCase()+" · "+row.server+" · "+row.provider+" · "+candidateLabel(row,true))));
-    catalogNotice.textContent=`Каталог: DNS — ${mains.length}, bootstrap — ${bootstraps.length}. Непроверенные варианты не считаются рабочими.`;
+    catalogNotice.textContent=`Из выбранных в «Проверка DNS»: DNS — ${mains.length}, bootstrap — ${bootstraps.length}. Непроверенные варианты не считаются рабочими.`;
     mainSelect.value=mains.some(row=>row.id+":"+row.protocol+":"+row.dnsServer===previousMain)?previousMain:mains.length?mains[0].id+":"+mains[0].protocol+":"+mains[0].dnsServer:"";
     bootstrapSelect.value=bootstraps.some(row=>bootstrapValue(row)===previousBootstrap)?previousBootstrap:bootstraps.length?bootstrapValue(bootstraps[0]):"";
     return {previousMain,previousBootstrap,mains,bootstraps};
@@ -896,7 +921,7 @@ function openBenchmark(map) {
     ]),pairStatus,bootstrapStatus,reserveStatus,E("div",{class:"pdk-dns-benchmark__footer"},[testLight,testBootstrap,saveReserve,apply,rollback,close]),
   ]);
   actions();ui.showModal("Бенчмарк DNS",[content]);refresh();
-  // Load immutable choices once per dialog, independently of measurement cache.
+  // Package data is intersected with this form's candidates and protocols.
   request(["catalog"]).then(value=>{
     if(!state.open) return;
     state.catalog=normalizeReport({...value,state:"idle",results:[],bootstrapResults:[],pairResults:[]});

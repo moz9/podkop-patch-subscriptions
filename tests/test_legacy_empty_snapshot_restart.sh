@@ -8,6 +8,7 @@ for runtime in "$repo"/openwrt/runtime-*/usr/bin/podkop; do
     (
         . "$repo/openwrt/podkop-service-snapshot.sh"
         log() { :; }
+        subscription_sing_box_pid() { :; }
         required=0
         config_foreach() { "$1" main; }
         validate_subscription_urltest_section() { return 0; }
