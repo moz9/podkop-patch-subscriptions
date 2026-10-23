@@ -145,7 +145,7 @@ const ctx=vm.createContext({baseclass:{extend:x=>(exported=x)},
  document:{getElementById:()=>true,createElement:()=>new Node('style'),head:{appendChild(){}}},
  window:{setTimeout:fn=>{poll=fn;return 1;},clearTimeout(){},location:{reload(){reloaded=true;}}},
  ui:{showModal:(title,children)=>{modal=new Node('modal',{},children)},hideModal:()=>{}},
- uci:{changes:async()=>pending?{podkop:[{}]}:{},unload(){},load:async()=>{},set:(...args)=>uciWrites.push(args)},
+ uci:{state:{values:{podkop:{settings:{}}},changes:{}},callLoad:async()=>({settings:{dns_type:'doh',dns_server:'dns.google',bootstrap_dns_server:'8.8.8.8'}}),changes:async()=>pending?{podkop:[{}]}:{},unload(){throw new Error('must retain drafts');},load:async()=>{throw new Error('must retain drafts');},set:(...args)=>uciWrites.push(args)},
  fs:{exec:async(path,args)=>{calls.push(args);const command=args[0];
    if(command===failureCommand)return {code:1,stdout:JSON.stringify({success:false,error:'busy'})};
    if(command==='status'&&statusFailure)return {code:1,stdout:'not-json'};
@@ -299,14 +299,17 @@ assert.equal(button('Применить пару').disabled,true,'choosing a mat
 await button('Проверить пару').click();await flush();
 assert.equal(button('Применить пару').disabled,false,'successful exact pair unlocks Apply');
 pending=true;browserDirty=true;
+ctx.uci.state.changes={podkop:{settings:{dns_server:'manual-draft.example'}}};
 await button('Применить пару').click();await flush();
-assert.ok(!calls.some(a=>a[0]==='apply_start'),'browser-only drafts block reload to preserve unsaved input');
-pending=true;browserDirty=false;
+assert.ok(!calls.some(a=>a[0]==='apply_start'),'conflicting DNS drafts block only the DNS mutation');
+ctx.uci.state.changes={};
+pending=true;
 await button('Применить пару').click();await flush();
 assert.ok(calls.some(a=>a[0]==='apply_start'),'persisted drafts are checked by backend');
-pending=false;
+pending=false;browserDirty=false;
 assert.equal(button('Применить пару').disabled,true,'Apply consumes verification');
-assert.equal(reloaded,true,'server-side apply reloads LuCI to avoid saving a stale form');
+assert.equal(reloaded,false,'server-side apply retains unrelated browser drafts');
+assert.equal(ctx.uci.state.values.podkop.settings.dns_server,'dns.google','DNS baseline follows server-side apply');
 reloaded=false;
 exported.renderOpenButton({root:new Node('root')}).click();await flush();
 assert.equal(reloaded,false,'historical completed apply must not close a newly opened modal');
@@ -584,7 +587,7 @@ exported.renderOpenButton({root:new Node('root'),lookupOption:name=>[reconciledO
 assert.equal(reconciledOptions.get('secondary_dns_server').current,'manual-draft.example','explicit browser-only secondary draft is never replaced by status readback');
 assert.equal(reconciledOptions.get('secondary_bootstrap_dns_server').current,'4.4.4.4','explicit pending secondary draft is never replaced');
 assert.equal(ctx.uci.state.changes.podkop.settings.secondary_bootstrap_dns_server,'4.4.4.4','pending secondary UCI draft is never discarded');
-delete ctx.uci.state;
+ctx.uci.state={values:{podkop:{settings:{}}},changes:{}};
 reservePersisted=null;status=nextStatus={...complete,...reserveReport,results:[good]};
 exported.renderOpenButton({root:new Node('root')}).click();await flush();
 ctx.fs.exec=async(path,args)=>{
@@ -655,15 +658,17 @@ assert.ok(!calls.some(a=>a[0]==='apply_selected_start'),'one-click selection nev
 assert.equal(button('Применить обе пары').disabled,false);
 assert.ok(walk(modal).some(n=>n.textContent.includes('не приложения')),'DNS-only scope is visible');
 browserDirty=true;
+ctx.uci.state.changes={podkop:{settings:{dns_server:'manual-draft.example'}}};
 await button('Применить обе пары').click();await flush();
-assert.ok(!calls.some(a=>a[0]==='apply_selected_start'),'unsaved browser edits survive apply refusal');
-browserDirty=false; pending=true; statusFailure=true; nextStatus={state:'running',action:'select_apply'};
+assert.ok(!calls.some(a=>a[0]==='apply_selected_start'),'conflicting DNS edits survive apply refusal');
+ctx.uci.state.changes={};
+pending=true; statusFailure=true; nextStatus={state:'running',action:'select_apply'};
 await button('Применить обе пары').click();await flush();
 assert.deepEqual(Array.from(calls.find(a=>a[0]==='apply_selected_start')),['apply_selected_start','both-1'],'backend owns both tuples, UI sends only report identity');
 assert.equal(button('Отменить проверку').disabled,true);
 assert.equal(button('Закрыть').disabled,true,'accepted atomic apply cannot be cancelled by closing');
 assert.equal(uciWrites.length,0,'new workflow never mutates shared drafts from the browser');
-status=nextStatus={...lightDone,partial:true,selectionComplete:false}; pending=false; statusFailure=false;
+status=nextStatus={...lightDone,partial:true,selectionComplete:false}; pending=false; statusFailure=false;browserDirty=false;
 exported.renderOpenButton({root:new Node('root')}).click();await flush();
 assert.equal(button('Применить обе пары').disabled,true,'partial selection cannot enable Apply');
-console.log('PASS: both-pair buttons, DNS-only scope, browser draft guard, persisted-draft handoff and atomic-apply UI lock');
+console.log('PASS: both-pair buttons, DNS-only scope, scoped DNS draft guard, persisted-draft handoff and atomic-apply UI lock');
