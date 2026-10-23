@@ -9,6 +9,14 @@
 const COMMAND = "/usr/bin/podkop-dns-benchmark";
 const SUPPORTED_PROTOCOLS = ["udp", "tcp", "doh", "dot"];
 const RECOMMENDATION_ACTIONS = ['recommend','recommend_full','recommend_verified','recommend_reserve'];
+const DNS_FORM_FIELDS = {
+  dns_type:'Протокол основного DNS', dns_server:'Основной DNS',
+  bootstrap_dns_type:'Протокол bootstrap DNS', bootstrap_dns_server:'Bootstrap DNS',
+  secondary_dns_enabled:'Резервный DNS', secondary_dns_type:'Протокол резервного DNS',
+  secondary_dns_server:'Резервный DNS', secondary_bootstrap_dns_type:'Протокол резервного bootstrap DNS',
+  secondary_bootstrap_dns_server:'Bootstrap резервной пары',
+  dns_failover_enabled:'Автоматический резервный DNS', dns_failover_active_slot:'Активная DNS-пара',
+};
 const ERRORS = {
   stale_reserve_proof: "Резерв не подтверждён текущей полной проверкой. Подберите резервную пару заново.",
   reserve_pending_conflict: "В ожидающих настройках изменены DNS или авторезерв. Сохраните или отмените именно эти изменения перед сохранением резерва.",
@@ -43,7 +51,7 @@ const ERRORS = {
   config_error: "Не удалось подготовить конфигурацию для проверки DNS.",
   pair_test_failed: "Выбранная пара не прошла проверку DNS и сервисов. Текущие настройки сохранены.",
   apply_failed: "Не удалось применить DNS-пару. Проверьте состояние Podkop и повторите проверку.",
-  unsaved_changes: "Сначала сохраните и примените изменения Podkop либо сбросьте их. Затем запускайте проверку DNS.",
+  unsaved_changes: "В ожидающих настройках изменены DNS. Примените или отмените только эти изменения. Остальные черновики можно оставить.",
   request_failed: "Не удалось получить ответ от процесса проверки DNS. Повторите запрос.",
   stale_proof: "Выбранная пара не подтверждена текущим результатом: настройки изменились, проверка отменена или её заменил другой прогон. Проверьте выбранную пару ещё раз.",
   dns_query_failed: "Не все обязательные DNS-запросы получили корректный ответ.",
@@ -394,7 +402,7 @@ function openBenchmark(map) {
   const draftNotice=E("div",{class:"pdk-dns-benchmark__notice",hidden:true},"Проверяются рабочая конфигурация и сохранённый каталог. Черновики не применяются.");
   const bootstrapStatus=E("div",{"aria-live":"polite"});
   const reserveStatus=E("div",{"aria-live":"polite"});
-  let lightSelection=null, selectBoth, applyBoth, testLight;
+  let lightSelection=null, selectBoth, applyBoth, testLight, syncFields;
   let savedReserve="";
   let persistedReserve=null, reserveTarget=null, reserveLoading=true;
   let reserveReadiness={}, readinessCheckedReport='';
@@ -441,6 +449,62 @@ function openBenchmark(map) {
     cancel.disabled = !state.running || ["apply", "select_apply", "rollback", "reserve_save"].includes(state.action);
     rollback.disabled = busy || !state.backup;
     close.disabled = state.needsReload || state.pending || state.running && ["apply", "select_apply", "rollback", "reserve_save"].includes(state.action);
+    syncFields.hidden=!state.needsReload;
+    syncFields.disabled=state.pending;
+  }
+  function dnsFieldState(name) {
+    const option=map?.lookupOption?.(name,'settings')?.[0];
+    const loaded=uci.state?.values?.podkop?.settings;
+    const baseline=option?.cfgvalue?.('settings') ?? loaded?.[name] ?? option?.default ?? '';
+    const current=option?.formvalue?.('settings');
+    const changes=uci.state?.changes?.podkop?.settings;
+    const deletes=uci.state?.deletes?.podkop?.settings;
+    const dirty=current!=null && String(current)!==String(baseline) ||
+      changes && Object.hasOwn(changes,name) && String(changes[name])!==String(loaded?.[name] ?? '') ||
+      deletes===true || deletes && Object.hasOwn(deletes,name);
+    // Native change markers can remain set after returning to the saved value.
+    return {option,current,dirty:!!dirty};
+  }
+  async function syncDnsFields() {
+    // callLoad reads fresh RPC values without clearing shared LuCI drafts or its
+    // loaded form. Only the DNS baseline and clean DNS widgets are rebased below.
+    const fresh=(await uci.callLoad('podkop'))?.settings;
+    if(!fresh || !['dns_type','dns_server','bootstrap_dns_server'].every(name=>typeof fresh[name]==='string' && fresh[name]) ||
+        Object.keys(DNS_FORM_FIELDS).some(name=>fresh[name]!=null && typeof fresh[name]!=='string'))
+      throw new Error('invalid_dns_readback');
+    const fields=Object.keys(DNS_FORM_FIELDS).map(name=>[name,dnsFieldState(name)]);
+    const loaded=uci.state?.values?.podkop?.settings;
+    if(!loaded) throw new Error('missing_dns_baseline');
+    for(const [name,{option,current,dirty}] of fields) {
+      const value=fresh[name], displayed=value ?? option?.default ?? '';
+      if(!dirty && option?.getUIElement && (current==null || String(current)!==String(displayed))) {
+        const widget=option.getUIElement('settings');
+        widget?.setValue(displayed);
+        widget?.node?.removeAttribute?.('data-changed');
+      }
+      option?.cfgvalue?.('settings',value);
+      const changes=uci.state?.changes?.podkop?.settings;
+      // A redundant old-value delta is not a draft, but would otherwise become
+      // a stale overwrite after the committed baseline changes underneath it.
+      if(!dirty && changes && Object.hasOwn(changes,name)) delete changes[name];
+      if(value==null) delete loaded[name]; else loaded[name]=value;
+    }
+    map?.checkDepends?.();
+    persistedReserve=fresh.secondary_dns_server && fresh.secondary_bootstrap_dns_server ? {
+      enabled:fresh.secondary_dns_enabled==='1',dnsType:fresh.secondary_dns_type || 'udp',dnsServer:fresh.secondary_dns_server,
+      bootstrapDnsType:fresh.secondary_bootstrap_dns_type || 'udp',bootstrapDnsServer:fresh.secondary_bootstrap_dns_server,
+      autoFailoverEnabled:fresh.dns_failover_enabled==='1',activeSlot:fresh.dns_failover_active_slot || 'primary',
+    } : null;
+    savedReserve=persistedReserve?.enabled ? reserveKey(persistedReserve) : '';
+    showReserveStatus();
+    state.needsReload=false;
+    error.textContent='';
+    message.textContent=state.action==='rollback'?'Предыдущие DNS восстановлены. Черновики сохранены.':'Настройки DNS применены. Черновики сохранены.';
+  }
+  async function finishDnsSync() {
+    try { await syncDnsFields(); }
+    catch (_) { error.textContent='Операция DNS завершена, но не удалось обновить поля формы. Нажмите «Обновить поля DNS». Повторять применение не нужно; остальные черновики сохранены.'; }
+    actions();
   }
   function reserveKey(value) { return JSON.stringify([value?.protocol || value?.dnsType,value?.dnsServer,value?.bootstrapProtocol || value?.bootstrapDnsType || 'udp',value?.bootstrapDnsServer]); }
   function reserveSaveReady() { return !!state.report?.reportId && reserveReadiness.saveReady===true && reserveReadiness.saveReportId===state.report.reportId; }
@@ -623,7 +687,7 @@ function openBenchmark(map) {
     stopPoll();
     try {
       const status=await request(["status"]); if (!state.open) return;
-      const reloadAfterCompletion=state.running && ["apply","select_apply","rollback"].includes(state.action);
+      const syncAfterCompletion=state.running && ["apply","select_apply","rollback"].includes(state.action);
       if (!["idle","running","done","error","cancelled"].includes(status.state)) throw new Error(ERRORS.request_failed);
       state.running=status.state === "running"; state.action=status.action || ""; state.backup=!!status.backupAvailable;
       state.nativeVerified=null;
@@ -706,13 +770,9 @@ function openBenchmark(map) {
         message.textContent="Проверка пары завершена";
       } else if (["apply","rollback"].includes(status.action) && status.state === "done") {
         state.verified=""; message.textContent=status.action === "apply" ? "Настройки DNS применены" : "Предыдущие DNS восстановлены";
-        if (!reloadAfterCompletion) { actions(); return; }
+        if (!syncAfterCompletion) { actions(); return; }
         state.needsReload=true;
-        uci.unload("podkop"); await uci.load("podkop");
-        // Server-side apply changed UCI. Reload before allowing LuCI to save its stale form.
-        start.disabled=true; test.disabled=true; apply.disabled=true; rollback.disabled=true;
-        message.textContent += ". Обновите страницу, чтобы загрузить новые настройки.";
-        window.location.reload();
+        await finishDnsSync();
         return;
       } else { message.textContent=RECOMMENDATION_ACTIONS.includes(status.action) ? (state.report?.recommendation?"Подбор завершён. Рекомендация готова, DNS не изменены.":"Подбор завершён без подтверждённой рекомендации. DNS не изменены.") : status.action==="pairs" ? "Проверка пар завершена. Выберите рабочую пару." : state.report?"Измерения завершены. Выберите и проверьте пару.":"Готов к проверке"; }
     } catch (failure) { error.textContent=failure.message || ERRORS.request_failed; if(state.action==='reserve_save' && !state.running)showReserveStatus();if(state.running && state.open)state.timer=window.setTimeout(refresh,1500); }
@@ -728,8 +788,10 @@ function openBenchmark(map) {
     state.pending=true; actions(); error.textContent="";
     try {
       const dirty=await hasChanges();
-      if(["apply_start","apply_selected_start","apply_manual_start","rollback_start"].includes(command) &&
-          map?.root?.querySelector('[data-changed="true"]')) throw new Error(ERRORS.unsaved_changes);
+      if(["apply_start","apply_selected_start","apply_manual_start","rollback_start"].includes(command)) {
+        const conflicts=Object.keys(DNS_FORM_FIELDS).filter(name=>dnsFieldState(name).dirty);
+        if(conflicts.length) throw new Error('В форме изменены поля: '+conflicts.map(name=>DNS_FORM_FIELDS[name]).join(', ')+'. Примените или верните только эти поля перед заменой DNS. Остальные черновики можно оставить.');
+      }
       draftNotice.hidden=!dirty;
       lightSelection=null;
       reserveReadiness={};readinessCheckedReport='';
@@ -782,6 +844,11 @@ function openBenchmark(map) {
   rollback=makeButton("Откатить DNS",()=>operate("rollback_start"),"cbi-button-reset");
   cancel=makeButton("Отменить проверку",async()=>{if(["apply","select_apply","rollback"].includes(state.action))return;try{await request(["cancel"]);await refresh();}catch(failure){error.textContent=failure.message;}},"cbi-button-reset");
   close=makeButton("Закрыть",()=>{if(close.disabled)return;state.open=false;stopPoll();ui.hideModal();if(state.running)request(["cancel"]).catch(()=>{});},"cbi-button-reset");
+  syncFields=makeButton("Обновить поля DNS",async()=>{
+    if(state.pending || !state.needsReload) return;
+    state.pending=true;actions();
+    try { await finishDnsSync(); } finally { state.pending=false;actions(); }
+  });
   const modeTabs=["1. Серверы по отдельности","2. Пары через Podkop"].map((label,index)=>makeButton(label,()=>showMode(index===0?"individual":"pairs")));
   function showMode(mode) {
     state.mode=mode; const matrix=mode==="pairs";
@@ -793,7 +860,7 @@ function openBenchmark(map) {
     E("div",{class:"pdk-dns-benchmark__notice"},"Автоматического применения нет. Закрытие окна отменяет проверку."),
     E("a",{href:"https://github.com/moz9/podkop-patch-subscriptions/blob/pe-dns-pairs-20261007/docs/user-guide.md",target:"_blank",rel:"noopener noreferrer"},"Справка"),
     E("div",{class:"pdk-dns-benchmark__notice"},"Подбор обеих пар: до 60 секунд, без дополнительного движка. Проверяются DNS-ответы и независимость резерва, не работа приложений. Применение и откат — отдельными кнопками."),
-    E("div",{class:"pdk-dns-benchmark__toolbar"},[selectBoth,applyBoth,message,progress,count,cancel]),error,recommendationNotice,matrixNotice,matrixDetails,resultTables,
+    E("div",{class:"pdk-dns-benchmark__toolbar"},[selectBoth,applyBoth,message,progress,count,cancel]),error,syncFields,recommendationNotice,matrixNotice,matrixDetails,resultTables,
     E("details",{},[E("summary",{},"Отдельные измерения и диагностика"),
       endpointNotice,
       E("div",{class:"pdk-dns-benchmark__notice"},"Проверка пар через Podkop и полный подбор — отдельные, более длительные режимы. Они могут потребовать дополнительной памяти. DNS не применяются автоматически."),
