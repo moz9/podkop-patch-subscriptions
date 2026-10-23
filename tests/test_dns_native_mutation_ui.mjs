@@ -19,13 +19,15 @@ const flush=()=>new Promise(resolve=>setImmediate(resolve));
 const first={protocol:'udp',id:'alidns',dnsServer:'223.5.5.5',bootstrapProtocol:'udp',bootstrapDnsServer:'77.88.8.1',mainFamily:'alidns',bootstrapFamily:'yandex',success:true,successCount:2,totalQueries:2,averageMs:7,httpsTested:false};
 const second={...first,id:'other',dnsServer:'dns.example',mainFamily:'other',bootstrapDnsServer:'45.90.28.0',bootstrapFamily:'nextdns'};
 const native={state:'done',action:'select',reportId:'selection-1',selectionComplete:true,partial:false,scope:'direct_dns_pair',recommendation:first,secondaryRecommendation:second,pairResults:[first,second]};
+const freshSettings={dns_type:'udp',dns_server:'223.5.5.5',bootstrap_dns_server:'77.88.8.1'};
+const uciFixture=()=>({state:{values:{podkop:{settings:{}}}},changes:async()=>({}),callLoad:async()=>({settings:freshSettings}),unload(){throw new Error('must preserve shared drafts');},load:async()=>{throw new Error('must preserve shared drafts');}});
 for(const action of ['apply','rollback']){
  let exported,modal,poll,reloaded=0,status=action==='apply'?native:{state:'idle',backupAvailable:true};
  const calls=[];
  const context=vm.createContext({baseclass:{extend:x=>(exported=x)},E:(...args)=>new Node(...args),
   document:{getElementById:()=>true},window:{setTimeout:fn=>(poll=fn,1),clearTimeout(){},location:{reload(){reloaded++;}}},
   ui:{showModal:(_title,children)=>{modal=new Node('modal',{},children);},hideModal(){}},
-  uci:{changes:async()=>({}),unload(){},load:async()=>{}},
+  uci:uciFixture(),
   fs:{exec:async(_path,args)=>{
    calls.push(args);const cmd=args[0];
    if(cmd==='status')return {code:0,stdout:JSON.stringify(status)};
@@ -44,12 +46,13 @@ for(const action of ['apply','rollback']){
  status={...status,state:'done',message:action==='apply'?'apply_complete':'rollback_complete'};
  await poll();await flush();
  assert.equal(walk(modal).find(n=>n.attrs.role==='alert').textContent,'','successful mutation is not a malformed measurement');
- assert.equal(reloaded,1,'successful mutation reloads stale LuCI form exactly once');
+ assert.equal(reloaded,0,'successful mutation keeps browser drafts instead of reloading');
+ assert.equal(context.uci.state.values.podkop.settings.dns_server,freshSettings.dns_server,'successful mutation rebases DNS');
  assert.ok(walk(modal).some(n=>n.textContent.includes(action==='apply'?'применен':'восстановлены')),'confirmed mutation outcome is visible');
  assert.equal(button('Применить обе пары').disabled,true,'consumed selection cannot be applied again');
  assert.ok(calls.some(a=>a[0]===(action==='apply'?'apply_selected_start':'rollback_start')));
 }
-console.log('PASS: native selection history cannot mask apply/rollback results or prevent stale-form reload');
+console.log('PASS: native selection history cannot mask apply/rollback results or DNS form synchronization');
 
 for(const scenario of ['fresh','changed','not-ready','wrong-tuple','dirty','old-reserve']) {
  let exported,modal,poll,reloaded=0,status=scenario==='old-reserve'?{state:'done',action:'recommend_reserve',results:[],bootstrapResults:[],pairResults:[],reportId:'old-reserve'}:{state:'idle'},dirty=false;
@@ -60,7 +63,7 @@ for(const scenario of ['fresh','changed','not-ready','wrong-tuple','dirty','old-
  const context=vm.createContext({baseclass:{extend:x=>(exported=x)},E:(...args)=>new Node(...args),
   document:{getElementById:()=>true},window:{setTimeout:fn=>(poll=fn,1),clearTimeout(){},location:{reload(){reloaded++;}}},
   ui:{showModal:(_title,children)=>{modal=new Node('modal',{},children);},hideModal(){}},
-  uci:{changes:async()=>({}),unload(){},load:async()=>{}},
+  uci:uciFixture(),
   fs:{exec:async(_path,args)=>{
    calls.push(args);
    if(args[0]==='status')return {code:0,stdout:JSON.stringify(status)};
@@ -83,13 +86,14 @@ for(const scenario of ['fresh','changed','not-ready','wrong-tuple','dirty','old-
   assert.equal(apply.disabled,true,'changing selection invalidates proof');
  } else if(['fresh','dirty','old-reserve'].includes(scenario)) {
   dirty=scenario==='dirty';await apply.click();await flush();
-  assert.equal(calls.some(a=>a[0]==='apply_manual_start'),!dirty,'draft changes block native apply');
+  assert.equal(calls.some(a=>a[0]==='apply_manual_start'),true,'unrelated draft changes do not block native apply');
   assert.equal(calls.some(a=>a[0]==='apply_start'),false,'native proof never enters the full-HTTPS apply path');
-  if(!dirty) {
+  {
    assert.deepEqual(Array.from(calls.find(a=>a[0]==='apply_manual_start')),['apply_manual_start','manual-1']);
    status={state:'done',action:'apply',message:'apply_complete'};await poll();await flush();
-   assert.equal(reloaded,1,'native manual apply reloads stale form');
+   assert.equal(reloaded,0,'native manual apply preserves browser form');
+   assert.equal(context.uci.state.values.podkop.settings.dns_server,freshSettings.dns_server,'manual apply rebases DNS');
   }
  }
 }
-console.log('PASS: manual native DNS proof, exact tuple binding, draft gate and separate apply command');
+console.log('PASS: manual native DNS proof, exact tuple binding, draft isolation and separate apply command');
