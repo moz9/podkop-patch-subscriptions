@@ -90,7 +90,7 @@ assert.equal(exported.pairSummary({...workingPair,httpsTested:false}),'DNS от�
 assert.match(exported.pairSummary({success:false,httpsTested:false,error:'dns_query_failed'}),/Ошибки DNS.*HTTPS не проверен/,'DNS failure remains visible before untested HTTPS');
 assert.match(exported.pairSummary({success:false,httpsTested:false,error:'child_start_failed'}),/Тест не выполнен.*HTTPS не проверен/,'worker failure is not described as measured DNS');
 assert.equal(exported.pairSummary(comparisonOnly),'Только для сравнения','manual/filtering pair is visibly excluded from ranking');
-const catalogMain={id:'controld',protocol:'doh',provider:'Control D',dnsServer:'freedns.controld.com/p0',primaryEligible:true,automaticEligible:false};
+const catalogMain={id:'controld_unfiltered',protocol:'doh',provider:'Control D',dnsServer:'freedns.controld.com/p0',primaryEligible:true,automaticEligible:false};
 const catalogBoot={id:'cloudflare_2',protocol:'udp',provider:'Cloudflare',server:'1.0.0.1'};
 const catalogReport={results:[candidate],bootstrapResults:report.bootstrapResults,availableResults:[candidate,catalogMain],availableBootstrapResults:[...report.bootstrapResults,catalogBoot]};
 assert.equal(exported.normalizeReport(catalogReport).availableResults?.length,2,'full catalog is separate from measured shortlist');
@@ -207,7 +207,7 @@ assert.equal(catalogMainPicker.children.length,2,'unmeasured configured primary 
 assert.equal(catalogBootPicker.children.length,2,'unmeasured configured bootstrap remains selectable');
 assert.ok(catalogMainPicker.children.some(n=>n.children.some(c=>typeof c==='string'&&c.includes('не проверен'))));
 assert.ok(catalogMainPicker.children.some(n=>n.children.some(c=>typeof c==='string'&&c.includes('только вручную'))),'manual-only catalog candidates are distinguished from automatic shortlist');
-catalogMainPicker.value='controld:doh:freedns.controld.com/p0';catalogMainPicker.listeners.change();
+catalogMainPicker.value='controld_unfiltered:doh:freedns.controld.com/p0';catalogMainPicker.listeners.change();
 catalogBootPicker.value='udp:1.0.0.1';catalogBootPicker.listeners.change();
 assert.equal(button('Проверить пару').disabled,false,'unmeasured catalog tuple can be explicitly tested');
 assert.equal(button('Применить пару').disabled,true,'catalog presence never grants apply proof');

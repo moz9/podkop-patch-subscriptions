@@ -221,7 +221,7 @@ if [ "${PODKOP_SOURCES_SAFE_RESTART_ONLY:-0}" = 1 ]; then
             sed -n '/^subscription_services_continuity_context_ready() {$/,/^}$/p' "$source_runtime" >> "$work/restart-prepare"
         fi
         [ -s "$work/restart-prepare" ] || exit 1
-        awk -v helper="$work/restart-prepare" '
+        awk -v helper="$work/restart-prepare" -v transaction="$(grep -c '^# subscription_restart_transaction_v1$' "$target" || true)" '
         /^start_main\(\) \{$/ {fn="start_main"}
         /^reload\(\) \{$/ {fn="reload"}
         /^restart\(\) \{$/ {fn="restart"}
@@ -236,7 +236,7 @@ if [ "${PODKOP_SOURCES_SAFE_RESTART_ONLY:-0}" = 1 ]; then
         }
         (fn=="reload" || fn=="restart") && $0=="    subscription_services_preflight || return 1" {
             if(fn=="restart") print "    # subscription_safe_restart_v1: validate before destructive rc.common stop."
-            print "    local PODKOP_SERVICE_RESTART_CONTINUITY=0"
+            print "    local PODKOP_SERVICE_RESTART_CONTINUITY=0" (transaction==1 ? " PODKOP_RESTART_WORK=\047\047" : "")
             print "    subscription_services_restart_prepare || return 1"; guards++; next
         }
         $0=="# subscription_service_snapshot_v1 end" {
@@ -271,6 +271,7 @@ if grep -Fqx '# subscription_choices_and_busy_v1' "$target" &&
     source_capability_current '    # subscription_apply_v2_native_intent_v1' &&
     source_capability_current '# subscription_optional_selection_v1' &&
     source_capability_current '# subscription_tag_prefix_v1' &&
+    source_capability_current '# subscription_restart_transaction_v1' &&
     source_capability_current '# subscription_probe_diagnostics_v1' &&
     grep -Fqx '# subscription_light_probe_v1' "$target" &&
     grep -Fqx '# subscription_selection_v1' "$target" &&
