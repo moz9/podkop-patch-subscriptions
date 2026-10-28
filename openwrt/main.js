@@ -2094,7 +2094,7 @@ function renderDefaultState({
             "div",
             { class: getLatencyClass() },
             outbound.reason || (outbound.latency ? `${outbound.latency} мс` :
-              outbound.latencyState === "unavailable" ? "Нет ответа" : "Не проверен")
+              outbound.latencyState === "error" ? "Ошибка проверки" : outbound.latencyState === "unavailable" ? "Нет ответа" : "Не проверен")
           )
         ])
       ]
@@ -2404,6 +2404,24 @@ async function handleChooseOutbound(selector, tag) {
   await PodkopShellMethods.setClashApiGroupProxy(selector, tag);
   await fetchDashboardSections();
 }
+function applyDashboardProbeResult(tag, response, grouped) {
+  const widget = store.get().sectionsWidget;
+  const payload = response?.data;
+  const groupSuccess = grouped && response?.success === true && payload && typeof payload === "object" && !Array.isArray(payload) && !payload.message &&
+    Object.values(payload).every(value => typeof value === "number" && Number.isFinite(value));
+  const explicitFailure = payload?.message === "An error occurred in the delay test";
+  const data = (widget.data || []).map(section => {
+    if (section.code !== tag && !section.outbounds?.some(node => node.code === tag)) return section;
+    return {...section, outbounds: section.outbounds.map(node => {
+      if (grouped ? node.isGroup || ["URLTest","Selector"].includes(node.type) : node.code !== tag) return node;
+      const delay = grouped ? payload?.[node.code] : payload?.delay;
+      const available = (grouped ? groupSuccess : response?.success === true) && typeof delay === "number" && Number.isFinite(delay) && delay > 0;
+      const failed = grouped ? groupSuccess : explicitFailure || response?.success === true && typeof delay === "number" && delay <= 0;
+      return {...node, latency: available ? delay : 0, latencyState: available ? "available" : failed ? "unavailable" : "error"};
+    })};
+  });
+  store.set({sectionsWidget:{...widget,data,latencyFetching:false}});
+}
 async function handleTestGroupLatency(tag) {
   store.set({
     sectionsWidget: {
@@ -2411,8 +2429,11 @@ async function handleTestGroupLatency(tag) {
       latencyFetching: true
     }
   });
-  await PodkopShellMethods.getClashApiGroupLatency(tag);
+  let result;
+  try { result = await PodkopShellMethods.getClashApiGroupLatency(tag); }
+  catch (_) { result = {success:false}; }
   await fetchDashboardSections();
+  applyDashboardProbeResult(tag, result, true);
   store.set({
     sectionsWidget: {
       ...store.get().sectionsWidget,
@@ -2427,8 +2448,11 @@ async function handleTestProxyLatency(tag) {
       latencyFetching: true
     }
   });
-  await PodkopShellMethods.getClashApiProxyLatency(tag);
+  let result;
+  try { result = await PodkopShellMethods.getClashApiProxyLatency(tag); }
+  catch (_) { result = {success:false}; }
   await fetchDashboardSections();
+  applyDashboardProbeResult(tag, result, false);
   store.set({
     sectionsWidget: {
       ...store.get().sectionsWidget,
@@ -5594,7 +5618,7 @@ function renderToolbar({
       ...(runtimeStatus?.pending ? [E("span", {
         class:"pdk_subscriptions-page__catalog-status", role:"status",
         style:"flex:1 0 100%;order:1;font-size:12px"
-      }, `Каталог и проверки обновлены${runtimeStatus.pendingSections?.length ? `: ${runtimeStatus.pendingSections.join(", ")}` : ""}. Само обновление каталога не меняет рабочие наборы. Применение каталога — отдельной кнопкой в секции.`)] : []),
+      }, `Каталог и проверки обновлены${runtimeStatus.pendingSections?.length ? `: ${runtimeStatus.pendingSections.join(", ")}` : ""}. Обновление рабочего набора ожидает применения. Текущий набор показан слева.`)] : []),
       E(
         "div",
         { class: "pdk_subscriptions-page__toolbar-message" },

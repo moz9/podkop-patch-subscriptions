@@ -169,7 +169,7 @@ test('filter changes and refreshed history rerender through real StoreService wi
   context.initialDiagnosticStore={};
   vm.runInContext(source.slice(storeStart,storeEnd),context);
   const controller=source.slice(source.indexOf('// src/podkop/tabs/dashboard/initController.ts'),source.indexOf('// src/podkop/tabs/dashboard/styles.ts'));
-  for(const name of ['onStoreUpdate','renderSectionsWidget','fetchDashboardSections','handleTestGroupLatency','handleTestProxyLatency','handleChooseOutbound']) load(context,name,controller);
+  for(const name of ['onStoreUpdate','renderSectionsWidget','fetchDashboardSections','applyDashboardProbeResult','handleTestGroupLatency','handleTestProxyLatency','handleChooseOutbound']) load(context,name,controller);
   load(context,'render',source.slice(source.indexOf('// src/podkop/tabs/dashboard/render.ts'),source.indexOf('// src/helpers/prettyBytes.ts')));
   let rendered=[];
   context.document={getElementById:()=>({replaceChildren:(...children)=>rendered=children})};

@@ -46,6 +46,7 @@ case "$version" in
 esac
 
 if grep -Fqx '# subscription_seamless_reload begin' "$target" &&
+	grep -q 'subscription_auto_refresh_v1' "$target" &&
 	grep -q 'subscription_deferred_apply_v1' "$target" &&
 	grep -Fqx '# subscription_seamless_reload end' "$target" &&
 	sed -n '/^subscription_update() {/,/^}/p' "$target" | grep -q 'subscription_reload_seamless' &&

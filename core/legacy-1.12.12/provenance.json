@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "runtimeVersion": "1.12.12-pdk-reality1",
+  "officialRelease": false,
+  "upstream": {
+    "repository": "https://github.com/SagerNet/sing-box.git",
+    "tag": "v1.12.12",
+    "commit": "54ed58499d7063136ed52dabf87d179d252425d0",
+    "commitTime": "2025-10-27T10:04:24Z",
+    "backportReferenceCommit": "87f2d718a06af194b9335a3abd3b6611ec37b97a"
+  },
+  "patch": {
+    "file": "reality-mlkem.patch",
+    "sourceFile": "common/tls/reality_client.go",
+    "insertions": 0,
+    "deletions": 17,
+    "patchedSourceSha256": "058dc83f1c20496639c7322b5ffef8d02ce5a1d4c24fed1b5962f0178f63ded0"
+  },
+  "dependencies": {
+    "goModUnchanged": true,
+    "goSumUnchanged": true,
+    "goModSha256": "e07d16650b32b8993b2e1545c80fcdbe7a6d5f3adf8ad3bf5a0126e328303ac3",
+    "goSumSha256": "2b16365435261126b40d1393eb2e343ca8078934d497387c97110c2b235918f4",
+    "utlsDependency": "github.com/metacubex/utls v1.8.3"
+  },
+  "wireClientVersion": "1.8.1",
+  "build": {
+    "goVersion": "go1.23.12",
+    "host": "windows/amd64",
+    "toolchainArchive": "go1.23.12.windows-amd64.zip",
+    "toolchainArchiveSha256": "07c35866cdd864b81bb6f1cfbf25ac7f87ddc3a976ede1bf5112acbb12dfe6dc",
+    "goos": "linux",
+    "goarch": "arm64",
+    "goarm64": "v8.0",
+    "cgoEnabled": "0",
+    "tags": "with_clash_api,with_gvisor,with_quic,with_tailscale,with_utls,with_wireguard",
+    "flags": ["-mod=readonly", "-trimpath", "-gcflags=all=-l"],
+    "ldflags": "-s -w -buildid= -X github.com/sagernet/sing-box/constant.Version=1.12.12-pdk-reality1",
+    "vcsModified": true,
+    "upx": false
+  },
+  "artifact": {
+    "bytes": 36569223,
+    "sha256": "b16d1530c45417a28317aa188bc32b845e09b6232aab2f5cc5831b37a770744a"
+  },
+  "regressionTest": {
+    "file": "reality_mlkem_test.go",
+    "sha256": "d5b6ca15738989a8196f332cc7954fa219e21d9524ad654f25afb9572516a1e5",
+    "name": "TestRealityChromeHybridClientHello",
+    "count": 20,
+    "fingerprint": "chrome",
+    "transport": "net.Pipe real serialized ClientHello",
+    "assertions": ["supported group 4588", "hybrid key share 4588, 1216 bytes, before classical share"]
+  },
+  "scope": {
+    "channel": "podkop-legacy",
+    "architecture": "aarch64",
+    "podkopVersions": ["0.7.20", "0.7.22"],
+    "allFingerprintsVerified": false,
+    "podkopEngineMigration": false,
+    "xhttpSupportAdded": false,
+    "universalServerCompatibilityClaim": false
+  }
+}

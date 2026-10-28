@@ -396,6 +396,24 @@ dns_apply_scoped_policy_validate() (
 )
 
 
+dns_apply_empty_required_section() {
+    local required
+    validate_subscription_urltest_section "$1" || return 0
+    required="$(subscription_required_services_json "$1")" || { DA_EMPTY_REQUIRED_INVALID=1; return 0; }
+    [ "$required" = '[]' ] || DA_EMPTY_REQUIRED_INVALID=1
+    return 0
+}
+dns_apply_empty_current() {
+    local context DA_EMPTY_REQUIRED_INVALID=0
+    [ "${DA_DNS_TRANSACTION_GRAPH:-0}" = 1 ] || return 1
+    [ "${DA_SAVED:-0}" != 1 ] && [ -z "${DA_LEGACY_CONTEXT:-}" ] && dns_apply_single_mode || return 1
+    jq -e '.sections==[]' "$1" >/dev/null || return 1
+    config_foreach dns_apply_empty_required_section section || return 1
+    [ "$DA_EMPTY_REQUIRED_INVALID" = 0 ] || return 1
+    context="$(cat "$DA_ROOT/context.sha256")" || return 1
+    case "$context" in v2:*) [ "${#context}" = 67 ] || return 1;; *) return 1;; esac
+    [ "$context" = "$(podkop_section_context_hash)" ]
+}
 dns_apply_continuity_validate() {
     # DNS continuation retains one exact admitted runtime, not today's pending
     # catalog selection. No supported/filter/TTL gate and no evidence writes.
@@ -418,9 +436,15 @@ dns_apply_continuity_validate() {
     ' "$manifest" >/dev/null || return 1
     config_get config_path settings config_path
     config_sha="$(dns_apply_hash "$config_path")" && policy_sha="$(subscription_services_snapshot_policy_hash)" || return 1
-    jq -e --arg config "$config_sha" '.config==$config' "$manifest" >/dev/null || return 1
-    if ! jq -e --arg policy "$policy_sha" '.policy==$policy' "$manifest" >/dev/null; then
-        dns_apply_scoped_policy_validate "$manifest" || return 1
+    # An empty receipt admits no nodes. A later unfiltered start intentionally
+    # does not create fresh service evidence, so its old graph/policy hash is
+    # not an admission requirement for a DNS-only change. Bind instead to the
+    # current exact single graph/context; keep every rule/generation check below.
+    if ! dns_apply_empty_current "$manifest"; then
+        jq -e --arg config "$config_sha" '.config==$config' "$manifest" >/dev/null || return 1
+        if ! jq -e --arg policy "$policy_sha" '.policy==$policy' "$manifest" >/dev/null; then
+            dns_apply_scoped_policy_validate "$manifest" || return 1
+        fi
     fi
     jq -r '.sections[].section' "$manifest" > "$DA_WORK/continuity-sections" || return 1
     while IFS= read -r section; do
@@ -539,6 +563,7 @@ dns_apply_collect() {
         jq -ceS . "$DA_ROOT/frontend.json" > "$DA_WORK/single.frontend" &&
         cmp -s "$DA_WORK/single.expected" "$DA_WORK/single.logical" &&
         cmp -s "$DA_WORK/single.expected" "$DA_WORK/single.frontend" || return 1
+        DA_DNS_TRANSACTION_GRAPH=1
         : > "$DA_WORK/sections"
         dns_apply_add_file "$DA_ROOT/runtime-mode" metadata || return 1
     else
@@ -940,6 +965,16 @@ dns_apply_run() {
         [ ! -L "$DA_WORK" ] && [ -s "$DA_WORK/applied.sha" ] || { dns_apply_reply incomplete_backup; return 1; }
         [ "$(wc -l < "$DA_WORK/applied.sha")" = "$(wc -l < "$DA_WORK/files")" ] || { dns_apply_reply incomplete_backup; return 1; }
         sha256sum -c "$DA_WORK/applied.sha" >/dev/null 2>&1 || { dns_apply_reply runtime_changed; return 1; }
+        # Only the recorded DNS transaction may retain the current-graph basis
+        # on explicit rollback. Reserve-save bindings never establish this flag.
+        if dns_apply_single_mode; then
+            jq -ceS . "$DA_CONFIG" > "$DA_WORK/rollback-main" &&
+            jq -ceS . "$DA_ROOT/logical.json" > "$DA_WORK/rollback-logical" &&
+            jq -ceS . "$DA_ROOT/frontend.json" > "$DA_WORK/rollback-frontend" &&
+            cmp -s "$DA_WORK/rollback-main" "$DA_WORK/rollback-logical" &&
+            cmp -s "$DA_WORK/rollback-main" "$DA_WORK/rollback-frontend" || { dns_apply_reply runtime_changed; return 1; }
+            DA_DNS_TRANSACTION_GRAPH=1
+        fi
         # Pending failure may have old files on disk but a candidate daemon
         # still running. Only a fully completed admission proves disk==loaded.
         if [ "$pending_recovery" = 0 ]; then
@@ -998,7 +1033,7 @@ dns_apply_worker() {
     # Keep the parent's strict mode intact and relax only this owned worker.
     set +eu
     umask 077
-    PODKOP_DNS_COMMITTED_FILE=''; DA_SECONDARY_TYPE=''; DA_LEGACY_CONTEXT=''; DA_UCI_RESTORED_SHA=''
+    PODKOP_DNS_COMMITTED_FILE=''; DA_SECONDARY_TYPE=''; DA_LEGACY_CONTEXT=''; DA_UCI_RESTORED_SHA=''; DA_DNS_TRANSACTION_GRAPH=0
     DA_MUTATED=0; DA_CHANGED=false; DA_OWN_LOCK=0; DA_TEMP=0; DA_WORK=''
     trap 'dns_apply_cleanup' EXIT
     trap 'dns_apply_signal' INT TERM HUP

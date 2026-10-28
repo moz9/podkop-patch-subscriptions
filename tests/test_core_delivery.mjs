@@ -1,0 +1,41 @@
+import fs from 'node:fs';
+import assert from 'node:assert/strict';
+import {createHash} from 'node:crypto';
+const root=new URL('../',import.meta.url);
+const read=p=>fs.readFileSync(new URL(p,root),'utf8');
+const m=JSON.parse(read('openwrt/update-manifest.json'));
+assert.equal(m.coreCompatibility?.reality,'x25519-mlkem768');
+if(m.channel==='podkop-legacy'){
+ assert.equal(m.coreCompatibility.version,'1.12.12-pdk-reality1');
+ assert.deepEqual(m.coreCompatibility.architectures,['aarch64']);
+ assert.equal(m.coreCompatibility.sha256,'b16d1530c45417a28317aa188bc32b845e09b6232aab2f5cc5831b37a770744a');
+ const coreRoot='core/legacy-1.12.12/';
+ const provenance=JSON.parse(read(coreRoot+'provenance.json'));
+ assert.equal(provenance.officialRelease,false);
+ assert.equal(provenance.upstream.commit,'54ed58499d7063136ed52dabf87d179d252425d0');
+ assert.equal(provenance.runtimeVersion,m.coreCompatibility.version);
+ assert.equal(provenance.artifact.sha256,m.coreCompatibility.sha256);
+ assert.equal(provenance.artifact.bytes,36569223);
+ assert.equal(provenance.wireClientVersion,'1.8.1');
+ assert.equal(provenance.dependencies.utlsDependency,'github.com/metacubex/utls v1.8.3');
+ assert.equal(provenance.build.goVersion,'go1.23.12');
+ assert.equal(provenance.build.vcsModified,true);
+ assert.equal(provenance.scope.allFingerprintsVerified,false);
+ assert.equal(provenance.scope.podkopEngineMigration,false);
+ assert.equal(provenance.scope.xhttpSupportAdded,false);
+ const patchLines=read(coreRoot+provenance.patch.file).split('\n');
+ assert.equal(patchLines.filter(line=>line.startsWith('-')&&!line.startsWith('---')).length,17);
+ assert.equal(patchLines.filter(line=>line.startsWith('+')&&!line.startsWith('+++')).length,0);
+ assert.equal(createHash('sha256').update(read(coreRoot+provenance.regressionTest.file)).digest('hex'),provenance.regressionTest.sha256);
+ assert.match(read(coreRoot+'build.ps1'),/-mod=readonly -trimpath -gcflags=all=-l/);
+ assert.match(read(coreRoot+'README.md'),/Only the `chrome` fingerprint/);
+ assert.match(read(coreRoot+'LICENSE'),/GNU General Public License/);
+ assert.match(read('i'),/sh "\$tmp_dir\/\$CORE_COMPAT_FILE" apply "\$\$"/);
+ assert.ok(read('i').indexOf('apply "$$"')<read('i').indexOf('transaction_phase="prepatch"'));
+ assert.equal(read('i'),read('openwrt/install.sh'));
+}else{
+ assert.equal(m.coreCompatibility.mode,'native-engine-preserved');
+ assert.equal(m.coreCompatibility.version,m.engineVersion);
+ assert.ok(!read('i').includes('CORE_COMPAT_FILE'));
+}
+console.log('PASS: channel-specific core delivery and preservation contract');

@@ -61,7 +61,7 @@ SECTION_WORKER_INIT_FILE="podkop-section-worker.init"
 SECTION_HOOKS_FILE="podkop-section-hooks.sh"
 SECTION_UPGRADE_FILE="podkop-section-upgrade.sh"
 SECTION_UPGRADE_PATCH_FILE="podkop-section-runtime-upgrade.patch"
-INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261023-legacy-v40"
+INSTALL_MARKER="PODKOP_SUBSCRIPTIONS_PATCH_VERSION=20261028-legacy-v41"
 ACTIONS_UPGRADE_PATCH_FILE="podkop-subscription-actions-upgrade.patch"
 LEGACY_UPGRADE_PATCH_FILE="podkop-subscription-legacy-upgrade.patch"
 UI_FIX_BACKEND_FILE="podkop-actions-ui-fix.sh"
@@ -89,6 +89,7 @@ DNS_FAILOVER_INIT_FILE="podkop-dns-failover.init"
 DNS_FAILOVER_VERSION="20261011-dns-failover-v4"
 DNS_FAILOVER_UPGRADE_FILE="podkop-dns-failover-upgrade.sh"
 UPDATE_MANAGER_FILE="podkop-update-manager"
+CORE_COMPAT_FILE="podkop-core-compat"
 UPDATE_MANAGER_VERSION="20261022-update-manager-v4"
 UPDATE_CENTER_UPGRADE_FILE="podkop-update-center-upgrade.sh"
 LMO_DECODED_FILE="podkop.ru.lmo"
@@ -96,7 +97,7 @@ RUNTIME_0720_PODKOP_FILE="runtime-0.7.20/usr/bin/podkop"
 RUNTIME_0720_PODKOP_JS_FILE="runtime-0.7.20/www/luci-static/resources/view/podkop/podkop.js"
 RUNTIME_0722_PODKOP_FILE="runtime-0.7.22/usr/bin/podkop"
 RUNTIME_0722_PODKOP_JS_FILE="runtime-0.7.22/www/luci-static/resources/view/podkop/podkop.js"
-LUCI_MODULE_NAMESPACE="podkop_patch_20261023_legacy_v40"
+LUCI_MODULE_NAMESPACE="podkop_patch_20261028_legacy_v41"
 LUCI_MODULE_ENTRY="$LUCI_MODULE_NAMESPACE/podkop"
 LUCI_VIEW_ROOT="${PODKOP_PATCH_LUCI_VIEW_ROOT:-/www/luci-static/resources/view}"
 LUCI_MENU_FILE="${PODKOP_PATCH_LUCI_MENU_FILE:-/usr/share/luci/menu.d/luci-app-podkop.json}"
@@ -109,14 +110,14 @@ PODKOP_RUNTIME_BIN="${PODKOP_PATCH_PODKOP_RUNTIME_BIN:-/usr/bin/podkop}"
 DNS_FAILOVER_INIT_SCRIPT="${PODKOP_PATCH_DNS_FAILOVER_INIT_SCRIPT:-/etc/init.d/podkop-dns-failover}"
 
 RUNTIME_FILES="
-www/luci-static/resources/view/podkop_patch_20261023_legacy_v40/main.js
-www/luci-static/resources/view/podkop_patch_20261023_legacy_v40/podkop.js
-www/luci-static/resources/view/podkop_patch_20261023_legacy_v40/section.js
-www/luci-static/resources/view/podkop_patch_20261023_legacy_v40/subscriptions.js
-www/luci-static/resources/view/podkop_patch_20261023_legacy_v40/settings.js
-www/luci-static/resources/view/podkop_patch_20261023_legacy_v40/dashboard.js
-www/luci-static/resources/view/podkop_patch_20261023_legacy_v40/diagnostic.js
-www/luci-static/resources/view/podkop_patch_20261023_legacy_v40/dns_benchmark.js
+www/luci-static/resources/view/podkop_patch_20261028_legacy_v41/main.js
+www/luci-static/resources/view/podkop_patch_20261028_legacy_v41/podkop.js
+www/luci-static/resources/view/podkop_patch_20261028_legacy_v41/section.js
+www/luci-static/resources/view/podkop_patch_20261028_legacy_v41/subscriptions.js
+www/luci-static/resources/view/podkop_patch_20261028_legacy_v41/settings.js
+www/luci-static/resources/view/podkop_patch_20261028_legacy_v41/dashboard.js
+www/luci-static/resources/view/podkop_patch_20261028_legacy_v41/diagnostic.js
+www/luci-static/resources/view/podkop_patch_20261028_legacy_v41/dns_benchmark.js
 etc/init.d/sing-box
 usr/bin/podkop
 etc/init.d/podkop
@@ -476,6 +477,8 @@ migrate_section_runtime_if_requested() {
 }
 
 prefetch_patch_assets() {
+	download "$RAW_BASE/$CORE_COMPAT_FILE" "$tmp_dir/$CORE_COMPAT_FILE"
+	sh -n "$tmp_dir/$CORE_COMPAT_FILE" || fail "core compatibility transaction syntax check failed"
 	download "$RAW_BASE/$LMO_FILE" "$tmp_dir/$LMO_FILE"
 	download "$RAW_BASE/$SUBSCRIPTIONS_FILE" "$tmp_dir/$SUBSCRIPTIONS_FILE"
 	download "$RAW_BASE/$MAIN_JS_FILE" "$tmp_dir/$MAIN_JS_FILE"
@@ -1139,6 +1142,7 @@ has_latest_subscription_backend() {
 		grep -Eq '^# subscription_isolated_probe_v[12] end$' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/null &&
 		grep -q 'subscription_deferred_apply_v1' /usr/bin/podkop 2>/dev/null &&
+		grep -q 'subscription_auto_refresh_v1' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_seamless_reload end' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_hwid_placeholder_guard begin' /usr/bin/podkop 2>/dev/null &&
 		grep -Fq '# subscription_hwid_placeholder_guard end' /usr/bin/podkop 2>/dev/null &&
@@ -1880,6 +1884,9 @@ dns_optimizer_has_google_play_guard "$tmp_dir/$DNS_OPTIMIZER_FILE" ||
 	fail "downloaded DNS optimizer lacks the Google Play or ChatGPT/OpenAI guard capability"
 prepare_versioned_luci_assets || fail "failed to prepare versioned Podkop LuCI assets"
 update_official_podkop_if_requested
+# Independent verified ELF transaction; the following file-only patch captures
+# the post-core PID and keeps that exact running graph. No PE migration here.
+sh "$tmp_dir/$CORE_COMPAT_FILE" apply "$$" || fail "Reality core compatibility transaction failed; inspect its retained receipt"
 ensure_no_pending_uci_changes || fail "the router UCI state changed or became unreadable before patching; apply or revert pending changes and retry"
 ensure_no_pending_podkop_changes || fail "Podkop UCI state changed or became unreadable before patching; apply or revert pending changes and retry"
 transaction_phase="prepatch"
@@ -2009,6 +2016,7 @@ fi
 
 if ! grep -Fqx '# subscription_seamless_reload begin' /usr/bin/podkop 2>/dev/null ||
 	! grep -q 'subscription_deferred_apply_v1' /usr/bin/podkop 2>/dev/null ||
+	! grep -q 'subscription_auto_refresh_v1' /usr/bin/podkop 2>/dev/null ||
 	! grep -Fqx '# subscription_seamless_reload end' /usr/bin/podkop 2>/dev/null ||
 	! grep -q '^subscription_reload_seamless() {' /usr/bin/podkop 2>/dev/null ||
 	! grep -q '^subscription_reload_pending_file() {' /usr/bin/podkop 2>/dev/null ||
@@ -2091,6 +2099,8 @@ if [ -f /usr/bin/podkop ]; then
 		abort_with_restore "seamless subscription reload marker check failed"
 	grep -q 'subscription_deferred_apply_v1' /usr/bin/podkop 2>/dev/null ||
 		abort_with_restore "deferred subscription application check failed"
+	grep -q 'subscription_auto_refresh_v1' /usr/bin/podkop 2>/dev/null ||
+		abort_with_restore "automatic saved subscription refresh check failed"
 	grep -q '^subscription_reload_seamless() {' /usr/bin/podkop 2>/dev/null ||
 		abort_with_restore "seamless subscription reload capability check failed"
 	grep -q '^subscription_reload_pending_file() {' /usr/bin/podkop 2>/dev/null ||

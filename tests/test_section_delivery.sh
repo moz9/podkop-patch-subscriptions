@@ -22,7 +22,13 @@ cmp "$repo_root/openwrt/podkop-section-worker.init" "$SECTION_INSTALL_ROOT/etc/i
 cmp "$repo_root/openwrt/podkop-section-hooks.sh" "$SECTION_INSTALL_ROOT/usr/lib/podkop/section-hooks.sh"
 [ ! -e "$SECTION_INSTALL_ROOT/etc/rc.d" ]
 for version in 0.7.20 0.7.22; do
-  cp "$repo_root/openwrt/runtime-$version/usr/bin/podkop" "$test_root/podkop-$version"
+  # Construct the pre-section fixture without the later automatic-refresh block:
+  # its insertion at the same hook is not part of the historical reverse patch.
+  awk '
+    /^    # subscription_auto_refresh_v1:/ { skip=1 }
+    /^    if \[ "\$\{PODKOP_SUBSCRIPTION_APPLY_NOW:-0\}" = 1 \]/ { skip=0 }
+    !skip { print }
+  ' "$repo_root/openwrt/runtime-$version/usr/bin/podkop" > "$test_root/podkop-$version"
   patch --batch --reverse --fuzz=0 "$test_root/podkop-$version" < "$repo_root/openwrt/podkop-section-runtime-upgrade.patch"
   sed -i 's/; \/\^podkop.settings.subscription_isolated_section=\/d//' "$test_root/podkop-$version"
   printf '\ncustom_user_function() {\n    echo preserved\n}\n' >> "$test_root/podkop-$version"

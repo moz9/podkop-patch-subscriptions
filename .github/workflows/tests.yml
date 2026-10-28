@@ -18,5 +18,5 @@ jobs:
         run: |
           shellcheck -s sh -S error a i s openwrt/install.sh \
             openwrt/*.sh openwrt/podkop-dns-failover openwrt/podkop-dns-failover.init \
-            openwrt/podkop-dns-optimizer openwrt/podkop-update-manager \
+            openwrt/podkop-dns-optimizer openwrt/podkop-update-manager openwrt/podkop-core-compat \
             openwrt/runtime-0.7.20/usr/bin/podkop openwrt/runtime-0.7.22/usr/bin/podkop
