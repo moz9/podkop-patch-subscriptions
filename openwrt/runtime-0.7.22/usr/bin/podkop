@@ -2862,6 +2862,26 @@ subscription_reload_pending_file() {
 
 subscription_reload_seamless() {
     local config_path backup_path pending_path before_hash after_hash pid recovery_pid attempts max_attempts delay
+    # subscription_auto_refresh_v1: saved filters may admit a refreshed catalog.
+    # Never consume drafts or bypass requested service evidence. Each section
+    # uses the same scoped transaction and rollback as its explicit Apply.
+    if [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != 1 ] &&
+       command -v podkop_section_enabled >/dev/null && podkop_section_enabled &&
+       [ "${SUBSCRIPTION_FAILED_SECTIONS:-0}" -eq 0 ] &&
+       refresh_drafts="$(uci -q changes)" && [ -z "$refresh_drafts" ]; then
+        local refresh_sections refresh_section refresh_required refresh_applied=0
+        refresh_sections="$(subscription_pending_sections_json)" || return 1
+        refresh_sections="$(printf '%s' "$refresh_sections" | jq -r --arg target "${SUBSCRIPTION_UPDATE_TARGET:-}" '.[]|select($target=="" or .==$target)')" || return 1
+        for refresh_section in $refresh_sections; do
+            podkop_section_names | jq -e --arg s "$refresh_section" 'index($s)!=null' >/dev/null || continue
+            refresh_required="$(subscription_required_services_json "$refresh_section")" || return 1
+            [ "$refresh_required" = '[]' ] || continue
+            podkop_section_preflight "$(jq -cn --arg s "$refresh_section" '{sections:[{section:$s}]}')" || return 1
+            PODKOP_SUBSCRIPTION_APPLY_NOW=1 subscription_reload_seamless || return 1
+            refresh_applied=1
+        done
+        [ "$refresh_applied" = 0 ] || return 0
+    fi
 
     # subscription_deferred_apply_v1: downloading is never permission to interrupt traffic.
     if [ "${PODKOP_SUBSCRIPTION_APPLY_NOW:-0}" != "1" ]; then

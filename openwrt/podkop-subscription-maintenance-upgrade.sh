@@ -6,6 +6,18 @@ tmp="${target}.tmp.$$"
 helper_target="${PODKOP_MAINTENANCE_HELPERS_TARGET:-/usr/lib/podkop/helpers.sh}"
 helper_tmp="${helper_target}.tmp.$$"
 
+# Repair the old over-broad speedtest insertion without weakening admission.
+awk '
+$0 == "subscription_update() {" {in_update=1}
+in_update && $0 == "    if ! subscription_action_lock_acquire \"speedtest\"; then" {skip=1; next}
+skip && $0 == "    trap '\''subscription_action_lock_release'\'' EXIT INT TERM" {skip=0; next}
+skip {next}
+in_update && $0 == "}" {in_update=0}
+{print}
+' "$target" > "$tmp"
+sh -n "$tmp" && cat "$tmp" > "$target" || { rm -f "$tmp"; exit 1; }
+rm -f "$tmp"
+
 if ! grep -q "get_subscription_items_cached" "$target" 2>/dev/null; then
 	exit 0
 fi
@@ -1139,7 +1151,7 @@ if ! grep -q "subscription_action_lock_acquire \"speedtest\"" "$target" 2>/dev/n
 		next
 	}
 
-	in_speedtest && $0 == "subscription_patch_update_status_file() {" {
+	in_speedtest && $0 == "}" {
 		in_speedtest = 0
 		print
 		next

@@ -1,0 +1,217 @@
+#!/bin/sh
+# Adapter only: immutable RouterDesk job/files protocol remains schema1 files-only.
+PL_JOB_SHA=b478c7604bb0f26bd7650ac512f1c997bc457ab41ef81467b73c0a8ca99f0523
+PL_FILES_SHA=b9dfce9e4c06c9bf2b626f58620dc1079bb924f92667d4b9c17024557bf14a00
+PL_TIMEOUT_SHA=62973f275fc8601c3879a940b0a3b72d713816aecf2993bd2e9ac2e4598e0fed
+PL_GRAPH_SHA=2e4a54ede15b3af6e02f1b576bc589d5dd4044b7949a6112ac488aef6998c68c
+pl_fail() { printf 'PE LuCI files-only refused: %s\n' "$*" >&2; return 1; }
+pl_sha() { sha256sum "$1" | cut -d' ' -f1; }
+pl_hex() { [ "${#1}" = "$2" ] && case "$1" in *[!a-f0-9]*) return 1;; *) return 0;; esac; }
+pl_validate_manifest() {
+    local manifest="$1"
+    jq -e --arg job "$PL_JOB_SHA" --arg files "$PL_FILES_SHA" '
+      .schemaVersion==1 and .channel=="podkop-pe" and .releaseStatus=="released" and
+      .recommendedPodkopVersion=="0.7.24" and .supportedPodkopVersions==["0.7.24"] and .engineVersion=="1.14.2-pdk-r14" and
+      .routerdeskPatch.schemaVersion==1 and .routerdeskPatch.mode=="files-only" and .routerdeskPatch.luciFilesOnly==1 and
+      .routerdeskPatch.coordinatorSha256==$job and .routerdeskPatch.filesSha256==$files and
+      ((.routerdeskPatch.initIntegration//0)==0 or .routerdeskPatch.initIntegration==1) and (.sha256|type)=="object"
+    ' "$manifest" >/dev/null || { pl_fail contract; return 1; }
+    PL_COMMIT="$(jq -er '.pinnedCommit|select(type=="string")' "$manifest")" && pl_hex "$PL_COMMIT" 40 || { pl_fail commit; return 1; }
+    PL_VERSION="$(jq -er '.patchVersion|select(type=="string" and length<80)' "$manifest")" || return 1
+    printf '%s\n' "$PL_VERSION" | grep -Eq '^20[0-9]{6}-pe-v[0-9]+(-[a-zA-Z0-9_-]+)?$' || return 1
+    PL_NAMESPACE="podkop_patch_$(printf '%s' "$PL_VERSION" | tr '.-' '__')"
+    PL_BASE="https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$PL_COMMIT"
+}
+pl_package_version() {
+    if command -v opkg >/dev/null 2>&1; then opkg status "$1" 2>/dev/null | sed -n 's/^Version: //p' | head -n 1
+    elif command -v apk >/dev/null 2>&1; then apk list --installed "$1" 2>/dev/null | sed -n "s/^$1-\([^ ]*\).*/\1/p" | head -n 1
+    else return 1; fi
+}
+pl_arch() { sed -n "s/^DISTRIB_ARCH='\([^']*\)'/\1/p" /etc/openwrt_release; }
+pl_podkop_version() { /usr/bin/podkop show_version 2>/dev/null | sed 's/^v//' | head -n 1; }
+pl_runtime_version() { /usr/bin/sing-box version 2>/dev/null | head -n 1; }
+pl_identity() {
+    local base luci
+    base="$(pl_package_version podkop)" && luci="$(pl_package_version luci-app-podkop)" || return 1
+    [ "${base#v}" = 0.7.24-r1 ] && [ "${luci#v}" = 0.7.24-r1 ] &&
+      [ "$(pl_package_version podkop-engine)" = 1.14.2-r14 ] && [ "$(pl_runtime_version)" = 'sing-box version 1.14.2-pdk-r14' ] &&
+      [ "$(pl_podkop_version)" = 0.7.24 ] && [ "$(pl_arch)" = aarch64_cortex-a53 ] || { pl_fail installed_identity; return 1; }
+}
+pl_download() {
+    local url="$1" output="$2" result
+    # Every caller constructs a fixed repository + 40hex commit URL. No branch fallback.
+    # head bounds even chunked responses on older curl versions whose
+    # --max-filesize checks only Content-Length. Preserve curl's own status.
+    (curl -fsS --connect-timeout 10 --max-time 35 --max-filesize 2097152 "$url"; result=$?; printf '%s\n' "$result" > "$output.curl-status") |
+      head -c 2097153 > "$output" || return 1
+    result="$(cat "$output.curl-status")" && rm -f "$output.curl-status" || return 1
+    [ "$result" = 0 ] && [ -s "$output" ] && [ "$(wc -c < "$output")" -le 2097152 ]
+}
+pl_space() {
+    local free
+    free="$(df -Pk "$1" | awk 'NR==2 {print $4}')" || return 1
+    case "$free" in ''|*[!0-9]*) return 1;; esac
+    # A view may temporarily have source, canonical copy, transformed copy and
+    # versioned copy (at most 2MiB each), while retaining 8MiB untouched.
+    [ "$free" -ge 16384 ] || { pl_fail storage_reserve; return 1; }
+}
+pl_source() {
+    local manifest="$1" source="$2" output="$3" hash
+    hash="$(jq -er --arg path "$source" '.sha256[$path]|select(type=="string")' "$manifest")" && pl_hex "$hash" 64 || return 1
+    pl_space "$(dirname "$output")" && pl_download "$PL_BASE/$source" "$output" && [ "$(pl_sha "$output")" = "$hash" ] || { pl_fail "payload $source"; return 1; }
+}
+pl_emit() {
+    local job="$1" input="$2" target="$3" mode="$4" index
+    index="$(wc -l < "$job/targets")" || return 1
+    cp "$input" "$job/new/$index" || return 1
+    printf '%s %s %s %s\n' "$(pl_sha "$job/new/$index")" "$mode" "$target" "$index" >> "$job/targets"
+}
+pl_build() {
+    local manifest="$1" job="$2" source helper library view total=0 size
+    [ -d "$job/new" ] && [ ! -e "$job/targets" ] || return 1
+    : > "$job/targets" || return 1
+    # Same sources, destinations, transforms and modes as PePatchRelease.Build.
+    for source in runtime-0.7.24/usr/bin/podkop podkop-dns-optimizer podkop-dns-benchmark podkop-dns-apply podkop-dns-failover podkop-update-manager podkop-section-runtime podkop-single-runtime podkop-subscription-sources-upgrade.sh runtime-0.7.24/usr/lib/podkop/constants.sh runtime-0.7.24/usr/lib/podkop/helpers.sh runtime-0.7.24/usr/lib/podkop/sing_box_config_facade.sh runtime-0.7.24/usr/lib/podkop/sing_box_config_manager.sh podkop-diagnostic-policy.sh podkop-section-hooks.sh podkop-section-worker.init podkop-dns-failover.init podkop-memdoc-guard dns-main.json dns-bootstrap.json main.js podkop.js section.js subscriptions.js settings.js dashboard.js diagnostic.js dns_benchmark.js podkop.ru.lmo.base64; do
+        if [ "$source" = podkop-subscription-sources-upgrade.sh ] && [ "$(jq -r '.routerdeskPatch.initIntegration//0' "$manifest")" != 1 ]; then continue; fi
+        pl_source "$manifest" "openwrt/$source" "$job/source.next" || return 1
+        size="$(wc -c < "$job/source.next")"; total=$((total+size))
+        [ "$total" -le 16777216 ] || return 1
+        case "$source" in
+          runtime-0.7.24/usr/bin/podkop)
+            awk -v version="$PL_VERSION" '{line[NR]=$0} END {last=NR;while(last>0&&line[last]~/^[ \t\r]*$/)last--;for(i=1;i<last;i++)print line[i];if(last>0){sub(/[ \t\r]+$/,"",line[last]);print line[last]}printf "\n# PODKOP_SUBSCRIPTIONS_PATCH_VERSION=%s\n",version}' "$job/source.next" > "$job/transform.next" || return 1
+            pl_emit "$job" "$job/transform.next" usr/bin/podkop 755 || return 1;;
+          podkop-dns-optimizer|podkop-dns-benchmark|podkop-dns-apply|podkop-dns-failover|podkop-update-manager|podkop-section-runtime|podkop-single-runtime)
+            pl_emit "$job" "$job/source.next" "usr/bin/$source" 755 || return 1;;
+          podkop-subscription-sources-upgrade.sh) pl_emit "$job" "$job/source.next" usr/bin/podkop-sources-upgrade 755 || return 1;;
+          runtime-0.7.24/usr/lib/podkop/*) pl_emit "$job" "$job/source.next" "usr/lib/podkop/${source##*/}" 644 || return 1;;
+          podkop-diagnostic-policy.sh) pl_emit "$job" "$job/source.next" usr/bin/podkop-diagnostic-policy.sh 644 || return 1;;
+          podkop-section-hooks.sh) pl_emit "$job" "$job/source.next" usr/lib/podkop/section-hooks.sh 644 || return 1;;
+          podkop-section-worker.init) pl_emit "$job" "$job/source.next" etc/init.d/podkop-section-worker 755 || return 1;;
+          podkop-dns-failover.init) pl_emit "$job" "$job/source.next" etc/init.d/podkop-dns-failover 755 || return 1;;
+          podkop-memdoc-guard) pl_emit "$job" "$job/source.next" usr/libexec/podkop-memdoc-guard 755 || return 1;;
+          dns-main.json|dns-bootstrap.json) pl_emit "$job" "$job/source.next" "usr/share/podkop/$source" 644 || return 1;;
+          *.js)
+            pl_emit "$job" "$job/source.next" "www/luci-static/resources/view/podkop/$source" 644 || return 1
+            sed "s/require view\.podkop\./require view.$PL_NAMESPACE./g" "$job/source.next" > "$job/transform.next" || return 1
+            pl_emit "$job" "$job/transform.next" "www/luci-static/resources/view/$PL_NAMESPACE/$source" 644 || return 1;;
+          podkop.ru.lmo.base64)
+            base64 -d "$job/source.next" > "$job/transform.next" || return 1
+            pl_emit "$job" "$job/transform.next" usr/lib/lua/luci/i18n/podkop.ru.lmo 644 || return 1;;
+          *) return 1;;
+        esac
+        rm -f "$job/source.next" "$job/transform.next" || return 1
+    done
+}
+pl_stage_code() {
+    local manifest="$1" job="$2" source destination expected
+    : > "$job/code.sha256" || return 1
+    for source in pe-patch-job.sh pe-patch-files.sh pe-patch-timeout.sh pe-frozen-graph.sh; do
+        case "$source" in pe-patch-job.sh) destination=job.sh; expected="$PL_JOB_SHA";; pe-patch-files.sh) destination=files.sh; expected="$PL_FILES_SHA";; pe-patch-timeout.sh) destination=timeout.sh; expected="$PL_TIMEOUT_SHA";; pe-frozen-graph.sh) destination=graph.sh; expected="$PL_GRAPH_SHA";; esac
+        pl_source "$manifest" "openwrt/$source" "$job/$destination" && [ "$(pl_sha "$job/$destination")" = "$expected" ] || return 1
+        [ "$destination" = graph.sh ] || printf '%s  %s\n' "$expected" "$destination" >> "$job/code.sha256" || return 1
+    done
+}
+pl_pin_manifest() {
+    local manifest="$1" job="$2"
+    # The manifest cannot contain its own SHA256; authenticate the pinned copy
+    # by exact canonical equality to the HTTPS-discovered request, excluding
+    # only the pointer added after the payload commit was published.
+    pl_download "$PL_BASE/openwrt/update-manifest.json" "$job/pinned-manifest.json" &&
+      jq -cS 'del(.pinnedCommit)' "$manifest" > "$job/request.canonical" &&
+      jq -cS 'del(.pinnedCommit)' "$job/pinned-manifest.json" > "$job/pinned.canonical" &&
+      cmp "$job/request.canonical" "$job/pinned.canonical"
+}
+pl_capture_graph() (
+    job="$1"
+    . "$job/graph.sh"
+    pe_graph_discover '' "$job/graph.roots" && pe_graph_collect '' "$job/graph.roots" "$job/graph.preflight" || exit 1
+    bytes=0; old=0
+    while IFS= read -r file; do bytes=$((bytes+$(wc -c < "$file"))) || exit 1; done < "$job/graph.preflight"
+    while read -r _hash _mode file _index; do [ ! -f "/$file" ] || old=$((old+$(wc -c < "/$file"))); done < "$job/targets"
+    free=$(df -Pk "$job" | awk 'NR==2 {print $4}')
+    case "$free" in ''|*[!0-9]*) exit 1;; esac
+    # Graph data + tar + independent verification scratch, old patch data/tar,
+    # plus reserve for init/ACL/menu preparation and filesystem overhead.
+    [ "$free" -ge $(((bytes*3+old*3+1023)/1024+12288)) ] || { pl_fail graph_backup_capacity; exit 1; }
+    pe_graph_capture '' "$job" "$job/graph.roots"
+)
+pl_job() (cd "$1" && shift && sh ./job.sh "$@")
+pl_receipt() (
+    PT_JOB="$1"
+    [ "$(pl_sha "$PT_JOB/files.sh")" = "$PL_FILES_SHA" ] || exit 1
+    . "$PT_JOB/files.sh"
+    pt_verify_backup || exit 1
+    local_hash="$(pl_sha "$PT_JOB/backup.tar")" || exit 1
+    size="$(wc -c < "$PT_JOB/backup.tar")"
+    [ "$size" -ge 512 ] && [ "$size" -le 50331648 ] && mkdir "$PT_JOB/local-readback" || exit 1
+    # Independent archive readback; only ordinary files/directories, no links.
+    tar -tf "$PT_JOB/backup.tar" > "$PT_JOB/local-readback/members" || exit 1
+    awk '/^\//||/\.\./||/[^A-Za-z0-9_./-]/ {bad=1} !/^(old\/?|old\/[A-Za-z0-9_./-]+|targets|before.sha256|before.meta|absent)$/ {bad=1} END{exit(bad||NR>1024)}' "$PT_JOB/local-readback/members" || exit 1
+    tar -tvf "$PT_JOB/backup.tar" | awk 'substr($0,1,1)!="-"&&substr($0,1,1)!="d"{bad=1}END{exit bad}' || exit 1
+    tar -C "$PT_JOB/local-readback" -xpf "$PT_JOB/backup.tar" || exit 1
+    for file in targets before.sha256 before.meta absent; do cmp "$PT_JOB/$file" "$PT_JOB/local-readback/$file" || exit 1; done
+    (cd "$PT_JOB/local-readback/old" && sha256sum -c ../before.sha256 >/dev/null) || exit 1
+    while IFS="$(printf '\t')" read -r metadata file; do
+        [ "$(pt_metadata "$PT_JOB/local-readback/old/$file")" = "$metadata" ] || exit 1
+    done < "$PT_JOB/before.meta"
+    [ "$(pl_sha "$PT_JOB/backup.tar")" = "$local_hash" ] || exit 1
+    jq -cn --arg sha256 "$local_hash" '{schemaVersion:1,backupLocation:"router-local",pcBackupVerified:false,sha256:$sha256,archiveReadbackVerified:true}' > "$PT_JOB/local-receipt.json" || exit 1
+    # pc-receipt is the immutable v1 protocol filename, NOT a claim of a PC copy.
+    pt_receipt "$local_hash"
+)
+pl_graph_check() ( [ "$(pl_sha "$1/graph.sh")" = "$PL_GRAPH_SHA" ] && . "$1/graph.sh" && pe_graph_unchanged '' "$1" )
+pl_dns_check() ( . "$1/timeout.sh" && bounded 10 nslookup openwrt.org 127.0.0.1 >/dev/null 2>&1 )
+pl_ui_check() {
+    local job="$1" expected
+    expected="$(awk -v path="www/luci-static/resources/view/$PL_NAMESPACE/podkop.js" '$3==path{print $1}' "$job/targets")" && pl_hex "$expected" 64 || return 1
+    curl -fsS --noproxy '*' --connect-timeout 2 --max-time 8 --max-filesize 2097152 -o "$job/ui.readback" "http://127.0.0.1/luci-static/resources/view/$PL_NAMESPACE/podkop.js" &&
+      [ "$(pl_sha "$job/ui.readback")" = "$expected" ]
+}
+pl_follow() {
+    local job="$1" elapsed=0 status
+    while [ "$elapsed" -lt 210 ]; do
+        status="$(pl_job "$job" status)" || return 1
+        case "$status" in
+          PATCH=awaiting-confirmation)
+            if pl_graph_check "$job" && pl_dns_check "$job" && pl_ui_check "$job" && pl_graph_check "$job"; then pl_job "$job" confirm || return 1
+            else pl_job "$job" rollback || return 1; pl_fail verification_rolled_back; return 1; fi;;
+          PATCH=confirmed)
+            if pl_graph_check "$job"; then return 0
+            else pl_job "$job" rollback || return 1; pl_fail final_graph_drift_rolled_back; return 1; fi;;
+          PATCH=prepared|PATCH=applying|PATCH=rolling-back|PATCH=confirmed-cleanup-pending|PATCH=rolled-back-cleanup-pending) ;;
+          PATCH=rolled-back|PATCH=failed|PATCH=recovery-required) pl_fail "$status"; return 1;;
+          *) pl_fail unknown_job_state; return 1;;
+        esac
+        sleep 2; elapsed=$((elapsed+2))
+    done
+    pl_fail confirmation_timeout
+}
+pl_run() (
+    set -u
+    umask 077
+    manifest="$1"
+    [ "$(id -u)" = 0 ] && pl_validate_manifest "$manifest" && pl_identity || exit 1
+    for command in curl jq stat uci ubus sha256sum setsid tar gzip cmp base64 od head; do command -v "$command" >/dev/null || { pl_fail "missing $command"; exit 1; }; done
+    # No duplicate dispatch into a still unresolved RouterDesk transaction.
+    [ ! -L /root/routerdesk ] && mkdir -p /root/routerdesk && [ "$(readlink -f /root/routerdesk)" = /root/routerdesk ] || exit 1
+    for previous in /root/routerdesk/*/state; do
+        [ -f "$previous" ] || continue
+        case "$(cat "$previous")" in confirmed|rolled-back) [ -f "${previous%/state}/finalized" ] || exit 1;; *) pl_fail unresolved_job; exit 1;; esac
+    done
+    id="$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')" && pl_hex "$id" 32 || exit 1
+    job="/root/routerdesk/$id"
+    mkdir "$job" && mkdir "$job/new" || exit 1
+    printf '%s\n' "$job" # Persistent recovery path; never auto-remove receipts.
+    pl_space "$job" || exit 1
+    cp "$manifest" "$job/request-manifest.json" || exit 1
+    pl_pin_manifest "$manifest" "$job" || exit 1
+    pl_stage_code "$manifest" "$job" && pl_build "$manifest" "$job" || exit 1
+    pl_capture_graph "$job" || exit 1
+    pl_job "$job" prepare "$PL_NAMESPACE" && pl_receipt "$job" && pl_identity && pl_graph_check "$job" || exit 1
+    pl_job "$job" start || exit 1
+    # Loss of this adapter/manager cannot disarm the unchanged detached watchdog.
+    pl_follow "$job"
+)
+if [ "${1:-}" != --library ]; then
+    case "${1:-}" in apply) [ "$#" = 2 ] && pl_run "$2";; check) [ "$#" = 2 ] && pl_validate_manifest "$2" && pl_identity;; *) printf 'Usage: podkop-pe-luci-update {check|apply} MANIFEST\n' >&2; exit 1;; esac
+fi

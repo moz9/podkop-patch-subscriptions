@@ -18,7 +18,9 @@ for suite in \
     subscription_services subscription_gemini_v2 subscription_services_cancel \
     subscription_services_delivery subscription_service_snapshot safe_restart_continuity source_ruleset_reuse subscription_source_actions \
     subscription_choice_identity subscription_operation_state subscription_game_filter \
-    subscription_selection_backend section_traffic_context section_candidate_boundary subscription_empty_admission_error; do
+    subscription_selection_backend section_traffic_context section_candidate_boundary subscription_empty_admission_error \
+    subscription_auto_refresh update_lock_migration dns_bootstrap_scope dns_empty_receipt pe_luci_manager \
+    update_manager_mode_env patch_update_direction update_center_direction_ui; do
     printf 'RUN: %s\n' "$suite"
     sh "$test_dir/test_$suite.sh"
 done
@@ -30,8 +32,13 @@ for suite in \
     subscription_admission_ui service_filter_delivery subscription_sources_ui \
     subscription_source_actions_ui subscription_pending_ui subscription_selection_ui \
     subscription_tag_picker subscription_picker_retention subscription_game_filter subscription_optional_selection_ui \
-    subscription_timeout_reconciliation subscription_section_apply_ui pe_stable_layout; do
+    subscription_timeout_reconciliation subscription_section_apply_ui pe_stable_layout core_delivery dashboard_probe_results; do
     printf 'RUN: %s\n' "$suite"
     node "$test_dir/test_$suite.mjs"
 done
+if [ "$(id -u)" = 0 ]; then
+    sh "$test_dir/test_pe_luci_update.sh"
+else
+    printf '%s\n' 'PE LuCI root-owned graph fixture: run sudo sh tests/test_pe_luci_update.sh (also enforced in CI)'
+fi
 printf '%s\n' 'PASS: preparation suite (no package migration or live activation)'

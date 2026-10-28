@@ -14,6 +14,8 @@ jobs:
           node-version: '22'
       - run: sudo apt-get update && sudo apt-get install -y jq shellcheck
       - run: sh tests/run.sh
+      - name: Verify PE LuCI root-owned transaction fixture
+        run: sudo sh tests/test_pe_luci_update.sh
       - name: Check router shell scripts
         run: |
           shellcheck -s sh -S error a i s m scripts/prepare-pe-storage.sh openwrt/install.sh \
@@ -22,4 +24,4 @@ jobs:
             openwrt/runtime-0.7.20/usr/bin/podkop openwrt/runtime-0.7.22/usr/bin/podkop \
             openwrt/runtime-0.7.23/usr/bin/podkop openwrt/runtime-0.7.23/usr/lib/podkop/*.sh \
             openwrt/runtime-0.7.24/usr/bin/podkop openwrt/runtime-0.7.24/usr/lib/podkop/*.sh \
-            openwrt/podkop-section-runtime openwrt/podkop-section-worker.init
+            openwrt/podkop-section-runtime openwrt/podkop-section-worker.init openwrt/podkop-pe-luci-update

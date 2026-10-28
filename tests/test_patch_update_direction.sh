@@ -60,12 +60,14 @@ expect_update '20261007-pe-v8' '20261009-pe-v11'
 expect_no_update '20261009-pe-v11' '20261007-pe-v8'
 expect_update '20261009-pe-v11' '20261010-pe-v12'
 expect_no_update '20261010-pe-v12' '20261009-pe-v11'
+expect_update '20261028-pe-v41-023' '20261028-pe-v42-023'
+expect_no_update '20261028-pe-v42-023' '20261028-pe-v41-023'
 release_patch="$(jq -r '.patchVersion' "$repo_root/openwrt/update-manifest.json")"
 expect_update '20261010-pe-v12' "$release_patch"
 expect_no_update "$release_patch" '20261010-pe-v12'
 fixture_manifest="$test_root/fixture-manifest.json"
 fixture_release="$test_root/fixture-release.json"
-TEST_CURRENT_PODKOP='0.7.23'
+TEST_CURRENT_PODKOP='0.7.24'
 TEST_CURRENT_PATCH='20260813-reliability-responsive-v1'
 
 current_podkop_version() {
@@ -91,9 +93,9 @@ download_file() {
 }
 
 cat > "$fixture_manifest" <<'JSON'
-{"schemaVersion":1,"channel":"podkop-pe","patchVersion":"20260720-update-center-force-v1","supportedPodkopVersions":["0.7.23"],"sha256":{}}
+{"schemaVersion":1,"channel":"podkop-pe","patchVersion":"20260720-update-center-force-v1","supportedPodkopVersions":["0.7.24"],"sha256":{}}
 JSON
-printf '%s\n' '{"tag_name":"v0.7.23"}' > "$fixture_release"
+printf '%s\n' '{"tag_name":"v0.7.24"}' > "$fixture_release"
 
 perform_check 1
 if ! jq -e '.updateMode == "none" and .canUpdate == false and .message == "up_to_date" and .patchUpdateAvailable == false' "$STATUS_FILE" >/dev/null; then
@@ -102,7 +104,7 @@ if ! jq -e '.updateMode == "none" and .canUpdate == false and .message == "up_to
     exit 1
 fi
 
-printf '%s\n' '{"tag_name":"v0.7.24"}' > "$fixture_release"
+printf '%s\n' '{"tag_name":"v0.7.25"}' > "$fixture_release"
 
 perform_check 1
 if ! jq -e '.updateMode == "blocked" and .canUpdate == false and .message == "published_patch_older" and .patchUpdateAvailable == false' "$STATUS_FILE" >/dev/null; then

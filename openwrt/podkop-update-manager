@@ -1,6 +1,6 @@
 #!/bin/ash
 
-VERSION="20261022-update-manager-v4"
+VERSION="20261028-update-manager-v5"
 STATE_DIR="/tmp/podkop-update-manager"
 STATUS_FILE="$STATE_DIR/status.json"
 DETAILS_FILE="$STATE_DIR/details.json"
@@ -216,6 +216,52 @@ reset_check_details() {
         podkopUpdateAvailable:false,patchUpdateAvailable:false}' > "$DETAILS_FILE"
 }
 
+pe_luci_adapter_transfer() {
+    local url="$1" output="$2" address="${3:-}" result
+    rm -f "$output.curl-status" || return 1
+    # The bootstrap is untrusted until its hash matches. Bound bytes while
+    # receiving, including chunked bodies on older curl implementations.
+    (
+        if [ -n "$address" ]; then
+            curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 10 --max-time 35 --max-filesize 2097152 \
+                --resolve "raw.githubusercontent.com:443:$address" "$url"
+        else
+            curl --proto '=https' --proto-redir '=https' -fsSL --connect-timeout 10 --max-time 35 --max-filesize 2097152 "$url"
+        fi
+        result=$?
+        printf '%s\n' "$result" > "$output.curl-status"
+    ) | head -c 2097153 > "$output" || return 1
+    [ -f "$output.curl-status" ] || return 1
+    result="$(cat "$output.curl-status")" && rm -f "$output.curl-status" || return 1
+    [ "$result" = 0 ] && [ -s "$output" ] && [ "$(wc -c < "$output")" -le 2097152 ]
+}
+
+download_pe_luci_adapter() {
+    local url="$1" output="$2" address
+    # apply itself requires curl; a wget-only bootstrap cannot enable this path.
+    command -v curl >/dev/null 2>&1 || return 1
+    if run_with_timeout 45 pe_luci_adapter_transfer "$url" "$output"; then return 0; fi
+    for address in 185.199.108.133 185.199.109.133 185.199.110.133 185.199.111.133; do
+        if run_with_timeout 45 pe_luci_adapter_transfer "$url" "$output" "$address"; then return 0; fi
+    done
+    rm -f "$output" "$output.curl-status"
+    return 1
+}
+
+prepare_pe_luci_adapter() {
+    local manifest="$STATE_DIR/manifest.json" commit hash adapter
+    jq -e '.routerdeskPatch.schemaVersion==1 and .routerdeskPatch.mode=="files-only" and .routerdeskPatch.luciFilesOnly==1' "$manifest" >/dev/null || return 1
+    commit="$(jq -er '.pinnedCommit|select(type=="string")' "$manifest")" || return 1
+    hash="$(jq -er '.sha256["openwrt/podkop-pe-luci-update"]|select(type=="string")' "$manifest")" || return 1
+    [ "${#commit}" = 40 ] && [ "${#hash}" = 64 ] || return 1
+    case "$commit:$hash" in *[!a-f0-9:]*) return 1;; esac
+    adapter="$STATE_DIR/pe-luci-adapter.sh"
+    download_pe_luci_adapter "https://raw.githubusercontent.com/moz9/podkop-patch-subscriptions/$commit/openwrt/podkop-pe-luci-update" "$adapter" &&
+        [ "$(wc -c < "$adapter")" -le 2097152 ] &&
+        [ "$(sha256sum "$adapter"|awk '{print $1}')" = "$hash" ] &&
+        run_with_timeout 20 sh "$adapter" check "$manifest"
+}
+
 perform_check() {
     local publish="${1:-1}"
     local manifest release current_podkop latest_podkop current_patch latest_patch
@@ -290,13 +336,16 @@ perform_check() {
         message="prepared_not_released"
     fi
 
-    # The file-only channel requires RouterDesk's backup/confirmation protocol.
-    # Never invoke the old installer, and do not label an installed release bad.
+    # Manager v4 still needs one RouterDesk bootstrap. v5 composes the same
+    # immutable file transaction only when the release explicitly opts in.
     if [ "$(jq -r '.releaseStatus // "released"' "$manifest")" = released ] &&
        jq -e '.routerdeskPatch.schemaVersion==1 and .routerdeskPatch.mode=="files-only"' "$manifest" >/dev/null; then
         can_update=false
+        podkop_update=false
         if [ "$current_podkop" != 0.7.24 ]; then mode=blocked; message=installed_podkop_unsupported
-        elif [ "$patch_update" = true ]; then mode=blocked; message=routerdesk_update_required
+        elif [ "$patch_update" = true ]; then
+            if prepare_pe_luci_adapter; then mode=patch; can_update=true; message=updates_available
+            else mode=blocked; message=routerdesk_update_required; fi
         else mode=none; message=up_to_date; fi
     fi
 
@@ -341,6 +390,15 @@ perform_update() {
     fi
 
     write_status "running" "patch_update_running"
+    if jq -e '.routerdeskPatch.schemaVersion==1 and .routerdeskPatch.mode=="files-only"' "$STATE_DIR/manifest.json" >/dev/null 2>&1; then
+        # Never fall back to the installer on file-only adapter failure.
+        if ! prepare_pe_luci_adapter ||
+           ! run_with_timeout 240 sh "$STATE_DIR/pe-luci-adapter.sh" apply "$STATE_DIR/manifest.json"; then
+            log_line "PE file transaction failed or remains unresolved; inspect its persistent /root/routerdesk job. No installer fallback."
+            write_status "error" "install_failed"
+            return 1
+        fi
+    else
     installer="$STATE_DIR/installer.sh"
     cache_buster="$(date +%s 2>/dev/null || echo 0)"
     if ! download_file "$INSTALLER_URL?t=$cache_buster" "$installer"; then
@@ -369,6 +427,7 @@ perform_update() {
         log_line "Installer returned an error. Existing backup and rollback rules remain active."
         write_status "error" "install_failed"
         return 1
+    fi
     fi
 
     expected_podkop="$(jq -r 'if .podkopUpdateAvailable then .latestPodkopVersion else .currentPodkopVersion end' "$DETAILS_FILE")"
