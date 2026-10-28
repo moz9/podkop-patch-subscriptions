@@ -26,7 +26,7 @@ if [ -z "${PODKOP_PATCH_RAW_BASE:-}" ]; then
         else
             wget -T 120 -O "$bootstrap_dir/u" "$bootstrap_url"
         fi
-        printf '%s  %s\n' 1e9b46ec9aa5c64925dd67b8d9e17905f326147693f5ca977a6a431b2cd604d8 "$bootstrap_dir/u" | sha256sum -c - || exit 1
+        printf '%s  %s\n' 5221f3ff36260cc5cabbd0452e46f652780791a83b98cbc56a9262640fdd5170 "$bootstrap_dir/u" | sha256sum -c - || exit 1
         exec sh "$bootstrap_dir/u"
         ;;
     esac

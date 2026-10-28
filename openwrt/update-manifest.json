@@ -11,13 +11,13 @@
   "publishedAt": "2026-10-28T00:00:00+07:00",
   "sha256": {
     "a": "3ce23b373162941e23be70a682e82561d1c19ea42725739c59199e728d7e1165",
-    "i": "292e826d2baf4b7c554ae454fdf5bb9dd60a98deee22525928ea8fd70f2db536",
+    "i": "8e2f44eed244ea9072c97113385e50d369cbac1aff9085f13963db117542ca7e",
     "openwrt/dashboard.js": "6a075ab405160ecfe2742cca4ca5ef24af2d7fca2108d05c3fb48541c0e639aa",
     "openwrt/diagnostic.js": "25fcfd513a23bd3203a04d64f201e724de01f8584ee6435940e47c358a349ad2",
     "openwrt/dns-bootstrap.json": "c2b478fcf742406bb42699e49b0dead6f91f7a0c51d7e8b2982168028deabdbd",
     "openwrt/dns-main.json": "b7f16eeb7d0519833bf60109dcc829af8478b915a1a480ee9849f9be1beddefb",
     "openwrt/dns_benchmark.js": "3c9e9575fd4e809b49850e7421a067c6a717b372fb50b1dcc701e683100b3680",
-    "openwrt/install.sh": "292e826d2baf4b7c554ae454fdf5bb9dd60a98deee22525928ea8fd70f2db536",
+    "openwrt/install.sh": "8e2f44eed244ea9072c97113385e50d369cbac1aff9085f13963db117542ca7e",
     "openwrt/main.js": "a04052f4867a10e428db42bf8f5692d5d49e567333df1bdd0deaf20eb06746ee",
     "openwrt/podkop-actions-ui-fix.sh": "2bc17d2a3cbc365d21d080612e4d5463ffee12c8b818fa2f6c839ee0645d605f",
     "openwrt/podkop-core-compat": "06e9517780c74eef9babef723fac56713640b3f64c424cc8b89492205ba6f797",
@@ -63,7 +63,7 @@
     "openwrt/settings.js": "29d1d0df268ce62e4a80828a63e301d5623b175a435881e2669ac37f78c6b641",
     "openwrt/subscriptions.js": "3ffd19eed69a6d061a0205ee29095b54ace314849b0c40ae78b4452d934e33b1",
     "s": "6bd479064263403ceccd1a326eea198da876d207767047d59e636534bf548365",
-    "u": "1e9b46ec9aa5c64925dd67b8d9e17905f326147693f5ca977a6a431b2cd604d8"
+    "u": "5221f3ff36260cc5cabbd0452e46f652780791a83b98cbc56a9262640fdd5170"
   },
   "releaseStatus": "released",
   "channel": "podkop-legacy",
