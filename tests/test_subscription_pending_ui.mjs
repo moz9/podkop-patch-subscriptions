@@ -109,7 +109,7 @@ assert.ok(!c.renderToolbar({...toolbarOptions,runtimeStatus:{busy:false,pending:
 const catalogNotice=toolbar.children.find(node=>node?.attrs?.class==='pdk_subscriptions-page__catalog-status');
 assert.ok(catalogNotice,'catalog status must be rendered separately');
 assert.match(catalogNotice.children,/main/);
-assert.match(catalogNotice.children,/не меняет рабочие наборы/);
+assert.match(catalogNotice.children,/Обновление рабочего набора ожидает применения\. Текущий набор показан слева\./,'catalog pending must distinguish the pending update from the current working set');
 const actions=toolbar.children.find(node=>node?.attrs?.class==='pdk_subscriptions-page__toolbar-actions').children;
 assert.equal(actions.find(button=>button.children==='Apply').attrs.disabled,true,'catalog pending alone must not enable ordinary Apply');
 assert.equal(actions.find(button=>button.children==='Reset').attrs.disabled,true,'catalog is not a resettable user draft');

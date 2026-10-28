@@ -849,6 +849,7 @@ db_child_start() {
 }
 db_native_start() {
     local protocol="$1" server="$2" bootstrap="$3" bp="${4:-udp}" kind="${5:-main}" endpoint boot output address
+    db_native_kind="$kind"
     db_native_mode=1
     db_production_capture || return 1
     db_runtime_safe || return 1
@@ -914,7 +915,14 @@ db_native_dig() {
 
 db_native_measure() {
     local domain output good=0 sum=0 nx=false attempted=0 nx_tested=false
-    for domain in example.com youtube.com; do
+    local domains="example.com youtube.com" scope=direct_native_dns_ordering_only
+    # Bootstrap resolves resolver hostnames, not routed application domains.
+    # The actual selected resolver hostname is checked by db_native_start again
+    # during pair confirmation. Do not reject a usable bootstrap for YouTube.
+    if [ "${db_native_kind:-main}" = bootstrap ]; then
+        domains="example.com example.net"; scope=direct_bootstrap_dns_ordering_only
+    fi
+    for domain in $domains; do
         attempted=$((attempted+1))
         output="$(db_query "$domain" || true)"
         case "$output" in NOERROR\|*) good=$((good+1)); sum=$((sum+${output#*|}));; *) break;; esac
@@ -924,7 +932,7 @@ db_native_measure() {
         output="$(db_query "podkop-native-$$.invalid" || true)"
         [ "$output" != NXDOMAIN ] || nx=true
     fi
-    jq -cn --argjson good "$good" --argjson attempted "$attempted" --argjson sum "$sum" --argjson nx "$nx" --argjson nx_tested "$nx_tested" '{successCount:$good,totalQueries:$attempted,plannedQueries:2,averageMs:(if $good>0 then $sum/$good else null end),nxdomainOk:$nx,nxdomainTested:$nx_tested,reliable:($good==2 and $nx),fullCompatibilityVerified:false,httpsTested:false,precheckOnly:true,probeScope:"direct_native_dns_ordering_only"}'
+    jq -cn --arg scope "$scope" --argjson good "$good" --argjson attempted "$attempted" --argjson sum "$sum" --argjson nx "$nx" --argjson nx_tested "$nx_tested" '{successCount:$good,totalQueries:$attempted,plannedQueries:2,averageMs:(if $good>0 then $sum/$good else null end),nxdomainOk:$nx,nxdomainTested:$nx_tested,reliable:($good==2 and $nx),fullCompatibilityVerified:false,httpsTested:false,precheckOnly:true,probeScope:$scope}'
 }
 
 db_quick_benchmark() {

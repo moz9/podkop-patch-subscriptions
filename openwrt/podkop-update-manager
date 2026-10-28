@@ -81,7 +81,7 @@ patch_version_date() {
 }
 
 patch_version_revision() {
-    printf '%s\n' "$1" | sed -n 's/.*-v\([0-9][0-9]*\)$/\1/p'
+    printf '%s\n' "$1" | sed -n 's/.*-v\([0-9][0-9]*\)\(-[A-Za-z0-9_-]*\)\{0,1\}$/\1/p'
 }
 
 patch_update_available() {

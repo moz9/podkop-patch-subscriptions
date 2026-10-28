@@ -32,6 +32,8 @@ expect_no_update() {
 }
 
 expect_update '' '20260720-update-center-force-v1'
+expect_update '20261028-pe-v41-023' '20261028-pe-v42-023'
+expect_no_update '20261028-pe-v42-023' '20261028-pe-v41-023'
 expect_no_update '20260720-update-center-force-v1' '20260720-update-center-force-v1'
 expect_update '20260720-update-center-force-v1' '20260813-reliability-responsive-v1'
 expect_no_update '20260813-reliability-responsive-v1' '20260720-update-center-force-v1'

@@ -141,3 +141,13 @@ node "$test_dir/test_subscription_optional_selection_ui.mjs"
 node "$test_dir/test_subscription_timeout_reconciliation.mjs"
 node "$test_dir/test_pe_stable_layout.mjs"
 sh "$test_dir/test_subscription_selection_backend.sh"
+
+node "$test_dir/test_core_delivery.mjs"
+
+sh "$test_dir/test_subscription_auto_refresh.sh"
+
+node "$test_dir/test_dashboard_probe_results.mjs"
+
+sh "$test_dir/test_update_lock_migration.sh"
+
+sh "$test_dir/test_dns_bootstrap_scope.sh"
