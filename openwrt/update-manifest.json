@@ -1,5 +1,6 @@
 {
   "schemaVersion": 1,
+  "pinnedCommit": "e1226e24f799dd161bca520ccdfc13cda47b0248",
   "patchVersion": "20261028-pe-v41",
   "channel": "podkop-pe",
   "releaseStatus": "released",
