@@ -1,0 +1,23 @@
+{
+ "schemaVersion": 2,
+ "version": "2026.11.12.2",
+ "publishedAt": "2026-11-12T03:57:50+07:00",
+ "podkopVersion": "0.7.24",
+ "engineVersion": "1.14.2-pdk-r14",
+ "arch": "aarch64_cortex-a53",
+ "notes": "",
+ "installers": {
+  "24.10": {
+   "file": "podkop-pe-2026.11.12.2-openwrt24.10.run",
+   "url": "https://github.com/moz9/podkop-patch-subscriptions/releases/download/pe-2026.11.12.2/podkop-pe-2026.11.12.2-openwrt24.10.run",
+   "sha256": "1aaf35190578fb448c603f6adf79a0a2fe1c3455ff550cc9d1cc34e90503fdb8",
+   "size": 9141626
+  },
+  "25.12": {
+   "file": "podkop-pe-2026.11.12.2-openwrt25.12.run",
+   "url": "https://github.com/moz9/podkop-patch-subscriptions/releases/download/pe-2026.11.12.2/podkop-pe-2026.11.12.2-openwrt25.12.run",
+   "sha256": "ff180ff60e22882fc4308ff66ff5b965481172e0aebf04f2e3f1139356fbffcf",
+   "size": 9083164
+  }
+ }
+}
