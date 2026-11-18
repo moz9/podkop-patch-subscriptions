@@ -1,23 +1,23 @@
 {
  "schemaVersion": 2,
- "version": "2026.11.14.4",
- "publishedAt": "2026-11-15T00:53:59+07:00",
+ "version": "2026.11.18.3",
+ "publishedAt": "2026-11-18T22:34:04+07:00",
  "podkopVersion": "0.7.24",
  "engineVersion": "1.14.2-pdk-r14",
  "arch": "aarch64_cortex-a53",
  "notes": "",
  "installers": {
   "24.10": {
-   "file": "podkop-pe-2026.11.14.4-openwrt24.10.run",
-   "url": "https://github.com/moz9/podkop-patch-subscriptions/releases/download/pe-2026.11.14.4/podkop-pe-2026.11.14.4-openwrt24.10.run",
-   "sha256": "ed9399e78685dea2d79264ec0fc6de87aac625ca47d86d9fafc6501cc95dec79",
-   "size": 9155323
+   "file": "podkop-pe-2026.11.18.3-openwrt24.10.run",
+   "url": "https://github.com/moz9/podkop-patch-subscriptions/releases/download/pe-2026.11.18.3/podkop-pe-2026.11.18.3-openwrt24.10.run",
+   "sha256": "9584d6eb34c6902faceb156dd4c45fd22619cd128ac968f5384ac8863746ffbf",
+   "size": 9189410
   },
   "25.12": {
-   "file": "podkop-pe-2026.11.14.4-openwrt25.12.run",
-   "url": "https://github.com/moz9/podkop-patch-subscriptions/releases/download/pe-2026.11.14.4/podkop-pe-2026.11.14.4-openwrt25.12.run",
-   "sha256": "3729e98de0f57da00d6ad24f0b6f690c4931960e732a11b0003f77f810ba5dfb",
-   "size": 9096616
+   "file": "podkop-pe-2026.11.18.3-openwrt25.12.run",
+   "url": "https://github.com/moz9/podkop-patch-subscriptions/releases/download/pe-2026.11.18.3/podkop-pe-2026.11.18.3-openwrt25.12.run",
+   "sha256": "efcf704b822ec6dc0579345dea2bab83da1b35b2ad2be68974495fb69c5e3dc2",
+   "size": 9130808
   }
  }
 }
